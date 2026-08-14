@@ -50,6 +50,7 @@ a { color: inherit; text-decoration: none; }
 .page-shell { max-width: 1500px; margin: 0 auto; padding: 34px 28px 54px; }
 .page-title-row { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
 .page-title-row h1 { font-size: clamp(1.8rem, 3vw, 2.45rem); letter-spacing: -.045em; margin: 2px 0 0; }
+.page-intro { max-width: 720px; margin: 9px 0 0; color: var(--muted); line-height: 1.45; }
 .eyebrow { color: var(--accent-bright); font-size: .77rem; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; margin: 0; }
 .receipt-preview { text-align: right; min-width: 165px; color: var(--muted); font-size: .77rem; text-transform: uppercase; letter-spacing: .08em; }
 .receipt-preview strong { display: block; margin-top: 4px; color: var(--text); font-size: 1rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0; text-transform: none; }
@@ -139,7 +140,9 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .status { display: inline-block; margin: 1px 4px 2px 0; padding: 3px 6px; border-radius: 5px; font-size: .72rem; font-weight: 750; }
 .status.good { color: #adf4ca; background: rgba(82,209,139,.14); }
 .status.warning { color: #ffd69b; background: rgba(243,179,90,.14); }
+.status-select { min-width: 170px; padding: 7px 8px; font-size: .83rem; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; }
+.preserve-newlines { white-space: pre-line; }
 .empty-cell { text-align: center; padding: 28px; color: var(--muted); }
 .stock-cell { font-weight: 760; }
 .out-of-stock { color: var(--danger); }

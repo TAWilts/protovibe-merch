@@ -261,8 +261,9 @@ def import_file(path: Path, database: Path) -> None:
                 INSERT INTO sales (
                     receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
                     amount_given_cents, donation_cents, payment_method, is_paid, is_received,
-                    customer_name, customer_address, event_name, comment, sold_on, created_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, NULL, 0, 'Import', 1, 1, NULL, NULL, ?, NULL, ?, ?, NULL)
+                    delivery_status, customer_name, customer_address, event_name, comment,
+                    sold_on, created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, NULL, 0, 'Import', 1, 1, 'not_applicable', NULL, NULL, ?, NULL, ?, ?, NULL)
                 """,
                 (
                     f"IMPORT-V-{row_number:04d}", variant_id, quantity, unit_price, quantity * unit_price,

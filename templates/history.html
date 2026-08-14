@@ -11,7 +11,10 @@
     <td>{{ sale.quantity }}</td><td>{{ sale.amount_due_cents|money }}</td>
     <td>{% if sale.amount_given_cents is not none %}{{ sale.amount_given_cents|money }}{% else %}—{% endif %}{% if sale.donation_cents %}<small class="table-subline donation">+ {{ sale.donation_cents|money }} Spende</small>{% endif %}</td>
     <td>{{ sale.payment_method }}</td>
-    <td>{% if sale.is_paid %}<span class="status good">bezahlt</span>{% else %}<span class="status warning">offen</span>{% endif %}{% if not sale.is_received %}<span class="status warning">nicht erhalten</span>{% endif %}</td>
+    <td>
+      {% if sale.is_paid %}<span class="status good">bezahlt</span>{% else %}<span class="status warning">offen</span>{% endif %}
+      {% if sale.delivery_status == 'pending' %}<span class="status warning">Versand offen</span>{% elif sale.delivery_status == 'shipped' %}<span class="status good">versendet</span>{% elif sale.delivery_status == 'received' %}<span class="status good">erhalten</span>{% endif %}
+    </td>
     <td>{% if sale.customer_name %}{{ sale.customer_name }}<small class="table-subline">{{ sale.customer_address }}</small>{% else %}—{% endif %}</td>
     <td>{{ sale.event_name or '—' }}{% if sale.comment %}<small class="table-subline">{{ sale.comment }}</small>{% endif %}</td>
   </tr>

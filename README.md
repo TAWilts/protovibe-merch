@@ -15,16 +15,21 @@ Bestand, Bilanz und CSV-Export.
   angezeigt und nach erfolgreichem Speichern bestätigt.
 - **Artikeloptionen:** ein Artikel kann beliebige Optionsspalten haben, etwa
   `Farbe`, `Größe`, `Schnitt` oder `Material`.  Aus den Werten erzeugt die App
-  automatisch die gültigen Varianten.
+  automatisch die gültigen Varianten. Neue Artikel starten mit `Schwarz`,
+  `Weiß` sowie `S` bis `XXL`, die jederzeit editierbar sind.
 - **Einkäufe:** der zuletzt für eine Variante bezahlte Preis wird übernommen,
   kann aber pro Einkauf geändert werden.
 - **Historie:** alle Verkäufe, inklusive Kontakt, Bezahlt-/Erhalten-Status,
   Beleg-ID, Bezahlart, Spende und Kommentar.
+- **Offene Vorgänge:** nicht direkt übergebene Artikel können von „Noch nicht
+  versendet“ über „Versendet“ bis „Erhalten“ geführt werden. Nicht bezahlte
+  Verkäufe lassen sich dort separat als bezahlt markieren.
 - **Bilanzen:** gekauft, verkauft und Bestand je Variante sowie Ausgaben,
   Umsatz, Spenden, Saldo und den aus der ODS übernommenen
   „Nicht nachbestellen“-Status.
 - **Export & Sicherung:** Download als CSV/ZIP sowie automatische Sicherung
-  nach jeder erfolgreichen Änderung.
+  nach jeder erfolgreichen Änderung, einschließlich Versand- und
+  Zahlungsstatus.
 - **Legacy-Import:** ein Skript importiert die vorhandene ODS als echte
   Buchungen, nicht als fragile Tabellenformeln.
 
@@ -52,6 +57,16 @@ Das erfüllt zwei Ziele zugleich:
 1. Die verlangte rückwirkende Umbenennung funktioniert zuverlässig.
 2. Keine alte Buchung verliert ihren Bezug zu einer inzwischen eingestellten
    Größe, Farbe oder Variante.
+
+### Versandstatus und Erhaltungsstatus
+
+Ein Verkauf, bei dem der Artikel direkt am Stand übergeben wurde, hat keinen
+Versandstatus. Wird beim Verkauf hingegen **Artikel erhalten** abgewählt,
+erfordert die App Kontaktdaten und startet einen Versandvorgang mit dem Status
+**Noch nicht versendet**. In **Offene Vorgänge** kann er anschließend auf
+**Versendet** und schließlich **Erhalten** gesetzt werden. Erst dann wandert
+er in die Liste **Gesendete Waren**. Die ursprüngliche Verkaufstransaktion wird
+dabei nicht verändert oder dupliziert.
 
 ### Saldo statt unklarer „Gewinn"
 
@@ -154,9 +169,10 @@ entdeckte, um eine Zeile verschobene Einkaufsformel.
 | `static/transaction.js` | Generische Artikelauswahl – kennt keine fest verdrahteten Optionen wie Farbe/Größe. |
 | `static/sales.js` | Verkaufsspezifische Logik, Belegvorschau und Spendenberechnung. |
 | `static/purchases.js` | Einkaufsspezifische Logik und Übernahme des letzten Einkaufspreises. |
+| `static/operations.js` | Speichert die Statusänderungen für offene Sendungen und Zahlungen. |
 | `static/articles.js` | Dynamische Optionsspalten und die Warnung vor rückwirkenden Änderungen. |
 | `scripts/import_ods.py` | Einmaliger ODS-Migrationsimport. |
-| `tests/test_app.py` | Regressionstests für Bestand, Pflichtkontaktdaten und rückwirkende Optionsnamen. |
+| `tests/test_app.py` | Regressionstests für Bestand, Statusvorgänge, Artikeldefaults, Pflichtkontaktdaten und rückwirkende Optionsnamen. |
 
 Die Anwendung speichert Geldbeträge immer als ganzzahlige Cent-Werte und
 Bestände als Bewegungen.  Deshalb gibt es weder Gleitkomma-Rundungsfehler noch

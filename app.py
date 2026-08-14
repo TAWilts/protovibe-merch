@@ -134,6 +134,10 @@ CREATE TABLE IF NOT EXISTS sales (
     payment_method TEXT NOT NULL,
     is_paid INTEGER NOT NULL DEFAULT 1,
     is_received INTEGER NOT NULL DEFAULT 1,
+    -- ``not_applicable`` identifies an ordinary counter sale.  The other
+    -- states form the delivery workflow for a sale that was not handed over
+    -- immediately.
+    delivery_status TEXT NOT NULL DEFAULT 'not_applicable',
     customer_name TEXT,
     customer_address TEXT,
     event_name TEXT,
@@ -163,6 +167,26 @@ CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
 
 PAYMENT_METHODS = ["Bar", "PayPal", "Überweisung", "Karte", "Sonstiges"]
 
+# ``is_received`` remains a useful, compact accounting flag.  The additional
+# state is only needed when a sale must be sent later: a shipment can be open,
+# sent, and eventually received.  Keeping ``not_applicable`` separate prevents
+# every ordinary sale at the merch stand from appearing in the shipment archive.
+DELIVERY_STATUS_LABELS = {
+    "pending": "Noch nicht versendet",
+    "shipped": "Versendet",
+    "received": "Erhalten",
+    "not_applicable": "Nicht relevant",
+}
+DELIVERY_WORKFLOW_STATUSES = ("pending", "shipped", "received")
+
+# These values are intentionally only used when a *new* article is created.
+# Existing articles can have completely different option groups (for example a
+# patch without sizes), so a migration must never add them retroactively.
+DEFAULT_NEW_ARTICLE_OPTIONS = (
+    ("Farbe", ("Schwarz", "Weiß")),
+    ("Größe", ("S", "M", "L", "XL", "XXL")),
+)
+
 
 def utc_now() -> str:
     """Return an ISO timestamp without pretending that it is local time."""
@@ -172,6 +196,28 @@ def utc_now() -> str:
 
 def today_iso() -> str:
     return date.today().isoformat()
+
+
+def default_new_article_option_configuration() -> list[dict[str, Any]]:
+    """Return fresh, editable default option columns for a new article.
+
+    IDs deliberately stay ``None`` here.  ``apply_option_configuration`` turns
+    them into persistent database rows and can therefore be reused for both
+    the normal and the duplicate-name creation paths.
+    """
+
+    return [
+        {
+            "id": None,
+            "name": group_name,
+            "position": position,
+            "values": [
+                {"id": None, "value": value, "position": value_position}
+                for value_position, value in enumerate(values)
+            ],
+        }
+        for position, (group_name, values) in enumerate(DEFAULT_NEW_ARTICLE_OPTIONS)
+    ]
 
 
 def money_to_cents(value: Any, *, field_name: str = "Betrag") -> int:
@@ -256,6 +302,21 @@ def initialise_database(app: Flask) -> None:
         variant_columns = {row["name"] for row in connection.execute("PRAGMA table_info(variants)").fetchall()}
         if "no_reorder" not in variant_columns:
             connection.execute("ALTER TABLE variants ADD COLUMN no_reorder INTEGER NOT NULL DEFAULT 0")
+
+        # Version 0.2 adds a small delivery state machine.  Existing counter
+        # sales remain outside it, while older sales marked "not received" are
+        # safely migrated into the first workflow state.
+        sales_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sales)").fetchall()}
+        if "delivery_status" not in sales_columns:
+            connection.execute(
+                "ALTER TABLE sales ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'not_applicable'"
+            )
+            connection.execute(
+                "UPDATE sales SET delivery_status = 'pending' WHERE is_received = 0"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sales_delivery_status ON sales(delivery_status)"
+        )
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
             username = app.config["ADMIN_USERNAME"].strip()
@@ -268,7 +329,10 @@ def initialise_database(app: Flask) -> None:
                 "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?)",
                 (username, generate_password_hash(password), utc_now()),
             )
-            connection.commit()
+        # Explicitly commit both schema migrations and initial user creation.
+        # In particular, an existing database may have users already and still
+        # need the delivery-status column added above.
+        connection.commit()
     finally:
         connection.close()
 
@@ -444,6 +508,26 @@ def variant_label_map(
         row["label"] = row["article_name"] if not option_text else f"{row['article_name']} — {option_text}"
         output[row["id"]] = row
     return output
+
+
+def sales_with_labels(
+    connection: sqlite3.Connection, sale_rows: Iterable[sqlite3.Row]
+) -> list[dict[str, Any]]:
+    """Add current variant labels to sale rows for history and work queues.
+
+    Labels intentionally resolve from the current article configuration.  This
+    keeps the delivery/payment tab consistent with the existing history view
+    after a variant or option has been renamed.
+    """
+
+    rows = list(sale_rows)
+    labels = variant_label_map(connection, [row["variant_id"] for row in rows])
+    sales = []
+    for row in rows:
+        item = dict(row)
+        item.update(labels[row["variant_id"]])
+        sales.append(item)
+    return sales
 
 
 def article_payload(connection: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -894,7 +978,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
             "verkaeufe",
             [
                 "Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Gegeben", "Spende",
-                "Bezahlart", "Bezahlt", "Artikel erhalten", "Kundenname", "Adresse", "Veranstaltung", "Kommentar",
+                "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus", "Kundenname", "Adresse", "Veranstaltung", "Kommentar",
             ],
             [
                 [
@@ -902,7 +986,9 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
                     row["quantity"], row["unit_price_cents"] / 100, row["amount_due_cents"] / 100,
                     "" if row["amount_given_cents"] is None else row["amount_given_cents"] / 100,
                     row["donation_cents"] / 100, row["payment_method"], "ja" if row["is_paid"] else "nein",
-                    "ja" if row["is_received"] else "nein", row["customer_name"] or "", row["customer_address"] or "",
+                    "ja" if row["is_received"] else "nein",
+                    DELIVERY_STATUS_LABELS.get(row["delivery_status"], row["delivery_status"]),
+                    row["customer_name"] or "", row["customer_address"] or "",
                     row["event_name"] or "", row["comment"] or "",
                 ]
                 for row in records
@@ -1171,6 +1257,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             customer_address = str(payload.get("customer_address", "")).strip()
             if not is_received and (not customer_name or not customer_address):
                 raise ValueError("Bei noch nicht erhaltenen Artikeln sind Name und Adresse Pflicht.")
+            # A sale collected at the merch table never enters the shipment
+            # workflow.  A non-collected sale starts as "not sent" and can be
+            # progressed later in the dedicated operations tab.
+            delivery_status = "not_applicable" if is_received else "pending"
 
             variant = connection.execute(
                 "SELECT * FROM variants WHERE id = ? AND is_active = 1", (variant_id,)
@@ -1203,28 +1293,44 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             if quantity > stock:
                 raise ValueError(f"Nur noch {stock} Stück dieser Variante auf Lager.")
             receipt_id = unique_receipt_id(connection, "V", payload.get("receipt_id"), sold_on)
+            stock_after_sale = stock - quantity
             cursor = connection.execute(
                 """
                 INSERT INTO sales (
                     receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
                     amount_given_cents, donation_cents, payment_method, is_paid, is_received,
-                    customer_name, customer_address, event_name, comment, sold_on, created_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    delivery_status, customer_name, customer_address, event_name, comment,
+                    sold_on, created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     receipt_id, variant_id, quantity, variant["sale_price_cents"], amount_due, amount_given,
-                    donation, payment_method, int(is_paid), int(is_received), customer_name or None,
-                    customer_address or None, str(payload.get("event_name", "")).strip() or None,
+                    donation, payment_method, int(is_paid), int(is_received), delivery_status,
+                    customer_name or None, customer_address or None,
+                    str(payload.get("event_name", "")).strip() or None,
                     str(payload.get("comment", "")).strip() or None, sold_on, utc_now(), g.user["id"],
                 ),
             )
-            audit(connection, "create", "sale", cursor.lastrowid, {"receipt_id": receipt_id, "quantity": quantity})
+            audit(
+                connection,
+                "create",
+                "sale",
+                cursor.lastrowid,
+                {
+                    "receipt_id": receipt_id,
+                    "quantity": quantity,
+                    "is_paid": is_paid,
+                    "delivery_status": delivery_status,
+                },
+            )
             connection.commit()
             backup_after_commit()
             return jsonify(
                 {
                     "ok": True,
                     "receipt_id": receipt_id,
+                    "variant_id": variant_id,
+                    "stock_after_sale": stock_after_sale,
                     "amount_due_cents": amount_due,
                     "donation_cents": donation,
                     "message": "Kauf erfolgreich erfasst.",
@@ -1310,14 +1416,139 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.get("/historie")
     @login_required
     def history_page():
-        sale_rows = get_db().execute("SELECT * FROM sales ORDER BY sold_on DESC, id DESC").fetchall()
-        labels = variant_label_map(get_db(), [row["variant_id"] for row in sale_rows])
-        sales = []
-        for row in sale_rows:
-            item = dict(row)
-            item.update(labels[row["variant_id"]])
-            sales.append(item)
-        return render_template("history.html", title="Historie", sales=sales)
+        connection = get_db()
+        sale_rows = connection.execute("SELECT * FROM sales ORDER BY sold_on DESC, id DESC").fetchall()
+        return render_template("history.html", title="Historie", sales=sales_with_labels(connection, sale_rows))
+
+    @app.get("/vorgaenge")
+    @login_required
+    def operations_page():
+        """Show shipment and payment work queues without hiding sale history."""
+
+        connection = get_db()
+        current_shipments = connection.execute(
+            """
+            SELECT * FROM sales
+            WHERE delivery_status IN ('pending', 'shipped')
+            ORDER BY sold_on DESC, id DESC
+            """
+        ).fetchall()
+        delivered_goods = connection.execute(
+            """
+            SELECT * FROM sales
+            WHERE delivery_status = 'received'
+            ORDER BY sold_on DESC, id DESC
+            """
+        ).fetchall()
+        unpaid_sales = connection.execute(
+            "SELECT * FROM sales WHERE is_paid = 0 ORDER BY sold_on DESC, id DESC"
+        ).fetchall()
+        return render_template(
+            "operations.html",
+            title="Offene Vorgänge",
+            current_shipments=sales_with_labels(connection, current_shipments),
+            delivered_goods=sales_with_labels(connection, delivered_goods),
+            unpaid_sales=sales_with_labels(connection, unpaid_sales),
+        )
+
+    @app.patch("/api/sales/<int:sale_id>/delivery-status")
+    @login_required
+    def update_delivery_status(sale_id: int):
+        """Advance or correct a later-delivery sale's shipping state."""
+
+        payload = request.get_json(silent=True) or {}
+        requested_status = str(payload.get("delivery_status", "")).strip()
+        if requested_status not in DELIVERY_WORKFLOW_STATUSES:
+            return jsonify({"ok": False, "error": "Ungültiger Versandstatus."}), 400
+
+        connection = get_db()
+        try:
+            sale = connection.execute(
+                "SELECT id, receipt_id, delivery_status FROM sales WHERE id = ?", (sale_id,)
+            ).fetchone()
+            if sale is None:
+                return jsonify({"ok": False, "error": "Verkauf wurde nicht gefunden."}), 404
+            if sale["delivery_status"] == "not_applicable":
+                raise ValueError("Dieser Verkauf wurde bereits direkt übergeben und hat keinen Versandvorgang.")
+
+            is_received = int(requested_status == "received")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE sales SET delivery_status = ?, is_received = ? WHERE id = ?",
+                (requested_status, is_received, sale_id),
+            )
+            audit(
+                connection,
+                "update_delivery_status",
+                "sale",
+                sale_id,
+                {"receipt_id": sale["receipt_id"], "delivery_status": requested_status},
+            )
+            connection.commit()
+            backup_after_commit()
+            return jsonify(
+                {
+                    "ok": True,
+                    "delivery_status": requested_status,
+                    "is_received": bool(is_received),
+                    "message": "Versandstatus gespeichert.",
+                }
+            )
+        except ValueError as exc:
+            connection.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not update delivery status")
+            return jsonify({"ok": False, "error": "Versandstatus konnte nicht gespeichert werden."}), 500
+
+    @app.patch("/api/sales/<int:sale_id>/payment-status")
+    @login_required
+    def update_payment_status(sale_id: int):
+        """Mark an outstanding sale as paid (or correct it back to outstanding)."""
+
+        payload = request.get_json(silent=True) or {}
+        requested_paid = payload.get("is_paid")
+        if not isinstance(requested_paid, bool):
+            return jsonify({"ok": False, "error": "Ungültiger Zahlungsstatus."}), 400
+
+        connection = get_db()
+        try:
+            sale = connection.execute(
+                "SELECT id, receipt_id, amount_due_cents FROM sales WHERE id = ?", (sale_id,)
+            ).fetchone()
+            if sale is None:
+                return jsonify({"ok": False, "error": "Verkauf wurde nicht gefunden."}), 404
+
+            # The dropdown deliberately has no second amount input.  Marking a
+            # sale as paid therefore records the exact due amount and no
+            # donation.  This matches the simple two-state workflow requested
+            # for an outstanding payment.
+            amount_given = int(sale["amount_due_cents"]) if requested_paid else None
+            donation = 0
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE sales
+                SET is_paid = ?, amount_given_cents = ?, donation_cents = ?
+                WHERE id = ?
+                """,
+                (int(requested_paid), amount_given, donation, sale_id),
+            )
+            audit(
+                connection,
+                "update_payment_status",
+                "sale",
+                sale_id,
+                {"receipt_id": sale["receipt_id"], "is_paid": requested_paid},
+            )
+            connection.commit()
+            backup_after_commit()
+            return jsonify({"ok": True, "is_paid": requested_paid, "message": "Zahlungsstatus gespeichert."})
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not update payment status")
+            return jsonify({"ok": False, "error": "Zahlungsstatus konnte nicht gespeichert werden."}), 500
 
     @app.get("/bilanzen")
     @login_required
@@ -1380,15 +1611,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 ("Neuer Artikel", now, now),
             )
             article_id = cursor.lastrowid
-            # New articles get the requested default columns.  Empty groups make
-            # the article non-sellable until the values are filled in.
+            # A new article starts with the common apparel defaults.  They are
+            # ordinary editable values; the administrator can remove a size or
+            # even replace both option columns for a non-apparel article.
             apply_option_configuration(
                 connection,
                 article_id,
-                [
-                    {"id": None, "name": "Farbe", "position": 0, "values": []},
-                    {"id": None, "name": "Größe", "position": 1, "values": []},
-                ],
+                default_new_article_option_configuration(),
             )
             sync_variants(connection, article_id)
             audit(connection, "create", "article", article_id, {"name": "Neuer Artikel"})
@@ -1412,10 +1641,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             apply_option_configuration(
                 connection,
                 article_id,
-                [
-                    {"id": None, "name": "Farbe", "position": 0, "values": []},
-                    {"id": None, "name": "Größe", "position": 1, "values": []},
-                ],
+                default_new_article_option_configuration(),
             )
             sync_variants(connection, article_id)
             audit(connection, "create", "article", article_id, {"name": unique_name})
@@ -1429,7 +1655,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def save_article(article_id: int):
         connection = get_db()
         try:
-            article = connection.execute("SELECT id FROM articles WHERE id = ?", (article_id,)).fetchone()
+            article = connection.execute("SELECT * FROM articles WHERE id = ?", (article_id,)).fetchone()
             if article is None:
                 abort(404)
             name = request.form.get("name", "").strip()
@@ -1469,6 +1695,24 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 field, variant_id = match.groups()
                 cents = money_to_cents(value, field_name="Variantenpreis")
                 column = "sale_price_cents" if field == "sale" else "default_purchase_price_cents"
+                previous_default = int(
+                    article["default_sale_price_cents"]
+                    if field == "sale"
+                    else article["default_purchase_price_cents"]
+                )
+                current_default = sale_price if field == "sale" else purchase_price
+                current_variant = connection.execute(
+                    f"SELECT {column} FROM variants WHERE id = ? AND article_id = ?",
+                    (int(variant_id), article_id),
+                ).fetchone()
+                # A freshly created article already has its default option
+                # combinations.  When the administrator changes the article's
+                # standard price in that first save, unchanged per-variant
+                # inputs must follow it instead of preserving their initial
+                # zero.  The same rule keeps only truly custom prices fixed on
+                # later standard-price changes.
+                if current_variant is not None and cents == previous_default and int(current_variant[column]) == previous_default:
+                    cents = current_default
                 connection.execute(
                     f"UPDATE variants SET {column} = ?, updated_at = ? WHERE id = ? AND article_id = ?",
                     (cents, utc_now(), int(variant_id), article_id),

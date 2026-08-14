@@ -104,6 +104,31 @@
     }
   }
 
+  function applySaleStockUpdate(response) {
+    // Update the in-memory selector data after a confirmed sale.  The page
+    // deliberately stays open, so a reload merely to refresh the number on the
+    // article button would be disruptive at a merch stand.  The server returns
+    // the authoritative remaining stock for exactly this purpose.
+
+    const soldVariantId = Number(response.variant_id);
+    const remainingStock = Number(response.stock_after_sale);
+    const article = articles.find((candidate) =>
+      (candidate.variants || []).some((variant) => Number(variant.id) === soldVariantId)
+    );
+    if (!article || !Number.isFinite(remainingStock)) return;
+
+    const variant = article.variants.find((candidate) => Number(candidate.id) === soldVariantId);
+    variant.stock = remainingStock;
+    article.total_stock = article.variants.reduce((total, candidate) => total + Number(candidate.stock || 0), 0);
+
+    const articleButton = ui.articleButtons.querySelector(`[data-article-id="${article.id}"]`);
+    const stockLabel = articleButton?.querySelector("small");
+    if (stockLabel) stockLabel.textContent = `${article.total_stock} auf Lager`;
+    if (currentVariant && Number(currentVariant.id) === soldVariantId) {
+      ui.selectedStock.textContent = `${remainingStock} Stück verfügbar`;
+    }
+  }
+
   async function confirmSale() {
     const { itemCount, dueCents } = updateSummary();
     if (!currentVariant) return showError("Bitte Artikel und alle Optionen auswählen.");
@@ -139,6 +164,7 @@
       });
       const body = await response.json();
       if (!response.ok || !body.ok) throw new Error(body.error || "Der Kauf konnte nicht gespeichert werden.");
+      applySaleStockUpdate(body);
       ui.dialogReceipt.textContent = body.receipt_id;
       ui.dialog.showModal();
     } catch (error) {
@@ -161,7 +187,8 @@
     ui.amountGiven.value = "";
     ui.customerName.value = "";
     ui.customerAddress.value = "";
-    ui.eventName.value = "";
+    // A merch stand normally records many sales for the same event.  Keep this
+    // field across confirmation; the optional free-text comment still resets.
     ui.comment.value = "";
     ui.error.dataset.serverError = "";
     showError("");

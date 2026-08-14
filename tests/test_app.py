@@ -93,6 +93,7 @@ class MerchAppTestCase(unittest.TestCase):
         )
         self.assertEqual(sale.status_code, 200)
         self.assertEqual(sale.json["amount_due_cents"], 6000)
+        self.assertEqual(sale.json["stock_after_sale"], 1)
         with self.app.app_context():
             connection = get_db()
             stock = connection.execute(
@@ -103,6 +104,95 @@ class MerchAppTestCase(unittest.TestCase):
                 (variant_id, variant_id),
             ).fetchone()[0]
         self.assertEqual(stock, 1)
+
+    def test_delivery_and_payment_queues_update_sale_statuses(self) -> None:
+        """A later-delivery sale must move through both requested work queues."""
+
+        variant_id = self.seed_variant()
+        self.api_post(
+            "/api/purchases",
+            {"variant_id": variant_id, "quantity": 2, "unit_cost": "11", "purchased_on": "2026-08-14"},
+        )
+        sale = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "is_paid": False,
+                "is_received": False,
+                "payment_method": "PayPal",
+                "sold_on": "2026-08-14",
+                "customer_name": "Ada Käuferin",
+                "customer_address": "Bandstraße 1\n24103 Kiel",
+            },
+        )
+        self.assertEqual(sale.status_code, 200)
+        with self.app.app_context():
+            sale_id = get_db().execute("SELECT id FROM sales").fetchone()[0]
+            state = get_db().execute(
+                "SELECT delivery_status, is_received, is_paid FROM sales WHERE id = ?", (sale_id,)
+            ).fetchone()
+        self.assertEqual(state["delivery_status"], "pending")
+        self.assertFalse(state["is_received"])
+        self.assertFalse(state["is_paid"])
+
+        queue = self.client.get("/vorgaenge")
+        self.assertEqual(queue.status_code, 200)
+        self.assertIn("Aktuelle Sendungen", queue.get_data(as_text=True))
+        self.assertIn(sale.json["receipt_id"], queue.get_data(as_text=True))
+
+        delivery = self.client.patch(
+            f"/api/sales/{sale_id}/delivery-status",
+            json={"delivery_status": "received"},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(delivery.status_code, 200)
+        self.assertTrue(delivery.json["is_received"])
+
+        payment = self.client.patch(
+            f"/api/sales/{sale_id}/payment-status",
+            json={"is_paid": True},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(payment.status_code, 200)
+        with self.app.app_context():
+            state = get_db().execute(
+                "SELECT delivery_status, is_received, is_paid, amount_due_cents, amount_given_cents FROM sales WHERE id = ?",
+                (sale_id,),
+            ).fetchone()
+        self.assertEqual(state["delivery_status"], "received")
+        self.assertTrue(state["is_received"])
+        self.assertTrue(state["is_paid"])
+        self.assertEqual(state["amount_given_cents"], state["amount_due_cents"])
+
+    def test_new_article_starts_with_common_colour_and_size_defaults(self) -> None:
+        response = self.client.post(
+            "/artikelverwaltung/neu",
+            data={"csrf_token": "test-csrf"},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            connection = get_db()
+            article_id = connection.execute("SELECT id FROM articles WHERE name = 'Neuer Artikel'").fetchone()[0]
+            groups = connection.execute(
+                "SELECT id, name FROM option_groups WHERE article_id = ? ORDER BY position", (article_id,)
+            ).fetchall()
+            values_by_group = {
+                group["name"]: [
+                    row["value"]
+                    for row in connection.execute(
+                        "SELECT value FROM option_values WHERE option_group_id = ? ORDER BY position", (group["id"],)
+                    ).fetchall()
+                ]
+                for group in groups
+            }
+            variant_count = connection.execute(
+                "SELECT COUNT(*) FROM variants WHERE article_id = ? AND is_active = 1", (article_id,)
+            ).fetchone()[0]
+        self.assertEqual(values_by_group["Farbe"], ["Schwarz", "Weiß"])
+        self.assertEqual(values_by_group["Größe"], ["S", "M", "L", "XL", "XXL"])
+        self.assertEqual(variant_count, 10)
 
     def test_unreceived_sale_requires_full_contact_data(self) -> None:
         variant_id = self.seed_variant()

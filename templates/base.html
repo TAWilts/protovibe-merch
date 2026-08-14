@@ -17,6 +17,7 @@
     <nav class="main-nav" aria-label="Hauptnavigation">
       <a href="{{ url_for('sales_page') }}" class="{{ 'active' if request.endpoint == 'sales_page' else '' }}">Verkauf</a>
       <a href="{{ url_for('history_page') }}" class="{{ 'active' if request.endpoint == 'history_page' else '' }}">Historie</a>
+      <a href="{{ url_for('operations_page') }}" class="{{ 'active' if request.endpoint == 'operations_page' else '' }}">Offene Vorgänge</a>
       <a href="{{ url_for('purchases_page') }}" class="{{ 'active' if request.endpoint == 'purchases_page' else '' }}">Einkäufe</a>
       <a href="{{ url_for('balances_page') }}" class="{{ 'active' if request.endpoint == 'balances_page' else '' }}">Bilanzen</a>
       {% if current_user.is_admin %}
