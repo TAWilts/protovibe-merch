@@ -224,13 +224,14 @@ docker compose exec merch python -m unittest discover -s tests -v
 
 ## GitHub-Releases und kontrollierte Container-Updates
 
-Ab Version 0.3.0 ist der Quellcode von der laufenden Datenhaltung getrennt:
+Ab Version 0.3.0 ist der Quellcode von der laufenden Datenhaltung getrennt.
+Der GitHub-Release-Tag ist dabei die einzige Versionsquelle für veröffentlichten
+Code:
 
-- `VERSION` enthält die Version des gerade gebauten Codes, zum Beispiel
-  `0.3.0`.
 - GitHub Actions testet jeden Push nach `main`.
 - Ein Git-Tag wie `v0.3.1` erzeugt nach erfolgreichen Tests ein
-  DS225+-kompatibles Image `ghcr.io/tawilts/protovibe-merch:v0.3.1`.
+  DS225+-kompatibles Image `ghcr.io/tawilts/protovibe-merch:v0.3.1` und bettet
+  exakt diesen Tag beim Build als `APP_VERSION` in das Image ein.
 - Die App prüft nach einem Admin-Login asynchron und zwischengespeichert die
   neueste veröffentlichte GitHub-Version. Unter **Updates** kann die Prüfung
   jederzeit bewusst wiederholt werden.
@@ -242,19 +243,19 @@ bewusste Administratoraktion.
 
 ### Release-Ablauf
 
-1. `VERSION` auf die neue Nummer ändern, zum Beispiel von `0.3.0` auf
-   `0.3.1`.
-2. Code, Tests und Dokumentation committen und nach `main` pushen.
-3. Den grünen Workflow **Test application** abwarten.
-4. Auf GitHub ein Release mit exakt demselben Tag erstellen, also `v0.3.1`.
+1. Code, Tests und Dokumentation committen und nach `main` pushen.
+2. Den grünen Workflow **Test application** abwarten.
+3. Auf GitHub ein Release mit einem neuen Tag erstellen, zum Beispiel `v0.3.1`.
    Der Workflow **Publish release image** testet erneut und veröffentlicht erst
-   dann das Container-Image.
-5. Erst wenn dieser Workflow grün ist, die Synology auf genau dieses Image
+   dann das Container-Image. Der Tag wird zugleich die in der App angezeigte
+   Versionsnummer.
+4. Erst wenn dieser Workflow grün ist, die Synology auf genau dieses Image
    aktualisieren.
 
-Der Versions-Tag und die Datei `VERSION` müssen zusammenpassen. Der
-Publish-Workflow bricht absichtlich ab, falls beispielsweise `v0.3.2` auf ein
-Commit mit `VERSION = 0.3.1` zeigt.
+Es gibt keine `VERSION`-Datei mehr und deshalb auch keinen Abgleich zweier
+Versionsnummern. Für lokale Entwicklungs-Builds ohne Release-Tag zeigt die App
+neutral `v0.0.0`; ein veröffentlichtes Container-Image zeigt immer seinen
+GitHub-Tag.
 
 ### Einmaliger Wechsel auf das Release-Image
 
@@ -290,11 +291,14 @@ nicht mehr auf dem NAS.
    unverändert am selben Ort bleibt; darin liegen Datenbank und Backups.
 
 Für eine spätere Version änderst du lediglich `MERCH_IMAGE_TAG`, zum Beispiel
-auf `v0.3.1`, und führst erneut `pull` und `up -d` aus. Ein Rücksprung auf die
-vorige Code-Version ist genauso möglich, indem du wieder den vorherigen Tag
-einträgst. Vor jeder Aktualisierung erzeugt die App bereits reguläre
-SQLite-/CSV-Sicherungen nach jeder Buchung; zusätzlich ist ein Synology Snapshot
-oder Hyper Backup des Projektordners sinnvoll.
+auf `v0.3.1`, und führst erneut `pull` und `up -d` aus. Das ist keine zweite
+Versionspflege: Es wählt nur bewusst aus, welches bereits veröffentlichte Image
+auf der Synology laufen soll. Die App-Version selbst ist bereits im gewählten
+Image hinterlegt. Ein Rücksprung auf die vorige Code-Version ist genauso
+möglich, indem du wieder den vorherigen Tag einträgst. Vor jeder Aktualisierung
+erzeugt die App bereits reguläre SQLite-/CSV-Sicherungen nach jeder Buchung;
+zusätzlich ist ein Synology Snapshot oder Hyper Backup des Projektordners
+sinnvoll.
 
 ### Private Repositories und die Update-Prüfung
 

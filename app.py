@@ -202,9 +202,8 @@ DEFAULT_NEW_ARTICLE_OPTIONS = (
 
 # A release tag is deliberately kept independent from the database schema.  It
 # identifies the exact code running in a container and is therefore useful for
-# both support requests and the GitHub update check.
-PROJECT_ROOT = Path(__file__).resolve().parent
-VERSION_FILE = PROJECT_ROOT / "VERSION"
+# both support requests and the GitHub update check.  Release images receive it
+# once at build time through the APP_VERSION environment variable.
 GITHUB_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RELEASE_VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
@@ -212,9 +211,9 @@ RELEASE_VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 def version_tuple(version: str) -> tuple[int, int, int] | None:
     """Return a comparable semantic version tuple or ``None`` for invalid tags.
 
-    Published releases use tags such as ``v0.3.0``, while the local ``VERSION``
-    file intentionally contains just ``0.3.0``.  Accepting both avoids a
-    fragile string comparison and keeps the release convention visible.
+    Published releases use tags such as ``v0.3.0``.  The same tag is embedded
+    in the release image as ``APP_VERSION``.  Accepting a leading ``v`` keeps
+    the release convention visible without a fragile string comparison.
     """
 
     match = RELEASE_VERSION_PATTERN.fullmatch(str(version).strip())
@@ -228,18 +227,6 @@ def display_version(version: str) -> str:
 
     cleaned = str(version).strip()
     return cleaned if cleaned.startswith("v") else f"v{cleaned}"
-
-
-def read_app_version() -> str:
-    """Read and validate the version embedded in the deployed source/image."""
-
-    try:
-        version = VERSION_FILE.read_text(encoding="utf-8").strip()
-    except OSError as exc:  # pragma: no cover - protects manual deployments.
-        raise RuntimeError("Die Datei VERSION fehlt im Projektordner.") from exc
-    if version_tuple(version) is None:
-        raise RuntimeError("VERSION muss dem Format X.Y.Z entsprechen, zum Beispiel 0.3.0.")
-    return version
 
 
 def fetch_latest_github_release(repository: str, token: str | None, timeout_seconds: float) -> dict[str, Any]:
@@ -333,8 +320,8 @@ def update_status(app: Flask, *, force: bool = False) -> dict[str, Any]:
             if release_version is None:
                 raise ValueError("Die neueste GitHub-Version hat kein gültiges Versions-Tag.")
             current_version_tuple = version_tuple(current_version)
-            if current_version_tuple is None:  # protected by ``read_app_version`` during app creation
-                raise ValueError("Die installierte Versionsdatei ist ungültig.")
+            if current_version_tuple is None:  # protected during app creation
+                raise ValueError("Die installierte App-Version ist ungültig.")
             release_url = str(release.get("html_url", "")).strip()
             safe_release_url = release_url if release_url.startswith("https://github.com/") else None
             base_status.update(
@@ -1606,7 +1593,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         BACKUP_RETENTION_DAYS=int(os.environ.get("BACKUP_RETENTION_DAYS", "90")),
         ADMIN_USERNAME=os.environ.get("ADMIN_USERNAME", "admin"),
         ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD", "replace-this-password"),
-        APP_VERSION=read_app_version(),
+        # A published image receives the GitHub release tag at Docker build
+        # time.  The neutral fallback only applies to local development builds.
+        APP_VERSION=os.environ.get("APP_VERSION", "0.0.0").strip(),
         # A public repository needs no token.  For a private repository, use a
         # separate, fine-grained read-only token; it remains server-side.
         UPDATE_CHECK_REPOSITORY=os.environ.get("UPDATE_CHECK_REPOSITORY", "TAWilts/protovibe-merch").strip(),
@@ -1619,6 +1608,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
+    if version_tuple(str(app.config["APP_VERSION"])) is None:
+        raise RuntimeError("APP_VERSION muss dem Format vX.Y.Z entsprechen, zum Beispiel v0.3.0.")
     if app.config["SECRET_KEY"] == "development-only-change-me" and not app.config.get("TESTING"):
         raise RuntimeError("Set SECRET_KEY in .env before starting the app.")
 

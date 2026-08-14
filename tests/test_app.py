@@ -29,6 +29,7 @@ class MerchAppTestCase(unittest.TestCase):
                 "BACKUP_DIR": str(root / "backups"),
                 "ADMIN_USERNAME": "tester",
                 "ADMIN_PASSWORD": "test-password",
+                "APP_VERSION": "v0.3.0",
                 "AUTO_BACKUP": False,
             }
         )
@@ -39,6 +40,25 @@ class MerchAppTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tempdir.cleanup()
+
+    def test_local_build_uses_a_neutral_version_without_a_release_tag(self) -> None:
+        """Source builds must not depend on a second VERSION file."""
+
+        root = Path(self.tempdir.name) / "local-build"
+        with patch.dict("app.os.environ", {}, clear=True):
+            local_app = create_app(
+                {
+                    "TESTING": True,
+                    "SECRET_KEY": "test-secret",
+                    "DATABASE": str(root / "merch.sqlite3"),
+                    "BACKUP_DIR": str(root / "backups"),
+                    "ADMIN_USERNAME": "tester",
+                    "ADMIN_PASSWORD": "test-password",
+                    "AUTO_BACKUP": False,
+                }
+            )
+
+        self.assertEqual(local_app.config["APP_VERSION"], "0.0.0")
 
     def seed_variant(self, article_name: str = "Test Shirt") -> int:
         """Create an article with generic Farbe/Größe options and one variant."""

@@ -3,14 +3,15 @@ FROM python:3.12-slim
 # The application deliberately uses a single small Python container and SQLite.
 # That keeps the footprint appropriate for a DS225+ while still providing proper
 # transactions and a durable database.
+ARG APP_VERSION=0.0.0
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    APP_VERSION=${APP_VERSION}
 
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY VERSION .
 COPY app.py .
 COPY templates ./templates
 COPY static ./static
