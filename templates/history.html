@@ -3,7 +3,7 @@
 <div class="page-title-row"><div><p class="eyebrow">Nachvollziehbarkeit</p><h1>Historie</h1></div><a class="secondary-button" href="{{ url_for('export_csv', kind='sales') }}">Verkäufe als CSV exportieren</a></div>
 <section class="table-section history-table-section">
   <div class="table-scroll"><table class="history-table"><thead><tr>
-    <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Gegeben / Spende</th><th>Bezahlart</th><th>Status</th><th>Kontakt</th><th>Veranstaltung / Notiz</th>
+    <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Gegeben / Spende</th><th>Bezahlart</th><th>Status</th><th>Kontakt</th><th>Veranstaltung / Verkauft von / Notiz</th>
   </tr></thead><tbody>
   {% for sale in sales %}
   <tr>
@@ -16,7 +16,7 @@
       {% if sale.delivery_status == 'pending' %}<span class="status warning">Versand offen</span>{% elif sale.delivery_status == 'shipped' %}<span class="status good">versendet</span>{% elif sale.delivery_status == 'received' %}<span class="status good">erhalten</span>{% endif %}
     </td>
     <td>{% if sale.customer_name %}{{ sale.customer_name }}<small class="table-subline">{{ sale.customer_address }}</small>{% else %}—{% endif %}</td>
-    <td>{{ sale.event_name or '—' }}{% if sale.comment %}<small class="table-subline">{{ sale.comment }}</small>{% endif %}</td>
+    <td>{{ sale.event_name or '—' }}{% if sale.sold_by %}<small class="table-subline">Verkauft von: {{ sale.sold_by }}</small>{% endif %}{% if sale.comment %}<small class="table-subline">{{ sale.comment }}</small>{% endif %}</td>
   </tr>
   {% else %}<tr><td colspan="10" class="empty-cell">Noch keine Verkäufe erfasst.</td></tr>{% endfor %}
   </tbody></table></div>

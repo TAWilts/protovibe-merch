@@ -45,10 +45,11 @@
     <div class="checkbox-row">
       <label class="toggle-label"><input id="is-paid" type="checkbox" checked><span>Bezahlt</span></label>
       <label class="toggle-label"><input id="is-received" type="checkbox" checked><span>Artikel erhalten</span></label>
+      <label class="seller-field"><span>Verkauft von</span><input id="sold-by" placeholder="Optional"></label>
     </div>
 
     <div class="contact-fields" id="contact-fields" hidden>
-      <p class="notice">Bei noch nicht erhaltenen Artikeln sind die Kontaktdaten erforderlich.</p>
+      <p class="notice">Bei noch nicht bezahlten oder noch nicht erhaltenen Artikeln sind die Kontaktdaten erforderlich.</p>
       <label>Name<input id="customer-name" autocomplete="name"></label>
       <label>Adresse<textarea id="customer-address" rows="2" autocomplete="street-address"></textarea></label>
     </div>

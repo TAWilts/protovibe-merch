@@ -14,7 +14,9 @@ Bestand, Bilanz und CSV-Export.
   Zahlung/Abholung/Kontaktdaten/Menge.  Die Beleg-ID wird vor dem Speichern
   angezeigt und nach erfolgreichem Speichern bestätigt. Ein fehlender
   Lagerbestand blockiert keinen Verkauf; bei Direktübergabe weist die App
-  vorher sichtbar darauf hin.
+  vorher sichtbar darauf hin. Bei nicht bezahlten oder noch nicht übergebenen
+  Artikeln sind Name und Adresse Pflicht. Das optionale Feld **Verkauft von**
+  bleibt für die nächsten Eingaben erhalten.
 - **Artikeloptionen:** ein Artikel kann beliebige Optionsspalten haben, etwa
   `Farbe`, `Größe`, `Schnitt` oder `Material`.  Aus den Werten erzeugt die App
   automatisch die gültigen Varianten. Neue Artikel starten mit `Schwarz`,
@@ -65,9 +67,10 @@ Das erfüllt zwei Ziele zugleich:
 ### Versandstatus und Erhaltungsstatus
 
 Ein Verkauf, bei dem der Artikel direkt am Stand übergeben wurde, hat keinen
-Versandstatus. Wird beim Verkauf hingegen **Artikel erhalten** abgewählt,
-erfordert die App Kontaktdaten und startet einen Versandvorgang mit dem Status
-**Noch nicht versendet**. In **Offene Vorgänge** kann er anschließend auf
+Versandstatus. Wird beim Verkauf hingegen **Artikel erhalten** oder **Bezahlt**
+abgewählt, erfordert die App Kontaktdaten. Ein nicht direkt übergebener Artikel
+startet zusätzlich einen Versandvorgang mit dem Status **Noch nicht versendet**.
+In **Offene Vorgänge** kann er anschließend auf
 **Versendet** und schließlich **Erhalten** gesetzt werden. Erst dann wandert
 er in die Liste **Gesendete Waren**. Die ursprüngliche Verkaufstransaktion wird
 dabei nicht verändert oder dupliziert.

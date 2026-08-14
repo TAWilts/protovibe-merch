@@ -28,7 +28,7 @@
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
       <td>{{ sale.quantity }}</td>
       <td>{{ sale.customer_name }}<small class="table-subline preserve-newlines">{{ sale.customer_address }}</small></td>
-      <td>{{ sale.event_name or '—' }}</td>
+      <td>{{ sale.event_name or '—' }}{% if sale.sold_by %}<small class="table-subline">Verkauft von: {{ sale.sold_by }}</small>{% endif %}</td>
       <td>
         <select class="status-select" data-delivery-status data-sale-id="{{ sale.sale_id }}" aria-label="Versandstatus für {{ sale.receipt_id }}">
           <option value="pending" {% if sale.delivery_status == 'pending' %}selected{% endif %}>Noch nicht versendet</option>
@@ -64,6 +64,7 @@
       <td>
         {% if sale.customer_name %}{{ sale.customer_name }}<small class="table-subline preserve-newlines">{{ sale.customer_address }}</small>{% endif %}
         {% if sale.event_name %}<small class="table-subline">{{ sale.event_name }}</small>{% elif not sale.customer_name %}—{% endif %}
+        {% if sale.sold_by %}<small class="table-subline">Verkauft von: {{ sale.sold_by }}</small>{% endif %}
       </td>
       <td>
         <select class="status-select" data-payment-status data-sale-id="{{ sale.sale_id }}" aria-label="Zahlungsstatus für {{ sale.receipt_id }}">
@@ -97,7 +98,7 @@
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
       <td>{{ sale.quantity }}</td>
       <td>{{ sale.customer_name }}<small class="table-subline preserve-newlines">{{ sale.customer_address }}</small></td>
-      <td>{{ sale.event_name or '—' }}</td>
+      <td>{{ sale.event_name or '—' }}{% if sale.sold_by %}<small class="table-subline">Verkauft von: {{ sale.sold_by }}</small>{% endif %}</td>
       <td>
         <select class="status-select" data-delivery-status data-sale-id="{{ sale.sale_id }}" aria-label="Versandstatus für {{ sale.receipt_id }}">
           <option value="pending">Noch nicht versendet</option>
@@ -133,6 +134,7 @@
       <td>
         {% if sale.customer_name %}{{ sale.customer_name }}<small class="table-subline preserve-newlines">{{ sale.customer_address }}</small>{% endif %}
         {% if sale.event_name %}<small class="table-subline">{{ sale.event_name }}</small>{% elif not sale.customer_name %}—{% endif %}
+        {% if sale.sold_by %}<small class="table-subline">Verkauft von: {{ sale.sold_by }}</small>{% endif %}
       </td>
       <td>
         <select class="status-select" data-payment-status data-sale-id="{{ sale.sale_id }}" aria-label="Zahlungsstatus für {{ sale.receipt_id }}">

@@ -292,6 +292,47 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Name und Adresse", response.json["error"])
 
+    def test_unpaid_sale_requires_full_contact_data(self) -> None:
+        variant_id = self.seed_variant()
+        response = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "is_paid": False,
+                "is_received": True,
+                "payment_method": "PayPal",
+                "sold_on": "2026-08-14",
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Name und Adresse", response.json["error"])
+
+    def test_optional_seller_is_stored_and_exported(self) -> None:
+        variant_id = self.seed_variant()
+        sale = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "is_paid": True,
+                "is_received": True,
+                "payment_method": "Bar",
+                "sold_on": "2026-08-14",
+                "sold_by": "Lena",
+            },
+        )
+        self.assertEqual(sale.status_code, 200)
+        with self.app.app_context():
+            sold_by = get_db().execute("SELECT sold_by FROM sales").fetchone()[0]
+        self.assertEqual(sold_by, "Lena")
+
+        history = self.client.get("/historie").get_data(as_text=True)
+        self.assertIn("Verkauft von: Lena", history)
+        exported_sales = self.client.get("/export/sales.csv").get_data(as_text=True)
+        self.assertIn("Verkauft von", exported_sales)
+        self.assertIn("Lena", exported_sales)
+
     def test_option_rename_is_visible_in_historic_labels(self) -> None:
         variant_id = self.seed_variant()
         with self.app.app_context():

@@ -82,6 +82,8 @@ a { color: inherit; text-decoration: none; }
 .checkbox-row { display: flex; flex-wrap: wrap; gap: 17px; padding-bottom: 4px; }
 .toggle-label { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; font-size: .91rem; cursor: pointer; }
 .toggle-label input { width: 18px; height: 18px; accent-color: var(--accent); }
+.seller-field { min-width: 170px; max-width: 225px; margin-left: auto; gap: 4px; }
+.seller-field input { padding: 7px 9px; }
 label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: .78rem; font-weight: 650; }
 input, select, textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: #110e16; padding: 9px 10px; outline: none; }
 textarea { resize: vertical; min-height: 42px; }
@@ -218,6 +220,7 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
   .sale-details { order: 3; }
   .article-list-panel { position: static; }
   .button-list { max-height: 260px; }
+  .seller-field { flex: 1 1 100%; max-width: none; margin-left: 0; }
   .two-columns, .three-columns { grid-template-columns: 1fr; }
   .quantity-and-total { align-items: stretch; flex-direction: column; gap: 10px; }
   .quantity-control { max-width: none; }

@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS sales (
     customer_name TEXT,
     customer_address TEXT,
     event_name TEXT,
+    sold_by TEXT,
     comment TEXT,
     sold_on TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -334,6 +335,12 @@ def initialise_database(app: Flask) -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_sales_payment_follow_up ON sales(payment_follow_up, is_paid)"
         )
+
+        # ``created_by`` identifies the logged-in app account.  Keep the
+        # optional person actually staffing the merch stand separately, so a
+        # shared account does not erase that useful sale context.
+        if "sold_by" not in sales_columns:
+            connection.execute("ALTER TABLE sales ADD COLUMN sold_by TEXT")
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
             username = app.config["ADMIN_USERNAME"].strip()
@@ -1005,7 +1012,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
             "verkaeufe",
             [
                 "Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Gegeben", "Spende",
-                "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus", "Kundenname", "Adresse", "Veranstaltung", "Kommentar",
+                "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus", "Kundenname", "Adresse", "Veranstaltung", "Verkauft von", "Kommentar",
             ],
             [
                 [
@@ -1016,7 +1023,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
                     "ja" if row["is_received"] else "nein",
                     DELIVERY_STATUS_LABELS.get(row["delivery_status"], row["delivery_status"]),
                     row["customer_name"] or "", row["customer_address"] or "",
-                    row["event_name"] or "", row["comment"] or "",
+                    row["event_name"] or "", row["sold_by"] or "", row["comment"] or "",
                 ]
                 for row in records
             ],
@@ -1282,8 +1289,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 raise ValueError("Bitte eine gültige Bezahlart auswählen.")
             customer_name = str(payload.get("customer_name", "")).strip()
             customer_address = str(payload.get("customer_address", "")).strip()
-            if not is_received and (not customer_name or not customer_address):
-                raise ValueError("Bei noch nicht erhaltenen Artikeln sind Name und Adresse Pflicht.")
+            sold_by = str(payload.get("sold_by", "")).strip()
+            if (not is_received or not is_paid) and (not customer_name or not customer_address):
+                raise ValueError("Bei nicht bezahlten oder noch nicht erhaltenen Artikeln sind Name und Adresse Pflicht.")
             # A sale collected at the merch table never enters the shipment
             # workflow.  A non-collected sale starts as "not sent" and can be
             # progressed later in the dedicated operations tab.
@@ -1324,9 +1332,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 INSERT INTO sales (
                     receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
                     amount_given_cents, donation_cents, payment_method, is_paid, payment_follow_up, is_received,
-                    delivery_status, customer_name, customer_address, event_name, comment,
+                    delivery_status, customer_name, customer_address, event_name, sold_by, comment,
                     sold_on, created_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     receipt_id, variant_id, quantity, variant["sale_price_cents"], amount_due,
@@ -1334,6 +1342,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     int(is_received), delivery_status,
                     customer_name or None, customer_address or None,
                     str(payload.get("event_name", "")).strip() or None,
+                    sold_by or None,
                     str(payload.get("comment", "")).strip() or None, sold_on, utc_now(), g.user["id"],
                 ),
             )
@@ -1348,6 +1357,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "is_paid": is_paid,
                     "payment_follow_up": bool(payment_follow_up),
                     "delivery_status": delivery_status,
+                    "sold_by": sold_by or None,
                 },
             )
             connection.commit()

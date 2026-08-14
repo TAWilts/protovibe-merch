@@ -16,6 +16,7 @@
     selectedStock: $("selected-variant-stock"),
     paid: $("is-paid"),
     received: $("is-received"),
+    soldBy: $("sold-by"),
     contactFields: $("contact-fields"),
     customerName: $("customer-name"),
     customerAddress: $("customer-address"),
@@ -72,7 +73,7 @@
   }
 
   function updateContactFields() {
-    const needsContact = !ui.received.checked;
+    const needsContact = !ui.received.checked || !ui.paid.checked;
     ui.contactFields.hidden = !needsContact;
     ui.customerName.required = needsContact;
     ui.customerAddress.required = needsContact;
@@ -147,8 +148,8 @@
   async function confirmSale() {
     const { itemCount, dueCents } = updateSummary();
     if (!currentVariant) return showError("Bitte Artikel und alle Optionen auswählen.");
-    if (!ui.received.checked && (!ui.customerName.value.trim() || !ui.customerAddress.value.trim())) {
-      return showError("Bei noch nicht erhaltenen Artikeln sind Name und Adresse erforderlich.");
+    if ((!ui.received.checked || !ui.paid.checked) && (!ui.customerName.value.trim() || !ui.customerAddress.value.trim())) {
+      return showError("Bei nicht bezahlten oder noch nicht erhaltenen Artikeln sind Name und Adresse erforderlich.");
     }
     const givenCents = window.MerchTransaction.inputToCents(ui.amountGiven.value);
     if (ui.paid.checked && ui.amountGiven.value.trim() && givenCents < dueCents) {
@@ -174,6 +175,7 @@
           customer_name: ui.customerName.value.trim(),
           customer_address: ui.customerAddress.value.trim(),
           event_name: ui.eventName.value.trim(),
+          sold_by: ui.soldBy.value.trim(),
           comment: ui.comment.value.trim(),
         }),
       });
@@ -202,8 +204,9 @@
     ui.amountGiven.value = "";
     ui.customerName.value = "";
     ui.customerAddress.value = "";
-    // A merch stand normally records many sales for the same event.  Keep this
-    // field across confirmation; the optional free-text comment still resets.
+    // A merch stand normally records many sales for the same event and with
+    // the same seller.  Keep both fields across confirmation; the optional
+    // free-text comment still resets.
     ui.comment.value = "";
     ui.error.dataset.serverError = "";
     showError("");
@@ -218,7 +221,7 @@
   ui.plus.addEventListener("click", () => { ui.quantity.value = quantity() + 1; updateSummary(); });
   ui.quantity.addEventListener("input", updateSummary);
   ui.amountGiven.addEventListener("input", updateSummary);
-  ui.paid.addEventListener("change", () => { updatePaidFields(); updateSummary(); });
+  ui.paid.addEventListener("change", () => { updatePaidFields(); updateContactFields(); updateSummary(); });
   ui.received.addEventListener("change", () => { updateContactFields(); updateSummary(); });
   ui.confirm.addEventListener("click", confirmSale);
   ui.closeDialog.addEventListener("click", () => ui.dialog.close());
