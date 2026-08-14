@@ -23,7 +23,9 @@ Bestand, Bilanz und CSV-Export.
   Beleg-ID, Bezahlart, Spende und Kommentar.
 - **Offene Vorgänge:** nicht direkt übergebene Artikel können von „Noch nicht
   versendet“ über „Versendet“ bis „Erhalten“ geführt werden. Nicht bezahlte
-  Verkäufe lassen sich dort separat als bezahlt markieren.
+  Verkäufe lassen sich dort separat als bezahlt markieren. Beide abgeschlossenen
+  Vorgänge erscheinen jeweils in einer getrennten Historie unterhalb der offenen
+  Listen.
 - **Bilanzen:** gekauft, verkauft und Bestand je Variante sowie Ausgaben,
   Umsatz, Spenden, Saldo und den aus der ODS übernommenen
   „Nicht nachbestellen“-Status.
@@ -67,6 +69,10 @@ erfordert die App Kontaktdaten und startet einen Versandvorgang mit dem Status
 **Versendet** und schließlich **Erhalten** gesetzt werden. Erst dann wandert
 er in die Liste **Gesendete Waren**. Die ursprüngliche Verkaufstransaktion wird
 dabei nicht verändert oder dupliziert.
+
+Nicht bezahlte Verkäufe werden analog nach dem Umschalten auf **Bezahlt** in
+**Bezahlte Verkäufe** verschoben. Direkt als bezahlt erfasste Verkäufe erscheinen
+nicht in dieser speziellen Nachbearbeitungshistorie.
 
 ### Saldo statt unklarer „Gewinn"
 

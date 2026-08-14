@@ -30,7 +30,7 @@
       <td>{{ sale.customer_name }}<small class="table-subline preserve-newlines">{{ sale.customer_address }}</small></td>
       <td>{{ sale.event_name or '—' }}</td>
       <td>
-        <select class="status-select" data-delivery-status data-sale-id="{{ sale.id }}" aria-label="Versandstatus für {{ sale.receipt_id }}">
+        <select class="status-select" data-delivery-status data-sale-id="{{ sale.sale_id }}" aria-label="Versandstatus für {{ sale.receipt_id }}">
           <option value="pending" {% if sale.delivery_status == 'pending' %}selected{% endif %}>Noch nicht versendet</option>
           <option value="shipped" {% if sale.delivery_status == 'shipped' %}selected{% endif %}>Versendet</option>
           <option value="received">Erhalten</option>
@@ -39,38 +39,6 @@
     </tr>
   {% else %}
     <tr><td colspan="7" class="empty-cell">Keine offenen Sendungen.</td></tr>
-  {% endfor %}
-  </tbody></table></div>
-</section>
-
-<section class="table-section">
-  <div class="section-heading">
-    <div>
-      <h2>Gesendete Waren</h2>
-      <p>Abgeschlossene Sendungen. Wenn nötig, kann der Versandstatus hier wieder korrigiert werden.</p>
-    </div>
-  </div>
-  <div class="table-scroll"><table class="operations-table"><thead><tr>
-    <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Kontakt</th><th>Veranstaltung</th><th>Versandstatus</th>
-  </tr></thead><tbody>
-  {% for sale in delivered_goods %}
-    <tr>
-      <td>{{ sale.sold_on }}</td>
-      <td class="mono">{{ sale.receipt_id }}</td>
-      <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
-      <td>{{ sale.quantity }}</td>
-      <td>{{ sale.customer_name }}<small class="table-subline preserve-newlines">{{ sale.customer_address }}</small></td>
-      <td>{{ sale.event_name or '—' }}</td>
-      <td>
-        <select class="status-select" data-delivery-status data-sale-id="{{ sale.id }}" aria-label="Versandstatus für {{ sale.receipt_id }}">
-          <option value="pending">Noch nicht versendet</option>
-          <option value="shipped">Versendet</option>
-          <option value="received" selected>Erhalten</option>
-        </select>
-      </td>
-    </tr>
-  {% else %}
-    <tr><td colspan="7" class="empty-cell">Noch keine versendete Ware als erhalten markiert.</td></tr>
   {% endfor %}
   </tbody></table></div>
 </section>
@@ -98,7 +66,7 @@
         {% if sale.event_name %}<small class="table-subline">{{ sale.event_name }}</small>{% elif not sale.customer_name %}—{% endif %}
       </td>
       <td>
-        <select class="status-select" data-payment-status data-sale-id="{{ sale.id }}" aria-label="Zahlungsstatus für {{ sale.receipt_id }}">
+        <select class="status-select" data-payment-status data-sale-id="{{ sale.sale_id }}" aria-label="Zahlungsstatus für {{ sale.receipt_id }}">
           <option value="false" selected>Nicht bezahlt</option>
           <option value="true">Bezahlt</option>
         </select>
@@ -106,6 +74,75 @@
     </tr>
   {% else %}
     <tr><td colspan="8" class="empty-cell">Keine offenen Zahlungen.</td></tr>
+  {% endfor %}
+  </tbody></table></div>
+</section>
+
+<hr class="operations-divider" aria-hidden="true">
+
+<section class="table-section">
+  <div class="section-heading">
+    <div>
+      <h2>Gesendete Waren</h2>
+      <p>Abgeschlossene Sendungen. Wenn nötig, kann der Versandstatus hier wieder korrigiert werden.</p>
+    </div>
+  </div>
+  <div class="table-scroll"><table class="operations-table"><thead><tr>
+    <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Kontakt</th><th>Veranstaltung</th><th>Versandstatus</th>
+  </tr></thead><tbody>
+  {% for sale in delivered_goods %}
+    <tr>
+      <td>{{ sale.sold_on }}</td>
+      <td class="mono">{{ sale.receipt_id }}</td>
+      <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
+      <td>{{ sale.quantity }}</td>
+      <td>{{ sale.customer_name }}<small class="table-subline preserve-newlines">{{ sale.customer_address }}</small></td>
+      <td>{{ sale.event_name or '—' }}</td>
+      <td>
+        <select class="status-select" data-delivery-status data-sale-id="{{ sale.sale_id }}" aria-label="Versandstatus für {{ sale.receipt_id }}">
+          <option value="pending">Noch nicht versendet</option>
+          <option value="shipped">Versendet</option>
+          <option value="received" selected>Erhalten</option>
+        </select>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="empty-cell">Noch keine versendete Ware als erhalten markiert.</td></tr>
+  {% endfor %}
+  </tbody></table></div>
+</section>
+
+<section class="table-section">
+  <div class="section-heading">
+    <div>
+      <h2>Bezahlte Verkäufe</h2>
+      <p>Abgeschlossene Zahlungen, die ursprünglich als nicht bezahlt erfasst wurden.</p>
+    </div>
+  </div>
+  <div class="table-scroll"><table class="operations-table"><thead><tr>
+    <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Bezahlart</th><th>Kontakt / Veranstaltung</th><th>Zahlungsstatus</th>
+  </tr></thead><tbody>
+  {% for sale in paid_follow_up_sales %}
+    <tr>
+      <td>{{ sale.sold_on }}</td>
+      <td class="mono">{{ sale.receipt_id }}</td>
+      <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
+      <td>{{ sale.quantity }}</td>
+      <td>{{ sale.amount_due_cents|money }}</td>
+      <td>{{ sale.payment_method }}</td>
+      <td>
+        {% if sale.customer_name %}{{ sale.customer_name }}<small class="table-subline preserve-newlines">{{ sale.customer_address }}</small>{% endif %}
+        {% if sale.event_name %}<small class="table-subline">{{ sale.event_name }}</small>{% elif not sale.customer_name %}—{% endif %}
+      </td>
+      <td>
+        <select class="status-select" data-payment-status data-sale-id="{{ sale.sale_id }}" aria-label="Zahlungsstatus für {{ sale.receipt_id }}">
+          <option value="false">Nicht bezahlt</option>
+          <option value="true" selected>Bezahlt</option>
+        </select>
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="empty-cell">Noch keine offene Zahlung als bezahlt markiert.</td></tr>
   {% endfor %}
   </tbody></table></div>
 </section>

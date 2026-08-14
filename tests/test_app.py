@@ -113,6 +113,20 @@ class MerchAppTestCase(unittest.TestCase):
             "/api/purchases",
             {"variant_id": variant_id, "quantity": 2, "unit_cost": "11", "purchased_on": "2026-08-14"},
         )
+        # Create one unrelated counter sale first.  The next sale's primary key
+        # must differ from the variant ID, otherwise a template that accidentally
+        # sends the variant ID to the status API would not be detected here.
+        self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "is_paid": True,
+                "is_received": True,
+                "payment_method": "Bar",
+                "sold_on": "2026-08-14",
+            },
+        )
         sale = self.api_post(
             "/api/sales",
             {
@@ -128,18 +142,21 @@ class MerchAppTestCase(unittest.TestCase):
         )
         self.assertEqual(sale.status_code, 200)
         with self.app.app_context():
-            sale_id = get_db().execute("SELECT id FROM sales").fetchone()[0]
+            sale_id = get_db().execute("SELECT id FROM sales ORDER BY id DESC").fetchone()[0]
             state = get_db().execute(
-                "SELECT delivery_status, is_received, is_paid FROM sales WHERE id = ?", (sale_id,)
+                "SELECT delivery_status, is_received, is_paid, payment_follow_up FROM sales WHERE id = ?", (sale_id,)
             ).fetchone()
         self.assertEqual(state["delivery_status"], "pending")
         self.assertFalse(state["is_received"])
         self.assertFalse(state["is_paid"])
+        self.assertTrue(state["payment_follow_up"])
 
         queue = self.client.get("/vorgaenge")
         self.assertEqual(queue.status_code, 200)
-        self.assertIn("Aktuelle Sendungen", queue.get_data(as_text=True))
-        self.assertIn(sale.json["receipt_id"], queue.get_data(as_text=True))
+        queue_html = queue.get_data(as_text=True)
+        self.assertIn("Aktuelle Sendungen", queue_html)
+        self.assertIn(sale.json["receipt_id"], queue_html)
+        self.assertIn(f'data-sale-id="{sale_id}"', queue_html)
 
         delivery = self.client.patch(
             f"/api/sales/{sale_id}/delivery-status",
@@ -157,13 +174,21 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(payment.status_code, 200)
         with self.app.app_context():
             state = get_db().execute(
-                "SELECT delivery_status, is_received, is_paid, amount_due_cents, amount_given_cents FROM sales WHERE id = ?",
+                """
+                SELECT delivery_status, is_received, is_paid, payment_follow_up,
+                       amount_due_cents, amount_given_cents
+                FROM sales WHERE id = ?
+                """,
                 (sale_id,),
             ).fetchone()
         self.assertEqual(state["delivery_status"], "received")
         self.assertTrue(state["is_received"])
         self.assertTrue(state["is_paid"])
+        self.assertTrue(state["payment_follow_up"])
         self.assertEqual(state["amount_given_cents"], state["amount_due_cents"])
+        history = self.client.get("/vorgaenge").get_data(as_text=True)
+        self.assertIn("Bezahlte Verkäufe", history)
+        self.assertIn(sale.json["receipt_id"], history)
 
     def test_new_article_starts_with_common_colour_and_size_defaults(self) -> None:
         response = self.client.post(

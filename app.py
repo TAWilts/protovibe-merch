@@ -133,6 +133,9 @@ CREATE TABLE IF NOT EXISTS sales (
     donation_cents INTEGER NOT NULL DEFAULT 0 CHECK(donation_cents >= 0),
     payment_method TEXT NOT NULL,
     is_paid INTEGER NOT NULL DEFAULT 1,
+    -- Keeps the payment workflow distinct from ordinary counter sales that
+    -- were already paid when first entered.
+    payment_follow_up INTEGER NOT NULL DEFAULT 0,
     is_received INTEGER NOT NULL DEFAULT 1,
     -- ``not_applicable`` identifies an ordinary counter sale.  The other
     -- states form the delivery workflow for a sale that was not handed over
@@ -316,6 +319,20 @@ def initialise_database(app: Flask) -> None:
             )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_sales_delivery_status ON sales(delivery_status)"
+        )
+
+        # A completed payment history should only contain sales that actually
+        # began as open payments.  Existing open sales get that marker during
+        # migration; already paid counter sales stay out of the new history.
+        if "payment_follow_up" not in sales_columns:
+            connection.execute(
+                "ALTER TABLE sales ADD COLUMN payment_follow_up INTEGER NOT NULL DEFAULT 0"
+            )
+            connection.execute(
+                "UPDATE sales SET payment_follow_up = 1 WHERE is_paid = 0"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sales_payment_follow_up ON sales(payment_follow_up, is_paid)"
         )
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
@@ -525,7 +542,13 @@ def sales_with_labels(
     sales = []
     for row in rows:
         item = dict(row)
+        # ``variant_label_map`` also exposes a generic ``id`` key for the
+        # variant.  Retain the sale ID before merging it: the operations page
+        # sends this ID back to the status API, not the variant ID.
+        sale_id = item["id"]
         item.update(labels[row["variant_id"]])
+        item["id"] = sale_id
+        item["sale_id"] = sale_id
         sales.append(item)
     return sales
 
@@ -1261,6 +1284,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             # workflow.  A non-collected sale starts as "not sent" and can be
             # progressed later in the dedicated operations tab.
             delivery_status = "not_applicable" if is_received else "pending"
+            payment_follow_up = int(not is_paid)
 
             variant = connection.execute(
                 "SELECT * FROM variants WHERE id = ? AND is_active = 1", (variant_id,)
@@ -1298,14 +1322,15 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 """
                 INSERT INTO sales (
                     receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
-                    amount_given_cents, donation_cents, payment_method, is_paid, is_received,
+                    amount_given_cents, donation_cents, payment_method, is_paid, payment_follow_up, is_received,
                     delivery_status, customer_name, customer_address, event_name, comment,
                     sold_on, created_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    receipt_id, variant_id, quantity, variant["sale_price_cents"], amount_due, amount_given,
-                    donation, payment_method, int(is_paid), int(is_received), delivery_status,
+                    receipt_id, variant_id, quantity, variant["sale_price_cents"], amount_due,
+                    amount_given, donation, payment_method, int(is_paid), payment_follow_up,
+                    int(is_received), delivery_status,
                     customer_name or None, customer_address or None,
                     str(payload.get("event_name", "")).strip() or None,
                     str(payload.get("comment", "")).strip() or None, sold_on, utc_now(), g.user["id"],
@@ -1320,6 +1345,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "receipt_id": receipt_id,
                     "quantity": quantity,
                     "is_paid": is_paid,
+                    "payment_follow_up": bool(payment_follow_up),
                     "delivery_status": delivery_status,
                 },
             )
@@ -1443,12 +1469,20 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         unpaid_sales = connection.execute(
             "SELECT * FROM sales WHERE is_paid = 0 ORDER BY sold_on DESC, id DESC"
         ).fetchall()
+        paid_follow_up_sales = connection.execute(
+            """
+            SELECT * FROM sales
+            WHERE is_paid = 1 AND payment_follow_up = 1
+            ORDER BY sold_on DESC, id DESC
+            """
+        ).fetchall()
         return render_template(
             "operations.html",
             title="Offene Vorgänge",
             current_shipments=sales_with_labels(connection, current_shipments),
-            delivered_goods=sales_with_labels(connection, delivered_goods),
             unpaid_sales=sales_with_labels(connection, unpaid_sales),
+            delivered_goods=sales_with_labels(connection, delivered_goods),
+            paid_follow_up_sales=sales_with_labels(connection, paid_follow_up_sales),
         )
 
     @app.patch("/api/sales/<int:sale_id>/delivery-status")
@@ -1530,7 +1564,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             connection.execute(
                 """
                 UPDATE sales
-                SET is_paid = ?, amount_given_cents = ?, donation_cents = ?
+                SET is_paid = ?, payment_follow_up = 1, amount_given_cents = ?, donation_cents = ?
                 WHERE id = ?
                 """,
                 (int(requested_paid), amount_given, donation, sale_id),

@@ -124,6 +124,7 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .success-icon { width: 42px; height: 42px; margin: 0 auto; display: grid; place-items: center; border-radius: 50%; background: rgba(82,209,139,.16); border: 1px solid var(--success); color: var(--success); font-size: 1.35rem; font-weight: 900; }
 
 .table-section { padding: 20px; margin-top: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: rgba(26, 22, 34, .88); box-shadow: var(--shadow); }
+.operations-divider { height: 0; margin: 38px 0 10px; border: 0; border-top: 1px solid rgba(240, 142, 255, .48); }
 .section-heading { display: flex; justify-content: space-between; gap: 18px; align-items: center; margin-bottom: 16px; }
 .section-heading h2, .section-heading h3 { margin: 0; letter-spacing: -.02em; }
 .section-heading h3 { font-size: 1.02rem; }
