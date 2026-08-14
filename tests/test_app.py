@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app import (
     apply_option_configuration,
+    balance_payload,
     create_app,
     get_db,
     sync_variants,
@@ -332,6 +333,61 @@ class MerchAppTestCase(unittest.TestCase):
         exported_sales = self.client.get("/export/sales.csv").get_data(as_text=True)
         self.assertIn("Verkauft von", exported_sales)
         self.assertIn("Lena", exported_sales)
+
+    def test_cancelling_a_sale_preserves_history_and_reverses_its_effects(self) -> None:
+        """A storno must remain auditable but leave active ledgers and queues."""
+
+        variant_id = self.seed_variant()
+        sale = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "is_paid": False,
+                "is_received": False,
+                "payment_method": "PayPal",
+                "sold_on": "2026-08-14",
+                "customer_name": "Ada Käuferin",
+                "customer_address": "Bandstraße 1\n24103 Kiel",
+            },
+        )
+        self.assertEqual(sale.status_code, 200)
+        with self.app.app_context():
+            sale_id = get_db().execute("SELECT id FROM sales").fetchone()[0]
+
+        cancellation = self.client.patch(
+            f"/api/sales/{sale_id}/cancel",
+            json={},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(cancellation.status_code, 200)
+        self.assertTrue(cancellation.json["is_cancelled"])
+        duplicate = self.client.patch(
+            f"/api/sales/{sale_id}/cancel",
+            json={},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(duplicate.status_code, 400)
+
+        with self.app.app_context():
+            connection = get_db()
+            self.assertTrue(connection.execute("SELECT is_cancelled FROM sales WHERE id = ?", (sale_id,)).fetchone()[0])
+            balances = balance_payload(connection)
+        balance_row = next(row for row in balances["rows"] if row["variant_id"] == variant_id)
+        self.assertEqual(balance_row["sold_quantity"], 0)
+        self.assertEqual(balance_row["stock"], 0)
+        self.assertEqual(balances["summary"]["outstanding_cents"], 0)
+        self.assertEqual(balances["summary"]["pending_delivery_count"], 0)
+
+        history = self.client.get("/historie").get_data(as_text=True)
+        self.assertIn(sale.json["receipt_id"], history)
+        self.assertIn("storniert", history)
+        operations = self.client.get("/vorgaenge").get_data(as_text=True)
+        self.assertNotIn(sale.json["receipt_id"], operations)
+
+        history_script = (Path(__file__).parents[1] / "static" / "history.js").read_text(encoding="utf-8")
+        self.assertIn("CONFIRMATION_SECONDS = 3", history_script)
+        self.assertIn("Stornierung bestätigen", history_script)
 
     def test_option_rename_is_visible_in_historic_labels(self) -> None:
         variant_id = self.seed_variant()

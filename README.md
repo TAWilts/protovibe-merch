@@ -33,6 +33,9 @@ Bestand, Bilanz und CSV-Export.
 - **Bilanzen:** gekauft, verkauft und Bestand je Variante sowie Ausgaben,
   Umsatz, Spenden, Saldo und den aus der ODS übernommenen
   „Nicht nachbestellen“-Status.
+- **Stornierungen:** Verkäufe können in der Historie mit einer dreisekündigen
+  Sicherheitsbestätigung storniert werden. Sie bleiben nachvollziehbar, werden
+  aber aus Bestand, Bilanzen und offenen Vorgängen herausgerechnet.
 - **Export & Sicherung:** Download als CSV/ZIP sowie automatische Sicherung
   nach jeder erfolgreichen Änderung, einschließlich Versand- und
   Zahlungsstatus.

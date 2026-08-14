@@ -143,13 +143,28 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .status { display: inline-block; margin: 1px 4px 2px 0; padding: 3px 6px; border-radius: 5px; font-size: .72rem; font-weight: 750; }
 .status.good { color: #adf4ca; background: rgba(82,209,139,.14); }
 .status.warning { color: #ffd69b; background: rgba(243,179,90,.14); }
+.status.cancelled { color: #ffd3d7; background: rgba(242,121,131,.17); }
 .status-select { min-width: 170px; padding: 7px 8px; font-size: .83rem; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; }
 .preserve-newlines { white-space: pre-line; }
 .empty-cell { text-align: center; padding: 28px; color: var(--muted); }
 .stock-cell { font-weight: 760; }
 .out-of-stock { color: var(--danger); }
+.cancelled-row { opacity: .62; background: rgba(242,121,131,.055); }
+.history-action { min-width: 120px; white-space: nowrap; text-align: right; }
 .button-group { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.danger-button { display: inline-flex; justify-content: center; align-items: center; min-height: 37px; padding: 8px 11px; border: 1px solid rgba(242,121,131,.6); border-radius: 8px; color: #ffd9dc; background: rgba(242,121,131,.12); font-weight: 750; font-size: .84rem; }
+.danger-button:hover:not(:disabled) { background: rgba(242,121,131,.23); border-color: var(--danger); }
+.danger-button:disabled { opacity: .5; cursor: not-allowed; }
+.confirmation-dialog { width: min(500px, calc(100vw - 28px)); border: 1px solid #8d4652; border-radius: 18px; padding: 25px; color: var(--text); background: var(--panel); box-shadow: 0 22px 70px rgba(0,0,0,.55); }
+.confirmation-dialog::backdrop { background: rgba(0,0,0,.64); backdrop-filter: blur(3px); }
+.confirmation-dialog h2 { margin: 0 0 9px; }
+.confirmation-dialog p { color: var(--muted); line-height: 1.48; }
+.confirmation-dialog strong { color: var(--accent-bright); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.confirmation-dialog .notice { color: #f7d09b; }
+.confirmation-dialog .form-error { color: #ffd3d7; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
 .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .metric-card { min-height: 118px; display: flex; flex-direction: column; justify-content: center; padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }

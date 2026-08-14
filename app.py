@@ -141,6 +141,9 @@ CREATE TABLE IF NOT EXISTS sales (
     -- states form the delivery workflow for a sale that was not handed over
     -- immediately.
     delivery_status TEXT NOT NULL DEFAULT 'not_applicable',
+    -- A cancellation preserves the original booking for audit/history while
+    -- removing its effect from stock, balances and active work queues.
+    is_cancelled INTEGER NOT NULL DEFAULT 0,
     customer_name TEXT,
     customer_address TEXT,
     event_name TEXT,
@@ -341,6 +344,16 @@ def initialise_database(app: Flask) -> None:
         # shared account does not erase that useful sale context.
         if "sold_by" not in sales_columns:
             connection.execute("ALTER TABLE sales ADD COLUMN sold_by TEXT")
+
+        # A cancellation is intentionally a status change instead of a delete.
+        # Existing sales remain valid, active ledger rows after this migration.
+        if "is_cancelled" not in sales_columns:
+            connection.execute(
+                "ALTER TABLE sales ADD COLUMN is_cancelled INTEGER NOT NULL DEFAULT 0"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sales_cancelled ON sales(is_cancelled)"
+        )
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
             username = app.config["ADMIN_USERNAME"].strip()
@@ -445,7 +458,7 @@ def variant_stock_map(connection: sqlite3.Connection) -> dict[int, int]:
         FROM (
             SELECT variant_id, quantity AS stock_delta FROM purchases
             UNION ALL
-            SELECT variant_id, -quantity AS stock_delta FROM sales
+            SELECT variant_id, -quantity AS stock_delta FROM sales WHERE is_cancelled = 0
         )
         GROUP BY variant_id
         """
@@ -1012,7 +1025,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
             "verkaeufe",
             [
                 "Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Gegeben", "Spende",
-                "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus", "Kundenname", "Adresse", "Veranstaltung", "Verkauft von", "Kommentar",
+                "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus", "Storniert", "Kundenname", "Adresse", "Veranstaltung", "Verkauft von", "Kommentar",
             ],
             [
                 [
@@ -1022,6 +1035,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
                     row["donation_cents"] / 100, row["payment_method"], "ja" if row["is_paid"] else "nein",
                     "ja" if row["is_received"] else "nein",
                     DELIVERY_STATUS_LABELS.get(row["delivery_status"], row["delivery_status"]),
+                    "ja" if row["is_cancelled"] else "nein",
                     row["customer_name"] or "", row["customer_address"] or "",
                     row["event_name"] or "", row["sold_by"] or "", row["comment"] or "",
                 ]
@@ -1053,7 +1067,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
                 "SELECT COALESCE(SUM(quantity), 0) FROM purchases WHERE variant_id = ?", (variant_id,)
             ).fetchone()[0]
             sold = connection.execute(
-                "SELECT COALESCE(SUM(quantity), 0) FROM sales WHERE variant_id = ?", (variant_id,)
+                "SELECT COALESCE(SUM(quantity), 0) FROM sales WHERE variant_id = ? AND is_cancelled = 0", (variant_id,)
             ).fetchone()[0]
             rows.append([label["article_name"], label["option_text"], purchased, sold, stock.get(variant_id, 0)])
         return ("bestand", ["Artikel", "Optionen", "Gekauft", "Verkauft", "Aktueller Bestand"], rows)
@@ -1143,7 +1157,7 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
                    COALESCE(SUM(amount_due_cents), 0) AS revenue,
                    COALESCE(SUM(CASE WHEN is_paid = 1 THEN amount_due_cents ELSE 0 END), 0) AS collected,
                    COALESCE(SUM(CASE WHEN is_paid = 1 THEN donation_cents ELSE 0 END), 0) AS donation
-            FROM sales WHERE variant_id = ?
+            FROM sales WHERE variant_id = ? AND is_cancelled = 0
             """,
             (variant_id,),
         ).fetchone()
@@ -1174,9 +1188,11 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
     total_collected = sum(row["collected_cents"] for row in rows)
     total_donation = sum(row["donation_cents"] for row in rows)
     outstanding_paid = connection.execute(
-        "SELECT COALESCE(SUM(amount_due_cents), 0) FROM sales WHERE is_paid = 0"
+        "SELECT COALESCE(SUM(amount_due_cents), 0) FROM sales WHERE is_paid = 0 AND is_cancelled = 0"
     ).fetchone()[0]
-    pending_delivery = connection.execute("SELECT COUNT(*) FROM sales WHERE is_received = 0").fetchone()[0]
+    pending_delivery = connection.execute(
+        "SELECT COUNT(*) FROM sales WHERE is_received = 0 AND is_cancelled = 0"
+    ).fetchone()[0]
     return {
         "rows": rows,
         "summary": {
@@ -1457,6 +1473,45 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         sale_rows = connection.execute("SELECT * FROM sales ORDER BY sold_on DESC, id DESC").fetchall()
         return render_template("history.html", title="Historie", sales=sales_with_labels(connection, sale_rows))
 
+    @app.patch("/api/sales/<int:sale_id>/cancel")
+    @login_required
+    def cancel_sale(sale_id: int):
+        """Cancel a sale without removing its audit trail from the ledger."""
+
+        connection = get_db()
+        try:
+            sale = connection.execute(
+                "SELECT id, receipt_id, is_cancelled FROM sales WHERE id = ?", (sale_id,)
+            ).fetchone()
+            if sale is None:
+                return jsonify({"ok": False, "error": "Verkauf wurde nicht gefunden."}), 404
+            if sale["is_cancelled"]:
+                return jsonify({"ok": False, "error": "Dieser Verkauf ist bereits storniert."}), 400
+
+            connection.execute("BEGIN IMMEDIATE")
+            result = connection.execute(
+                "UPDATE sales SET is_cancelled = 1 WHERE id = ? AND is_cancelled = 0", (sale_id,)
+            )
+            if result.rowcount != 1:
+                raise ValueError("Dieser Verkauf ist bereits storniert.")
+            audit(
+                connection,
+                "cancel",
+                "sale",
+                sale_id,
+                {"receipt_id": sale["receipt_id"], "is_cancelled": True},
+            )
+            connection.commit()
+            backup_after_commit()
+            return jsonify({"ok": True, "is_cancelled": True, "message": "Verkauf wurde storniert."})
+        except ValueError as exc:
+            connection.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not cancel sale")
+            return jsonify({"ok": False, "error": "Verkauf konnte nicht storniert werden."}), 500
+
     @app.get("/vorgaenge")
     @login_required
     def operations_page():
@@ -1466,24 +1521,24 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         current_shipments = connection.execute(
             """
             SELECT * FROM sales
-            WHERE delivery_status IN ('pending', 'shipped')
+            WHERE is_cancelled = 0 AND delivery_status IN ('pending', 'shipped')
             ORDER BY sold_on DESC, id DESC
             """
         ).fetchall()
         delivered_goods = connection.execute(
             """
             SELECT * FROM sales
-            WHERE delivery_status = 'received'
+            WHERE is_cancelled = 0 AND delivery_status = 'received'
             ORDER BY sold_on DESC, id DESC
             """
         ).fetchall()
         unpaid_sales = connection.execute(
-            "SELECT * FROM sales WHERE is_paid = 0 ORDER BY sold_on DESC, id DESC"
+            "SELECT * FROM sales WHERE is_cancelled = 0 AND is_paid = 0 ORDER BY sold_on DESC, id DESC"
         ).fetchall()
         paid_follow_up_sales = connection.execute(
             """
             SELECT * FROM sales
-            WHERE is_paid = 1 AND payment_follow_up = 1
+            WHERE is_cancelled = 0 AND is_paid = 1 AND payment_follow_up = 1
             ORDER BY sold_on DESC, id DESC
             """
         ).fetchall()
@@ -1509,10 +1564,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         connection = get_db()
         try:
             sale = connection.execute(
-                "SELECT id, receipt_id, delivery_status FROM sales WHERE id = ?", (sale_id,)
+                "SELECT id, receipt_id, delivery_status, is_cancelled FROM sales WHERE id = ?", (sale_id,)
             ).fetchone()
             if sale is None:
                 return jsonify({"ok": False, "error": "Verkauf wurde nicht gefunden."}), 404
+            if sale["is_cancelled"]:
+                raise ValueError("Ein stornierter Verkauf kann nicht weiter bearbeitet werden.")
             if sale["delivery_status"] == "not_applicable":
                 raise ValueError("Dieser Verkauf wurde bereits direkt übergeben und hat keinen Versandvorgang.")
 
@@ -1560,10 +1617,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         connection = get_db()
         try:
             sale = connection.execute(
-                "SELECT id, receipt_id, amount_due_cents FROM sales WHERE id = ?", (sale_id,)
+                "SELECT id, receipt_id, amount_due_cents, is_cancelled FROM sales WHERE id = ?", (sale_id,)
             ).fetchone()
             if sale is None:
                 return jsonify({"ok": False, "error": "Verkauf wurde nicht gefunden."}), 404
+            if sale["is_cancelled"]:
+                raise ValueError("Ein stornierter Verkauf kann nicht weiter bearbeitet werden.")
 
             # The dropdown deliberately has no second amount input.  Marking a
             # sale as paid therefore records the exact due amount and no
@@ -1590,6 +1649,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             connection.commit()
             backup_after_commit()
             return jsonify({"ok": True, "is_paid": requested_paid, "message": "Zahlungsstatus gespeichert."})
+        except ValueError as exc:
+            connection.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
         except Exception:
             connection.rollback()
             current_app.logger.exception("Could not update payment status")
