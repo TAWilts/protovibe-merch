@@ -39,7 +39,7 @@ class MerchAppTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
-    def seed_variant(self) -> int:
+    def seed_variant(self, article_name: str = "Test Shirt") -> int:
         """Create an article with generic Farbe/Größe options and one variant."""
 
         with self.app.app_context():
@@ -48,8 +48,9 @@ class MerchAppTestCase(unittest.TestCase):
                 """
                 INSERT INTO articles (
                     name, default_sale_price_cents, default_purchase_price_cents, is_active, created_at, updated_at
-                ) VALUES ('Test Shirt', 2000, 1100, 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
-                """
+                ) VALUES (?, 2000, 1100, 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+                """,
+                (article_name,),
             )
             article_id = cursor.lastrowid
             apply_option_configuration(
@@ -123,6 +124,83 @@ class MerchAppTestCase(unittest.TestCase):
         )
         self.assertEqual(sale.status_code, 200)
         self.assertEqual(sale.json["stock_after_sale"], -2)
+
+    def test_basket_shares_one_receipt_and_supports_item_or_full_cancellation(self) -> None:
+        """A cart is one receipt with independently cancellable ledger rows."""
+
+        first_variant_id = self.seed_variant("Cart Shirt")
+        second_variant_id = self.seed_variant("Cart Hoodie")
+        sale = self.api_post(
+            "/api/sales",
+            {
+                "items": [
+                    {"variant_id": first_variant_id, "quantity": 1},
+                    {"variant_id": second_variant_id, "quantity": 2},
+                ],
+                "is_paid": True,
+                "is_received": True,
+                "payment_method": "Bar",
+                "amount_given": "65,00",
+                "sold_on": "2026-08-14",
+            },
+        )
+        self.assertEqual(sale.status_code, 200)
+        self.assertEqual(sale.json["amount_due_cents"], 6000)
+        self.assertEqual(sale.json["donation_cents"], 500)
+        self.assertEqual(len(sale.json["items"]), 2)
+
+        with self.app.app_context():
+            connection = get_db()
+            rows = connection.execute(
+                """
+                SELECT id, receipt_id, amount_due_cents, amount_given_cents,
+                       donation_cents, is_cancelled
+                FROM sales ORDER BY id
+                """
+            ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["receipt_id"] for row in rows}, {sale.json["receipt_id"]})
+        self.assertEqual(sum(row["amount_due_cents"] for row in rows), 6000)
+        self.assertEqual(sum(row["amount_given_cents"] for row in rows), 6500)
+        self.assertEqual(sum(row["donation_cents"] for row in rows), 500)
+
+        history = self.client.get("/historie").get_data(as_text=True)
+        self.assertIn("Warenkorb (2 Artikel)", history)
+        self.assertIn('data-cancel-scope="receipt"', history)
+        self.assertIn('data-cancel-scope="item"', history)
+        sales_script = (Path(__file__).parents[1] / "static" / "sales.js").read_text(encoding="utf-8")
+        self.assertIn("const cartItems", sales_script)
+        self.assertIn("items: cartItems.map", sales_script)
+        history_script = (Path(__file__).parents[1] / "static" / "history.js").read_text(encoding="utf-8")
+        self.assertIn("data-cart-toggle", history_script)
+
+        item_cancellation = self.client.patch(
+            f"/api/sales/{rows[0]['id']}/cancel",
+            json={"scope": "item"},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(item_cancellation.status_code, 200)
+        self.assertEqual(item_cancellation.json["cancelled_item_count"], 1)
+        with self.app.app_context():
+            partial_states = [
+                row[0] for row in get_db().execute("SELECT is_cancelled FROM sales ORDER BY id").fetchall()
+            ]
+        self.assertEqual(partial_states, [1, 0])
+
+        # Deliberately address the already cancelled first item.  Cancelling at
+        # receipt scope must still find and cancel the remaining cart line.
+        receipt_cancellation = self.client.patch(
+            f"/api/sales/{rows[0]['id']}/cancel",
+            json={"scope": "receipt"},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(receipt_cancellation.status_code, 200)
+        self.assertEqual(receipt_cancellation.json["cancelled_item_count"], 1)
+        with self.app.app_context():
+            final_states = [
+                row[0] for row in get_db().execute("SELECT is_cancelled FROM sales ORDER BY id").fetchall()
+            ]
+        self.assertEqual(final_states, [1, 1])
 
     def test_delivery_and_payment_queues_update_sale_statuses(self) -> None:
         """A later-delivery sale must move through both requested work queues."""

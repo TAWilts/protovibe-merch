@@ -1,20 +1,23 @@
-/* Storno workflow for historic sale entries.
+/* Expandable receipt history and deliberate cancellation workflow.
  *
- * A cancellation is deliberately a two-step action.  The customer must open
- * the dialog and then wait three full seconds before the final API action is
- * enabled, so a stray tap cannot remove a sale from balances accidentally.
+ * Both a complete shopping basket and an individual ledger item use the same
+ * three-second safety delay.  The scope travels explicitly to the API, so a
+ * cancellation can never accidentally affect the next history row.
  */
 (function () {
   "use strict";
   const dialog = document.getElementById("cancel-sale-dialog");
   if (!dialog) return;
 
+  const title = document.getElementById("cancel-sale-title");
+  const description = document.getElementById("cancel-sale-description");
   const receipt = document.getElementById("cancel-sale-receipt");
   const error = document.getElementById("cancel-sale-error");
   const closeButton = document.getElementById("close-cancel-dialog");
   const confirmButton = document.getElementById("confirm-cancel-sale");
   const CONFIRMATION_SECONDS = 3;
   let pendingSaleId = null;
+  let pendingScope = "item";
   let countdownTimer = null;
 
   function showError(message) {
@@ -44,22 +47,54 @@
     }, 1000);
   }
 
+  function setDescription(scope) {
+    const isReceipt = scope === "receipt";
+    title.textContent = isReceipt ? "Warenkorb stornieren?" : "Artikel stornieren?";
+    receipt.textContent = receipt.dataset.value || "";
+    description.replaceChildren(
+      document.createTextNode(
+        isReceipt
+          ? "Der gesamte Warenkorb "
+          : "Der ausgewählte Artikel aus dem Warenkorb "
+      ),
+      receipt,
+      document.createTextNode(
+        " bleibt in der Historie sichtbar, zählt danach aber nicht mehr für Bestand, Bilanzen oder offene Vorgänge."
+      )
+    );
+  }
+
   function openDialog(button) {
     pendingSaleId = Number(button.dataset.saleId);
-    receipt.textContent = button.dataset.receiptId || "";
+    pendingScope = button.dataset.cancelScope === "receipt" ? "receipt" : "item";
+    receipt.dataset.value = button.dataset.receiptId || "";
+    setDescription(pendingScope);
     showError("");
     dialog.showModal();
     startCountdown();
   }
 
-  document.querySelectorAll("[data-cancel-sale]").forEach((button) => {
-    button.addEventListener("click", () => openDialog(button));
+  document.addEventListener("click", (event) => {
+    const toggle = event.target.closest("[data-cart-toggle]");
+    if (toggle) {
+      const target = document.getElementById(toggle.dataset.target);
+      if (!target) return;
+      const isExpanded = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", String(!isExpanded));
+      toggle.querySelector("span").textContent = isExpanded ? "▸" : "▾";
+      target.hidden = isExpanded;
+      return;
+    }
+    const cancelButton = event.target.closest("[data-cancel-sale]");
+    if (cancelButton) openDialog(cancelButton);
   });
 
   closeButton.addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", () => {
     stopCountdown();
     pendingSaleId = null;
+    pendingScope = "item";
+    receipt.dataset.value = "";
     showError("");
   });
 
@@ -71,7 +106,7 @@
       const response = await fetch(`/api/sales/${pendingSaleId}/cancel`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ scope: pendingScope }),
       });
       const body = await response.json();
       if (!response.ok || !body.ok) throw new Error(body.error || "Verkauf konnte nicht storniert werden.");

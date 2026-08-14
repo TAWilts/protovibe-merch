@@ -1,5 +1,9 @@
-/* Verkauf screen behaviour.  Server-side validation remains authoritative; this
- * script only provides a fast, touch-friendly UI and a useful total preview. */
+/* Verkauf mit Warenkorb.
+ *
+ * Der Browser hält nur den noch unbestätigten Warenkorb.  Beim Speichern
+ * validiert der Server jede Position erneut und schreibt sie unter derselben
+ * Beleg-ID als einzelne, für Bestand und Versand nachvollziehbare Ledgerzeile.
+ */
 (function () {
   "use strict";
   const root = document.getElementById("sales-app");
@@ -30,6 +34,9 @@
     amountDue: $("amount-due"),
     amountGiven: $("amount-given"),
     donation: $("donation-preview"),
+    addCart: $("add-cart-item"),
+    cartItems: $("cart-items"),
+    cartItemCount: $("cart-item-count"),
     stockWarning: $("stock-warning"),
     confirm: $("confirm-sale"),
     error: $("sale-error"),
@@ -38,6 +45,7 @@
     closeDialog: $("close-success"),
   };
   let currentVariant = null;
+  const cartItems = [];
 
   const selector = window.MerchTransaction.setupVariantSelector({
     articles,
@@ -55,6 +63,14 @@
       updateSummary();
     },
   });
+
+  function variantForId(variantId) {
+    for (const article of articles) {
+      const variant = (article.variants || []).find((candidate) => Number(candidate.id) === Number(variantId));
+      if (variant) return variant;
+    }
+    return null;
+  }
 
   function quantity() {
     const value = Math.max(1, Math.floor(Number(ui.quantity.value) || 1));
@@ -84,30 +100,118 @@
     if (!ui.paid.checked) ui.amountGiven.value = "";
   }
 
-  function updateSummary() {
-    const itemCount = quantity();
-    const dueCents = currentVariant ? itemCount * Number(currentVariant.sale_price_cents) : 0;
-    const givenCents = window.MerchTransaction.inputToCents(ui.amountGiven.value);
-    const donationCents = ui.paid.checked ? Math.max(0, givenCents - dueCents) : 0;
-    ui.amountDue.textContent = window.MerchTransaction.centsToEuro(dueCents);
-    ui.donation.textContent = window.MerchTransaction.centsToEuro(donationCents);
-    const hasEnoughStock = currentVariant && itemCount <= Number(currentVariant.stock);
-    // A negative inventory is useful evidence of a missing purchase entry or
-    // a sale that will be shipped after replenishment.  It must therefore not
-    // block a booking.  Only warn for an article handed over immediately;
-    // later shipments deliberately stay quiet here.
-    ui.confirm.disabled = !currentVariant;
-    if (currentVariant && !hasEnoughStock && ui.received.checked) {
+  function cartTotalCents() {
+    return cartItems.reduce((total, item) => total + item.quantity * item.unitPriceCents, 0);
+  }
+
+  function quantitiesForStockWarning() {
+    const quantities = new Map();
+    // Before the first add, still show the familiar warning for the currently
+    // selected direct hand-over.  Afterwards the basket is decisive.
+    const candidates = cartItems.length
+      ? cartItems
+      : currentVariant
+        ? [{ variantId: currentVariant.id, quantity: quantity() }]
+        : [];
+    candidates.forEach((item) => {
+      const identifier = Number(item.variantId);
+      quantities.set(identifier, (quantities.get(identifier) || 0) + Number(item.quantity));
+    });
+    return quantities;
+  }
+
+  function updateStockWarning() {
+    if (!ui.received.checked) {
+      showStockWarning("");
+      return;
+    }
+    const shortages = [];
+    quantitiesForStockWarning().forEach((wanted, variantId) => {
+      const variant = variantForId(variantId);
+      if (variant && wanted > Number(variant.stock)) {
+        shortages.push(`${variant.label} (Bestand: ${variant.stock})`);
+      }
+    });
+    if (shortages.length) {
       showStockWarning(
-        `Warnung: Laut Bestand stehen für diese Menge nicht genug Artikel zur Verfügung (Bestand: ${currentVariant.stock}). Der Verkauf wird trotzdem gespeichert.`
+        `Warnung: Laut Bestand sind folgende Artikel nicht ausreichend verfügbar: ${shortages.join(", ")}. Der Verkauf wird trotzdem gespeichert.`
       );
     } else {
       showStockWarning("");
     }
-    if (!ui.error.dataset.serverError) {
-      showError("");
+  }
+
+  function updateSummary() {
+    const dueCents = cartTotalCents();
+    const givenCents = window.MerchTransaction.inputToCents(ui.amountGiven.value);
+    const donationCents = ui.paid.checked ? Math.max(0, givenCents - dueCents) : 0;
+    ui.amountDue.textContent = window.MerchTransaction.centsToEuro(dueCents);
+    ui.donation.textContent = window.MerchTransaction.centsToEuro(donationCents);
+    ui.addCart.disabled = !currentVariant;
+    ui.confirm.disabled = cartItems.length === 0;
+    updateStockWarning();
+    if (!ui.error.dataset.serverError) showError("");
+    return { dueCents };
+  }
+
+  function renderCart() {
+    ui.cartItems.replaceChildren();
+    if (!cartItems.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "Noch keine Artikel hinzugefügt.";
+      ui.cartItems.append(empty);
+    } else {
+      cartItems.forEach((item, index) => {
+        const variant = variantForId(item.variantId);
+        const row = document.createElement("div");
+        row.className = "cart-item";
+        const copy = document.createElement("div");
+        const label = document.createElement("strong");
+        label.textContent = variant?.label || item.label;
+        const details = document.createElement("small");
+        details.textContent = `${item.quantity} × ${window.MerchTransaction.centsToEuro(item.unitPriceCents)}`;
+        copy.append(label, details);
+        const total = document.createElement("span");
+        total.className = "cart-item-total";
+        total.textContent = window.MerchTransaction.centsToEuro(item.quantity * item.unitPriceCents);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "cart-remove-button";
+        remove.dataset.cartIndex = String(index);
+        remove.setAttribute("aria-label", `${variant?.label || item.label} aus dem Warenkorb entfernen`);
+        remove.textContent = "×";
+        row.append(copy, total, remove);
+        ui.cartItems.append(row);
+      });
     }
-    return { itemCount, dueCents };
+    ui.cartItemCount.textContent = `${cartItems.length} Artikel`;
+    updateSummary();
+  }
+
+  function addCurrentItem() {
+    if (!currentVariant) {
+      showError("Bitte Artikel und alle Optionen auswählen.");
+      return;
+    }
+    const currentQuantity = quantity();
+    const existing = cartItems.find((item) => Number(item.variantId) === Number(currentVariant.id));
+    if (existing) {
+      existing.quantity += currentQuantity;
+    } else {
+      cartItems.push({
+        variantId: Number(currentVariant.id),
+        quantity: currentQuantity,
+        unitPriceCents: Number(currentVariant.sale_price_cents),
+        label: currentVariant.label,
+      });
+    }
+    // Keep article and option selection exactly as it is.  Only the quantity
+    // returns to one, so the next add is an intentional extra copy.
+    ui.quantity.value = 1;
+    ui.error.dataset.serverError = "";
+    showError("");
+    renderCart();
   }
 
   async function loadReceiptPreview() {
@@ -121,33 +225,36 @@
   }
 
   function applySaleStockUpdate(response) {
-    // Update the in-memory selector data after a confirmed sale.  The page
-    // deliberately stays open, so a reload merely to refresh the number on the
-    // article button would be disruptive at a merch stand.  The server returns
-    // the authoritative remaining stock for exactly this purpose.
-
-    const soldVariantId = Number(response.variant_id);
-    const remainingStock = Number(response.stock_after_sale);
-    const article = articles.find((candidate) =>
-      (candidate.variants || []).some((variant) => Number(variant.id) === soldVariantId)
-    );
-    if (!article || !Number.isFinite(remainingStock)) return;
-
-    const variant = article.variants.find((candidate) => Number(candidate.id) === soldVariantId);
-    variant.stock = remainingStock;
-    article.total_stock = article.variants.reduce((total, candidate) => total + Number(candidate.stock || 0), 0);
-
-    const articleButton = ui.articleButtons.querySelector(`[data-article-id="${article.id}"]`);
-    const stockLabel = articleButton?.querySelector("small");
-    if (stockLabel) stockLabel.textContent = `${article.total_stock} auf Lager`;
-    if (currentVariant && Number(currentVariant.id) === soldVariantId) {
-      ui.selectedStock.textContent = `${remainingStock} Stück verfügbar`;
+    // The page deliberately stays open after a sale.  Update all affected
+    // variants locally so the article list immediately reflects the cart.
+    const updates = Array.isArray(response.items) ? response.items : [response];
+    const affectedArticles = new Set();
+    updates.forEach((update) => {
+      const variantId = Number(update.variant_id);
+      const remainingStock = Number(update.stock_after_sale);
+      const article = articles.find((candidate) =>
+        (candidate.variants || []).some((variant) => Number(variant.id) === variantId)
+      );
+      if (!article || !Number.isFinite(remainingStock)) return;
+      const variant = article.variants.find((candidate) => Number(candidate.id) === variantId);
+      variant.stock = remainingStock;
+      affectedArticles.add(article);
+    });
+    affectedArticles.forEach((article) => {
+      article.total_stock = article.variants.reduce((total, variant) => total + Number(variant.stock || 0), 0);
+      const articleButton = ui.articleButtons.querySelector(`[data-article-id="${article.id}"]`);
+      const stockLabel = articleButton?.querySelector("small");
+      if (stockLabel) stockLabel.textContent = `${article.total_stock} auf Lager`;
+    });
+    if (currentVariant) {
+      const freshVariant = variantForId(currentVariant.id);
+      if (freshVariant) ui.selectedStock.textContent = `${freshVariant.stock} Stück verfügbar`;
     }
   }
 
   async function confirmSale() {
-    const { itemCount, dueCents } = updateSummary();
-    if (!currentVariant) return showError("Bitte Artikel und alle Optionen auswählen.");
+    const { dueCents } = updateSummary();
+    if (!cartItems.length) return showError("Bitte mindestens einen Artikel zum Warenkorb hinzufügen.");
     if ((!ui.received.checked || !ui.paid.checked) && (!ui.customerName.value.trim() || !ui.customerAddress.value.trim())) {
       return showError("Bei nicht bezahlten oder noch nicht erhaltenen Artikeln sind Name und Adresse erforderlich.");
     }
@@ -165,8 +272,7 @@
         headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
         body: JSON.stringify({
           receipt_id: ui.receipt.textContent,
-          variant_id: currentVariant.id,
-          quantity: itemCount,
+          items: cartItems.map((item) => ({ variant_id: item.variantId, quantity: item.quantity })),
           is_paid: ui.paid.checked,
           is_received: ui.received.checked,
           payment_method: ui.method.value,
@@ -195,6 +301,7 @@
   }
 
   function resetSaleForm() {
+    cartItems.length = 0;
     selector.clear();
     currentVariant = null;
     ui.paid.checked = true;
@@ -210,10 +317,9 @@
     ui.comment.value = "";
     ui.error.dataset.serverError = "";
     showError("");
-    showStockWarning("");
     updateContactFields();
     updatePaidFields();
-    updateSummary();
+    renderCart();
     loadReceiptPreview();
   }
 
@@ -223,12 +329,22 @@
   ui.amountGiven.addEventListener("input", updateSummary);
   ui.paid.addEventListener("change", () => { updatePaidFields(); updateContactFields(); updateSummary(); });
   ui.received.addEventListener("change", () => { updateContactFields(); updateSummary(); });
+  ui.addCart.addEventListener("click", addCurrentItem);
+  ui.cartItems.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-cart-index]");
+    if (!button) return;
+    const index = Number(button.dataset.cartIndex);
+    if (!Number.isInteger(index) || index < 0 || index >= cartItems.length) return;
+    cartItems.splice(index, 1);
+    ui.error.dataset.serverError = "";
+    renderCart();
+  });
   ui.confirm.addEventListener("click", confirmSale);
   ui.closeDialog.addEventListener("click", () => ui.dialog.close());
   ui.dialog.addEventListener("close", resetSaleForm);
 
   updateContactFields();
   updatePaidFields();
-  updateSummary();
+  renderCart();
   loadReceiptPreview();
 })();

@@ -124,7 +124,9 @@ CREATE TABLE IF NOT EXISTS purchases (
 
 CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY,
-    receipt_id TEXT NOT NULL UNIQUE,
+    -- One receipt can contain several line items.  ``receipt_id`` therefore
+    -- identifies the shopping basket and must not be unique per ledger row.
+    receipt_id TEXT NOT NULL,
     variant_id INTEGER NOT NULL REFERENCES variants(id),
     quantity INTEGER NOT NULL CHECK(quantity > 0),
     unit_price_cents INTEGER NOT NULL CHECK(unit_price_cents >= 0),
@@ -296,6 +298,78 @@ def close_db(_: BaseException | None = None) -> None:
         connection.close()
 
 
+def sales_receipt_id_is_unique(connection: sqlite3.Connection) -> bool:
+    """Return whether an older database still restricts receipts to one row.
+
+    SQLite cannot drop the implicit index created by a ``UNIQUE`` column
+    constraint.  The small migration below consequently rebuilds only the
+    ``sales`` table when upgrading from versions before the shopping basket.
+    """
+
+    for index in connection.execute("PRAGMA index_list(sales)").fetchall():
+        if not index["unique"]:
+            continue
+        index_name = str(index["name"]).replace('"', '""')
+        columns = connection.execute(f'PRAGMA index_info("{index_name}")').fetchall()
+        if [column["name"] for column in columns] == ["receipt_id"]:
+            return True
+    return False
+
+
+def rebuild_sales_for_multi_item_receipts(connection: sqlite3.Connection) -> None:
+    """Remove the legacy per-row receipt uniqueness without losing history.
+
+    Every existing sale remains byte-for-byte equivalent as a one-item receipt.
+    New sales can then insert several rows with the same receipt ID, which
+    keeps stock, balances and delivery workflows item-based as before.
+    """
+
+    connection.executescript(
+        """
+        CREATE TABLE sales_multi_item_receipts (
+            id INTEGER PRIMARY KEY,
+            receipt_id TEXT NOT NULL,
+            variant_id INTEGER NOT NULL REFERENCES variants(id),
+            quantity INTEGER NOT NULL CHECK(quantity > 0),
+            unit_price_cents INTEGER NOT NULL CHECK(unit_price_cents >= 0),
+            amount_due_cents INTEGER NOT NULL CHECK(amount_due_cents >= 0),
+            amount_given_cents INTEGER,
+            donation_cents INTEGER NOT NULL DEFAULT 0 CHECK(donation_cents >= 0),
+            payment_method TEXT NOT NULL,
+            is_paid INTEGER NOT NULL DEFAULT 1,
+            payment_follow_up INTEGER NOT NULL DEFAULT 0,
+            is_received INTEGER NOT NULL DEFAULT 1,
+            delivery_status TEXT NOT NULL DEFAULT 'not_applicable',
+            is_cancelled INTEGER NOT NULL DEFAULT 0,
+            customer_name TEXT,
+            customer_address TEXT,
+            event_name TEXT,
+            sold_by TEXT,
+            comment TEXT,
+            sold_on TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by INTEGER REFERENCES users(id)
+        );
+        INSERT INTO sales_multi_item_receipts (
+            id, receipt_id, variant_id, quantity, unit_price_cents,
+            amount_due_cents, amount_given_cents, donation_cents,
+            payment_method, is_paid, payment_follow_up, is_received,
+            delivery_status, is_cancelled, customer_name, customer_address,
+            event_name, sold_by, comment, sold_on, created_at, created_by
+        )
+        SELECT
+            id, receipt_id, variant_id, quantity, unit_price_cents,
+            amount_due_cents, amount_given_cents, donation_cents,
+            payment_method, is_paid, payment_follow_up, is_received,
+            delivery_status, is_cancelled, customer_name, customer_address,
+            event_name, sold_by, comment, sold_on, created_at, created_by
+        FROM sales;
+        DROP TABLE sales;
+        ALTER TABLE sales_multi_item_receipts RENAME TO sales;
+        """
+    )
+
+
 def initialise_database(app: Flask) -> None:
     """Create/update the schema and bootstrap the configured administrator."""
 
@@ -351,8 +425,25 @@ def initialise_database(app: Flask) -> None:
             connection.execute(
                 "ALTER TABLE sales ADD COLUMN is_cancelled INTEGER NOT NULL DEFAULT 0"
             )
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_sales_cancelled ON sales(is_cancelled)"
+
+        # Until v0.2.4, a receipt was forced to contain exactly one sale row.
+        # Rebuild that one table for a safe in-place upgrade; all existing rows
+        # automatically become one-item receipts.
+        if sales_receipt_id_is_unique(connection):
+            rebuild_sales_for_multi_item_receipts(connection)
+
+        # Recreate the normal indexes after a possible table rebuild.  The
+        # schema script creates them for fresh databases, whereas upgrading
+        # drops their old instances together with the legacy ``sales`` table.
+        connection.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sales_variant ON sales(variant_id, sold_on);
+            CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
+            CREATE INDEX IF NOT EXISTS idx_sales_receipt_id ON sales(receipt_id);
+            CREATE INDEX IF NOT EXISTS idx_sales_delivery_status ON sales(delivery_status);
+            CREATE INDEX IF NOT EXISTS idx_sales_payment_follow_up ON sales(payment_follow_up, is_paid);
+            CREATE INDEX IF NOT EXISTS idx_sales_cancelled ON sales(is_cancelled);
+            """
         )
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
@@ -575,6 +666,105 @@ def sales_with_labels(
         item["sale_id"] = item["id"]
         sales.append(item)
     return sales
+
+
+def distribute_cents(total_cents: int, weights: list[int]) -> list[int]:
+    """Split a positive amount exactly across receipt items.
+
+    A basket has one optional ``Gegeben`` field but several ledger rows.  The
+    invoice amount itself belongs unambiguously to each row; only the donation
+    needs distributing.  Integer arithmetic keeps the allocation exact, even
+    for odd cent values.  A fully free basket gives its donation to the first
+    item, because proportional allocation has no meaningful denominator then.
+    """
+
+    if not weights:
+        return []
+    if total_cents <= 0:
+        return [0 for _ in weights]
+    weight_sum = sum(max(0, weight) for weight in weights)
+    if weight_sum <= 0:
+        return [total_cents, *([0] * (len(weights) - 1))]
+
+    shares = [(total_cents * max(0, weight)) // weight_sum for weight in weights]
+    remainder = total_cents - sum(shares)
+    # Assign the unavoidable rounding cents deterministically from left to
+    # right.  The individual items always sum back to the basket total.
+    positive_indexes = [index for index, weight in enumerate(weights) if weight > 0]
+    for index in range(remainder):
+        shares[positive_indexes[index % len(positive_indexes)]] += 1
+    return shares
+
+
+def receipt_history_payload(
+    connection: sqlite3.Connection, sale_rows: Iterable[sqlite3.Row]
+) -> list[dict[str, Any]]:
+    """Group sale ledger rows into expandable receipts for the history page.
+
+    The ledger deliberately stays one row per article variant, as stock and
+    delivery status can later differ for individual basket items.  This helper
+    gives the history UI a receipt-level view without flattening that detail.
+    """
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for sale in sales_with_labels(connection, sale_rows):
+        receipt = grouped.setdefault(sale["receipt_id"], {"receipt_id": sale["receipt_id"], "items": []})
+        receipt["items"].append(sale)
+
+    receipts: list[dict[str, Any]] = []
+    for receipt in grouped.values():
+        items = receipt["items"]
+        items.sort(key=lambda item: item["sale_id"])
+        first_item = items[0]
+        active_items = [item for item in items if not item["is_cancelled"]]
+        cancelled_items = [item for item in items if item["is_cancelled"]]
+        receipt.update(
+            {
+                "primary_sale_id": first_item["sale_id"],
+                "sold_on": first_item["sold_on"],
+                "customer_name": first_item["customer_name"],
+                "customer_address": first_item["customer_address"],
+                "event_name": first_item["event_name"],
+                "sold_by": first_item["sold_by"],
+                "comment": first_item["comment"],
+                "payment_method": first_item["payment_method"],
+                "item_count": len(items),
+                "total_quantity": sum(int(item["quantity"]) for item in items),
+                # History keeps the original document values visible.  Active
+                # totals are included as an explicit subline for a partial
+                # cancellation, while accounting derives from active rows.
+                "amount_due_cents": sum(int(item["amount_due_cents"]) for item in items),
+                "active_amount_due_cents": sum(int(item["amount_due_cents"]) for item in active_items),
+                "amount_given_cents": (
+                    None
+                    if all(item["amount_given_cents"] is None for item in items)
+                    else sum(int(item["amount_given_cents"] or 0) for item in items)
+                ),
+                "active_amount_given_cents": (
+                    None
+                    if all(item["amount_given_cents"] is None for item in active_items)
+                    else sum(int(item["amount_given_cents"] or 0) for item in active_items)
+                ),
+                "donation_cents": sum(int(item["donation_cents"]) for item in items),
+                "active_donation_cents": sum(int(item["donation_cents"]) for item in active_items),
+                "active_item_count": len(active_items),
+                "is_cancelled": not active_items,
+                "is_partially_cancelled": bool(active_items and cancelled_items),
+                "all_paid": bool(active_items) and all(item["is_paid"] for item in active_items),
+                "has_unpaid_items": any(not item["is_paid"] for item in active_items),
+                "delivery_pending": any(item["delivery_status"] == "pending" for item in active_items),
+                "delivery_shipped": any(item["delivery_status"] == "shipped" for item in active_items),
+                "delivery_received": any(item["delivery_status"] == "received" for item in active_items),
+            }
+        )
+        if len(items) == 1:
+            receipt["summary_label"] = first_item["article_name"]
+            receipt["summary_options"] = first_item["option_text"]
+        else:
+            receipt["summary_label"] = f"Warenkorb ({len(items)} Artikel)"
+            receipt["summary_options"] = f"{receipt['total_quantity']} Stück insgesamt"
+        receipts.append(receipt)
+    return receipts
 
 
 def article_payload(connection: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -1293,11 +1483,43 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/api/sales")
     @login_required
     def create_sale():
+        """Create one receipt with one or more sale ledger rows.
+
+        ``items`` is the basket API introduced with v0.2.5.  The legacy
+        ``variant_id``/``quantity`` shape remains accepted so that a browser
+        tab left open during an update cannot lose a sale.
+        """
+
         payload = request.get_json(silent=True) or {}
         connection = get_db()
         try:
-            variant_id = int(payload.get("variant_id"))
-            quantity = parse_positive_int(payload.get("quantity"))
+            raw_items = payload.get("items")
+            if raw_items is None:
+                raw_items = [{"variant_id": payload.get("variant_id"), "quantity": payload.get("quantity")}]
+            if not isinstance(raw_items, list) or not raw_items:
+                raise ValueError("Der Warenkorb enthält noch keine Artikel.")
+
+            basket_items: list[dict[str, Any]] = []
+            for raw_item in raw_items:
+                if not isinstance(raw_item, dict):
+                    raise ValueError("Ungültiger Artikel im Warenkorb.")
+                variant_id = int(raw_item.get("variant_id"))
+                quantity = parse_positive_int(raw_item.get("quantity"))
+                variant = connection.execute(
+                    "SELECT * FROM variants WHERE id = ? AND is_active = 1", (variant_id,)
+                ).fetchone()
+                if variant is None:
+                    raise ValueError("Diese Artikelvariante ist nicht mehr verfügbar.")
+                amount_due = quantity * int(variant["sale_price_cents"])
+                basket_items.append(
+                    {
+                        "variant_id": variant_id,
+                        "quantity": quantity,
+                        "unit_price_cents": int(variant["sale_price_cents"]),
+                        "amount_due_cents": amount_due,
+                    }
+                )
+
             is_paid = bool(payload.get("is_paid", True))
             is_received = bool(payload.get("is_received", True))
             payment_method = str(payload.get("payment_method", "")).strip()
@@ -1314,15 +1536,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             delivery_status = "not_applicable" if is_received else "pending"
             payment_follow_up = int(not is_paid)
 
-            variant = connection.execute(
-                "SELECT * FROM variants WHERE id = ? AND is_active = 1", (variant_id,)
-            ).fetchone()
-            if variant is None:
-                raise ValueError("Diese Artikelvariante ist nicht mehr verfügbar.")
-
-            amount_due = quantity * int(variant["sale_price_cents"])
+            amount_due = sum(item["amount_due_cents"] for item in basket_items)
             given_raw = payload.get("amount_given")
-            amount_given = None if given_raw in (None, "") else money_to_cents(given_raw, field_name="Gegeben")
+            amount_given = (
+                None
+                if given_raw is None or not str(given_raw).strip()
+                else money_to_cents(given_raw, field_name="Gegeben")
+            )
             if is_paid and amount_given is not None and amount_given < amount_due:
                 raise ValueError("Wenn „Bezahlt“ markiert ist, darf „Gegeben“ nicht kleiner als der Betrag sein.")
             # An unpaid booking must never accidentally count as a donation just
@@ -1332,60 +1552,75 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 donation = 0
             else:
                 donation = max(0, (amount_given or 0) - amount_due)
+            donation_shares = distribute_cents(donation, [item["amount_due_cents"] for item in basket_items])
+            for item, donation_share in zip(basket_items, donation_shares):
+                item["donation_cents"] = donation_share
+                item["amount_given_cents"] = (
+                    None if amount_given is None else item["amount_due_cents"] + donation_share
+                )
+
             sold_on = str(payload.get("sold_on") or today_iso())
             date.fromisoformat(sold_on)
+            event_name = str(payload.get("event_name", "")).strip() or None
+            comment = str(payload.get("comment", "")).strip() or None
 
             connection.execute("BEGIN IMMEDIATE")
             # The inventory is a ledger, not a hard sales lock: a missed
             # purchase entry or a later shipment must not prevent the merch
-            # stand from recording a real sale.  Holding the write lock still
-            # gives the response an authoritative post-sale stock value.
-            stock_before_sale = stock_for_variant(connection, variant_id)
+            # stand from recording a real sale.  Holding the write lock gives
+            # the response authoritative post-sale stock values for every
+            # basket line.
             receipt_id = unique_receipt_id(connection, "V", payload.get("receipt_id"), sold_on)
-            stock_after_sale = stock_before_sale - quantity
-            cursor = connection.execute(
-                """
-                INSERT INTO sales (
-                    receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
-                    amount_given_cents, donation_cents, payment_method, is_paid, payment_follow_up, is_received,
-                    delivery_status, customer_name, customer_address, event_name, sold_by, comment,
-                    sold_on, created_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    receipt_id, variant_id, quantity, variant["sale_price_cents"], amount_due,
-                    amount_given, donation, payment_method, int(is_paid), payment_follow_up,
-                    int(is_received), delivery_status,
-                    customer_name or None, customer_address or None,
-                    str(payload.get("event_name", "")).strip() or None,
-                    sold_by or None,
-                    str(payload.get("comment", "")).strip() or None, sold_on, utc_now(), g.user["id"],
-                ),
-            )
-            audit(
-                connection,
-                "create",
-                "sale",
-                cursor.lastrowid,
-                {
-                    "receipt_id": receipt_id,
-                    "quantity": quantity,
-                    "is_paid": is_paid,
-                    "payment_follow_up": bool(payment_follow_up),
-                    "delivery_status": delivery_status,
-                    "sold_by": sold_by or None,
-                },
-            )
+            for item in basket_items:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO sales (
+                        receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
+                        amount_given_cents, donation_cents, payment_method, is_paid, payment_follow_up, is_received,
+                        delivery_status, customer_name, customer_address, event_name, sold_by, comment,
+                        sold_on, created_at, created_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        receipt_id, item["variant_id"], item["quantity"], item["unit_price_cents"],
+                        item["amount_due_cents"], item["amount_given_cents"], item["donation_cents"],
+                        payment_method, int(is_paid), payment_follow_up, int(is_received), delivery_status,
+                        customer_name or None, customer_address or None, event_name, sold_by or None,
+                        comment, sold_on, utc_now(), g.user["id"],
+                    ),
+                )
+                item["sale_id"] = cursor.lastrowid
+                audit(
+                    connection,
+                    "create",
+                    "sale",
+                    cursor.lastrowid,
+                    {
+                        "receipt_id": receipt_id,
+                        "quantity": item["quantity"],
+                        "cart_item_count": len(basket_items),
+                        "is_paid": is_paid,
+                        "payment_follow_up": bool(payment_follow_up),
+                        "delivery_status": delivery_status,
+                        "sold_by": sold_by or None,
+                    },
+                )
+            for item in basket_items:
+                item["stock_after_sale"] = stock_for_variant(connection, item["variant_id"])
             connection.commit()
             backup_after_commit()
+            first_item = basket_items[0]
             return jsonify(
                 {
                     "ok": True,
                     "receipt_id": receipt_id,
-                    "variant_id": variant_id,
-                    "stock_after_sale": stock_after_sale,
+                    # Keep these two top-level fields for a browser that was
+                    # still open on the one-item UI during an upgrade.
+                    "variant_id": first_item["variant_id"],
+                    "stock_after_sale": first_item["stock_after_sale"],
                     "amount_due_cents": amount_due,
                     "donation_cents": donation,
+                    "items": basket_items,
                     "message": "Kauf erfolgreich erfasst.",
                 }
             )
@@ -1471,13 +1706,19 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def history_page():
         connection = get_db()
         sale_rows = connection.execute("SELECT * FROM sales ORDER BY sold_on DESC, id DESC").fetchall()
-        return render_template("history.html", title="Historie", sales=sales_with_labels(connection, sale_rows))
+        return render_template(
+            "history.html", title="Historie", receipts=receipt_history_payload(connection, sale_rows)
+        )
 
     @app.patch("/api/sales/<int:sale_id>/cancel")
     @login_required
     def cancel_sale(sale_id: int):
-        """Cancel a sale without removing its audit trail from the ledger."""
+        """Cancel one basket item or all remaining items of its receipt."""
 
+        payload = request.get_json(silent=True) or {}
+        scope = str(payload.get("scope", "item")).strip().lower()
+        if scope not in {"item", "receipt"}:
+            return jsonify({"ok": False, "error": "Ungültiger Stornoumfang."}), 400
         connection = get_db()
         try:
             sale = connection.execute(
@@ -1485,25 +1726,54 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             ).fetchone()
             if sale is None:
                 return jsonify({"ok": False, "error": "Verkauf wurde nicht gefunden."}), 404
-            if sale["is_cancelled"]:
+            if scope == "item" and sale["is_cancelled"]:
                 return jsonify({"ok": False, "error": "Dieser Verkauf ist bereits storniert."}), 400
 
             connection.execute("BEGIN IMMEDIATE")
-            result = connection.execute(
-                "UPDATE sales SET is_cancelled = 1 WHERE id = ? AND is_cancelled = 0", (sale_id,)
-            )
-            if result.rowcount != 1:
-                raise ValueError("Dieser Verkauf ist bereits storniert.")
+            if scope == "receipt":
+                # The header may use the first item of a receipt, even when
+                # that individual item was already cancelled earlier.  Scope
+                # the update by receipt ID so the remaining basket rows still
+                # cancel correctly.
+                result = connection.execute(
+                    "UPDATE sales SET is_cancelled = 1 WHERE receipt_id = ? AND is_cancelled = 0",
+                    (sale["receipt_id"],),
+                )
+                if result.rowcount == 0:
+                    raise ValueError("Dieser Warenkorb ist bereits vollständig storniert.")
+                cancelled_count = result.rowcount
+                audit_entity_type = "sale_receipt"
+            else:
+                result = connection.execute(
+                    "UPDATE sales SET is_cancelled = 1 WHERE id = ? AND is_cancelled = 0", (sale_id,)
+                )
+                if result.rowcount != 1:
+                    raise ValueError("Dieser Verkauf ist bereits storniert.")
+                cancelled_count = 1
+                audit_entity_type = "sale"
             audit(
                 connection,
                 "cancel",
-                "sale",
+                audit_entity_type,
                 sale_id,
-                {"receipt_id": sale["receipt_id"], "is_cancelled": True},
+                {
+                    "receipt_id": sale["receipt_id"],
+                    "scope": scope,
+                    "cancelled_item_count": cancelled_count,
+                    "is_cancelled": True,
+                },
             )
             connection.commit()
             backup_after_commit()
-            return jsonify({"ok": True, "is_cancelled": True, "message": "Verkauf wurde storniert."})
+            message = "Warenkorb wurde storniert." if scope == "receipt" else "Artikel wurde storniert."
+            return jsonify(
+                {
+                    "ok": True,
+                    "is_cancelled": True,
+                    "cancelled_item_count": cancelled_count,
+                    "message": message,
+                }
+            )
         except ValueError as exc:
             connection.rollback()
             return jsonify({"ok": False, "error": str(exc)}), 400

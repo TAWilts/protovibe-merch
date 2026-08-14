@@ -11,8 +11,10 @@ Bestand, Bilanz und CSV-Export.
 ## Enthaltene Funktionen
 
 - **Verkauf:** links Artikelauswahl, mittig generische Optionen, rechts
-  Zahlung/Abholung/Kontaktdaten/Menge.  Die Beleg-ID wird vor dem Speichern
-  angezeigt und nach erfolgreichem Speichern bestätigt. Ein fehlender
+  Zahlung/Abholung/Kontaktdaten/Menge und ein Warenkorb. Mit **Artikel
+  hinzufügen** bleiben Artikel- und Optionsauswahl stehen; mehrere Positionen
+  werden gemeinsam unter einer Beleg-ID gespeichert. Die Beleg-ID wird vor dem
+  Speichern angezeigt und nach erfolgreichem Speichern bestätigt. Ein fehlender
   Lagerbestand blockiert keinen Verkauf; bei Direktübergabe weist die App
   vorher sichtbar darauf hin. Bei nicht bezahlten oder noch nicht übergebenen
   Artikeln sind Name und Adresse Pflicht. Das optionale Feld **Verkauft von**
@@ -23,8 +25,9 @@ Bestand, Bilanz und CSV-Export.
   `Weiß` sowie `S` bis `XXL`, die jederzeit editierbar sind.
 - **Einkäufe:** der zuletzt für eine Variante bezahlte Preis wird übernommen,
   kann aber pro Einkauf geändert werden.
-- **Historie:** alle Verkäufe, inklusive Kontakt, Bezahlt-/Erhalten-Status,
-  Beleg-ID, Bezahlart, Spende und Kommentar.
+- **Historie:** jeder Kauf erscheint als Beleg, dessen Warenkorb sich über den
+  Pfeil links aufklappen lässt – inklusive Kontakt, Bezahlt-/Erhalten-Status,
+  Bezahlart, Spende und Kommentar.
 - **Offene Vorgänge:** nicht direkt übergebene Artikel können von „Noch nicht
   versendet“ über „Versendet“ bis „Erhalten“ geführt werden. Nicht bezahlte
   Verkäufe lassen sich dort separat als bezahlt markieren. Beide abgeschlossenen
@@ -33,9 +36,10 @@ Bestand, Bilanz und CSV-Export.
 - **Bilanzen:** gekauft, verkauft und Bestand je Variante sowie Ausgaben,
   Umsatz, Spenden, Saldo und den aus der ODS übernommenen
   „Nicht nachbestellen“-Status.
-- **Stornierungen:** Verkäufe können in der Historie mit einer dreisekündigen
-  Sicherheitsbestätigung storniert werden. Sie bleiben nachvollziehbar, werden
-  aber aus Bestand, Bilanzen und offenen Vorgängen herausgerechnet.
+- **Stornierungen:** ganze Warenkörbe oder einzelne Artikel können in der
+  Historie mit einer dreisekündigen Sicherheitsbestätigung storniert werden.
+  Sie bleiben nachvollziehbar, werden aber aus Bestand, Bilanzen und offenen
+  Vorgängen herausgerechnet.
 - **Export & Sicherung:** Download als CSV/ZIP sowie automatische Sicherung
   nach jeder erfolgreichen Änderung, einschließlich Versand- und
   Zahlungsstatus.
@@ -53,6 +57,16 @@ Varianten erzeugt, etwa `Geometry Shirt — Farbe: schwarz · Größe: M`.
 Jede Variante kann einen abweichenden Verkaufspreis und Standard-Einkaufspreis
 haben.  Das ist wichtig, weil beispielsweise Pullover oder Sondergrößen einen
 anderen Preis haben können.
+
+### Sammelbelege und Warenkorb
+
+Ein **Sammelbeleg** ist ein Kauf mit mehreren Positionen. Technisch bleibt jede
+Position eine eigene Verkaufszeile, aber alle teilen dieselbe `receipt_id`.
+Dadurch wird der Warenkorb in der Historie als ein Kauf dargestellt, während
+Bestand, Zahlungs- und Versandstatus weiterhin pro Artikel funktionieren. Der
+eingegebene Gesamtbetrag und eine mögliche Spende werden beim Speichern
+centgenau auf die Positionen verteilt; so lässt sich auch nur eine Position
+stornieren, ohne die Bilanz des restlichen Warenkorbs zu verfälschen.
 
 ### Warum gelöschte Optionen nicht wirklich gelöscht werden
 
@@ -181,7 +195,7 @@ entdeckte, um eine Zeile verschobene Einkaufsformel.
 | `app.py` | Datenbankschema, Geschäftsregeln, Routen, CSV-Export und Backup. Alle zentralen Funktionen haben Docstrings. |
 | `templates/` | Deutsche servergerenderte Oberflächen, ein Template pro Reiter. |
 | `static/transaction.js` | Generische Artikelauswahl – kennt keine fest verdrahteten Optionen wie Farbe/Größe. |
-| `static/sales.js` | Verkaufsspezifische Logik, Belegvorschau und Spendenberechnung. |
+| `static/sales.js` | Verkaufsspezifische Logik, Warenkorb, Belegvorschau und Spendenberechnung. |
 | `static/purchases.js` | Einkaufsspezifische Logik und Übernahme des letzten Einkaufspreises. |
 | `static/operations.js` | Speichert die Statusänderungen für offene Sendungen und Zahlungen. |
 | `static/articles.js` | Dynamische Optionsspalten und die Warnung vor rückwirkenden Änderungen. |
@@ -211,7 +225,6 @@ docker compose exec merch python -m unittest discover -s tests -v
 ## Nächste sinnvolle Erweiterungen
 
 - Benutzerverwaltung und persönliche Konten für Bandmitglieder.
-- Mehrere Artikel in einem einzigen Sammelbeleg/Warenkorb.
 - Separater Dialog für Fehldrucke, Geschenke und Inventurkorrekturen.
 - Offline-fähige PWA mit Konfliktauflösung beim späteren Synchronisieren.
 - Zeitbasierte Umsatzgrafiken und Mindestbestandswarnungen.

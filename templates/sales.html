@@ -74,10 +74,20 @@
         </span>
       </label>
       <div class="total-box">
-        <span>Betrag</span>
+        <span>Warenkorb</span>
         <strong id="amount-due">0,00 €</strong>
       </div>
     </div>
+    <button id="add-cart-item" class="secondary-button full-width" type="button" disabled>Artikel hinzufügen</button>
+    <section class="cart-section" aria-labelledby="cart-heading">
+      <div class="cart-heading">
+        <h3 id="cart-heading">Warenkorb</h3>
+        <span id="cart-item-count" class="muted">0 Artikel</span>
+      </div>
+      <div id="cart-items" class="cart-items" aria-live="polite">
+        <p class="muted">Noch keine Artikel hinzugefügt.</p>
+      </div>
+    </section>
     <div class="field-grid two-columns payment-inputs">
       <label>Gegeben <input id="amount-given" inputmode="decimal" placeholder="Optional"></label>
       <div class="donation-box"><span>Spende</span><strong id="donation-preview">0,00 €</strong></div>
