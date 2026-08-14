@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app import (
     apply_option_configuration,
@@ -72,6 +73,75 @@ class MerchAppTestCase(unittest.TestCase):
             json=payload,
             headers={"X-CSRF-Token": "test-csrf"},
         )
+
+    @patch("app.fetch_latest_github_release")
+    def test_admin_update_check_detects_and_caches_a_new_release(self, fetch_release) -> None:
+        """The first post-login check is cached; the explicit button refreshes it."""
+
+        fetch_release.return_value = {
+            "tag_name": "v0.3.1",
+            "name": "Merch Manager v0.3.1",
+            "html_url": "https://github.com/TAWilts/protovibe-merch/releases/tag/v0.3.1",
+            "published_at": "2026-08-14T15:30:00Z",
+        }
+
+        first = self.client.get("/api/update-status")
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(first.json["ok"])
+        self.assertTrue(first.json["update_available"])
+        self.assertEqual(first.json["current_version"], "v0.3.0")
+        self.assertEqual(first.json["latest_version"], "v0.3.1")
+        self.assertFalse(first.json["cached"])
+        self.assertEqual(fetch_release.call_count, 1)
+
+        cached = self.client.get("/api/update-status")
+        self.assertEqual(cached.status_code, 200)
+        self.assertTrue(cached.json["cached"])
+        self.assertEqual(fetch_release.call_count, 1)
+
+        forced = self.client.get("/api/update-status?force=1")
+        self.assertEqual(forced.status_code, 200)
+        self.assertFalse(forced.json["cached"])
+        self.assertEqual(fetch_release.call_count, 2)
+
+    @patch("app.fetch_latest_github_release")
+    def test_update_check_handles_invalid_release_tags_without_breaking_the_app(self, fetch_release) -> None:
+        fetch_release.return_value = {"tag_name": "latest", "html_url": "https://github.com/example/release"}
+
+        response = self.client.get("/api/update-status?force=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json["ok"])
+        self.assertEqual(response.json["state"], "unavailable")
+        self.assertFalse(response.json["update_available"])
+
+    def test_updates_page_is_admin_only_and_header_contains_the_version_link(self) -> None:
+        updates_page = self.client.get("/updates")
+        self.assertEqual(updates_page.status_code, 200)
+        updates_html = updates_page.get_data(as_text=True)
+        self.assertIn("Jetzt nach Updates suchen", updates_html)
+        self.assertIn('data-update-panel', updates_html)
+
+        sales_html = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertIn('data-update-indicator', sales_html)
+        self.assertIn('static/updates.js', sales_html)
+
+        with self.app.app_context():
+            connection = get_db()
+            password_hash = connection.execute("SELECT password_hash FROM users WHERE id = 1").fetchone()[0]
+            connection.execute(
+                "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, 0, ?)",
+                ("non-admin", password_hash, "2026-08-14T00:00:00+00:00"),
+            )
+            connection.commit()
+        with self.client.session_transaction() as session:
+            session["user_id"] = 2
+            session["csrf_token"] = "test-csrf"
+        self.assertEqual(self.client.get("/updates").status_code, 403)
+
+        with self.client.session_transaction() as session:
+            session.clear()
+        unauthenticated = self.client.get("/api/update-status")
+        self.assertEqual(unauthenticated.status_code, 401)
 
     def test_purchase_then_sale_updates_stock_and_creates_receipts(self) -> None:
         variant_id = self.seed_variant()

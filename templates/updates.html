@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block page_class %}updates-page{% endblock %}
+{% block content %}
+<div class="page-title-row">
+  <div>
+    <p class="eyebrow">Wartung</p>
+    <h1>Updates</h1>
+    <p class="page-intro">Neue Versionen werden aus den veröffentlichten GitHub-Releases geprüft. Eine Installation wird bewusst nicht durch die Web-App selbst ausgelöst.</p>
+  </div>
+</div>
+
+<section class="update-card" data-update-panel>
+  <div class="update-version-grid">
+    <article>
+      <span>Installiert</span>
+      <strong data-update-current-version>{{ app_version_label }}</strong>
+      <small>Version im laufenden Container</small>
+    </article>
+    <article>
+      <span>Neueste Veröffentlichung</span>
+      <strong data-update-latest-version>Wird geprüft …</strong>
+      <small data-update-published-at>GitHub-Releases</small>
+    </article>
+  </div>
+  <div class="update-status-row">
+    <p class="notice update-status-message" data-update-message aria-live="polite">Der Update-Status wird geladen.</p>
+    <div class="button-group">
+      <a class="secondary-button" data-update-release href="#" target="_blank" rel="noopener noreferrer" hidden>Änderungen ansehen</a>
+      <button class="primary-button" type="button" data-update-check>Jetzt nach Updates suchen</button>
+    </div>
+  </div>
+</section>
+
+<section class="table-section update-instructions">
+  <div class="section-heading">
+    <div>
+      <h2>So wird eine freigegebene Version installiert</h2>
+      <p>Der laufende Container erhält keine Rechte, Git oder Docker selbst zu steuern. Dadurch kann ein App-Login kein Software-Update auslösen.</p>
+    </div>
+  </div>
+  <ol>
+    <li>Die Release-Notizen prüfen.</li>
+    <li>Auf der Synology das versionierte Container-Image der gewünschten Release-Version abrufen.</li>
+    <li>Das Projekt kontrolliert neu starten. Die Daten unter <code>data/</code> bleiben davon unverändert.</li>
+  </ol>
+  {% if update_repository %}<p class="muted compact-copy">Quelle für die Prüfung: <code>{{ update_repository }}</code></p>{% endif %}
+</section>
+{% endblock %}

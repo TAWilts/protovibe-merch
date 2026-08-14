@@ -27,12 +27,16 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import time
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
 from pathlib import Path
+from threading import Lock
 from typing import Any, Iterable
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from flask import (
@@ -195,6 +199,198 @@ DEFAULT_NEW_ARTICLE_OPTIONS = (
     ("Farbe", ("Schwarz", "Weiß")),
     ("Größe", ("S", "M", "L", "XL", "XXL")),
 )
+
+# A release tag is deliberately kept independent from the database schema.  It
+# identifies the exact code running in a container and is therefore useful for
+# both support requests and the GitHub update check.
+PROJECT_ROOT = Path(__file__).resolve().parent
+VERSION_FILE = PROJECT_ROOT / "VERSION"
+GITHUB_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+RELEASE_VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+
+
+def version_tuple(version: str) -> tuple[int, int, int] | None:
+    """Return a comparable semantic version tuple or ``None`` for invalid tags.
+
+    Published releases use tags such as ``v0.3.0``, while the local ``VERSION``
+    file intentionally contains just ``0.3.0``.  Accepting both avoids a
+    fragile string comparison and keeps the release convention visible.
+    """
+
+    match = RELEASE_VERSION_PATTERN.fullmatch(str(version).strip())
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def display_version(version: str) -> str:
+    """Return a consistently labelled version for the German user interface."""
+
+    cleaned = str(version).strip()
+    return cleaned if cleaned.startswith("v") else f"v{cleaned}"
+
+
+def read_app_version() -> str:
+    """Read and validate the version embedded in the deployed source/image."""
+
+    try:
+        version = VERSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError as exc:  # pragma: no cover - protects manual deployments.
+        raise RuntimeError("Die Datei VERSION fehlt im Projektordner.") from exc
+    if version_tuple(version) is None:
+        raise RuntimeError("VERSION muss dem Format X.Y.Z entsprechen, zum Beispiel 0.3.0.")
+    return version
+
+
+def fetch_latest_github_release(repository: str, token: str | None, timeout_seconds: float) -> dict[str, Any]:
+    """Fetch the newest published GitHub release without exposing credentials.
+
+    The optional token is only useful for a private repository and is kept
+    exclusively in the server-side environment.  No token is ever rendered in
+    a page or included in a JSON response.
+    """
+
+    if not GITHUB_REPOSITORY_PATTERN.fullmatch(repository):
+        raise ValueError("UPDATE_CHECK_REPOSITORY muss als owner/repository angegeben werden.")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "Protovibe-Merch-Manager",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request_object = Request(
+        f"https://api.github.com/repos/{repository}/releases/latest",
+        headers=headers,
+    )
+    with urlopen(request_object, timeout=timeout_seconds) as response:
+        payload = json.load(response)
+    if not isinstance(payload, dict):
+        raise ValueError("GitHub hat keine gültigen Release-Daten geliefert.")
+    return payload
+
+
+def update_status(app: Flask, *, force: bool = False) -> dict[str, Any]:
+    """Return a cached, non-blocking-in-practice status of the newest release.
+
+    The browser asks this endpoint after a successful login.  The actual
+    GitHub request is cached for several hours, so normal navigation does not
+    repeatedly contact an external service.  A deliberate "Jetzt prüfen"
+    action passes ``force=True`` and bypasses that cache.
+    """
+
+    current_version = str(app.config["APP_VERSION"])
+    repository = str(app.config.get("UPDATE_CHECK_REPOSITORY", "")).strip()
+    current_label = display_version(current_version)
+    if not repository:
+        return {
+            "ok": False,
+            "state": "not_configured",
+            "current_version": current_label,
+            "latest_version": None,
+            "update_available": False,
+            "release_url": None,
+            "release_name": None,
+            "published_at": None,
+            "checked_at": utc_now(),
+            "message": "Die GitHub-Update-Prüfung ist nicht eingerichtet.",
+        }
+
+    cache = app.extensions.setdefault(
+        "update_status_cache",
+        {"lock": Lock(), "key": None, "status": None, "checked_at_monotonic": 0.0},
+    )
+    cache_key = (current_version, repository, str(app.config.get("UPDATE_CHECK_TOKEN") or ""))
+    ttl_seconds = max(0, int(app.config.get("UPDATE_CHECK_CACHE_SECONDS", 21600)))
+    now = time.monotonic()
+
+    with cache["lock"]:
+        cached_status = cache["status"]
+        cache_is_fresh = (
+            cache["key"] == cache_key
+            and cached_status is not None
+            and now - float(cache["checked_at_monotonic"]) < ttl_seconds
+        )
+        if cache_is_fresh and not force:
+            return {**cached_status, "cached": True}
+
+        base_status: dict[str, Any] = {
+            "current_version": current_label,
+            "latest_version": None,
+            "update_available": False,
+            "release_url": None,
+            "release_name": None,
+            "published_at": None,
+            "checked_at": utc_now(),
+        }
+        try:
+            release = fetch_latest_github_release(
+                repository,
+                app.config.get("UPDATE_CHECK_TOKEN") or None,
+                float(app.config.get("UPDATE_CHECK_TIMEOUT_SECONDS", 3.0)),
+            )
+            release_tag = str(release.get("tag_name", "")).strip()
+            release_version = version_tuple(release_tag)
+            if release_version is None:
+                raise ValueError("Die neueste GitHub-Version hat kein gültiges Versions-Tag.")
+            current_version_tuple = version_tuple(current_version)
+            if current_version_tuple is None:  # protected by ``read_app_version`` during app creation
+                raise ValueError("Die installierte Versionsdatei ist ungültig.")
+            release_url = str(release.get("html_url", "")).strip()
+            safe_release_url = release_url if release_url.startswith("https://github.com/") else None
+            base_status.update(
+                {
+                    "ok": True,
+                    "latest_version": display_version(release_tag),
+                    "release_url": safe_release_url,
+                    "release_name": str(release.get("name") or release_tag).strip(),
+                    "published_at": str(release.get("published_at") or "").strip() or None,
+                }
+            )
+            if release_version > current_version_tuple:
+                base_status.update(
+                    {
+                        "state": "update_available",
+                        "update_available": True,
+                        "message": f"{display_version(release_tag)} ist als neue stabile Version verfügbar.",
+                    }
+                )
+            elif release_version == current_version_tuple:
+                base_status.update(
+                    {
+                        "state": "current",
+                        "message": "Diese Installation ist auf dem aktuellen veröffentlichten Stand.",
+                    }
+                )
+            else:
+                base_status.update(
+                    {
+                        "state": "ahead",
+                        "message": "Diese Installation ist neuer als die zuletzt veröffentlichte GitHub-Version.",
+                    }
+                )
+        except HTTPError as exc:
+            if exc.code == 404:
+                message = "Es ist noch keine veröffentlichte Version erreichbar. Prüfe Release und Zugriffsrechte."
+            else:
+                message = "GitHub konnte die neueste Version gerade nicht bereitstellen."
+            base_status.update({"ok": False, "state": "unavailable", "message": message})
+        except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
+            base_status.update(
+                {
+                    "ok": False,
+                    "state": "unavailable",
+                    "message": "Die Update-Prüfung ist derzeit nicht erreichbar. Die App läuft unverändert weiter.",
+                }
+            )
+
+        cache.update(
+            {
+                "key": cache_key,
+                "status": base_status,
+                "checked_at_monotonic": time.monotonic(),
+            }
+        )
+        return {**base_status, "cached": False}
 
 
 def utc_now() -> str:
@@ -1410,6 +1606,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         BACKUP_RETENTION_DAYS=int(os.environ.get("BACKUP_RETENTION_DAYS", "90")),
         ADMIN_USERNAME=os.environ.get("ADMIN_USERNAME", "admin"),
         ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD", "replace-this-password"),
+        APP_VERSION=read_app_version(),
+        # A public repository needs no token.  For a private repository, use a
+        # separate, fine-grained read-only token; it remains server-side.
+        UPDATE_CHECK_REPOSITORY=os.environ.get("UPDATE_CHECK_REPOSITORY", "TAWilts/protovibe-merch").strip(),
+        UPDATE_CHECK_TOKEN=os.environ.get("UPDATE_CHECK_TOKEN", "").strip(),
+        UPDATE_CHECK_TIMEOUT_SECONDS=float(os.environ.get("UPDATE_CHECK_TIMEOUT_SECONDS", "3")),
+        UPDATE_CHECK_CACHE_SECONDS=int(os.environ.get("UPDATE_CHECK_CACHE_SECONDS", "21600")),
         AUTO_BACKUP=True,
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -1430,7 +1633,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.context_processor
     def inject_template_values() -> dict[str, Any]:
-        return {"csrf_token": csrf_token, "current_user": g.get("user"), "payment_methods": PAYMENT_METHODS}
+        return {
+            "csrf_token": csrf_token,
+            "current_user": g.get("user"),
+            "payment_methods": PAYMENT_METHODS,
+            "app_version": app.config["APP_VERSION"],
+            "app_version_label": display_version(app.config["APP_VERSION"]),
+        }
 
     @app.before_request
     def load_request_context() -> None:
@@ -1467,6 +1676,27 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def logout():
         session.clear()
         return redirect(url_for("login"))
+
+    @app.get("/updates")
+    @login_required
+    @admin_required
+    def updates_page():
+        """Show release state and deliberately non-automatic update guidance."""
+
+        return render_template(
+            "updates.html",
+            title="Updates",
+            update_repository=app.config["UPDATE_CHECK_REPOSITORY"],
+        )
+
+    @app.get("/api/update-status")
+    @login_required
+    @admin_required
+    def api_update_status():
+        """Provide a cached GitHub release comparison for the admin UI."""
+
+        force = request.args.get("force", "").lower() in {"1", "true", "yes"}
+        return jsonify(update_status(app, force=force))
 
     @app.get("/verkauf")
     @login_required

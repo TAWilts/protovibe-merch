@@ -25,6 +25,16 @@
       {% endif %}
     </nav>
     <div class="user-menu">
+      {% if current_user.is_admin %}
+      <a
+        class="update-link"
+        href="{{ url_for('updates_page') }}"
+        data-update-indicator
+        data-update-status-url="{{ url_for('api_update_status') }}"
+        data-current-version="{{ app_version_label }}"
+        title="Installierte Version {{ app_version_label }} – Update-Status prüfen"
+      >{{ app_version_label }}</a>
+      {% endif %}
       <span>{{ current_user.username }}</span>
       <form action="{{ url_for('logout') }}" method="post">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -53,6 +63,9 @@
       moneyFormatter: new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
     };
   </script>
+  {% if current_user and current_user.is_admin %}
+  <script src="{{ url_for('static', filename='updates.js') }}" defer></script>
+  {% endif %}
   {% block scripts %}{% endblock %}
 </body>
 </html>

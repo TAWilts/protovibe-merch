@@ -222,6 +222,95 @@ Die Regressionstests lassen sich im gebauten Container ausführen:
 docker compose exec merch python -m unittest discover -s tests -v
 ```
 
+## GitHub-Releases und kontrollierte Container-Updates
+
+Ab Version 0.3.0 ist der Quellcode von der laufenden Datenhaltung getrennt:
+
+- `VERSION` enthält die Version des gerade gebauten Codes, zum Beispiel
+  `0.3.0`.
+- GitHub Actions testet jeden Push nach `main`.
+- Ein Git-Tag wie `v0.3.1` erzeugt nach erfolgreichen Tests ein
+  DS225+-kompatibles Image `ghcr.io/tawilts/protovibe-merch:v0.3.1`.
+- Die App prüft nach einem Admin-Login asynchron und zwischengespeichert die
+  neueste veröffentlichte GitHub-Version. Unter **Updates** kann die Prüfung
+  jederzeit bewusst wiederholt werden.
+
+Die Web-App führt ausdrücklich kein `git pull`, keinen Docker-Befehl und keine
+automatische Datenbankwiederherstellung aus. Ein kompromittierter Browser-Login
+kann dadurch kein beliebigen Code auf dem NAS starten. Ein Update bleibt eine
+bewusste Administratoraktion.
+
+### Release-Ablauf
+
+1. `VERSION` auf die neue Nummer ändern, zum Beispiel von `0.3.0` auf
+   `0.3.1`.
+2. Code, Tests und Dokumentation committen und nach `main` pushen.
+3. Den grünen Workflow **Test application** abwarten.
+4. Auf GitHub ein Release mit exakt demselben Tag erstellen, also `v0.3.1`.
+   Der Workflow **Publish release image** testet erneut und veröffentlicht erst
+   dann das Container-Image.
+5. Erst wenn dieser Workflow grün ist, die Synology auf genau dieses Image
+   aktualisieren.
+
+Der Versions-Tag und die Datei `VERSION` müssen zusammenpassen. Der
+Publish-Workflow bricht absichtlich ab, falls beispielsweise `v0.3.2` auf ein
+Commit mit `VERSION = 0.3.1` zeigt.
+
+### Einmaliger Wechsel auf das Release-Image
+
+Die vorhandene `docker-compose.yml` bleibt für Entwicklung und lokale Builds.
+Nach dem ersten veröffentlichten Image steht für die Synology die separate
+`docker-compose.synology.yml` bereit. Sie lädt ein fertiges Image, baut also
+nicht mehr auf dem NAS.
+
+1. Warten, bis das GitHub-Release `v0.3.0` den erfolgreichen Workflow
+   **Publish release image** zeigt.
+2. Unter GitHub **Packages** das Paket `protovibe-merch` öffnen. Ist es
+   öffentlich, kann die Synology es ohne Registry-Zugangsdaten laden. Bei einem
+   privaten Paket muss die Synology stattdessen einmal mit einem auf
+   `read:packages` beschränkten GitHub-Token bei `ghcr.io` angemeldet werden.
+3. Im Projektordner auf der Synology die bestehende `.env` unverändert lassen
+   und ergänzen:
+
+   ```dotenv
+   MERCH_IMAGE_TAG=v0.3.0
+   ```
+
+4. Das laufende Projekt stoppen, dann die Produktion-Datei
+   `docker-compose.synology.yml` als Compose-Datei des Projekts verwenden.
+   Falls du per SSH arbeitest, lauten die entsprechenden Befehle:
+
+   ```bash
+   docker compose -f docker-compose.synology.yml pull
+   docker compose -f docker-compose.synology.yml up -d
+   ```
+
+   Ohne SSH kannst du in Container Manager ein Projekt aus dieser Datei im
+   gleichen Ordner neu anlegen. Entscheidend ist, dass der Ordner `data/`
+   unverändert am selben Ort bleibt; darin liegen Datenbank und Backups.
+
+Für eine spätere Version änderst du lediglich `MERCH_IMAGE_TAG`, zum Beispiel
+auf `v0.3.1`, und führst erneut `pull` und `up -d` aus. Ein Rücksprung auf die
+vorige Code-Version ist genauso möglich, indem du wieder den vorherigen Tag
+einträgst. Vor jeder Aktualisierung erzeugt die App bereits reguläre
+SQLite-/CSV-Sicherungen nach jeder Buchung; zusätzlich ist ein Synology Snapshot
+oder Hyper Backup des Projektordners sinnvoll.
+
+### Private Repositories und die Update-Prüfung
+
+Für ein öffentliches Repository funktioniert die Versionsprüfung ohne weitere
+Konfiguration. Bei einem privaten Repository kann in `.env` ein separat
+erzeugter, feingranularer GitHub-Token mit ausschließlich lesendem Zugriff auf
+dieses Repository hinterlegt werden:
+
+```dotenv
+UPDATE_CHECK_TOKEN=<nur-lesender-token>
+```
+
+Dieser Token ist nur für die Versionsabfrage vorgesehen und nicht identisch mit
+einem möglichen `read:packages`-Token für das Laden privater Container-Images.
+Beide gehören ausschließlich in `.env`, niemals ins Git-Repository.
+
 ## Nächste sinnvolle Erweiterungen
 
 - Benutzerverwaltung und persönliche Konten für Bandmitglieder.
