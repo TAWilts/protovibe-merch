@@ -20,9 +20,9 @@
   </div>
   <div class="table-scroll"><table class="operations-table"><thead><tr>
     <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Kontakt</th><th>Veranstaltung</th><th>Versandstatus</th>
-  </tr></thead><tbody>
+  </tr></thead><tbody id="current-shipments-body" data-empty-message="Keine offenen Sendungen." data-empty-colspan="7">
   {% for sale in current_shipments %}
-    <tr>
+    <tr data-sale-row data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
       <td>{{ sale.sold_on }}</td>
       <td class="mono">{{ sale.receipt_id }}</td>
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
@@ -38,7 +38,7 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="7" class="empty-cell">Keine offenen Sendungen.</td></tr>
+    <tr data-empty-state><td colspan="7" class="empty-cell">Keine offenen Sendungen.</td></tr>
   {% endfor %}
   </tbody></table></div>
 </section>
@@ -52,9 +52,9 @@
   </div>
   <div class="table-scroll"><table class="operations-table"><thead><tr>
     <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Bezahlart</th><th>Kontakt / Veranstaltung</th><th>Zahlungsstatus</th>
-  </tr></thead><tbody>
+  </tr></thead><tbody id="unpaid-sales-body" data-empty-message="Keine offenen Zahlungen." data-empty-colspan="8">
   {% for sale in unpaid_sales %}
-    <tr>
+    <tr data-sale-row data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
       <td>{{ sale.sold_on }}</td>
       <td class="mono">{{ sale.receipt_id }}</td>
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
@@ -73,7 +73,7 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="8" class="empty-cell">Keine offenen Zahlungen.</td></tr>
+    <tr data-empty-state><td colspan="8" class="empty-cell">Keine offenen Zahlungen.</td></tr>
   {% endfor %}
   </tbody></table></div>
 </section>
@@ -89,9 +89,9 @@
   </div>
   <div class="table-scroll"><table class="operations-table"><thead><tr>
     <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Kontakt</th><th>Veranstaltung</th><th>Versandstatus</th>
-  </tr></thead><tbody>
+  </tr></thead><tbody id="delivered-goods-body" data-empty-message="Noch keine versendete Ware als erhalten markiert." data-empty-colspan="7">
   {% for sale in delivered_goods %}
-    <tr>
+    <tr data-sale-row data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
       <td>{{ sale.sold_on }}</td>
       <td class="mono">{{ sale.receipt_id }}</td>
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
@@ -107,7 +107,7 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="7" class="empty-cell">Noch keine versendete Ware als erhalten markiert.</td></tr>
+    <tr data-empty-state><td colspan="7" class="empty-cell">Noch keine versendete Ware als erhalten markiert.</td></tr>
   {% endfor %}
   </tbody></table></div>
 </section>
@@ -121,9 +121,9 @@
   </div>
   <div class="table-scroll"><table class="operations-table"><thead><tr>
     <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Bezahlart</th><th>Kontakt / Veranstaltung</th><th>Zahlungsstatus</th>
-  </tr></thead><tbody>
+  </tr></thead><tbody id="paid-follow-up-sales-body" data-empty-message="Noch keine offene Zahlung als bezahlt markiert." data-empty-colspan="8">
   {% for sale in paid_follow_up_sales %}
-    <tr>
+    <tr data-sale-row data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
       <td>{{ sale.sold_on }}</td>
       <td class="mono">{{ sale.receipt_id }}</td>
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
@@ -142,7 +142,7 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="8" class="empty-cell">Noch keine offene Zahlung als bezahlt markiert.</td></tr>
+    <tr data-empty-state><td colspan="8" class="empty-cell">Noch keine offene Zahlung als bezahlt markiert.</td></tr>
   {% endfor %}
   </tbody></table></div>
 </section>

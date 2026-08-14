@@ -29,6 +29,7 @@
     amountDue: $("amount-due"),
     amountGiven: $("amount-given"),
     donation: $("donation-preview"),
+    stockWarning: $("stock-warning"),
     confirm: $("confirm-sale"),
     error: $("sale-error"),
     dialog: $("success-dialog"),
@@ -65,6 +66,11 @@
     ui.error.hidden = !message;
   }
 
+  function showStockWarning(message) {
+    ui.stockWarning.textContent = message;
+    ui.stockWarning.hidden = !message;
+  }
+
   function updateContactFields() {
     const needsContact = !ui.received.checked;
     ui.contactFields.hidden = !needsContact;
@@ -85,10 +91,19 @@
     ui.amountDue.textContent = window.MerchTransaction.centsToEuro(dueCents);
     ui.donation.textContent = window.MerchTransaction.centsToEuro(donationCents);
     const hasEnoughStock = currentVariant && itemCount <= Number(currentVariant.stock);
-    ui.confirm.disabled = !hasEnoughStock;
-    if (currentVariant && !hasEnoughStock) {
-      showError(`Nur noch ${currentVariant.stock} Stück auf Lager.`);
-    } else if (!ui.error.dataset.serverError) {
+    // A negative inventory is useful evidence of a missing purchase entry or
+    // a sale that will be shipped after replenishment.  It must therefore not
+    // block a booking.  Only warn for an article handed over immediately;
+    // later shipments deliberately stay quiet here.
+    ui.confirm.disabled = !currentVariant;
+    if (currentVariant && !hasEnoughStock && ui.received.checked) {
+      showStockWarning(
+        `Warnung: Laut Bestand stehen für diese Menge nicht genug Artikel zur Verfügung (Bestand: ${currentVariant.stock}). Der Verkauf wird trotzdem gespeichert.`
+      );
+    } else {
+      showStockWarning("");
+    }
+    if (!ui.error.dataset.serverError) {
       showError("");
     }
     return { itemCount, dueCents };
@@ -192,6 +207,7 @@
     ui.comment.value = "";
     ui.error.dataset.serverError = "";
     showError("");
+    showStockWarning("");
     updateContactFields();
     updatePaidFields();
     updateSummary();
@@ -203,7 +219,7 @@
   ui.quantity.addEventListener("input", updateSummary);
   ui.amountGiven.addEventListener("input", updateSummary);
   ui.paid.addEventListener("change", () => { updatePaidFields(); updateSummary(); });
-  ui.received.addEventListener("change", updateContactFields);
+  ui.received.addEventListener("change", () => { updateContactFields(); updateSummary(); });
   ui.confirm.addEventListener("click", confirmSale);
   ui.closeDialog.addEventListener("click", () => ui.dialog.close());
   ui.dialog.addEventListener("close", resetSaleForm);

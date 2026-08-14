@@ -542,13 +542,17 @@ def sales_with_labels(
     sales = []
     for row in rows:
         item = dict(row)
-        # ``variant_label_map`` also exposes a generic ``id`` key for the
-        # variant.  Retain the sale ID before merging it: the operations page
-        # sends this ID back to the status API, not the variant ID.
-        sale_id = item["id"]
-        item.update(labels[row["variant_id"]])
-        item["id"] = sale_id
-        item["sale_id"] = sale_id
+        variant = labels[row["variant_id"]]
+        # Never merge the complete variant payload here.  Both sales and
+        # variants have generic column names such as ``id``.  A wholesale
+        # ``dict.update`` can therefore silently replace the sale ID used by
+        # the operations controls.  Only copy the label fields a sale view
+        # actually needs, keeping the ledger row as the source of all status
+        # and identity data.
+        item["article_name"] = variant["article_name"]
+        item["option_text"] = variant["option_text"]
+        item["label"] = variant["label"]
+        item["sale_id"] = item["id"]
         sales.append(item)
     return sales
 
@@ -1291,9 +1295,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             ).fetchone()
             if variant is None:
                 raise ValueError("Diese Artikelvariante ist nicht mehr verfügbar.")
-            stock = stock_for_variant(connection, variant_id)
-            if quantity > stock:
-                raise ValueError(f"Nur noch {stock} Stück dieser Variante auf Lager.")
 
             amount_due = quantity * int(variant["sale_price_cents"])
             given_raw = payload.get("amount_given")
@@ -1311,13 +1312,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             date.fromisoformat(sold_on)
 
             connection.execute("BEGIN IMMEDIATE")
-            # Repeat the stock check after acquiring the write lock, so two people
-            # cannot sell the final shirt at exactly the same moment.
-            stock = stock_for_variant(connection, variant_id)
-            if quantity > stock:
-                raise ValueError(f"Nur noch {stock} Stück dieser Variante auf Lager.")
+            # The inventory is a ledger, not a hard sales lock: a missed
+            # purchase entry or a later shipment must not prevent the merch
+            # stand from recording a real sale.  Holding the write lock still
+            # gives the response an authoritative post-sale stock value.
+            stock_before_sale = stock_for_variant(connection, variant_id)
             receipt_id = unique_receipt_id(connection, "V", payload.get("receipt_id"), sold_on)
-            stock_after_sale = stock - quantity
+            stock_after_sale = stock_before_sale - quantity
             cursor = connection.execute(
                 """
                 INSERT INTO sales (

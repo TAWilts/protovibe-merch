@@ -105,6 +105,24 @@ class MerchAppTestCase(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(stock, 1)
 
+    def test_sale_can_be_recorded_when_the_ledger_has_no_stock(self) -> None:
+        """A missing inventory booking must not block a real counter sale."""
+
+        variant_id = self.seed_variant()
+        sale = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 2,
+                "is_paid": True,
+                "is_received": True,
+                "payment_method": "Bar",
+                "sold_on": "2026-08-14",
+            },
+        )
+        self.assertEqual(sale.status_code, 200)
+        self.assertEqual(sale.json["stock_after_sale"], -2)
+
     def test_delivery_and_payment_queues_update_sale_statuses(self) -> None:
         """A later-delivery sale must move through both requested work queues."""
 
@@ -189,6 +207,39 @@ class MerchAppTestCase(unittest.TestCase):
         history = self.client.get("/vorgaenge").get_data(as_text=True)
         self.assertIn("Bezahlte Verkäufe", history)
         self.assertIn(sale.json["receipt_id"], history)
+
+    def test_operations_template_uses_stable_sale_ids_and_no_page_reload(self) -> None:
+        """Queue controls address their own sale and move without form restoration."""
+
+        variant_id = self.seed_variant()
+        for payment_method in ("PayPal", "Überweisung", "PayPal"):
+            response = self.api_post(
+                "/api/sales",
+                {
+                    "variant_id": variant_id,
+                    "quantity": 1,
+                    "is_paid": False,
+                    "is_received": False,
+                    "payment_method": payment_method,
+                    "sold_on": "2026-08-14",
+                    "customer_name": "Ada Käuferin",
+                    "customer_address": "Bandstraße 1\n24103 Kiel",
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+
+        with self.app.app_context():
+            sale_rows = get_db().execute("SELECT id, receipt_id FROM sales ORDER BY id").fetchall()
+        queue_html = self.client.get("/vorgaenge").get_data(as_text=True)
+        for sale_row in sale_rows:
+            receipt_marker = f'<td class="mono">{sale_row["receipt_id"]}</td>'
+            sale_id_marker = f'data-sale-id="{sale_row["id"]}"'
+            start = queue_html.index(receipt_marker)
+            self.assertIn(sale_id_marker, queue_html[start : start + 2000])
+
+        operations_script = (Path(__file__).parents[1] / "static" / "operations.js").read_text(encoding="utf-8")
+        self.assertNotIn("window.location.reload", operations_script)
+        self.assertIn("moveRowToQueue", operations_script)
 
     def test_new_article_starts_with_common_colour_and_size_defaults(self) -> None:
         response = self.client.post(

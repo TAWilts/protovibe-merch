@@ -12,7 +12,9 @@ Bestand, Bilanz und CSV-Export.
 
 - **Verkauf:** links Artikelauswahl, mittig generische Optionen, rechts
   Zahlung/Abholung/Kontaktdaten/Menge.  Die Beleg-ID wird vor dem Speichern
-  angezeigt und nach erfolgreichem Speichern bestätigt.
+  angezeigt und nach erfolgreichem Speichern bestätigt. Ein fehlender
+  Lagerbestand blockiert keinen Verkauf; bei Direktübergabe weist die App
+  vorher sichtbar darauf hin.
 - **Artikeloptionen:** ein Artikel kann beliebige Optionsspalten haben, etwa
   `Farbe`, `Größe`, `Schnitt` oder `Material`.  Aus den Werten erzeugt die App
   automatisch die gültigen Varianten. Neue Artikel starten mit `Schwarz`,
