@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#16131d">
+  <title>{{ title }} · Merch Manager</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  {% if current_user %}
+  <header class="app-header">
+    <a class="brand" href="{{ url_for('sales_page') }}" aria-label="Zur Verkaufsansicht">
+      <span class="brand-mark">P</span>
+      <span>Merch Manager</span>
+    </a>
+    <nav class="main-nav" aria-label="Hauptnavigation">
+      <a href="{{ url_for('sales_page') }}" class="{{ 'active' if request.endpoint == 'sales_page' else '' }}">Verkauf</a>
+      <a href="{{ url_for('history_page') }}" class="{{ 'active' if request.endpoint == 'history_page' else '' }}">Historie</a>
+      <a href="{{ url_for('purchases_page') }}" class="{{ 'active' if request.endpoint == 'purchases_page' else '' }}">Einkäufe</a>
+      <a href="{{ url_for('balances_page') }}" class="{{ 'active' if request.endpoint == 'balances_page' else '' }}">Bilanzen</a>
+      {% if current_user.is_admin %}
+      <a href="{{ url_for('article_management_page') }}" class="{{ 'active' if request.endpoint in ['article_management_page', 'create_article', 'save_article'] else '' }}">Artikelverwaltung</a>
+      {% endif %}
+    </nav>
+    <div class="user-menu">
+      <span>{{ current_user.username }}</span>
+      <form action="{{ url_for('logout') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="text-button" type="submit">Abmelden</button>
+      </form>
+    </div>
+  </header>
+  {% endif %}
+
+  <main class="page-shell {% block page_class %}{% endblock %}">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <section class="flash-stack" aria-live="polite">
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+
+  <script>
+    window.MERCH_APP = {
+      csrfToken: {{ csrf_token()|tojson }},
+      moneyFormatter: new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
+    };
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

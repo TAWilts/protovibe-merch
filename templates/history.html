@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title-row"><div><p class="eyebrow">Nachvollziehbarkeit</p><h1>Historie</h1></div><a class="secondary-button" href="{{ url_for('export_csv', kind='sales') }}">Verkäufe als CSV exportieren</a></div>
+<section class="table-section history-table-section">
+  <div class="table-scroll"><table class="history-table"><thead><tr>
+    <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Gegeben / Spende</th><th>Bezahlart</th><th>Status</th><th>Kontakt</th><th>Veranstaltung / Notiz</th>
+  </tr></thead><tbody>
+  {% for sale in sales %}
+  <tr>
+    <td>{{ sale.sold_on }}</td><td class="mono">{{ sale.receipt_id }}</td><td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
+    <td>{{ sale.quantity }}</td><td>{{ sale.amount_due_cents|money }}</td>
+    <td>{% if sale.amount_given_cents is not none %}{{ sale.amount_given_cents|money }}{% else %}—{% endif %}{% if sale.donation_cents %}<small class="table-subline donation">+ {{ sale.donation_cents|money }} Spende</small>{% endif %}</td>
+    <td>{{ sale.payment_method }}</td>
+    <td>{% if sale.is_paid %}<span class="status good">bezahlt</span>{% else %}<span class="status warning">offen</span>{% endif %}{% if not sale.is_received %}<span class="status warning">nicht erhalten</span>{% endif %}</td>
+    <td>{% if sale.customer_name %}{{ sale.customer_name }}<small class="table-subline">{{ sale.customer_address }}</small>{% else %}—{% endif %}</td>
+    <td>{{ sale.event_name or '—' }}{% if sale.comment %}<small class="table-subline">{{ sale.comment }}</small>{% endif %}</td>
+  </tr>
+  {% else %}<tr><td colspan="10" class="empty-cell">Noch keine Verkäufe erfasst.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

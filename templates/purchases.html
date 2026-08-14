@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block page_class %}transaction-page{% endblock %}
+{% block content %}
+<div class="page-title-row">
+  <div><p class="eyebrow">Wareneingang</p><h1>Einkäufe</h1></div>
+  <div class="receipt-preview"><span>Beleg-ID</span><strong id="purchase-receipt-preview">Wird geladen …</strong></div>
+</div>
+
+<section class="transaction-layout" id="purchase-app">
+  <aside class="selection-panel product-panel">
+    <h2>Artikel</h2>
+    <p class="panel-hint">Artikel und Variante auswählen.</p>
+    <div class="button-list" id="purchase-article-buttons">
+      {% for article in articles %}
+      <button type="button" class="selection-button" data-article-id="{{ article.id }}" {% if not article.is_config_complete %}disabled{% endif %}>
+        <span>{{ article.name }}</span><small>{{ article.total_stock }} auf Lager</small>
+      </button>
+      {% endfor %}
+    </div>
+  </aside>
+  <section class="selection-panel option-panel">
+    <h2>Optionen</h2>
+    <div id="purchase-option-groups" class="option-groups"><div class="empty-selection">Bitte links einen Artikel auswählen.</div></div>
+    <div class="selected-variant-card" id="purchase-selected-variant-card" hidden>
+      <span>Ausgewählte Variante</span><strong id="purchase-selected-variant-label"></strong>
+    </div>
+  </section>
+  <section class="selection-panel sale-details">
+    <div class="field-grid two-columns">
+      <label>Datum<input id="purchased-on" type="date" value="{{ today }}"></label>
+      <label>Preis pro Stück<input id="unit-cost" inputmode="decimal" placeholder="z. B. 11,00"></label>
+    </div>
+    <p class="muted compact-copy" id="last-cost-hint">Nach Auswahl wird der letzte Einkaufspreis übernommen.</p>
+    <label>Lieferant<input id="supplier" placeholder="Optional"></label>
+    <label>Rechnungsnummer / Dateipfad<input id="invoice-reference" placeholder="Optional"></label>
+    <label>Kommentar<textarea id="purchase-comment" rows="2" placeholder="Optional"></textarea></label>
+    <div class="quantity-and-total">
+      <label class="quantity-control">Anzahl
+        <span class="stepper">
+          <button id="purchase-quantity-minus" type="button">−</button>
+          <input id="purchase-quantity" type="number" min="1" value="1" inputmode="numeric">
+          <button id="purchase-quantity-plus" type="button">+</button>
+        </span>
+      </label>
+      <div class="total-box"><span>Einkaufswert</span><strong id="purchase-total">0,00 €</strong></div>
+    </div>
+    <button id="confirm-purchase" class="primary-button large-button" type="button" disabled>Einkauf bestätigen</button>
+    <p class="form-error" id="purchase-error" role="alert" hidden></p>
+  </section>
+</section>
+
+<section class="table-section">
+  <div class="section-heading"><div><h2>Letzte Einkäufe</h2><p>Die letzten 15 Wareneingänge.</p></div><a class="secondary-button" href="{{ url_for('export_csv', kind='purchases') }}">CSV exportieren</a></div>
+  <div class="table-scroll"><table><thead><tr><th>Datum</th><th>Beleg</th><th>Artikel</th><th>Stück</th><th>Preis/Stück</th><th>Lieferant</th></tr></thead>
+  <tbody>{% for purchase in purchases %}<tr><td>{{ purchase.purchased_on }}</td><td>{{ purchase.receipt_id }}</td><td>{{ purchase.label }}</td><td>{{ purchase.quantity }}</td><td>{{ purchase.unit_cost_cents|money }}</td><td>{{ purchase.supplier or '—' }}</td></tr>{% else %}<tr><td colspan="6" class="empty-cell">Noch keine Einkäufe erfasst.</td></tr>{% endfor %}</tbody></table></div>
+</section>
+
+<dialog id="purchase-success-dialog" class="success-dialog"><div class="success-icon">✓</div><h2>Einkauf erfolgreich</h2><p>Der Wareneingang wurde mit der Beleg-ID <strong id="purchase-success-receipt"></strong> gespeichert.</p><button id="purchase-close-success" class="primary-button" type="button">Nächsten Einkauf erfassen</button></dialog>
+<script id="purchase-articles-data" type="application/json">{{ articles|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='transaction.js') }}"></script><script src="{{ url_for('static', filename='purchases.js') }}"></script>{% endblock %}

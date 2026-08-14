@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title-row"><div><p class="eyebrow">Bestand &amp; Finanzen</p><h1>Bilanzen</h1></div><a class="secondary-button" href="{{ url_for('export_all') }}">Alle Tabellen exportieren</a></div>
+<section class="metric-grid">
+  <article class="metric-card"><span>Ausgaben</span><strong>{{ balances.summary.purchase_cost_cents|money }}</strong><small>Erfasste Wareneingänge</small></article>
+  <article class="metric-card"><span>Eingenommen</span><strong>{{ balances.summary.collected_cents|money }}</strong><small>Bezahlte Verkaufspreise</small></article>
+  <article class="metric-card"><span>Spenden</span><strong>{{ balances.summary.donation_cents|money }}</strong><small>Über den Betrag hinaus</small></article>
+  <article class="metric-card accent"><span>Saldo</span><strong>{{ balances.summary.cash_balance_cents|money }}</strong><small>Eingenommen + Spenden − Ausgaben</small></article>
+</section>
+<section class="metric-grid small-metrics">
+  <article class="metric-card subtle"><span>Artikel im Bestand</span><strong>{{ balances.summary.stock_count }}</strong></article>
+  <article class="metric-card subtle"><span>Offene Zahlungen</span><strong>{{ balances.summary.outstanding_cents|money }}</strong></article>
+  <article class="metric-card subtle"><span>Noch nicht erhalten</span><strong>{{ balances.summary.pending_delivery_count }}</strong><small>Verkäufe mit Kontaktdaten</small></article>
+</section>
+<section class="table-section">
+  <div class="section-heading"><div><h2>Artikelbilanz</h2><p>Bestand wird ausschließlich aus den Einkauf- und Verkaufstransaktionen berechnet.</p></div><div class="button-group"><a class="secondary-button" href="{{ url_for('export_csv', kind='inventory') }}">Bestand CSV</a><a class="secondary-button" href="{{ url_for('export_csv', kind='articles') }}">Artikel CSV</a></div></div>
+  <div class="table-scroll"><table><thead><tr><th>Artikel</th><th>Gekauft</th><th>Verkauft</th><th>Aktueller Bestand</th><th>Nachbestellen</th><th>Ausgaben</th><th>Umsatz</th><th>Spenden</th></tr></thead><tbody>
+  {% for row in balances.rows %}<tr><td><strong>{{ row.article_name }}</strong>{% if row.option_text %}<small class="table-subline">{{ row.option_text }}</small>{% endif %}{% if not row.is_active %}<small class="table-subline muted">Variante nicht mehr erhältlich</small>{% endif %}</td><td>{{ row.purchased_quantity }}</td><td>{{ row.sold_quantity }}</td><td class="stock-cell {{ 'out-of-stock' if row.stock == 0 else '' }}">{{ row.stock }}</td><td>{% if row.no_reorder %}<span class="status warning">nein</span>{% else %}<span class="status good">ja</span>{% endif %}</td><td>{{ row.purchase_cost_cents|money }}</td><td>{{ row.revenue_cents|money }}</td><td>{{ row.donation_cents|money }}</td></tr>{% else %}<tr><td colspan="8" class="empty-cell">Noch keine Artikelbewegungen vorhanden.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

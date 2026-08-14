@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block page_class %}article-management-page{% endblock %}
+{% block content %}
+<div class="page-title-row"><div><p class="eyebrow">Stammdaten</p><h1>Artikelverwaltung</h1></div><form action="{{ url_for('create_article') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="primary-button" type="submit">Neuer Artikel</button></form></div>
+
+<section class="article-management-layout">
+  <aside class="selection-panel article-list-panel">
+    <h2>Artikel</h2>
+    <div class="button-list">
+      {% for item in article_list %}<a class="selection-button link-button {{ 'selected' if article and item.id == article.id else '' }}" href="{{ url_for('article_management_page', article=item.id) }}"><span>{{ item.name }}</span></a>{% else %}<p class="muted">Noch keine Artikel angelegt.</p>{% endfor %}
+    </div>
+  </aside>
+  <section class="selection-panel article-editor">
+    {% if article %}
+    <form id="article-form" action="{{ url_for('save_article', article_id=article.id) }}" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input id="options-json" type="hidden" name="options_json" value="[]">
+      <div class="section-heading no-margin"><div><h2>Artikel bearbeiten</h2><p>Optionen werden als Spalten angelegt. Änderungen wirken bewusst auch auf bestehende Verkaufs- und Einkaufsbelege.</p></div></div>
+      <div class="field-grid three-columns">
+        <label>Artikelname<input name="name" value="{{ article.name }}" required></label>
+        <label>Standard-Verkaufspreis<input name="default_sale_price" value="{{ '%.2f'|format(article.default_sale_price_cents / 100) }}" inputmode="decimal"></label>
+        <label>Standard-Einkaufspreis<input name="default_purchase_price" value="{{ '%.2f'|format(article.default_purchase_price_cents / 100) }}" inputmode="decimal"></label>
+      </div>
+      <section class="option-editor">
+        <div class="section-heading"><div><h3>Artikeloptionen</h3><p>Beispiele: Farbe, Größe, Schnitt oder Material.</p></div><button id="add-option-column" class="secondary-button" type="button">Option hinzufügen</button></div>
+        <div class="table-scroll option-table-scroll"><table id="option-grid"><thead></thead><tbody></tbody></table></div>
+        <button id="add-option-row" class="secondary-button add-row-button" type="button">Wertezeile hinzufügen</button>
+        <p class="notice">Beim Speichern von Änderungen oder gelöschten Werten erscheint eine Warnung. Gelöschte Optionen bleiben nur für historische Belege erhalten und können nicht mehr neu verkauft werden.</p>
+      </section>
+      <section class="variant-price-section">
+        <div class="section-heading"><div><h3>Varianten &amp; Preise</h3><p>Neue Kombinationen übernehmen zunächst die oben eingetragenen Standardpreise.</p></div></div>
+        <div class="table-scroll"><table><thead><tr><th>Variante</th><th>Bestand</th><th>Verkaufspreis</th><th>Standard-Einkaufspreis</th><th>Nicht nachbestellen</th></tr></thead><tbody>
+        {% for variant in article.variants %}<tr><td>{{ variant.label }}</td><td>{{ variant.stock }}</td><td><input class="inline-money" name="sale_price_{{ variant.id }}" value="{{ '%.2f'|format(variant.sale_price_cents / 100) }}" inputmode="decimal"></td><td><input class="inline-money" name="purchase_price_{{ variant.id }}" value="{{ '%.2f'|format(variant.default_purchase_price_cents / 100) }}" inputmode="decimal"></td><td><input type="checkbox" name="no_reorder_{{ variant.id }}" {% if variant.no_reorder %}checked{% endif %}></td></tr>{% else %}<tr><td colspan="5" class="empty-cell">Ergänze mindestens einen Wert je Option und speichere den Artikel. Danach entstehen die auswählbaren Varianten.</td></tr>{% endfor %}
+        </tbody></table></div>
+      </section>
+      <div class="editor-actions"><button class="primary-button" type="submit">Artikel speichern</button></div>
+    </form>
+    <script id="article-editor-data" type="application/json">{{ {'id': article.id, 'option_groups': article.option_groups}|tojson }}</script>
+    {% else %}
+      <div class="empty-state compact"><h2>Noch keine Auswahl</h2><p>Lege links über „Neuer Artikel“ den ersten Artikel an.</p></div>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}
+{% block scripts %}{% if article %}<script src="{{ url_for('static', filename='articles.js') }}"></script>{% endif %}{% endblock %}

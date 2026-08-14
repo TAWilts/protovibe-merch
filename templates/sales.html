@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block page_class %}transaction-page{% endblock %}
+{% block content %}
+<div class="page-title-row">
+  <div>
+    <p class="eyebrow">Live-Erfassung</p>
+    <h1>Verkauf</h1>
+  </div>
+  <div class="receipt-preview" aria-label="Vorschau der Beleg-ID">
+    <span>Beleg-ID</span>
+    <strong id="receipt-preview">Wird geladen …</strong>
+  </div>
+</div>
+
+<section class="transaction-layout" id="sales-app">
+  <aside class="selection-panel product-panel">
+    <h2>Artikel</h2>
+    <p class="panel-hint">Zuerst Artikel, dann Variante auswählen.</p>
+    <div class="button-list" id="article-buttons">
+      {% for article in articles %}
+      <button type="button" class="selection-button" data-article-id="{{ article.id }}" {% if not article.is_config_complete %}disabled title="Artikeloptionen sind noch nicht vollständig gepflegt."{% endif %}>
+        <span>{{ article.name }}</span>
+        <small>{{ article.total_stock }} auf Lager</small>
+      </button>
+      {% endfor %}
+      {% if not articles %}
+        <p class="muted">Noch keine Artikel vorhanden. Lege sie zuerst in der Artikelverwaltung an.</p>
+      {% endif %}
+    </div>
+  </aside>
+
+  <section class="selection-panel option-panel">
+    <h2>Optionen</h2>
+    <div id="option-groups" class="option-groups">
+      <div class="empty-selection">Bitte links einen Artikel auswählen.</div>
+    </div>
+    <div class="selected-variant-card" id="selected-variant-card" hidden>
+      <span>Ausgewählte Variante</span>
+      <strong id="selected-variant-label"></strong>
+      <small id="selected-variant-stock"></small>
+    </div>
+  </section>
+
+  <section class="selection-panel sale-details">
+    <div class="checkbox-row">
+      <label class="toggle-label"><input id="is-paid" type="checkbox" checked><span>Bezahlt</span></label>
+      <label class="toggle-label"><input id="is-received" type="checkbox" checked><span>Artikel erhalten</span></label>
+    </div>
+
+    <div class="contact-fields" id="contact-fields" hidden>
+      <p class="notice">Bei noch nicht erhaltenen Artikeln sind die Kontaktdaten erforderlich.</p>
+      <label>Name<input id="customer-name" autocomplete="name"></label>
+      <label>Adresse<textarea id="customer-address" rows="2" autocomplete="street-address"></textarea></label>
+    </div>
+
+    <div class="field-grid two-columns">
+      <label>Bezahlart
+        <select id="payment-method">
+          {% for method in payment_methods %}<option>{{ method }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Datum<input id="sold-on" type="date" value="{{ today }}"></label>
+    </div>
+    <label>Veranstaltung / Kommentar<input id="event-name" placeholder="z. B. Wilwarin 2026"></label>
+    <label>Zusätzliche Notiz<textarea id="comment" rows="2" placeholder="Optional"></textarea></label>
+
+    <div class="quantity-and-total">
+      <label class="quantity-control">Anzahl
+        <span class="stepper">
+          <button id="quantity-minus" type="button" aria-label="Anzahl verringern">−</button>
+          <input id="quantity" type="number" min="1" value="1" inputmode="numeric">
+          <button id="quantity-plus" type="button" aria-label="Anzahl erhöhen">+</button>
+        </span>
+      </label>
+      <div class="total-box">
+        <span>Betrag</span>
+        <strong id="amount-due">0,00 €</strong>
+      </div>
+    </div>
+    <div class="field-grid two-columns payment-inputs">
+      <label>Gegeben <input id="amount-given" inputmode="decimal" placeholder="Optional"></label>
+      <div class="donation-box"><span>Spende</span><strong id="donation-preview">0,00 €</strong></div>
+    </div>
+    <button id="confirm-sale" class="primary-button large-button" type="button" disabled>Kauf bestätigen</button>
+    <p class="form-error" id="sale-error" role="alert" hidden></p>
+  </section>
+</section>
+
+<dialog id="success-dialog" class="success-dialog">
+  <div class="success-icon">✓</div>
+  <h2>Kauf erfolgreich</h2>
+  <p>Der Verkauf wurde mit der Beleg-ID <strong id="success-receipt"></strong> gespeichert.</p>
+  <button id="close-success" class="primary-button" type="button">Neuen Kauf erfassen</button>
+</dialog>
+
+<script id="articles-data" type="application/json">{{ articles|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='transaction.js') }}"></script><script src="{{ url_for('static', filename='sales.js') }}"></script>{% endblock %}
