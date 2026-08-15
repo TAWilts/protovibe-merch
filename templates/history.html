@@ -2,11 +2,18 @@
 {% block content %}
 <div class="page-title-row"><div><p class="eyebrow">Nachvollziehbarkeit</p><h1>Historie</h1></div><a class="secondary-button" href="{{ url_for('export_csv', kind='sales') }}">Verkäufe als CSV exportieren</a></div>
 <section class="table-section history-table-section">
+  <div class="section-heading ledger-heading">
+    <div><h2>Alle Verkaufsbelege</h2><p>Filtert auch Varianten, Veranstaltungen, Verkäufer und Kontaktdaten innerhalb eines Warenkorbs.</p></div>
+    <label class="table-filter">Suche in Verkäufen
+      <input type="search" data-table-filter data-filter-targets="#history-receipts" placeholder="z. B. Langeln, Tim oder Cap" autocomplete="off">
+      <small data-filter-result-count aria-live="polite"></small>
+    </label>
+  </div>
   <div class="table-scroll"><table class="history-table"><thead><tr>
     <th class="cart-toggle-cell"><span class="visually-hidden">Warenkorb</span></th><th>Datum</th><th>Beleg-ID</th><th>Verkauf</th><th>Stück</th><th>Betrag</th><th>Gegeben / Spende</th><th>Bezahlart</th><th>Status</th><th>Kontakt</th><th>Veranstaltung / Verkauft von / Notiz</th><th></th>
-  </tr></thead><tbody>
+  </tr></thead><tbody id="history-receipts">
   {% for receipt in receipts %}
-  <tr class="{{ 'cancelled-row' if receipt.is_cancelled else '' }}">
+  <tr class="{{ 'cancelled-row' if receipt.is_cancelled else '' }}" data-filter-row data-filter-group="receipt-{{ receipt.primary_sale_id }}" data-filter-text="{{ receipt.search_text }}">
     <td class="cart-toggle-cell"><button class="cart-toggle" type="button" data-cart-toggle data-target="cart-details-{{ receipt.primary_sale_id }}" aria-expanded="false" aria-label="Warenkorb für {{ receipt.receipt_id }} anzeigen"><span aria-hidden="true">▸</span></button></td>
     <td>{{ receipt.sold_on }}</td><td class="mono">{{ receipt.receipt_id }}</td>
     <td><strong>{{ receipt.summary_label }}</strong>{% if receipt.summary_options %}<small class="table-subline">{{ receipt.summary_options }}</small>{% endif %}</td>
@@ -26,7 +33,7 @@
     <td>{{ receipt.event_name or '—' }}{% if receipt.sold_by %}<small class="table-subline">Verkauft von: {{ receipt.sold_by }}</small>{% endif %}{% if receipt.comment %}<small class="table-subline">{{ receipt.comment }}</small>{% endif %}</td>
     <td class="history-action">{% if receipt.active_item_count %}<button class="danger-button" type="button" data-cancel-sale data-cancel-scope="receipt" data-sale-id="{{ receipt.primary_sale_id }}" data-receipt-id="{{ receipt.receipt_id }}">Warenkorb stornieren</button>{% else %}<span class="muted">—</span>{% endif %}</td>
   </tr>
-  <tr id="cart-details-{{ receipt.primary_sale_id }}" class="cart-details-row" hidden>
+  <tr id="cart-details-{{ receipt.primary_sale_id }}" class="cart-details-row" data-filter-linked="receipt-{{ receipt.primary_sale_id }}" hidden>
     <td colspan="12">
       <div class="cart-details-panel">
         <p class="cart-details-title">Warenkorb: {{ receipt.receipt_id }}</p>
@@ -61,4 +68,4 @@
   </div>
 </dialog>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='history.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='table-filters.js') }}"></script><script src="{{ url_for('static', filename='history.js') }}"></script>{% endblock %}

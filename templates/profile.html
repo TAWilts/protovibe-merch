@@ -34,6 +34,15 @@
 </section>
 
 <section class="table-section password-card">
+  <div class="section-heading"><div><h2>Benutzername ändern</h2><p>Der neue Name wird beim nächsten Anmelden verwendet und erscheint künftig automatisch bei „Verkauft von“.</p></div></div>
+  <form action="{{ url_for('update_own_username') }}" method="post" class="form-grid-inline username-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Neuer Benutzername<input name="username" value="{{ profile_user.username }}" minlength="3" maxlength="48" autocomplete="username" required></label>
+    <button class="secondary-button" type="submit">Benutzername speichern</button>
+  </form>
+</section>
+
+<section class="table-section password-card">
   <div class="section-heading"><div><h2>Passwort ändern</h2><p>Die aktuelle Sicherheitsbestätigung gilt nur kurz. Nach dem Ändern werden andere Sitzungen dieses Kontos abgemeldet.</p></div></div>
   <form action="{{ url_for('update_own_password') }}" method="post" class="form-grid-inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

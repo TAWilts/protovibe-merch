@@ -10,6 +10,12 @@
 </div>
 
 <p id="operations-feedback" class="form-error" role="alert" hidden></p>
+<div class="operations-filter-row">
+  <label class="table-filter">Vorgänge filtern
+    <input type="search" data-table-filter data-filter-targets=".operations-filter-rows" placeholder="z. B. Langeln, Tim oder Cap" autocomplete="off">
+    <small data-filter-result-count aria-live="polite"></small>
+  </label>
+</div>
 
 <section class="table-section">
   <div class="section-heading">
@@ -20,9 +26,9 @@
   </div>
   <div class="table-scroll"><table class="operations-table"><thead><tr>
     <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Kontakt</th><th>Veranstaltung</th><th>Versandstatus</th>
-  </tr></thead><tbody id="current-shipments-body" data-empty-message="Keine offenen Sendungen." data-empty-colspan="7">
+  </tr></thead><tbody id="current-shipments-body" class="operations-filter-rows" data-empty-message="Keine offenen Sendungen." data-empty-colspan="7">
   {% for sale in current_shipments %}
-    <tr data-sale-row data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
+    <tr data-sale-row data-filter-row data-filter-text="{{ sale.sold_on }} {{ sale.receipt_id }} {{ sale.article_name }} {{ sale.option_text or '' }} {{ sale.customer_name or '' }} {{ sale.customer_address or '' }} {{ sale.event_name or '' }} {{ sale.sold_by or '' }} {{ sale.payment_method or '' }}" data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
       <td>{{ sale.sold_on }}</td>
       <td class="mono">{{ sale.receipt_id }}</td>
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
@@ -52,9 +58,9 @@
   </div>
   <div class="table-scroll"><table class="operations-table"><thead><tr>
     <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Bezahlart</th><th>Kontakt / Veranstaltung</th><th>Zahlungsstatus</th>
-  </tr></thead><tbody id="unpaid-sales-body" data-empty-message="Keine offenen Zahlungen." data-empty-colspan="8">
+  </tr></thead><tbody id="unpaid-sales-body" class="operations-filter-rows" data-empty-message="Keine offenen Zahlungen." data-empty-colspan="8">
   {% for sale in unpaid_sales %}
-    <tr data-sale-row data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
+    <tr data-sale-row data-filter-row data-filter-text="{{ sale.sold_on }} {{ sale.receipt_id }} {{ sale.article_name }} {{ sale.option_text or '' }} {{ sale.customer_name or '' }} {{ sale.customer_address or '' }} {{ sale.event_name or '' }} {{ sale.sold_by or '' }} {{ sale.payment_method or '' }}" data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
       <td>{{ sale.sold_on }}</td>
       <td class="mono">{{ sale.receipt_id }}</td>
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
@@ -90,9 +96,9 @@
   </div>
   <div class="table-scroll"><table class="operations-table"><thead><tr>
     <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Kontakt</th><th>Veranstaltung</th><th>Versandstatus</th>
-  </tr></thead><tbody id="delivered-goods-body" data-empty-message="Noch keine versendete Ware als erhalten markiert." data-empty-colspan="7">
+  </tr></thead><tbody id="delivered-goods-body" class="operations-filter-rows" data-empty-message="Noch keine versendete Ware als erhalten markiert." data-empty-colspan="7">
   {% for sale in delivered_goods %}
-    <tr data-sale-row data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
+    <tr data-sale-row data-filter-row data-filter-text="{{ sale.sold_on }} {{ sale.receipt_id }} {{ sale.article_name }} {{ sale.option_text or '' }} {{ sale.customer_name or '' }} {{ sale.customer_address or '' }} {{ sale.event_name or '' }} {{ sale.sold_by or '' }} {{ sale.payment_method or '' }}" data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
       <td>{{ sale.sold_on }}</td>
       <td class="mono">{{ sale.receipt_id }}</td>
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
@@ -122,9 +128,9 @@
   </div>
   <div class="table-scroll"><table class="operations-table"><thead><tr>
     <th>Datum</th><th>Beleg-ID</th><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Bezahlart</th><th>Kontakt / Veranstaltung</th><th>Zahlungsstatus</th>
-  </tr></thead><tbody id="paid-follow-up-sales-body" data-empty-message="Noch keine offene Zahlung als bezahlt markiert." data-empty-colspan="8">
+  </tr></thead><tbody id="paid-follow-up-sales-body" class="operations-filter-rows" data-empty-message="Noch keine offene Zahlung als bezahlt markiert." data-empty-colspan="8">
   {% for sale in paid_follow_up_sales %}
-    <tr data-sale-row data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
+    <tr data-sale-row data-filter-row data-filter-text="{{ sale.sold_on }} {{ sale.receipt_id }} {{ sale.article_name }} {{ sale.option_text or '' }} {{ sale.customer_name or '' }} {{ sale.customer_address or '' }} {{ sale.event_name or '' }} {{ sale.sold_by or '' }} {{ sale.payment_method or '' }}" data-sale-id="{{ sale.sale_id }}" data-sold-on="{{ sale.sold_on }}">
       <td>{{ sale.sold_on }}</td>
       <td class="mono">{{ sale.receipt_id }}</td>
       <td><strong>{{ sale.article_name }}</strong>{% if sale.option_text %}<small class="table-subline">{{ sale.option_text }}</small>{% endif %}</td>
@@ -149,4 +155,4 @@
   </tbody></table></div>
 </section>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='operations.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='table-filters.js') }}"></script><script src="{{ url_for('static', filename='operations.js') }}"></script>{% endblock %}

@@ -44,7 +44,14 @@ Bestand, Bilanz und CSV-Export.
 - **Bilanzen:** gekauft, verkauft und Bestand je Variante sowie Ausgaben,
   Umsatz, Spenden, Saldo und Angebotsstatus. Pro Variante lassen sich optionale
   Mindestbestände hinterlegen; unterschrittene Grenzwerte werden in der Bilanz
-  und vor einem direkten Verkauf hervorgehoben.
+  und vor einem direkten Verkauf hervorgehoben. Zusätzlich zeigen Ranglisten
+  die meistverkauften und umsatzstärksten Artikel, Veranstaltungen und
+  Verkäufer; ein lokales Diagramm zeichnet den Einnahmenverlauf pro Datum.
+- **Schnelles Finden & Mobilansicht:** Historie, Einkäufe, offene Vorgänge,
+  Bilanzen und Artikelliste lassen sich direkt nach Begriffen wie Artikel,
+  Veranstaltung oder Verkäufer filtern. Auf Smartphones sind Pinch-Zoom und
+  horizontales Wischen in breiten Tabellen ausdrücklich aktiviert, sodass auch
+  eine vollständige Tabellenzeile kontrolliert werden kann.
 - **Stornierungen:** ganze Warenkörbe oder einzelne Artikel können in der
   Historie mit einer dreisekündigen Sicherheitsbestätigung storniert werden.
   Sie bleiben nachvollziehbar, werden aber aus Bestand, Bilanzen und offenen
@@ -57,7 +64,8 @@ Bestand, Bilanz und CSV-Export.
   zeitlich begrenztem Einrichtungscode anlegen und zurücksetzen. Seller können
   verkaufen und Einkaufsdaten lesen, Manager verwalten zusätzlich Artikel und
   Einkaufswarenkörbe, nur der Admin verwaltet Konten oder setzt Daten zurück.
-  Der Admin benötigt eine kostenlose, lokale TOTP-2FA; die anderen Rollen
+  Jede Person kann ihren eigenen Benutzernamen nach einer frischen
+  Sicherheitsbestätigung ändern. Der Admin benötigt eine kostenlose, lokale TOTP-2FA; die anderen Rollen
   können sie freiwillig aktivieren. Profilzugriff, Passwortwechsel und der
   Datenreset verlangen eine erneute Passwortbestätigung.
 - **Legacy-Import:** ein Skript importiert die vorhandene ODS als echte

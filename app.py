@@ -1550,6 +1550,22 @@ def purchase_receipt_payload(
         else:
             receipt["summary_label"] = f"Warenkorb ({len(items)} Artikel)"
             receipt["summary_options"] = f"{receipt['total_quantity']} Stück insgesamt"
+        # The history filter works at shopping-cart level. Include position
+        # details too, so an individual variant, supplier or invoice number
+        # finds the complete cart instead of only a flattened summary.
+        receipt["search_text"] = " ".join(
+            str(value or "")
+            for item in items
+            for value in (
+                receipt["purchased_on"],
+                receipt["receipt_id"],
+                item["article_name"],
+                item["option_text"],
+                item["supplier"],
+                item["invoice_reference"],
+                item["comment"],
+            )
+        )
         receipts.append(receipt)
     receipts.sort(key=lambda receipt: (receipt["purchased_on"], receipt["primary_purchase_id"]), reverse=True)
     return receipts
@@ -1650,6 +1666,22 @@ def receipt_history_payload(
         else:
             receipt["summary_label"] = f"Warenkorb ({len(items)} Artikel)"
             receipt["summary_options"] = f"{receipt['total_quantity']} Stück insgesamt"
+        receipt["search_text"] = " ".join(
+            str(value or "")
+            for item in items
+            for value in (
+                receipt["sold_on"],
+                receipt["receipt_id"],
+                receipt["customer_name"],
+                receipt["customer_address"],
+                receipt["event_name"],
+                receipt["sold_by"],
+                receipt["comment"],
+                receipt["payment_method"],
+                item["article_name"],
+                item["option_text"],
+            )
+        )
         receipts.append(receipt)
     return receipts
 
@@ -2444,6 +2476,97 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
     pending_delivery = connection.execute(
         "SELECT COUNT(*) FROM sales WHERE is_received = 0 AND is_cancelled = 0"
     ).fetchone()[0]
+
+    # These lists intentionally only use active sales. A cancellation must
+    # disappear from this overview just as it already does from stock and
+    # financial totals. Money rankings use cash marked as received; open
+    # invoices remain visible in the dedicated headline metric above.
+    top_selling_items = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT a.name AS label,
+                   COALESCE(SUM(s.quantity), 0) AS quantity,
+                   COALESCE(SUM(CASE WHEN s.is_paid = 1 THEN s.amount_due_cents ELSE 0 END), 0)
+                       AS collected_cents
+            FROM sales s
+            JOIN variants v ON v.id = s.variant_id
+            JOIN articles a ON a.id = v.article_id
+            WHERE s.is_cancelled = 0
+            GROUP BY a.id, a.name
+            ORDER BY quantity DESC, collected_cents DESC, a.name COLLATE NOCASE
+            LIMIT 5
+            """
+        ).fetchall()
+    ]
+    top_revenue_items = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT a.name AS label,
+                   COALESCE(SUM(s.quantity), 0) AS quantity,
+                   COALESCE(SUM(CASE WHEN s.is_paid = 1
+                                     THEN s.amount_due_cents + s.donation_cents
+                                     ELSE 0 END), 0) AS income_cents
+            FROM sales s
+            JOIN variants v ON v.id = s.variant_id
+            JOIN articles a ON a.id = v.article_id
+            WHERE s.is_cancelled = 0
+            GROUP BY a.id, a.name
+            ORDER BY income_cents DESC, quantity DESC, a.name COLLATE NOCASE
+            LIMIT 5
+            """
+        ).fetchall()
+    ]
+    top_events = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT COALESCE(NULLIF(TRIM(s.event_name), ''), 'Ohne Veranstaltung') AS label,
+                   COALESCE(SUM(s.quantity), 0) AS quantity,
+                   COALESCE(SUM(CASE WHEN s.is_paid = 1
+                                     THEN s.amount_due_cents + s.donation_cents
+                                     ELSE 0 END), 0) AS income_cents
+            FROM sales s
+            WHERE s.is_cancelled = 0
+            GROUP BY COALESCE(NULLIF(TRIM(s.event_name), ''), 'Ohne Veranstaltung')
+            ORDER BY income_cents DESC, quantity DESC, label COLLATE NOCASE
+            LIMIT 5
+            """
+        ).fetchall()
+    ]
+    top_sellers = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT COALESCE(NULLIF(TRIM(s.sold_by), ''), 'Nicht angegeben') AS label,
+                   COALESCE(SUM(s.quantity), 0) AS quantity,
+                   COALESCE(SUM(CASE WHEN s.is_paid = 1
+                                     THEN s.amount_due_cents + s.donation_cents
+                                     ELSE 0 END), 0) AS income_cents
+            FROM sales s
+            WHERE s.is_cancelled = 0
+            GROUP BY COALESCE(NULLIF(TRIM(s.sold_by), ''), 'Nicht angegeben')
+            ORDER BY income_cents DESC, quantity DESC, label COLLATE NOCASE
+            LIMIT 5
+            """
+        ).fetchall()
+    ]
+    daily_income = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT sold_on AS date,
+                   COALESCE(SUM(CASE WHEN is_paid = 1
+                                     THEN amount_due_cents + donation_cents
+                                     ELSE 0 END), 0) AS income_cents
+            FROM sales
+            WHERE is_cancelled = 0
+            GROUP BY sold_on
+            ORDER BY sold_on ASC
+            """
+        ).fetchall()
+    ]
     return {
         "rows": rows,
         "summary": {
@@ -2456,6 +2579,13 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
             "pending_delivery_count": int(pending_delivery),
             "stock_count": sum(row["stock"] for row in rows),
             "minimum_stock_warning_count": sum(1 for row in rows if row["minimum_stock_warning"]),
+        },
+        "analytics": {
+            "top_selling_items": top_selling_items,
+            "top_revenue_items": top_revenue_items,
+            "top_events": top_events,
+            "top_sellers": top_sellers,
+            "daily_income": daily_income,
         },
     }
 
@@ -2889,6 +3019,45 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             session["user_session_version"] = int(refreshed["session_version"])
             flash("Dein Passwort wurde geändert. Andere Sitzungen wurden abgemeldet.", "success")
         except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page"))
+
+    @app.post("/profil/benutzername")
+    @login_required
+    @profile_reauth_required
+    def update_own_username():
+        """Change the locally displayed/login username after fresh re-auth."""
+
+        connection = get_db()
+        try:
+            user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+            username = valid_username(request.form.get("username"))
+            if username.casefold() == str(user["username"]).casefold():
+                flash("Der Benutzername wurde nicht verändert.", "success")
+                return redirect(url_for("profile_page"))
+            duplicate = connection.execute(
+                "SELECT id FROM users WHERE username = ? AND id != ?", (username, g.user["id"])
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("Dieser Benutzername ist bereits vergeben.")
+            previous_username = str(user["username"])
+            connection.execute(
+                "UPDATE users SET username = ?, session_version = session_version + 1 WHERE id = ?",
+                (username, g.user["id"]),
+            )
+            audit(
+                connection,
+                "change_username",
+                "user",
+                g.user["id"],
+                {"previous_username": previous_username, "username": username},
+            )
+            connection.commit()
+            refreshed = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+            session["user_session_version"] = int(refreshed["session_version"])
+            flash("Dein Benutzername wurde geändert. Beim nächsten Anmelden verwendest du den neuen Namen.", "success")
+        except ValueError as exc:
+            connection.rollback()
             flash(str(exc), "error")
         return redirect(url_for("profile_page"))
 

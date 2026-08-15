@@ -13,10 +13,46 @@
   <article class="metric-card subtle"><span>Offene Zahlungen</span><strong>{{ balances.summary.outstanding_cents|money }}</strong></article>
   <article class="metric-card subtle"><span>Noch nicht erhalten</span><strong>{{ balances.summary.pending_delivery_count }}</strong><small>Verkäufe mit Kontaktdaten</small></article>
 </section>
+<section class="insight-grid" aria-label="Auswertungen">
+  <article class="table-section insight-card">
+    <div class="section-heading"><div><h2>Meistverkaufte Artikel</h2><p>Alle Varianten je Artikel zusammengefasst.</p></div></div>
+    <ol class="ranking-list">
+      {% for item in balances.analytics.top_selling_items %}<li><span><strong>{{ item.label }}</strong><small>{{ item.quantity }} Stück · {{ item.collected_cents|money }} bezahlt</small></span><b>{{ item.quantity }}×</b></li>{% else %}<li class="muted">Noch keine aktiven Verkäufe.</li>{% endfor %}
+    </ol>
+  </article>
+  <article class="table-section insight-card">
+    <div class="section-heading"><div><h2>Höchste Einnahmen je Artikel</h2><p>Bezahlte Verkaufspreise inklusive Spenden.</p></div></div>
+    <ol class="ranking-list">
+      {% for item in balances.analytics.top_revenue_items %}<li><span><strong>{{ item.label }}</strong><small>{{ item.quantity }} Stück</small></span><b>{{ item.income_cents|money }}</b></li>{% else %}<li class="muted">Noch keine bezahlten Verkäufe.</li>{% endfor %}
+    </ol>
+  </article>
+  <article class="table-section insight-card">
+    <div class="section-heading"><div><h2>Stärkste Veranstaltungen</h2><p>Nach bezahlten Einnahmen.</p></div></div>
+    <ol class="ranking-list">
+      {% for item in balances.analytics.top_events %}<li><span><strong>{{ item.label }}</strong><small>{{ item.quantity }} Stück</small></span><b>{{ item.income_cents|money }}</b></li>{% else %}<li class="muted">Noch keine aktiven Verkäufe.</li>{% endfor %}
+    </ol>
+  </article>
+  <article class="table-section insight-card">
+    <div class="section-heading"><div><h2>Sales-Ranking</h2><p>Nach bezahlten Einnahmen.</p></div></div>
+    <ol class="ranking-list">
+      {% for item in balances.analytics.top_sellers %}<li><span><strong>{{ item.label }}</strong><small>{{ item.quantity }} Stück</small></span><b>{{ item.income_cents|money }}</b></li>{% else %}<li class="muted">Noch keine aktiven Verkäufe.</li>{% endfor %}
+    </ol>
+  </article>
+</section>
+<section class="table-section income-chart-section">
+  <div class="section-heading"><div><h2>Einnahmenverlauf</h2><p>Bezahlte Verkäufe und Spenden pro Verkaufsdatum.</p></div></div>
+  <div id="income-chart" class="income-chart" role="img" aria-label="Einnahmenverlauf nach Verkaufsdatum"></div>
+  <p id="income-chart-empty" class="muted" hidden>Noch keine bezahlten Verkäufe zum Plotten vorhanden.</p>
+</section>
 <section class="table-section">
-  <div class="section-heading"><div><h2>Artikelbilanz</h2><p>Bestand wird ausschließlich aus den Einkauf- und Verkaufstransaktionen berechnet.</p></div><div class="button-group"><a class="secondary-button" href="{{ url_for('export_csv', kind='inventory') }}">Bestand CSV</a><a class="secondary-button" href="{{ url_for('export_csv', kind='articles') }}">Artikel CSV</a></div></div>
-  <div class="table-scroll"><table><thead><tr><th>Artikel</th><th>Gekauft</th><th>Verkauft</th><th>Aktueller Bestand</th><th>Mindestbestand</th><th>Warnung</th><th>Angeboten</th><th>Ausgaben</th><th>Umsatz</th><th>Spenden</th></tr></thead><tbody>
-  {% for row in balances.rows %}<tr class="{{ 'low-stock-row' if row.minimum_stock_warning else '' }}"><td><strong>{{ row.article_name }}</strong>{% if row.option_text %}<small class="table-subline">{{ row.option_text }}</small>{% endif %}{% if not row.is_active %}<small class="table-subline muted">Variante nicht mehr erhältlich</small>{% endif %}</td><td>{{ row.purchased_quantity }}</td><td>{{ row.sold_quantity }}</td><td class="stock-cell {{ 'out-of-stock' if row.stock == 0 else '' }}">{{ row.stock }}</td><td>{{ row.minimum_stock if row.minimum_stock is not none else '—' }}</td><td>{% if row.minimum_stock_warning %}<span class="status warning">Grenzwert erreicht</span>{% else %}—{% endif %}</td><td>{% if row.is_available_for_sale %}<span class="status good">ja</span>{% else %}<span class="status warning">nein</span>{% endif %}</td><td>{{ row.purchase_cost_cents|money }}</td><td>{{ row.revenue_cents|money }}</td><td>{{ row.donation_cents|money }}</td></tr>{% else %}<tr><td colspan="10" class="empty-cell">Noch keine Artikelbewegungen vorhanden.</td></tr>{% endfor %}
+  <div class="section-heading ledger-heading"><div><h2>Artikelbilanz</h2><p>Bestand wird ausschließlich aus den Einkauf- und Verkaufstransaktionen berechnet.</p></div><div class="ledger-actions"><label class="table-filter">Artikel filtern
+    <input type="search" data-table-filter data-filter-targets="#balance-rows" placeholder="z. B. Cap oder Größe M" autocomplete="off">
+    <small data-filter-result-count aria-live="polite"></small>
+  </label><div class="button-group"><a class="secondary-button" href="{{ url_for('export_csv', kind='inventory') }}">Bestand CSV</a><a class="secondary-button" href="{{ url_for('export_csv', kind='articles') }}">Artikel CSV</a></div></div></div>
+  <div class="table-scroll"><table><thead><tr><th>Artikel</th><th>Gekauft</th><th>Verkauft</th><th>Aktueller Bestand</th><th>Mindestbestand</th><th>Warnung</th><th>Angeboten</th><th>Ausgaben</th><th>Umsatz</th><th>Spenden</th></tr></thead><tbody id="balance-rows">
+  {% for row in balances.rows %}<tr class="{{ 'low-stock-row' if row.minimum_stock_warning else '' }}" data-filter-row data-filter-text="{{ row.article_name }} {{ row.option_text }} {{ row.label }}"><td><strong>{{ row.article_name }}</strong>{% if row.option_text %}<small class="table-subline">{{ row.option_text }}</small>{% endif %}{% if not row.is_active %}<small class="table-subline muted">Variante nicht mehr erhältlich</small>{% endif %}</td><td>{{ row.purchased_quantity }}</td><td>{{ row.sold_quantity }}</td><td class="stock-cell {{ 'out-of-stock' if row.stock == 0 else '' }}">{{ row.stock }}</td><td>{{ row.minimum_stock if row.minimum_stock is not none else '—' }}</td><td>{% if row.minimum_stock_warning %}<span class="status warning">Grenzwert erreicht</span>{% else %}—{% endif %}</td><td>{% if row.is_available_for_sale %}<span class="status good">ja</span>{% else %}<span class="status warning">nein</span>{% endif %}</td><td>{{ row.purchase_cost_cents|money }}</td><td>{{ row.revenue_cents|money }}</td><td>{{ row.donation_cents|money }}</td></tr>{% else %}<tr><td colspan="10" class="empty-cell">Noch keine Artikelbewegungen vorhanden.</td></tr>{% endfor %}
   </tbody></table></div>
 </section>
+<script id="balance-daily-income-data" type="application/json">{{ balances.analytics.daily_income|tojson }}</script>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='table-filters.js') }}"></script><script src="{{ url_for('static', filename='balances.js') }}"></script>{% endblock %}

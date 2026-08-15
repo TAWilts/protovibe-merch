@@ -546,6 +546,93 @@ class MerchAppTestCase(unittest.TestCase):
         with self.client.session_transaction() as session:
             self.assertEqual(session["user_session_version"], user["session_version"])
 
+    def test_profile_username_can_be_changed_after_fresh_confirmation(self) -> None:
+        """A profile re-auth is sufficient to rename the current local account."""
+
+        confirmation = self.client.post(
+            "/profil/zugriff?next=/profil",
+            data={"csrf_token": "test-csrf", "password": "test-password"},
+        )
+        self.assertEqual(confirmation.status_code, 302)
+        changed = self.client.post(
+            "/profil/benutzername",
+            data={"csrf_token": "test-csrf", "username": "tester-neu"},
+        )
+        self.assertEqual(changed.status_code, 302)
+        with self.app.app_context():
+            user = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            audit_row = get_db().execute(
+                "SELECT details_json FROM audit_log WHERE action = 'change_username' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertEqual(user["username"], "tester-neu")
+        self.assertEqual(json.loads(audit_row["details_json"])["previous_username"], "tester")
+        with self.client.session_transaction() as session:
+            self.assertEqual(session["user_session_version"], user["session_version"])
+
+    def test_balance_analytics_rank_active_paid_sales_and_render_filters(self) -> None:
+        """Insights ignore cancellations/open invoices and expose the local table search UI."""
+
+        shirt_variant = self.seed_variant("Analytics Shirt")
+        hoodie_variant = self.seed_variant("Analytics Hoodie")
+        self.assertEqual(
+            self.api_post(
+                "/api/sales",
+                {
+                    "variant_id": shirt_variant,
+                    "quantity": 3,
+                    "is_paid": True,
+                    "is_received": True,
+                    "payment_method": "Bar",
+                    "amount_given": "65,00",
+                    "sold_on": "2026-08-14",
+                    "event_name": "Langeln",
+                    "sold_by": "Tim",
+                },
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.api_post(
+                "/api/sales",
+                {
+                    "variant_id": hoodie_variant,
+                    "quantity": 1,
+                    "is_paid": False,
+                    "is_received": True,
+                    "payment_method": "PayPal",
+                    "sold_on": "2026-08-15",
+                    "customer_name": "Offen",
+                    "customer_address": "Noch offen 1",
+                    "event_name": "Langeln",
+                    "sold_by": "Lena",
+                },
+            ).status_code,
+            200,
+        )
+        with self.app.app_context():
+            balances = balance_payload(get_db())
+        analytics = balances["analytics"]
+        self.assertEqual(analytics["top_selling_items"][0]["label"], "Analytics Shirt")
+        self.assertEqual(analytics["top_selling_items"][0]["quantity"], 3)
+        self.assertEqual(analytics["top_revenue_items"][0]["label"], "Analytics Shirt")
+        self.assertEqual(analytics["top_events"][0]["label"], "Langeln")
+        self.assertEqual(analytics["top_sellers"][0]["label"], "Tim")
+        self.assertEqual(analytics["daily_income"], [{"date": "2026-08-14", "income_cents": 6500}, {"date": "2026-08-15", "income_cents": 0}])
+
+        balances_html = self.client.get("/bilanzen").get_data(as_text=True)
+        history_html = self.client.get("/historie").get_data(as_text=True)
+        purchases_html = self.client.get("/einkaeufe").get_data(as_text=True)
+        operations_html = self.client.get("/vorgaenge").get_data(as_text=True)
+        articles_html = self.client.get("/artikelverwaltung").get_data(as_text=True)
+        self.assertIn("Einnahmenverlauf", balances_html)
+        self.assertIn('data-table-filter', balances_html)
+        self.assertIn('data-table-filter', history_html)
+        self.assertIn('data-table-filter', purchases_html)
+        self.assertIn('data-table-filter', operations_html)
+        self.assertIn('data-table-filter', articles_html)
+        self.assertIn("income-chart", (Path(__file__).parents[1] / "static" / "balances.js").read_text(encoding="utf-8"))
+        self.assertIn("data-filter-linked", (Path(__file__).parents[1] / "static" / "table-filters.js").read_text(encoding="utf-8"))
+
     def test_roles_are_enforced_on_the_server_not_only_in_navigation(self) -> None:
         """Seller may view purchases but cannot mutate them through direct URLs."""
 

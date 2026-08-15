@@ -82,10 +82,13 @@
 {% endif %}
 
 <section class="table-section">
-  <div class="section-heading"><div><h2>Alle Einkaufswarenkörbe</h2><p>{{ receipts|length }} Warenkörbe, absteigend nach Datum sortiert.</p></div><a class="secondary-button" href="{{ url_for('export_csv', kind='purchases') }}">CSV exportieren</a></div>
+  <div class="section-heading ledger-heading"><div><h2>Alle Einkaufswarenkörbe</h2><p>{{ receipts|length }} Warenkörbe, absteigend nach Datum sortiert.</p></div><div class="ledger-actions"><label class="table-filter">Suche in Einkäufen
+    <input type="search" data-table-filter data-filter-targets="#purchase-receipts" placeholder="z. B. Cap, Lieferant oder Rechnung" autocomplete="off">
+    <small data-filter-result-count aria-live="polite"></small>
+  </label><a class="secondary-button" href="{{ url_for('export_csv', kind='purchases') }}">CSV exportieren</a></div></div>
   <div class="table-scroll"><table class="purchases-table"><thead><tr><th></th><th>Datum</th><th>Beleg</th><th>Artikel</th><th>Stück</th><th>Gesamt</th><th>Beleg-Anhänge</th><th></th></tr></thead>
-  <tbody>{% for receipt in receipts %}
-    <tr>
+  <tbody id="purchase-receipts">{% for receipt in receipts %}
+    <tr data-filter-row data-filter-group="purchase-{{ receipt.primary_purchase_id }}" data-filter-text="{{ receipt.search_text }}">
       <td class="cart-toggle-cell"><button type="button" class="cart-toggle" data-purchase-cart-toggle data-receipt-id="{{ receipt.receipt_id }}" aria-expanded="false" aria-label="Warenkorb {{ receipt.receipt_id }} anzeigen">▸</button></td>
       <td>{{ receipt.purchased_on }}</td><td class="mono">{{ receipt.receipt_id }}</td>
       <td><strong>{{ receipt.summary_label }}</strong>{% if receipt.summary_options %}<small class="table-subline">{{ receipt.summary_options }}</small>{% endif %}</td>
@@ -93,7 +96,7 @@
       <td>{% if receipt["attachments"] %}{{ receipt["attachments"]|length }} am Warenkorb{% else %}—{% endif %}</td>
       <td class="purchase-actions">{% if can_manage_purchases %}<button type="button" class="danger-button compact-button" data-delete-purchase-cart data-receipt-id="{{ receipt.receipt_id }}">Warenkorb löschen</button>{% else %}—{% endif %}</td>
     </tr>
-    <tr class="cart-details-row" data-purchase-cart-details="{{ receipt.receipt_id }}" hidden><td colspan="8">
+    <tr class="cart-details-row" data-purchase-cart-details="{{ receipt.receipt_id }}" data-filter-linked="purchase-{{ receipt.primary_purchase_id }}" hidden><td colspan="8">
       <div class="cart-details-panel purchase-cart-details-panel">
         <div class="purchase-receipt-attachments">
           <div><h3 class="cart-details-title">Anhänge am gesamten Warenkorb</h3>
@@ -161,6 +164,7 @@
 {% endif %}
 {% endblock %}
 {% block scripts %}
+<script src="{{ url_for('static', filename='table-filters.js') }}"></script>
 {% if can_manage_purchases %}
 <script src="{{ url_for('static', filename='transaction.js') }}"></script>
 <script src="{{ url_for('static', filename='purchases.js') }}"></script>

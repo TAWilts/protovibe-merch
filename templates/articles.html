@@ -6,8 +6,12 @@
 <section class="article-management-layout">
   <aside class="selection-panel article-list-panel">
     <h2>Artikel</h2>
-    <div class="button-list">
-      {% for item in article_list %}<a class="selection-button link-button {{ 'selected' if article and item.id == article.id else '' }}" href="{{ url_for('article_management_page', article=item.id) }}"><span>{{ item.name }}</span>{% if not item.is_offered %}<small class="article-list-status">Nicht angeboten</small>{% endif %}</a>{% else %}<p class="muted">Noch keine Artikel angelegt.</p>{% endfor %}
+    <label class="table-filter article-list-filter">Artikel filtern
+      <input type="search" data-table-filter data-filter-targets="#article-list" placeholder="Artikel suchen" autocomplete="off">
+      <small data-filter-result-count aria-live="polite"></small>
+    </label>
+    <div class="button-list" id="article-list">
+      {% for item in article_list %}<a class="selection-button link-button {{ 'selected' if article and item.id == article.id else '' }}" data-filter-row data-filter-text="{{ item.name }} {{ 'nicht angeboten' if not item.is_offered else '' }}" href="{{ url_for('article_management_page', article=item.id) }}"><span>{{ item.name }}</span>{% if not item.is_offered %}<small class="article-list-status">Nicht angeboten</small>{% endif %}</a>{% else %}<p class="muted">Noch keine Artikel angelegt.</p>{% endfor %}
     </div>
   </aside>
   <section class="selection-panel article-editor">
@@ -45,4 +49,4 @@
   </section>
 </section>
 {% endblock %}
-{% block scripts %}{% if article %}<script src="{{ url_for('static', filename='articles.js') }}"></script>{% endif %}{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='table-filters.js') }}"></script>{% if article %}<script src="{{ url_for('static', filename='articles.js') }}"></script>{% endif %}{% endblock %}

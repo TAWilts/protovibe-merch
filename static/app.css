@@ -20,7 +20,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; background: radial-gradient(circle at 18% -10%, #332143 0, transparent 34rem), var(--bg); color: var(--text); }
+body { margin: 0; min-width: 320px; background: radial-gradient(circle at 18% -10%, #332143 0, transparent 34rem), var(--bg); color: var(--text); touch-action: pan-x pan-y pinch-zoom; }
 button, input, select, textarea { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
@@ -162,8 +162,15 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .section-heading h2, .section-heading h3 { margin: 0; letter-spacing: -.02em; }
 .section-heading h3 { font-size: 1.02rem; }
 .section-heading p { margin: 4px 0 0; }
+.ledger-heading { align-items: end; }
+.ledger-actions { display: flex; align-items: end; flex-wrap: wrap; justify-content: end; gap: 10px; }
+.table-filter { display: grid; gap: 5px; min-width: min(290px, 100%); color: var(--muted); font-size: .75rem; font-weight: 720; }
+.table-filter input { min-width: 0; padding: 9px 10px; color: var(--text); background: rgba(17,14,22,.48); border: 1px solid var(--border); border-radius: 8px; }
+.table-filter input:focus { outline: 2px solid rgba(240,142,255,.42); outline-offset: 1px; border-color: var(--accent); }
+.table-filter small { min-height: 1em; color: var(--accent-bright); font-size: .73rem; font-weight: 650; }
+.operations-filter-row { display: flex; justify-content: end; margin: -2px 0 3px; }
 .no-margin { margin-bottom: 4px; }
-.table-scroll { overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+.table-scroll { overflow: auto; border: 1px solid var(--border); border-radius: 10px; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; touch-action: pan-x pinch-zoom; }
 table { width: 100%; border-collapse: collapse; min-width: 660px; font-size: .87rem; }
 .purchases-table { min-width: 1250px; }
 th { position: sticky; top: 0; z-index: 1; background: #27202f; color: #dcd3e5; text-align: left; font-size: .72rem; letter-spacing: .045em; text-transform: uppercase; }
@@ -235,6 +242,29 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .metric-card.subtle strong { font-size: 1.1rem; }
 .stock-warning-metric { border-color: rgba(243,179,90,.62); background: rgba(243,179,90,.09); }
 .stock-warning-metric strong { color: #ffd69b; }
+.insight-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 20px; }
+.insight-grid .table-section { margin-top: 0; }
+.insight-card { min-width: 0; }
+.insight-card .section-heading { margin-bottom: 12px; }
+.ranking-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; counter-reset: ranking; }
+.ranking-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 46px; padding: 8px 0 8px 31px; border-bottom: 1px solid rgba(255,255,255,.075); position: relative; }
+.ranking-list li:last-child { border-bottom: 0; }
+.ranking-list li::before { counter-increment: ranking; content: counter(ranking); position: absolute; left: 0; width: 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; color: #edc7f6; background: rgba(217,95,241,.18); font-size: .71rem; font-weight: 800; }
+.ranking-list li.muted { padding-left: 0; }
+.ranking-list li.muted::before { display: none; }
+.ranking-list span { min-width: 0; display: grid; gap: 2px; }
+.ranking-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; }
+.ranking-list small { color: var(--muted); font-size: .75rem; }
+.ranking-list b { color: var(--accent-bright); white-space: nowrap; font-size: .83rem; }
+.income-chart-section { overflow: hidden; }
+.income-chart { min-height: 250px; width: 100%; }
+.income-chart-svg { display: block; width: 100%; height: 250px; overflow: visible; }
+.income-grid-line { stroke: rgba(255,255,255,.14); stroke-width: 1; stroke-dasharray: 3 4; }
+.income-axis-label { fill: var(--muted); font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 13px; }
+.income-date-label { font-size: 12px; }
+.income-area { fill: rgba(217,95,241,.18); }
+.income-line { fill: none; stroke: var(--accent-bright); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.income-dot { fill: var(--panel); stroke: var(--accent-bright); stroke-width: 3; }
 
 .update-card { padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: linear-gradient(138deg, rgba(72,35,83,.76), rgba(26,22,34,.9)); box-shadow: var(--shadow); }
 .update-version-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
@@ -251,6 +281,7 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 
 .article-management-layout { display: grid; grid-template-columns: minmax(220px, .75fr) minmax(580px, 2.35fr); gap: 16px; }
 .article-list-panel { align-self: start; position: sticky; top: 88px; }
+.article-list-filter { margin: 12px 0; }
 .article-editor { min-width: 0; }
 .article-offer-toggle { margin-top: 14px; color: #f7d09b; }
 .option-editor, .variant-price-section { margin-top: 25px; padding-top: 22px; border-top: 1px solid var(--border); }
@@ -338,6 +369,7 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
   .sale-details { grid-column: 1 / -1; }
   .sale-details > .quantity-and-total, .sale-details > .payment-inputs { max-width: 520px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
+  .insight-grid { grid-template-columns: 1fr; }
   .article-management-layout { grid-template-columns: 220px 1fr; }
   .reset-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -376,6 +408,13 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
   .update-status-row { align-items: stretch; flex-direction: column; }
   .update-status-row .button-group, .update-status-row .button-group > * { width: 100%; }
   .section-heading { align-items: start; flex-direction: column; }
+  .ledger-actions, .operations-filter-row { width: 100%; justify-content: stretch; }
+  .ledger-actions > .table-filter, .operations-filter-row > .table-filter { width: 100%; }
+  .ledger-actions > .button-group { width: 100%; }
+  .ledger-actions > .button-group > * { flex: 1 1 auto; }
+  .table-filter input { min-height: 42px; font-size: 16px; }
+  .income-chart { min-height: 220px; margin: 0 -5px; }
+  .income-chart-svg { height: 220px; }
   .table-section, .selection-panel { padding: 15px; }
   .page-title-row > .secondary-button, .page-title-row form, .page-title-row form > .primary-button { width: 100%; }
 }
