@@ -24,6 +24,7 @@ import itertools
 import json
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import tempfile
@@ -55,6 +56,7 @@ from flask import (
     url_for,
 )
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.exceptions import RequestEntityTooLarge
 
 
 SCHEMA_SQL = """
@@ -124,14 +126,29 @@ CREATE TABLE IF NOT EXISTS variants (
 
 CREATE TABLE IF NOT EXISTS purchases (
     id INTEGER PRIMARY KEY,
-    receipt_id TEXT NOT NULL UNIQUE,
+    -- One purchase receipt can contain several independently editable ledger
+    -- lines, just like a sales cart.  The shared ID is therefore deliberately
+    -- not unique per line.
+    receipt_id TEXT NOT NULL,
     variant_id INTEGER NOT NULL REFERENCES variants(id),
     quantity INTEGER NOT NULL CHECK(quantity > 0),
     unit_cost_cents INTEGER NOT NULL CHECK(unit_cost_cents >= 0),
     purchased_on TEXT NOT NULL,
     supplier TEXT,
     invoice_reference TEXT,
+    -- The server-managed filename of an optional PDF/image attachment.  Keep
+    -- it distinct from ``invoice_reference`` so a typed invoice number stays
+    -- useful even when a document is uploaded as well.
+    invoice_file_path TEXT,
     comment TEXT,
+    created_at TEXT NOT NULL,
+    created_by INTEGER REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS purchase_receipt_attachments (
+    id INTEGER PRIMARY KEY,
+    receipt_id TEXT NOT NULL,
+    file_path TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     created_by INTEGER REFERENCES users(id)
 );
@@ -184,6 +201,8 @@ CREATE INDEX IF NOT EXISTS idx_option_groups_article ON option_groups(article_id
 CREATE INDEX IF NOT EXISTS idx_option_values_group ON option_values(option_group_id, position);
 CREATE INDEX IF NOT EXISTS idx_variants_article ON variants(article_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_purchases_variant ON purchases(variant_id, purchased_on);
+CREATE INDEX IF NOT EXISTS idx_purchases_receipt_id ON purchases(receipt_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_receipt_attachments_receipt ON purchase_receipt_attachments(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_sales_variant ON sales(variant_id, sold_on);
 CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
 """
@@ -201,6 +220,12 @@ DELIVERY_STATUS_LABELS = {
     "not_applicable": "Nicht relevant",
 }
 DELIVERY_WORKFLOW_STATUSES = ("pending", "shipped", "received")
+
+# Invoice uploads deliberately stay small enough for the NAS and for regular
+# automatic backups.  The browser validates the same extensions for a nicer
+# experience, but the server is the authoritative check.
+ALLOWED_INVOICE_FILE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+MAX_INVOICE_FILE_BYTES = 10 * 1024 * 1024
 
 # These values are intentionally only used when a *new* article is created.
 # Existing articles can have completely different option groups (for example a
@@ -482,6 +507,174 @@ def parse_optional_non_negative_int(value: Any, *, field_name: str = "Mindestbes
     return int(raw)
 
 
+def purchase_request_payload() -> tuple[Any, Any]:
+    """Return either JSON or multipart/form purchase data plus uploaded files.
+
+    Existing browser tabs can keep posting the original JSON purchase API.
+    The cart UI uses ``FormData`` so item and receipt attachments can be sent
+    atomically with their booking.  Supporting both shapes makes upgrades
+    harmless instead of losing a just-entered purchase in an older tab.
+    """
+
+    if request.is_json:
+        return request.get_json(silent=True) or {}, request.files
+    return request.form, request.files
+
+
+def invoice_file_extension(uploaded_file: Any | None) -> str | None:
+    """Validate an optional invoice upload and return its lowercase suffix.
+
+    Only PDFs, PNGs and JPEGs are accepted.  In addition to the filename the
+    small signature checks reject a renamed HTML/text file.  The user-provided
+    filename is never used as a filesystem path.
+    """
+
+    if uploaded_file is None or not getattr(uploaded_file, "filename", ""):
+        return None
+
+    extension = Path(str(uploaded_file.filename)).suffix.lower()
+    if extension not in ALLOWED_INVOICE_FILE_EXTENSIONS:
+        raise ValueError("Bitte nur eine Rechnung als PDF, PNG oder JPG hochladen.")
+
+    stream = uploaded_file.stream
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+    stream.seek(0)
+    if size <= 0:
+        raise ValueError("Die Rechnungsdatei ist leer.")
+    if size > int(current_app.config["MAX_INVOICE_FILE_BYTES"]):
+        raise ValueError("Die Rechnungsdatei darf höchstens 10 MB groß sein.")
+
+    signature = stream.read(16)
+    stream.seek(0)
+    is_valid = (
+        (extension == ".pdf" and signature.startswith(b"%PDF-"))
+        or (extension == ".png" and signature.startswith(b"\x89PNG\r\n\x1a\n"))
+        or (extension in {".jpg", ".jpeg"} and signature.startswith(b"\xff\xd8\xff"))
+    )
+    if not is_valid:
+        raise ValueError("Die Datei passt nicht zum gewählten Rechnungsformat.")
+    return extension
+
+
+def invoice_storage_path(filename: str | None) -> Path | None:
+    """Resolve a stored invoice name without allowing path traversal."""
+
+    if not filename:
+        return None
+    safe_name = Path(str(filename)).name
+    if safe_name != str(filename) or Path(safe_name).suffix.lower() not in ALLOWED_INVOICE_FILE_EXTENSIONS:
+        return None
+    return Path(current_app.config["INVOICE_UPLOAD_DIR"]) / safe_name
+
+
+def save_invoice_file(uploaded_file: Any | None, receipt_id: str) -> str | None:
+    """Store a validated invoice under an opaque, receipt-associated name."""
+
+    extension = invoice_file_extension(uploaded_file)
+    if extension is None:
+        return None
+    filename = f"{receipt_id}-{secrets.token_hex(12)}{extension}"
+    target = invoice_storage_path(filename)
+    if target is None:  # Defensive guard; generated names always pass above.
+        raise ValueError("Rechnungsdatei konnte nicht gespeichert werden.")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        uploaded_file.save(target)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    return filename
+
+
+def delete_invoice_file(filename: str | None) -> None:
+    """Remove a managed invoice attachment if it still exists."""
+
+    target = invoice_storage_path(filename)
+    if target is not None:
+        target.unlink(missing_ok=True)
+
+
+def purchase_values_from_payload(
+    connection: sqlite3.Connection,
+    payload: Any,
+    *,
+    current_variant_id: int | None = None,
+    current_purchased_on: str | None = None,
+) -> dict[str, Any]:
+    """Validate the editable fields of a purchase booking.
+
+    A historic, now inactive variant may remain selected when a purchase is
+    merely corrected in another field.  Switching to a different variant still
+    requires an active target, so no new booking can be attached to retired
+    catalogue data.
+    """
+
+    variant_id = int(payload.get("variant_id"))
+    quantity = parse_positive_int(payload.get("quantity"))
+    unit_cost = money_to_cents(payload.get("unit_cost"), field_name="Preis pro Stück")
+    purchased_on = str(payload.get("purchased_on") or current_purchased_on or today_iso())
+    date.fromisoformat(purchased_on)
+    variant = connection.execute("SELECT id, is_active FROM variants WHERE id = ?", (variant_id,)).fetchone()
+    if variant is None or (not variant["is_active"] and variant_id != current_variant_id):
+        raise ValueError("Diese Artikelvariante ist nicht mehr verfügbar.")
+    return {
+        "variant_id": variant_id,
+        "quantity": quantity,
+        "unit_cost_cents": unit_cost,
+        "purchased_on": purchased_on,
+        "supplier": str(payload.get("supplier", "")).strip() or None,
+        "invoice_reference": str(payload.get("invoice_reference", "")).strip() or None,
+        "comment": str(payload.get("comment", "")).strip() or None,
+    }
+
+
+def purchase_items_from_payload(
+    connection: sqlite3.Connection,
+    payload: Any,
+    uploaded_files: Any,
+) -> tuple[str, list[dict[str, Any]], list[Any]]:
+    """Validate a single legacy purchase or a new multi-item purchase cart.
+
+    The cart's date belongs to the receipt and is copied to every ledger row.
+    Item-specific prices, suppliers, references, comments and optional invoice
+    files remain independent so mixed supplier invoices can still be recorded
+    accurately in one day/cart.
+    """
+
+    raw_items = payload.get("items")
+    if raw_items is None:
+        raw_items = [payload]
+    elif isinstance(raw_items, str):
+        try:
+            raw_items = json.loads(raw_items)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Der Einkaufswarenkorb ist ungültig.") from exc
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValueError("Der Einkaufswarenkorb enthält noch keine Artikel.")
+
+    purchased_on = str(payload.get("purchased_on") or today_iso())
+    date.fromisoformat(purchased_on)
+    items: list[dict[str, Any]] = []
+    for index, raw_item in enumerate(raw_items):
+        if not isinstance(raw_item, dict):
+            raise ValueError("Ungültiger Artikel im Einkaufswarenkorb.")
+        item_payload = {**raw_item, "purchased_on": purchased_on}
+        values = purchase_values_from_payload(connection, item_payload)
+        # ``invoice_file`` keeps the just-released single-item UI compatible.
+        uploaded_invoice = uploaded_files.get(f"item_invoice_{index}")
+        if uploaded_invoice is None and len(raw_items) == 1:
+            uploaded_invoice = uploaded_files.get("invoice_file")
+        items.append({**values, "uploaded_invoice": uploaded_invoice})
+
+    cart_invoice_files = [
+        uploaded_file
+        for uploaded_file in uploaded_files.getlist("cart_invoice_files")
+        if getattr(uploaded_file, "filename", "")
+    ]
+    return purchased_on, items, cart_invoice_files
+
+
 def db_connect(path: str | Path) -> sqlite3.Connection:
     """Open a SQLite connection with the consistency settings used by the app."""
 
@@ -579,6 +772,81 @@ def rebuild_sales_for_multi_item_receipts(connection: sqlite3.Connection) -> Non
     )
 
 
+def purchases_receipt_id_is_unique(connection: sqlite3.Connection) -> bool:
+    """Return whether an older purchase table permits only one line per ID."""
+
+    for index in connection.execute("PRAGMA index_list(purchases)").fetchall():
+        if not index["unique"]:
+            continue
+        index_name = str(index["name"]).replace('"', '""')
+        columns = connection.execute(f'PRAGMA index_info("{index_name}")').fetchall()
+        if [column["name"] for column in columns] == ["receipt_id"]:
+            return True
+    return False
+
+
+def rebuild_purchases_for_multi_item_receipts(connection: sqlite3.Connection) -> None:
+    """Remove the legacy purchase receipt uniqueness without losing rows.
+
+    The previous purchase screen only ever wrote a single ledger row.  The
+    migration preserves each row and its optional invoice attachment exactly;
+    the new UI can subsequently add several lines under one shared receipt ID.
+    """
+
+    connection.executescript(
+        """
+        CREATE TABLE purchases_multi_item_receipts (
+            id INTEGER PRIMARY KEY,
+            receipt_id TEXT NOT NULL,
+            variant_id INTEGER NOT NULL REFERENCES variants(id),
+            quantity INTEGER NOT NULL CHECK(quantity > 0),
+            unit_cost_cents INTEGER NOT NULL CHECK(unit_cost_cents >= 0),
+            purchased_on TEXT NOT NULL,
+            supplier TEXT,
+            invoice_reference TEXT,
+            invoice_file_path TEXT,
+            comment TEXT,
+            created_at TEXT NOT NULL,
+            created_by INTEGER REFERENCES users(id)
+        );
+        INSERT INTO purchases_multi_item_receipts (
+            id, receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
+            supplier, invoice_reference, invoice_file_path, comment, created_at, created_by
+        )
+        SELECT
+            id, receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
+            supplier, invoice_reference, invoice_file_path, comment, created_at, created_by
+        FROM purchases;
+        DROP TABLE purchases;
+        ALTER TABLE purchases_multi_item_receipts RENAME TO purchases;
+        """
+    )
+
+
+def group_legacy_purchases_by_date(connection: sqlite3.Connection) -> None:
+    """Turn the pre-cart purchase history into one cart per booking date.
+
+    Earlier imports only had the date as grouping information and consequently
+    assigned one receipt ID to every individual line.  Retain the oldest of
+    those familiar IDs for each day and attach all rows from that day to it.
+    Per-item supplier, comment and invoice fields stay untouched.
+    """
+
+    dates = connection.execute(
+        "SELECT DISTINCT purchased_on FROM purchases ORDER BY purchased_on"
+    ).fetchall()
+    for row in dates:
+        purchase_rows = connection.execute(
+            "SELECT id, receipt_id FROM purchases WHERE purchased_on = ? ORDER BY id", (row["purchased_on"],)
+        ).fetchall()
+        if len(purchase_rows) < 2:
+            continue
+        connection.execute(
+            "UPDATE purchases SET receipt_id = ? WHERE purchased_on = ?",
+            (purchase_rows[0]["receipt_id"], row["purchased_on"]),
+        )
+
+
 def initialise_database(app: Flask) -> None:
     """Create/update the schema and bootstrap the configured administrator."""
 
@@ -603,6 +871,28 @@ def initialise_database(app: Flask) -> None:
             connection.execute("ALTER TABLE variants ADD COLUMN minimum_stock INTEGER CHECK(minimum_stock >= 0)")
         if "is_offered" not in variant_columns:
             connection.execute("ALTER TABLE variants ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
+
+        # Invoice references used to be a single free-text field.  Preserve
+        # those values and add a separate server-managed attachment path for
+        # drag-and-drop PDF/image uploads.
+        purchase_columns = {row["name"] for row in connection.execute("PRAGMA table_info(purchases)").fetchall()}
+        if "invoice_file_path" not in purchase_columns:
+            connection.execute("ALTER TABLE purchases ADD COLUMN invoice_file_path TEXT")
+
+        # Purchases now mirror sale carts: several rows can share one receipt.
+        # During the one-time upgrade, legacy/imported single rows from one
+        # date become one cart while retaining every line-level detail.
+        if purchases_receipt_id_is_unique(connection):
+            rebuild_purchases_for_multi_item_receipts(connection)
+            group_legacy_purchases_by_date(connection)
+        connection.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_purchases_variant ON purchases(variant_id, purchased_on);
+            CREATE INDEX IF NOT EXISTS idx_purchases_receipt_id ON purchases(receipt_id);
+            CREATE INDEX IF NOT EXISTS idx_purchase_receipt_attachments_receipt
+                ON purchase_receipt_attachments(receipt_id);
+            """
+        )
 
         # Version 0.2 adds a small delivery state machine.  Existing counter
         # sales remain outside it, while older sales marked "not received" are
@@ -893,6 +1183,82 @@ def sales_with_labels(
         item["sale_id"] = item["id"]
         sales.append(item)
     return sales
+
+
+def purchases_with_labels(
+    connection: sqlite3.Connection, purchase_rows: Iterable[sqlite3.Row]
+) -> list[dict[str, Any]]:
+    """Add safe current variant labels to purchase ledger rows.
+
+    Keep the purchase primary key separate from the similarly named variant
+    fields.  The edit/delete controls must always address the booking row, not
+    accidentally the article variant.
+    """
+
+    rows = list(purchase_rows)
+    labels = variant_label_map(connection, [row["variant_id"] for row in rows])
+    purchases = []
+    for row in rows:
+        item = dict(row)
+        variant = labels[row["variant_id"]]
+        item["article_name"] = variant["article_name"]
+        item["option_text"] = variant["option_text"]
+        item["label"] = variant["label"]
+        item["purchase_id"] = item["id"]
+        purchases.append(item)
+    return purchases
+
+
+def purchase_receipt_payload(
+    connection: sqlite3.Connection, purchase_rows: Iterable[sqlite3.Row]
+) -> list[dict[str, Any]]:
+    """Group purchase ledger rows into expandable, editable shopping carts."""
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for purchase in purchases_with_labels(connection, purchase_rows):
+        receipt = grouped.setdefault(purchase["receipt_id"], {"receipt_id": purchase["receipt_id"], "items": []})
+        receipt["items"].append(purchase)
+
+    attachments_by_receipt: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    if grouped:
+        receipt_ids = list(grouped)
+        placeholders = ",".join("?" for _ in receipt_ids)
+        attachment_rows = connection.execute(
+            f"""
+            SELECT id, receipt_id, file_path
+            FROM purchase_receipt_attachments
+            WHERE receipt_id IN ({placeholders})
+            ORDER BY id
+            """,
+            receipt_ids,
+        ).fetchall()
+        for attachment in attachment_rows:
+            attachments_by_receipt[attachment["receipt_id"]].append(dict(attachment))
+
+    receipts: list[dict[str, Any]] = []
+    for receipt in grouped.values():
+        items = receipt["items"]
+        items.sort(key=lambda item: item["purchase_id"])
+        first_item = items[0]
+        receipt.update(
+            {
+                "primary_purchase_id": first_item["purchase_id"],
+                "purchased_on": first_item["purchased_on"],
+                "item_count": len(items),
+                "total_quantity": sum(int(item["quantity"]) for item in items),
+                "total_cost_cents": sum(int(item["quantity"]) * int(item["unit_cost_cents"]) for item in items),
+                "attachments": attachments_by_receipt.get(receipt["receipt_id"], []),
+            }
+        )
+        if len(items) == 1:
+            receipt["summary_label"] = first_item["article_name"]
+            receipt["summary_options"] = first_item["option_text"]
+        else:
+            receipt["summary_label"] = f"Warenkorb ({len(items)} Artikel)"
+            receipt["summary_options"] = f"{receipt['total_quantity']} Stück insgesamt"
+        receipts.append(receipt)
+    receipts.sort(key=lambda receipt: (receipt["purchased_on"], receipt["primary_purchase_id"]), reverse=True)
+    return receipts
 
 
 def distribute_cents(total_cents: int, weights: list[int]) -> list[int]:
@@ -1538,7 +1904,7 @@ def csv_bytes(headers: list[str], rows: Iterable[Iterable[Any]]) -> bytes:
 
 
 def create_backup(app: Flask) -> None:
-    """Create a restorable SQLite snapshot and human-readable CSV exports.
+    """Create a restorable SQLite snapshot, CSV exports and invoice files.
 
     It runs after every successful write.  The application database itself stays
     authoritative; the SQLite snapshot is the recovery copy, while CSV makes
@@ -1565,6 +1931,20 @@ def create_backup(app: Flask) -> None:
         for kind in ("articles", "sales", "purchases", "inventory"):
             filename, headers, rows = csv_rows(source, kind)
             (target / f"{filename}.csv").write_bytes(csv_bytes(headers, rows))
+        # Attachments belong to the same recovery point as their database
+        # rows.  Hard links avoid multiplying disk use on normal local
+        # filesystems; fall back to copying if a platform does not support it.
+        invoice_source = Path(app.config["INVOICE_UPLOAD_DIR"])
+        if invoice_source.is_dir():
+            invoice_target = target / "invoices"
+            invoice_target.mkdir()
+            for invoice in invoice_source.iterdir():
+                if not invoice.is_file():
+                    continue
+                try:
+                    os.link(invoice, invoice_target / invoice.name)
+                except OSError:
+                    shutil.copy2(invoice, invoice_target / invoice.name)
     finally:
         source.close()
         try:
@@ -1682,6 +2062,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         SECRET_KEY=os.environ.get("SECRET_KEY", "development-only-change-me"),
         DATABASE=str(data_dir / "merch.sqlite3"),
         BACKUP_DIR=str(data_dir / "backups"),
+        INVOICE_UPLOAD_DIR=str(data_dir / "invoices"),
+        MAX_INVOICE_FILE_BYTES=MAX_INVOICE_FILE_BYTES,
+        # Leave modest room for the multipart envelope while independently
+        # enforcing the actual 10 MB file limit in ``invoice_file_extension``.
+        MAX_CONTENT_LENGTH=MAX_INVOICE_FILE_BYTES + 1024 * 1024,
         BACKUP_RETENTION_DAYS=int(os.environ.get("BACKUP_RETENTION_DAYS", "90")),
         ADMIN_USERNAME=os.environ.get("ADMIN_USERNAME", "admin"),
         ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD", "replace-this-password"),
@@ -1707,6 +2092,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
     Path(app.config["BACKUP_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(app.config["INVOICE_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
     initialise_database(app)
     app.teardown_appcontext(close_db)
 
@@ -1958,15 +2344,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.get("/einkaeufe")
     @login_required
     def purchases_page():
-        latest_rows = get_db().execute("SELECT * FROM purchases ORDER BY purchased_on DESC, id DESC LIMIT 15").fetchall()
-        labels = variant_label_map(get_db(), [row["variant_id"] for row in latest_rows])
-        purchases = []
-        for row in latest_rows:
-            item = dict(row)
-            item.update(labels[row["variant_id"]])
-            purchases.append(item)
+        connection = get_db()
+        purchase_rows = connection.execute("SELECT * FROM purchases ORDER BY purchased_on DESC, id DESC").fetchall()
         return render_template(
-            "purchases.html", title="Einkäufe", articles=article_payload(get_db()), purchases=purchases, today=today_iso()
+            "purchases.html",
+            title="Einkäufe",
+            articles=article_payload(connection),
+            receipts=purchase_receipt_payload(connection, purchase_rows),
+            today=today_iso(),
         )
 
     @app.get("/api/variants/<int:variant_id>/last-purchase-price")
@@ -1981,48 +2366,384 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/api/purchases")
     @login_required
     def create_purchase():
-        payload = request.get_json(silent=True) or {}
+        """Create a single legacy purchase or a complete multi-item cart."""
+
+        payload, uploaded_files = purchase_request_payload()
         connection = get_db()
+        stored_files: list[str] = []
         try:
-            variant_id = int(payload.get("variant_id"))
-            quantity = parse_positive_int(payload.get("quantity"))
-            unit_cost = money_to_cents(payload.get("unit_cost"), field_name="Preis pro Stück")
-            purchased_on = str(payload.get("purchased_on") or today_iso())
-            date.fromisoformat(purchased_on)
-            variant = connection.execute(
-                "SELECT id FROM variants WHERE id = ? AND is_active = 1", (variant_id,)
-            ).fetchone()
-            if variant is None:
-                raise ValueError("Diese Artikelvariante ist nicht mehr verfügbar.")
+            purchased_on, cart_items, cart_invoice_files = purchase_items_from_payload(
+                connection, payload, uploaded_files
+            )
 
             connection.execute("BEGIN IMMEDIATE")
             receipt_id = unique_receipt_id(connection, "E", payload.get("receipt_id"), purchased_on)
-            cursor = connection.execute(
-                """
-                INSERT INTO purchases (
-                    receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
-                    supplier, invoice_reference, comment, created_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    receipt_id, variant_id, quantity, unit_cost, purchased_on,
-                    str(payload.get("supplier", "")).strip() or None,
-                    str(payload.get("invoice_reference", "")).strip() or None,
-                    str(payload.get("comment", "")).strip() or None,
-                    utc_now(), g.user["id"],
-                ),
+            for item_index, item in enumerate(cart_items):
+                invoice_file_path = save_invoice_file(item["uploaded_invoice"], receipt_id)
+                if invoice_file_path:
+                    stored_files.append(invoice_file_path)
+                cursor = connection.execute(
+                    """
+                    INSERT INTO purchases (
+                        receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
+                        supplier, invoice_reference, invoice_file_path, comment, created_at, created_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        receipt_id, item["variant_id"], item["quantity"], item["unit_cost_cents"], purchased_on,
+                        item["supplier"], item["invoice_reference"], invoice_file_path, item["comment"],
+                        utc_now(), g.user["id"],
+                    ),
+                )
+                item["purchase_id"] = cursor.lastrowid
+                audit(
+                    connection,
+                    "create",
+                    "purchase",
+                    cursor.lastrowid,
+                    {
+                        "receipt_id": receipt_id,
+                        "quantity": item["quantity"],
+                        "cart_item_count": len(cart_items),
+                        "cart_item_index": item_index,
+                        "has_invoice_file": bool(invoice_file_path),
+                    },
+                )
+
+            for uploaded_invoice in cart_invoice_files:
+                invoice_file_path = save_invoice_file(uploaded_invoice, receipt_id)
+                if invoice_file_path:
+                    stored_files.append(invoice_file_path)
+                    connection.execute(
+                        """
+                        INSERT INTO purchase_receipt_attachments (
+                            receipt_id, file_path, created_at, created_by
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (receipt_id, invoice_file_path, utc_now(), g.user["id"]),
+                    )
+            audit(
+                connection,
+                "create",
+                "purchase_receipt",
+                cart_items[0]["purchase_id"],
+                {
+                    "receipt_id": receipt_id,
+                    "purchased_on": purchased_on,
+                    "cart_item_count": len(cart_items),
+                    "cart_attachment_count": len(cart_invoice_files),
+                },
             )
-            audit(connection, "create", "purchase", cursor.lastrowid, {"receipt_id": receipt_id, "quantity": quantity})
             connection.commit()
             backup_after_commit()
-            return jsonify({"ok": True, "receipt_id": receipt_id, "message": "Einkauf erfolgreich erfasst."})
+            return jsonify(
+                {
+                    "ok": True,
+                    "receipt_id": receipt_id,
+                    "item_count": len(cart_items),
+                    "cart_attachment_count": len(cart_invoice_files),
+                    # Kept for the former single-purchase client/API.  New
+                    # clients can use the more precise item/cart counts.
+                    "has_invoice_file": any(item["uploaded_invoice"] for item in cart_items),
+                    "message": "Einkaufswarenkorb erfolgreich erfasst.",
+                }
+            )
         except (ValueError, TypeError) as exc:
             connection.rollback()
+            for stored_file in stored_files:
+                delete_invoice_file(stored_file)
             return jsonify({"ok": False, "error": str(exc)}), 400
         except Exception:
             connection.rollback()
+            for stored_file in stored_files:
+                delete_invoice_file(stored_file)
             current_app.logger.exception("Could not create purchase")
             return jsonify({"ok": False, "error": "Der Einkauf konnte nicht gespeichert werden."}), 500
+
+    @app.patch("/api/purchases/<int:purchase_id>")
+    @login_required
+    def update_purchase(purchase_id: int):
+        """Correct a purchase after an explicit client-side safety delay."""
+
+        payload, uploaded_files = purchase_request_payload()
+        connection = get_db()
+        stored_invoice: str | None = None
+        old_invoice: str | None = None
+        try:
+            purchase = connection.execute("SELECT * FROM purchases WHERE id = ?", (purchase_id,)).fetchone()
+            if purchase is None:
+                return jsonify({"ok": False, "error": "Einkauf wurde nicht gefunden."}), 404
+
+            values = purchase_values_from_payload(
+                connection,
+                payload,
+                current_variant_id=int(purchase["variant_id"]),
+                current_purchased_on=str(purchase["purchased_on"]),
+            )
+            old_invoice = purchase["invoice_file_path"]
+            uploaded_invoice = uploaded_files.get("invoice_file")
+            if uploaded_invoice is not None and getattr(uploaded_invoice, "filename", ""):
+                stored_invoice = save_invoice_file(uploaded_invoice, purchase["receipt_id"])
+            invoice_file_path = stored_invoice if stored_invoice is not None else old_invoice
+
+            connection.execute("BEGIN IMMEDIATE")
+            # A receipt represents one shopping trip/day.  Keep that shared
+            # date coherent even for older API clients that still send an
+            # editable ``purchased_on`` field for a single line.
+            if values["purchased_on"] != purchase["purchased_on"]:
+                connection.execute(
+                    "UPDATE purchases SET purchased_on = ? WHERE receipt_id = ?",
+                    (values["purchased_on"], purchase["receipt_id"]),
+                )
+            connection.execute(
+                """
+                UPDATE purchases
+                SET variant_id = ?, quantity = ?, unit_cost_cents = ?, purchased_on = ?,
+                    supplier = ?, invoice_reference = ?, invoice_file_path = ?, comment = ?
+                WHERE id = ?
+                """,
+                (
+                    values["variant_id"], values["quantity"], values["unit_cost_cents"], values["purchased_on"],
+                    values["supplier"], values["invoice_reference"], invoice_file_path, values["comment"], purchase_id,
+                ),
+            )
+            audit(
+                connection,
+                "update",
+                "purchase",
+                purchase_id,
+                {
+                    "receipt_id": purchase["receipt_id"],
+                    "before": {
+                        "variant_id": purchase["variant_id"],
+                        "quantity": purchase["quantity"],
+                        "unit_cost_cents": purchase["unit_cost_cents"],
+                        "purchased_on": purchase["purchased_on"],
+                    },
+                    "after": {
+                        "variant_id": values["variant_id"],
+                        "quantity": values["quantity"],
+                        "unit_cost_cents": values["unit_cost_cents"],
+                        "purchased_on": values["purchased_on"],
+                    },
+                    "invoice_replaced": bool(stored_invoice),
+                    "receipt_date_changed": values["purchased_on"] != purchase["purchased_on"],
+                },
+            )
+            connection.commit()
+        except (ValueError, TypeError) as exc:
+            connection.rollback()
+            if stored_invoice:
+                delete_invoice_file(stored_invoice)
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception:
+            connection.rollback()
+            if stored_invoice:
+                delete_invoice_file(stored_invoice)
+            current_app.logger.exception("Could not update purchase")
+            return jsonify({"ok": False, "error": "Der Einkauf konnte nicht bearbeitet werden."}), 500
+
+        # The database change is already durable.  A failure here leaves at
+        # most an unused old file, never a booking that points at a missing
+        # replacement invoice.
+        if stored_invoice and old_invoice and old_invoice != stored_invoice:
+            try:
+                delete_invoice_file(old_invoice)
+            except OSError:
+                current_app.logger.exception("Could not remove replaced purchase invoice")
+        backup_after_commit()
+        return jsonify({"ok": True, "message": "Einkauf wurde aktualisiert."})
+
+    @app.delete("/api/purchases/<int:purchase_id>")
+    @login_required
+    def delete_purchase(purchase_id: int):
+        """Delete one item from a purchase cart after client confirmation."""
+
+        connection = get_db()
+        cart_attachment_paths: list[str] = []
+        try:
+            purchase = connection.execute("SELECT * FROM purchases WHERE id = ?", (purchase_id,)).fetchone()
+            if purchase is None:
+                return jsonify({"ok": False, "error": "Einkauf wurde nicht gefunden."}), 404
+            connection.execute("BEGIN IMMEDIATE")
+            remaining_item_count = connection.execute(
+                "SELECT COUNT(*) FROM purchases WHERE receipt_id = ? AND id <> ?",
+                (purchase["receipt_id"], purchase_id),
+            ).fetchone()[0]
+            connection.execute("DELETE FROM purchases WHERE id = ?", (purchase_id,))
+            if remaining_item_count == 0:
+                attachment_rows = connection.execute(
+                    "SELECT file_path FROM purchase_receipt_attachments WHERE receipt_id = ?",
+                    (purchase["receipt_id"],),
+                ).fetchall()
+                cart_attachment_paths = [row["file_path"] for row in attachment_rows]
+                connection.execute(
+                    "DELETE FROM purchase_receipt_attachments WHERE receipt_id = ?", (purchase["receipt_id"],)
+                )
+            audit(
+                connection,
+                "delete",
+                "purchase",
+                purchase_id,
+                {
+                    "receipt_id": purchase["receipt_id"],
+                    "variant_id": purchase["variant_id"],
+                    "quantity": purchase["quantity"],
+                    "unit_cost_cents": purchase["unit_cost_cents"],
+                    "purchased_on": purchase["purchased_on"],
+                    "had_invoice_file": bool(purchase["invoice_file_path"]),
+                    "scope": "item",
+                    "receipt_deleted": not remaining_item_count,
+                },
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not delete purchase")
+            return jsonify({"ok": False, "error": "Der Einkauf konnte nicht gelöscht werden."}), 500
+
+        try:
+            delete_invoice_file(purchase["invoice_file_path"])
+            for file_path in cart_attachment_paths:
+                delete_invoice_file(file_path)
+        except OSError:
+            # Do not report the successfully deleted booking as a failure.  A
+            # harmless orphan can be removed manually, and is safer than
+            # rolling back accounting after the fact.
+            current_app.logger.exception("Could not remove deleted purchase invoice")
+        backup_after_commit()
+        message = "Einkauf wurde gelöscht." if not remaining_item_count else "Artikel wurde aus dem Warenkorb entfernt."
+        return jsonify({"ok": True, "receipt_deleted": not remaining_item_count, "message": message})
+
+    @app.delete("/api/purchase-receipts/<receipt_id>")
+    @login_required
+    def delete_purchase_receipt(receipt_id: str):
+        """Delete an entire purchase cart, including its item/cart invoices."""
+
+        connection = get_db()
+        try:
+            purchase_rows = connection.execute(
+                "SELECT * FROM purchases WHERE receipt_id = ? ORDER BY id", (receipt_id,)
+            ).fetchall()
+            if not purchase_rows:
+                return jsonify({"ok": False, "error": "Einkaufswarenkorb wurde nicht gefunden."}), 404
+            attachment_rows = connection.execute(
+                "SELECT file_path FROM purchase_receipt_attachments WHERE receipt_id = ?", (receipt_id,)
+            ).fetchall()
+            item_invoice_paths = [row["invoice_file_path"] for row in purchase_rows if row["invoice_file_path"]]
+            cart_attachment_paths = [row["file_path"] for row in attachment_rows]
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM purchase_receipt_attachments WHERE receipt_id = ?", (receipt_id,))
+            connection.execute("DELETE FROM purchases WHERE receipt_id = ?", (receipt_id,))
+            audit(
+                connection,
+                "delete",
+                "purchase_receipt",
+                purchase_rows[0]["id"],
+                {
+                    "receipt_id": receipt_id,
+                    "deleted_item_count": len(purchase_rows),
+                    "cart_attachment_count": len(cart_attachment_paths),
+                    "scope": "receipt",
+                },
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not delete purchase receipt")
+            return jsonify({"ok": False, "error": "Der Einkaufswarenkorb konnte nicht gelöscht werden."}), 500
+
+        for file_path in [*item_invoice_paths, *cart_attachment_paths]:
+            try:
+                delete_invoice_file(file_path)
+            except OSError:
+                current_app.logger.exception("Could not remove deleted purchase receipt invoice")
+        backup_after_commit()
+        return jsonify({"ok": True, "message": "Einkaufswarenkorb wurde gelöscht."})
+
+    @app.get("/api/purchases/<int:purchase_id>/invoice")
+    @login_required
+    def purchase_invoice(purchase_id: int):
+        """Serve an invoice only when it belongs to an existing booking."""
+
+        purchase = get_db().execute(
+            "SELECT invoice_file_path FROM purchases WHERE id = ?", (purchase_id,)
+        ).fetchone()
+        target = invoice_storage_path(purchase["invoice_file_path"] if purchase else None)
+        if target is None or not target.is_file():
+            abort(404)
+        return send_file(target, as_attachment=False, download_name=target.name)
+
+    @app.post("/api/purchase-receipts/<receipt_id>/attachments")
+    @login_required
+    def add_purchase_receipt_attachments(receipt_id: str):
+        """Attach one or more invoice files to an already saved purchase cart."""
+
+        connection = get_db()
+        stored_files: list[str] = []
+        try:
+            purchase = connection.execute(
+                "SELECT id FROM purchases WHERE receipt_id = ? LIMIT 1", (receipt_id,)
+            ).fetchone()
+            if purchase is None:
+                return jsonify({"ok": False, "error": "Einkaufswarenkorb wurde nicht gefunden."}), 404
+            uploaded_invoices = [
+                uploaded_file
+                for uploaded_file in request.files.getlist("cart_invoice_files")
+                if getattr(uploaded_file, "filename", "")
+            ]
+            if not uploaded_invoices:
+                raise ValueError("Bitte mindestens eine Rechnung auswählen.")
+
+            connection.execute("BEGIN IMMEDIATE")
+            for uploaded_invoice in uploaded_invoices:
+                file_path = save_invoice_file(uploaded_invoice, receipt_id)
+                if not file_path:
+                    continue
+                stored_files.append(file_path)
+                connection.execute(
+                    """
+                    INSERT INTO purchase_receipt_attachments (receipt_id, file_path, created_at, created_by)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (receipt_id, file_path, utc_now(), g.user["id"]),
+                )
+            audit(
+                connection,
+                "add_attachment",
+                "purchase_receipt",
+                purchase["id"],
+                {"receipt_id": receipt_id, "attachment_count": len(stored_files)},
+            )
+            connection.commit()
+        except ValueError as exc:
+            connection.rollback()
+            for file_path in stored_files:
+                delete_invoice_file(file_path)
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception:
+            connection.rollback()
+            for file_path in stored_files:
+                delete_invoice_file(file_path)
+            current_app.logger.exception("Could not add purchase receipt attachment")
+            return jsonify({"ok": False, "error": "Die Rechnung konnte nicht angehängt werden."}), 500
+
+        backup_after_commit()
+        return jsonify({"ok": True, "attachment_count": len(stored_files), "message": "Rechnung angehängt."})
+
+    @app.get("/api/purchase-receipts/<receipt_id>/attachments/<int:attachment_id>")
+    @login_required
+    def purchase_receipt_attachment(receipt_id: str, attachment_id: int):
+        """Serve a cart invoice only when it belongs to that purchase receipt."""
+
+        attachment = get_db().execute(
+            "SELECT file_path FROM purchase_receipt_attachments WHERE id = ? AND receipt_id = ?",
+            (attachment_id, receipt_id),
+        ).fetchone()
+        target = invoice_storage_path(attachment["file_path"] if attachment else None)
+        if target is None or not target.is_file():
+            abort(404)
+        return send_file(target, as_attachment=False, download_name=target.name)
 
     @app.get("/historie")
     @login_required
@@ -2467,6 +3188,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if request.path.startswith("/api/"):
             return jsonify({"ok": False, "error": error.description}), 400
         return render_template("error.html", title="Ungültige Anfrage", message=error.description), 400
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def invoice_request_too_large(_: RequestEntityTooLarge):
+        message = "Die Rechnungsdatei darf höchstens 10 MB groß sein."
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": message}), 413
+        return render_template("error.html", title="Datei zu groß", message=message), 413
 
     @app.errorhandler(403)
     def forbidden(_: Exception):

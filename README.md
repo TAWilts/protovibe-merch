@@ -25,7 +25,10 @@ Bestand, Bilanz und CSV-Export.
   sich bereits beim Bearbeiten der Optionen. Neue Artikel starten mit `Schwarz`,
   `Weiß` sowie `S` bis `XXL`, die jederzeit editierbar sind.
 - **Einkäufe:** der zuletzt für eine Variante bezahlte Preis wird übernommen,
-  kann aber pro Einkauf geändert werden.
+  kann aber pro Einkauf geändert werden. Die vollständige Einkaufshistorie
+  bleibt sichtbar; Einträge lassen sich nach einer dreisekündigen
+  Sicherheitsbestätigung bearbeiten oder löschen. Rechnungen können direkt als
+  PDF, PNG oder JPG (bis 10 MB) per Drag-and-drop angehängt werden.
 - **Historie:** jeder Kauf erscheint als Beleg, dessen Warenkorb sich über den
   Pfeil links aufklappen lässt – inklusive Kontakt, Bezahlt-/Erhalten-Status,
   Bezahlart, Spende und Kommentar.
@@ -48,7 +51,8 @@ Bestand, Bilanz und CSV-Export.
   Vorgängen herausgerechnet.
 - **Export & Sicherung:** Download als CSV/ZIP sowie automatische Sicherung
   nach jeder erfolgreichen Änderung, einschließlich Versand- und
-  Zahlungsstatus.
+  Zahlungsstatus. Hochgeladene Rechnungen gehören zum jeweiligen
+  Sicherungspunkt dazu.
 - **Legacy-Import:** ein Skript importiert die vorhandene ODS als echte
   Buchungen, nicht als fragile Tabellenformeln.
 
@@ -168,6 +172,13 @@ Nach jedem erfolgreichen Verkauf, Einkauf oder Artikel-Update legt die App in
 - `merch.sqlite3` – vollständige, wiederherstellbare Datenbankkopie;
 - `artikel.csv`, `verkaeufe.csv`, `einkaeufe.csv`, `bestand.csv` – lesbare
   Tabellenexporte.
+- `invoices/` – die zum Sicherungszeitpunkt vorhandenen hochgeladenen
+  Rechnungen. Die App verwendet dafür platzsparende Hardlinks, sofern das
+  Dateisystem sie unterstützt.
+
+Rechnungen selbst liegen im laufenden System unter `data/invoices/`. Beim
+Ersetzen oder Löschen eines Einkaufs wird der zugehörige Anhang ebenfalls
+entfernt; die Änderung wird im Audit-Protokoll festgehalten.
 
 Alte Sicherungsordner werden nach der in `.env` gesetzten Anzahl von Tagen
 gelöscht.  Ergänzend ist ein Synology-Snapshot oder Hyper Backup des gesamten
@@ -200,7 +211,7 @@ Verkaufsbelege.
    docker exec -it protovibe-merch python scripts/import_ods.py /import/protovibe-merch-bereinigt.ods
    ```
 
-4. Lade die App neu und kontrolliere zuerst Artikelbilanz, einzelne Einkäufe
+4. Lade die App neu und kontrolliere zuerst Artikelbilanz, Einkaufswarenkörbe
    und ein paar alte Verkäufe.
 
 Das Skript erkennt weiterhin auch die ursprüngliche ODS mit den Spalten
@@ -214,6 +225,10 @@ Das Importskript verwendet für Buchungen immer die Eingangsdaten
 `Stück × Preis/Stück`. Es kopiert also nicht versehentlich eine fehlerhafte
 Berechnung aus einer abgeleiteten ODS-Spalte.
 
+Einkaufszeilen desselben Kalendertags werden beim Import als ein
+Einkaufswarenkorb mit gemeinsamer Beleg-ID angelegt. Preis, Lieferant,
+Rechnungsnummer und Kommentar bleiben dabei an der jeweiligen Position.
+
 ## Für Entwickler: Orientierung im Quellcode
 
 | Datei/Ordner | Aufgabe |
@@ -222,7 +237,7 @@ Berechnung aus einer abgeleiteten ODS-Spalte.
 | `templates/` | Deutsche servergerenderte Oberflächen, ein Template pro Reiter. |
 | `static/transaction.js` | Generische Artikelauswahl – kennt keine fest verdrahteten Optionen wie Farbe/Größe. |
 | `static/sales.js` | Verkaufsspezifische Logik, Warenkorb, Belegvorschau und Spendenberechnung. |
-| `static/purchases.js` | Einkaufsspezifische Logik und Übernahme des letzten Einkaufspreises. |
+| `static/purchases.js` | Einkaufswarenkorb, positions- und warenkorbbezogene Rechnungsanhänge sowie abgesicherte Korrektur/Löschung. |
 | `static/operations.js` | Speichert die Statusänderungen für offene Sendungen und Zahlungen. |
 | `static/articles.js` | Dynamische Optionsspalten, Live-Vorschau der Varianten sowie Mindestbestands- und Angebotssteuerung. |
 | `scripts/import_ods.py` | Einmaliger ODS-Migrationsimport. |

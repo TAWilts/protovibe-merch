@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-title-row">
   <div><p class="eyebrow">Wareneingang</p><h1>Einkäufe</h1></div>
-  <div class="receipt-preview"><span>Beleg-ID</span><strong id="purchase-receipt-preview">Wird geladen …</strong></div>
+  <div class="receipt-preview" aria-label="Vorschau der Beleg-ID"><span>Beleg-ID</span><strong id="purchase-receipt-preview">Wird geladen …</strong></div>
 </div>
 
 <section class="transaction-layout" id="purchase-app">
@@ -15,9 +15,10 @@
       <button type="button" class="selection-button" data-article-id="{{ article.id }}" {% if not article.is_config_complete %}disabled{% endif %}>
         <span>{{ article.name }}</span><small>{{ article.total_stock }} auf Lager</small>
       </button>
-      {% endfor %}
+      {% else %}<p class="muted">Noch keine Artikel vorhanden.</p>{% endfor %}
     </div>
   </aside>
+
   <section class="selection-panel option-panel">
     <h2>Optionen</h2>
     <div id="purchase-option-groups" class="option-groups"><div class="empty-selection">Bitte links einen Artikel auswählen.</div></div>
@@ -25,37 +26,125 @@
       <span>Ausgewählte Variante</span><strong id="purchase-selected-variant-label"></strong>
     </div>
   </section>
+
   <section class="selection-panel sale-details">
     <div class="field-grid two-columns">
-      <label>Datum<input id="purchased-on" type="date" value="{{ today }}"></label>
+      <label>Datum des Warenkorbs<input id="purchased-on" type="date" value="{{ today }}"></label>
       <label>Preis pro Stück<input id="unit-cost" inputmode="decimal" placeholder="z. B. 11,00"></label>
     </div>
     <p class="muted compact-copy" id="last-cost-hint">Nach Auswahl wird der letzte Einkaufspreis übernommen.</p>
-    <label>Lieferant<input id="supplier" placeholder="Optional"></label>
-    <label>Rechnungsnummer / Dateipfad<input id="invoice-reference" placeholder="Optional"></label>
-    <label>Kommentar<textarea id="purchase-comment" rows="2" placeholder="Optional"></textarea></label>
+    <label>Lieferant dieser Position<input id="supplier" placeholder="Optional"></label>
+    <label>Rechnungsnummer dieser Position<input id="invoice-reference" placeholder="Optional"></label>
+    <div id="purchase-invoice-dropzone" class="file-dropzone" role="button" tabindex="0" aria-describedby="purchase-invoice-file-status">
+      <input id="purchase-invoice-file" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" hidden>
+      <strong>Rechnung an diesem Artikel ablegen</strong><span>oder klicken zum Auswählen · PDF, PNG oder JPG · max. 10 MB</span>
+    </div>
+    <p id="purchase-invoice-file-status" class="file-status">Keine Datei für diese Position ausgewählt.</p>
+    <label>Kommentar dieser Position<textarea id="purchase-comment" rows="2" placeholder="Optional"></textarea></label>
     <div class="quantity-and-total">
       <label class="quantity-control">Anzahl
         <span class="stepper">
-          <button id="purchase-quantity-minus" type="button">−</button>
+          <button id="purchase-quantity-minus" type="button" aria-label="Anzahl verringern">−</button>
           <input id="purchase-quantity" type="number" min="1" value="1" inputmode="numeric">
-          <button id="purchase-quantity-plus" type="button">+</button>
+          <button id="purchase-quantity-plus" type="button" aria-label="Anzahl erhöhen">+</button>
         </span>
       </label>
-      <div class="total-box"><span>Einkaufswert</span><strong id="purchase-total">0,00 €</strong></div>
+      <div class="total-box"><span>Diese Position</span><strong id="purchase-total">0,00 €</strong></div>
     </div>
-    <button id="confirm-purchase" class="primary-button large-button" type="button" disabled>Einkauf bestätigen</button>
+    <button id="add-purchase-cart-item" class="secondary-button full-width" type="button" disabled>Artikel hinzufügen</button>
+
+    <section class="cart-section" aria-labelledby="purchase-cart-heading">
+      <div class="cart-heading"><h3 id="purchase-cart-heading">Einkaufswarenkorb</h3><span><span id="purchase-cart-item-count" class="muted">0 Artikel</span> · <strong id="purchase-cart-total" class="cart-total-preview">0,00 €</strong></span></div>
+      <div id="purchase-cart-items" class="cart-items" aria-live="polite"><p class="muted">Noch keine Artikel hinzugefügt.</p></div>
+    </section>
+
+    <div id="purchase-cart-invoice-dropzone" class="file-dropzone" role="button" tabindex="0" aria-describedby="purchase-cart-invoice-status">
+      <input id="purchase-cart-invoice-files" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" hidden>
+      <strong>Rechnung am gesamten Warenkorb ablegen</strong><span>Für den gesamten Einkauf · mehrere PDF-, PNG- oder JPG-Dateien möglich · je max. 10 MB</span>
+    </div>
+    <p id="purchase-cart-invoice-status" class="file-status">Keine Rechnung am Warenkorb ausgewählt.</p>
+    <div id="purchase-cart-invoice-list" class="attachment-file-list" aria-live="polite"></div>
+
+    <button id="confirm-purchase" class="primary-button large-button" type="button" disabled>Warenkorb bestätigen</button>
     <p class="form-error" id="purchase-error" role="alert" hidden></p>
   </section>
 </section>
 
 <section class="table-section">
-  <div class="section-heading"><div><h2>Letzte Einkäufe</h2><p>Die letzten 15 Wareneingänge.</p></div><a class="secondary-button" href="{{ url_for('export_csv', kind='purchases') }}">CSV exportieren</a></div>
-  <div class="table-scroll"><table><thead><tr><th>Datum</th><th>Beleg</th><th>Artikel</th><th>Stück</th><th>Preis/Stück</th><th>Lieferant</th></tr></thead>
-  <tbody>{% for purchase in purchases %}<tr><td>{{ purchase.purchased_on }}</td><td>{{ purchase.receipt_id }}</td><td>{{ purchase.label }}</td><td>{{ purchase.quantity }}</td><td>{{ purchase.unit_cost_cents|money }}</td><td>{{ purchase.supplier or '—' }}</td></tr>{% else %}<tr><td colspan="6" class="empty-cell">Noch keine Einkäufe erfasst.</td></tr>{% endfor %}</tbody></table></div>
+  <div class="section-heading"><div><h2>Alle Einkaufswarenkörbe</h2><p>{{ receipts|length }} Warenkörbe, absteigend nach Datum sortiert.</p></div><a class="secondary-button" href="{{ url_for('export_csv', kind='purchases') }}">CSV exportieren</a></div>
+  <div class="table-scroll"><table class="purchases-table"><thead><tr><th></th><th>Datum</th><th>Beleg</th><th>Artikel</th><th>Stück</th><th>Gesamt</th><th>Beleg-Anhänge</th><th></th></tr></thead>
+  <tbody>{% for receipt in receipts %}
+    <tr>
+      <td class="cart-toggle-cell"><button type="button" class="cart-toggle" data-purchase-cart-toggle data-receipt-id="{{ receipt.receipt_id }}" aria-expanded="false" aria-label="Warenkorb {{ receipt.receipt_id }} anzeigen">▸</button></td>
+      <td>{{ receipt.purchased_on }}</td><td class="mono">{{ receipt.receipt_id }}</td>
+      <td><strong>{{ receipt.summary_label }}</strong>{% if receipt.summary_options %}<small class="table-subline">{{ receipt.summary_options }}</small>{% endif %}</td>
+      <td>{{ receipt.total_quantity }}</td><td>{{ receipt.total_cost_cents|money }}</td>
+      <td>{% if receipt["attachments"] %}{{ receipt["attachments"]|length }} am Warenkorb{% else %}—{% endif %}</td>
+      <td class="purchase-actions"><button type="button" class="danger-button compact-button" data-delete-purchase-cart data-receipt-id="{{ receipt.receipt_id }}">Warenkorb löschen</button></td>
+    </tr>
+    <tr class="cart-details-row" data-purchase-cart-details="{{ receipt.receipt_id }}" hidden><td colspan="8">
+      <div class="cart-details-panel purchase-cart-details-panel">
+        <div class="purchase-receipt-attachments">
+          <div><h3 class="cart-details-title">Anhänge am gesamten Warenkorb</h3>
+            <div class="receipt-attachment-links">
+              {% for attachment in receipt["attachments"] %}<a class="invoice-link" href="{{ url_for('purchase_receipt_attachment', receipt_id=receipt.receipt_id, attachment_id=attachment.id) }}" target="_blank" rel="noopener">Rechnung {{ loop.index }} öffnen</a>{% else %}<span class="muted">Noch kein Anhang am Warenkorb.</span>{% endfor %}
+            </div>
+          </div>
+          <div class="file-dropzone compact-dropzone" role="button" tabindex="0" data-receipt-attachment-dropzone data-receipt-id="{{ receipt.receipt_id }}" aria-describedby="receipt-attachment-status-{{ receipt.primary_purchase_id }}">
+            <input id="receipt-attachment-input-{{ receipt.primary_purchase_id }}" type="file" multiple hidden accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" data-receipt-attachment-input data-receipt-id="{{ receipt.receipt_id }}">
+            <strong>Weitere Beleg-Anhänge</strong><span>Datei(en) ablegen oder auswählen</span>
+          </div>
+          <p id="receipt-attachment-status-{{ receipt.primary_purchase_id }}" class="file-status" data-receipt-attachment-status data-receipt-id="{{ receipt.receipt_id }}"></p>
+        </div>
+        <p class="cart-details-title">Positionen dieses Einkaufs</p>
+        <div class="table-scroll cart-detail-scroll"><table class="cart-detail-table"><thead><tr><th>Artikel</th><th>Stück</th><th>Preis/Stück</th><th>Gesamt</th><th>Lieferant</th><th>Rechnung</th><th>Kommentar</th><th></th></tr></thead><tbody>
+          {% for purchase in receipt["items"] %}<tr>
+            <td><strong>{{ purchase.article_name }}</strong>{% if purchase.option_text %}<small class="table-subline">{{ purchase.option_text }}</small>{% endif %}</td><td>{{ purchase.quantity }}</td><td>{{ purchase.unit_cost_cents|money }}</td><td>{{ (purchase.quantity * purchase.unit_cost_cents)|money }}</td><td>{{ purchase.supplier or '—' }}</td>
+            <td>{% if purchase.invoice_file_path %}<a class="invoice-link" href="{{ url_for('purchase_invoice', purchase_id=purchase.purchase_id) }}" target="_blank" rel="noopener">Position öffnen</a>{% endif %}{% if purchase.invoice_reference %}<small class="table-subline">{{ purchase.invoice_reference }}</small>{% elif not purchase.invoice_file_path %}—{% endif %}</td><td>{{ purchase.comment or '—' }}</td>
+            <td class="purchase-actions"><div class="button-group"><button type="button" class="secondary-button compact-button" data-edit-purchase data-purchase-id="{{ purchase.purchase_id }}">Bearbeiten</button><button type="button" class="danger-button compact-button" data-delete-purchase data-purchase-id="{{ purchase.purchase_id }}">Entfernen</button></div></td>
+          </tr>{% endfor %}
+        </tbody></table></div>
+      </div>
+    </td></tr>
+  {% else %}<tr><td colspan="8" class="empty-cell">Noch keine Einkäufe erfasst.</td></tr>{% endfor %}</tbody></table></div>
 </section>
 
-<dialog id="purchase-success-dialog" class="success-dialog"><div class="success-icon">✓</div><h2>Einkauf erfolgreich</h2><p>Der Wareneingang wurde mit der Beleg-ID <strong id="purchase-success-receipt"></strong> gespeichert.</p><button id="purchase-close-success" class="primary-button" type="button">Nächsten Einkauf erfassen</button></dialog>
+<dialog id="purchase-edit-dialog" class="confirmation-dialog purchase-edit-dialog" aria-labelledby="purchase-edit-title">
+  <h2 id="purchase-edit-title">Position bearbeiten?</h2>
+  <p>Du bearbeitest eine Position aus <strong id="purchase-edit-receipt"></strong> vom <span id="purchase-edit-date"></span>.</p>
+  <p class="notice">Änderungen wirken sofort auf Bestand und Bilanz. Die Bestätigung wird nach drei Sekunden freigeschaltet und die Änderung wird protokolliert.</p>
+  <div class="field-grid two-columns"><label>Preis pro Stück<input id="edit-unit-cost" inputmode="decimal" placeholder="z. B. 11,00"></label><label class="quantity-control">Anzahl<input id="edit-purchase-quantity" type="number" min="1" inputmode="numeric"></label></div>
+  <label>Artikel / Variante<select id="edit-purchase-variant"></select></label>
+  <label>Lieferant<input id="edit-supplier" placeholder="Optional"></label>
+  <label>Rechnungsnummer<input id="edit-invoice-reference" placeholder="Optional"></label>
+  <div id="edit-invoice-dropzone" class="file-dropzone" role="button" tabindex="0" aria-describedby="edit-invoice-file-status">
+    <input id="edit-invoice-file" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" hidden>
+    <strong>Rechnung an dieser Position hochladen</strong><span>Eine vorhandene Datei wird ersetzt · PDF, PNG oder JPG · max. 10 MB</span>
+  </div>
+  <p id="edit-invoice-file-status" class="file-status">Keine neue Datei ausgewählt.</p><p id="edit-existing-invoice" class="file-status" hidden></p>
+  <label>Kommentar<textarea id="edit-purchase-comment" rows="2" placeholder="Optional"></textarea></label>
+  <p id="purchase-edit-error" class="form-error" role="alert" hidden></p>
+  <div class="dialog-actions"><button id="close-purchase-edit-dialog" class="secondary-button" type="button">Abbrechen</button><button id="save-purchase-edit" class="primary-button" type="button" disabled>Speichern (3)</button></div>
+</dialog>
+
+<dialog id="purchase-item-delete-dialog" class="confirmation-dialog" aria-labelledby="purchase-item-delete-title">
+  <h2 id="purchase-item-delete-title">Position entfernen?</h2>
+  <p>Die Position <strong id="purchase-item-delete-label"></strong> wird aus dem Warenkorb entfernt. Bestand und Bilanz werden entsprechend korrigiert.</p>
+  <p class="notice">Ein Anhang an dieser Position wird ebenfalls gelöscht. Die Bestätigung wird nach drei Sekunden freigeschaltet und die Löschung wird protokolliert.</p>
+  <p id="purchase-item-delete-error" class="form-error" role="alert" hidden></p>
+  <div class="dialog-actions"><button id="close-purchase-item-delete-dialog" class="secondary-button" type="button">Abbrechen</button><button id="confirm-purchase-item-delete" class="danger-button" type="button" disabled>Entfernen (3)</button></div>
+</dialog>
+
+<dialog id="purchase-cart-delete-dialog" class="confirmation-dialog" aria-labelledby="purchase-cart-delete-title">
+  <h2 id="purchase-cart-delete-title">Gesamten Warenkorb löschen?</h2>
+  <p>Der Einkaufswarenkorb <strong id="purchase-cart-delete-receipt"></strong> wird mit allen Positionen und Beleg-Anhängen gelöscht.</p>
+  <p class="notice">Bestand und Bilanz werden für alle Positionen korrigiert. Die Bestätigung wird nach drei Sekunden freigeschaltet und die Löschung wird protokolliert.</p>
+  <p id="purchase-cart-delete-error" class="form-error" role="alert" hidden></p>
+  <div class="dialog-actions"><button id="close-purchase-cart-delete-dialog" class="secondary-button" type="button">Abbrechen</button><button id="confirm-purchase-cart-delete" class="danger-button" type="button" disabled>Warenkorb löschen (3)</button></div>
+</dialog>
+
+<dialog id="purchase-success-dialog" class="success-dialog"><div class="success-icon">✓</div><h2>Einkaufswarenkorb erfolgreich</h2><p>Der Einkauf wurde mit der Beleg-ID <strong id="purchase-success-receipt"></strong> gespeichert.</p><button id="purchase-close-success" class="primary-button" type="button">Nächsten Einkauf erfassen</button></dialog>
 <script id="purchase-articles-data" type="application/json">{{ articles|tojson }}</script>
+<script id="purchase-history-data" type="application/json">{{ receipts|tojson }}</script>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='transaction.js') }}"></script><script src="{{ url_for('static', filename='purchases.js') }}"></script>{% endblock %}

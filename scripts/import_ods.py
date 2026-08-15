@@ -23,7 +23,15 @@ from typing import Any
 from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
-# The command is run from /app in the Docker image, where app.py is importable.
+# Python normally puts ``scripts/`` rather than the repository root on
+# ``sys.path`` when this file is invoked directly.  Keep both documented forms
+# working: ``python scripts/import_ods.py …`` and ``python -m scripts.import_ods
+# …``.  The latter was previously required on some local VS Code setups.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+# The command is run from /app in the Docker image, where app.py lives.
 from app import (
     apply_option_configuration,
     csv_bytes,
@@ -339,7 +347,12 @@ def import_normalised_sheets(
                 )
                 variant_ids[entry["source_variant_key"]] = variant_id
 
+        # The source sheets list purchase positions line by line.  A date is
+        # the only reliable common receipt marker in the legacy data, so all
+        # purchases from one day become one multi-item cart on import.  This
+        # intentionally supersedes any old per-line Einkauf-ID.
         imported_purchases = 0
+        purchase_receipts_by_date: dict[str, str] = {}
         for row_number, row in enumerate(purchase_rows, start=1):
             source_variant_key = cell_text(row, purchase_headers.get("Varianten-ID"))
             variant_id = variant_ids.get(source_variant_key)
@@ -348,7 +361,10 @@ def import_normalised_sheets(
             quantity = cell_quantity(row, purchase_headers.get("Stück"))
             if quantity <= 0:
                 continue
-            receipt_id = cell_text(row, purchase_headers.get("Einkauf-ID")) or f"IMPORT-E-{row_number:04d}"
+            purchased_on = normalise_date(row, purchase_headers.get("Datum"))
+            receipt_id = purchase_receipts_by_date.setdefault(
+                purchased_on, f"IMPORT-E-{purchased_on.replace('-', '')}"
+            )
             invoice_reference = (
                 cell_text(row, purchase_headers.get("Rechnungsnummer/Name"))
                 or cell_text(row, purchase_headers.get("Rechnungsnummer/Name (Dateipfad auf dem Server)"))
@@ -366,7 +382,7 @@ def import_normalised_sheets(
                     variant_id,
                     quantity,
                     cell_number(row, purchase_headers.get("Preis/Stück"), "Preis/Stück"),
-                    normalise_date(row, purchase_headers.get("Datum")),
+                    purchased_on,
                     invoice_reference,
                     cell_text(row, purchase_headers.get("Kommentar")) or None,
                     now,
@@ -411,7 +427,8 @@ def import_normalised_sheets(
         create_initial_backup(connection, database)
         print(
             f"Import abgeschlossen: {len(entries_by_article)} Artikel, "
-            f"{imported_purchases} Einkäufe, {imported_sales} Verkäufe."
+            f"{imported_purchases} Einkaufspositionen in {len(purchase_receipts_by_date)} Warenkörben, "
+            f"{imported_sales} Verkäufe."
         )
     except Exception:
         connection.rollback()
@@ -506,6 +523,7 @@ def import_file(path: Path, database: Path) -> None:
             return variant_ids.get(cell_text(row, purchase_headers.get("Artikel")))
 
         imported_purchases = 0
+        purchase_receipts_by_date: dict[str, str] = {}
         for row_number, row in enumerate(purchase_rows, start=1):
             legacy_name = cell_text(row, purchase_headers.get("Artikel"))
             variant_id = variant_ids.get(legacy_name)
@@ -515,6 +533,10 @@ def import_file(path: Path, database: Path) -> None:
             quantity = cell_quantity(row, purchase_headers.get("Stück"))
             if quantity <= 0:
                 continue
+            purchased_on = normalise_date(row, purchase_headers.get("Datum"))
+            receipt_id = purchase_receipts_by_date.setdefault(
+                purchased_on, f"IMPORT-E-{purchased_on.replace('-', '')}"
+            )
             connection.execute(
                 """
                 INSERT INTO purchases (
@@ -523,9 +545,9 @@ def import_file(path: Path, database: Path) -> None:
                 ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)
                 """,
                 (
-                    f"IMPORT-E-{row_number:04d}", variant_id, quantity,
+                    receipt_id, variant_id, quantity,
                     cell_number(row, purchase_headers.get("Preis/Stück"), "Preis/Stück"),
-                    normalise_date(row, purchase_headers.get("Datum")),
+                    purchased_on,
                     cell_text(row, purchase_headers.get("Rechnungsnummer/Name (Dateipfad auf dem Server)")) or None,
                     cell_text(row, purchase_headers.get("Kommentar")) or None, now,
                 ),
@@ -562,7 +584,11 @@ def import_file(path: Path, database: Path) -> None:
 
         connection.commit()
         create_initial_backup(connection, database)
-        print(f"Import abgeschlossen: {len(entries_by_article)} Artikel, {imported_purchases} Einkäufe, {imported_sales} Verkäufe.")
+        print(
+            f"Import abgeschlossen: {len(entries_by_article)} Artikel, "
+            f"{imported_purchases} Einkaufspositionen in {len(purchase_receipts_by_date)} Warenkörben, "
+            f"{imported_sales} Verkäufe."
+        )
     except Exception:
         connection.rollback()
         raise

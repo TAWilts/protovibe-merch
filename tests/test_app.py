@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
 import tempfile
@@ -12,6 +13,7 @@ from unittest.mock import patch
 from app import (
     apply_option_configuration,
     balance_payload,
+    create_backup,
     csv_rows,
     create_app,
     get_db,
@@ -30,6 +32,7 @@ class MerchAppTestCase(unittest.TestCase):
                 "SECRET_KEY": "test-secret",
                 "DATABASE": str(root / "merch.sqlite3"),
                 "BACKUP_DIR": str(root / "backups"),
+                "INVOICE_UPLOAD_DIR": str(root / "invoices"),
                 "ADMIN_USERNAME": "tester",
                 "ADMIN_PASSWORD": "test-password",
                 "APP_VERSION": "v0.3.0",
@@ -55,6 +58,7 @@ class MerchAppTestCase(unittest.TestCase):
                     "SECRET_KEY": "test-secret",
                     "DATABASE": str(root / "merch.sqlite3"),
                     "BACKUP_DIR": str(root / "backups"),
+                    "INVOICE_UPLOAD_DIR": str(root / "invoices"),
                     "ADMIN_USERNAME": "tester",
                     "ADMIN_PASSWORD": "test-password",
                     "AUTO_BACKUP": False,
@@ -141,6 +145,78 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("is_offered", variant_columns)
         self.assertIn("is_offered", article_columns)
         self.assertTrue(legacy_variant_is_offered)
+
+    def test_existing_purchase_table_gets_invoice_attachment_column(self) -> None:
+        """A deployed database upgrades without losing its free-text reference."""
+
+        legacy_database = Path(self.tempdir.name) / "legacy-purchases.sqlite3"
+        connection = sqlite3.connect(legacy_database)
+        try:
+            # A real deployed purchase table always references existing
+            # catalogue rows.  The small fixture needs only that primary key
+            # for the migration's reconstructed foreign key.
+            connection.execute(
+                "CREATE TABLE variants (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL DEFAULT 1, is_active INTEGER NOT NULL DEFAULT 1)"
+            )
+            connection.execute("INSERT INTO variants (id) VALUES (1)")
+            connection.execute(
+                """
+                CREATE TABLE purchases (
+                    id INTEGER PRIMARY KEY,
+                    receipt_id TEXT NOT NULL UNIQUE,
+                    variant_id INTEGER NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    unit_cost_cents INTEGER NOT NULL,
+                    purchased_on TEXT NOT NULL,
+                    supplier TEXT,
+                    invoice_reference TEXT,
+                    comment TEXT,
+                    created_at TEXT NOT NULL,
+                    created_by INTEGER
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO purchases (
+                    receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
+                    invoice_reference, created_at
+                ) VALUES ('E-20260814-001', 1, 1, 1100, '2026-08-14', 'ALT-42', '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO purchases (
+                    receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
+                    invoice_reference, created_at
+                ) VALUES ('E-20260814-002', 1, 2, 900, '2026-08-14', 'ALT-43', '2026-08-14T00:01:00+00:00')
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        legacy_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": str(legacy_database),
+                "BACKUP_DIR": str(Path(self.tempdir.name) / "legacy-purchase-backups"),
+                "INVOICE_UPLOAD_DIR": str(Path(self.tempdir.name) / "legacy-purchase-invoices"),
+                "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password",
+                "AUTO_BACKUP": False,
+            }
+        )
+        with legacy_app.app_context():
+            columns = {row["name"] for row in get_db().execute("PRAGMA table_info(purchases)").fetchall()}
+            references = get_db().execute(
+                "SELECT receipt_id, invoice_reference, invoice_file_path FROM purchases ORDER BY id"
+            ).fetchall()
+        self.assertIn("invoice_file_path", columns)
+        self.assertEqual([row["receipt_id"] for row in references], ["E-20260814-001", "E-20260814-001"])
+        self.assertEqual([row["invoice_reference"] for row in references], ["ALT-42", "ALT-43"])
+        self.assertTrue(all(row["invoice_file_path"] is None for row in references))
 
     def seed_variant(self, article_name: str = "Test Shirt") -> int:
         """Create an article with generic Farbe/Größe options and one variant."""
@@ -865,6 +941,283 @@ class MerchAppTestCase(unittest.TestCase):
             connection.commit()
             label = variant_label_map(connection, [variant_id])[variant_id]["label"]
         self.assertIn("Farbe: Schwarz", label)
+
+    def test_purchase_invoice_upload_edit_delete_and_backup(self) -> None:
+        """Invoices are atomically attached, replaceable and recoverable."""
+
+        first_variant_id = self.seed_variant("Invoice Shirt")
+        second_variant_id = self.seed_variant("Invoice Hoodie")
+        purchase = self.client.post(
+            "/api/purchases",
+            data={
+                "variant_id": str(first_variant_id),
+                "quantity": "4",
+                "unit_cost": "11,00",
+                "purchased_on": "2026-08-14",
+                "supplier": "Merch Druck",
+                "invoice_reference": "RG-42",
+                "comment": "erste Lieferung",
+                "invoice_file": (io.BytesIO(b"%PDF-1.7\nInvoice test\n"), "rechnung.pdf"),
+            },
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(purchase.status_code, 200)
+        self.assertTrue(purchase.json["has_invoice_file"])
+        with self.app.app_context():
+            connection = get_db()
+            purchase_row = connection.execute("SELECT * FROM purchases").fetchone()
+            purchase_id = purchase_row["id"]
+            first_invoice_name = purchase_row["invoice_file_path"]
+            first_invoice_path = Path(self.app.config["INVOICE_UPLOAD_DIR"]) / first_invoice_name
+        self.assertTrue(first_invoice_path.is_file())
+        invoice_response = self.client.get(f"/api/purchases/{purchase_id}/invoice")
+        self.assertEqual(invoice_response.data, b"%PDF-1.7\nInvoice test\n")
+        invoice_response.close()
+
+        # A recovery snapshot contains the attachment matching its SQLite row.
+        self.app.config["AUTO_BACKUP"] = True
+        create_backup(self.app)
+        backup_invoices = list(Path(self.app.config["BACKUP_DIR"]).glob("*/invoices/*"))
+        self.assertEqual(len(backup_invoices), 1)
+        self.assertEqual(backup_invoices[0].read_bytes(), b"%PDF-1.7\nInvoice test\n")
+        self.app.config["AUTO_BACKUP"] = False
+
+        page = self.client.get("/einkaeufe").get_data(as_text=True)
+        self.assertIn("Alle Einkaufswarenkörbe", page)
+        self.assertIn("Position öffnen", page)
+        self.assertIn(f'data-edit-purchase data-purchase-id="{purchase_id}"', page)
+
+        update = self.client.patch(
+            f"/api/purchases/{purchase_id}",
+            data={
+                "variant_id": str(second_variant_id),
+                "quantity": "2",
+                "unit_cost": "13,50",
+                "purchased_on": "2026-08-15",
+                "supplier": "Merch Druck Nord",
+                "invoice_reference": "RG-43",
+                "comment": "korrigierte Lieferung",
+                "invoice_file": (io.BytesIO(b"\x89PNG\r\n\x1a\nreplacement"), "rechnung-neu.png"),
+            },
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(update.status_code, 200)
+        with self.app.app_context():
+            connection = get_db()
+            updated = connection.execute("SELECT * FROM purchases WHERE id = ?", (purchase_id,)).fetchone()
+            balances = balance_payload(connection)
+            audit_actions = [row[0] for row in connection.execute("SELECT action FROM audit_log ORDER BY id").fetchall()]
+        self.assertEqual(updated["variant_id"], second_variant_id)
+        self.assertEqual(updated["quantity"], 2)
+        self.assertEqual(updated["unit_cost_cents"], 1350)
+        self.assertEqual(updated["invoice_reference"], "RG-43")
+        self.assertFalse(first_invoice_path.exists())
+        replacement_path = Path(self.app.config["INVOICE_UPLOAD_DIR"]) / updated["invoice_file_path"]
+        self.assertTrue(replacement_path.is_file())
+        stocks = {row["variant_id"]: row["stock"] for row in balances["rows"]}
+        self.assertEqual(stocks[first_variant_id], 0)
+        self.assertEqual(stocks[second_variant_id], 2)
+        self.assertEqual(audit_actions[-1], "update")
+
+        deletion = self.client.delete(
+            f"/api/purchases/{purchase_id}", headers={"X-CSRF-Token": "test-csrf"}
+        )
+        self.assertEqual(deletion.status_code, 200)
+        self.assertFalse(replacement_path.exists())
+        with self.app.app_context():
+            connection = get_db()
+            self.assertIsNone(connection.execute("SELECT id FROM purchases WHERE id = ?", (purchase_id,)).fetchone())
+            self.assertEqual(connection.execute("SELECT action FROM audit_log ORDER BY id DESC").fetchone()[0], "delete")
+
+    def test_purchase_cart_groups_lines_and_keeps_item_and_cart_attachments_separate(self) -> None:
+        """A multi-item purchase has one receipt but independently managed lines."""
+
+        first_variant_id = self.seed_variant("Cart Invoice Shirt")
+        second_variant_id = self.seed_variant("Cart Invoice Hoodie")
+        created = self.client.post(
+            "/api/purchases",
+            data={
+                "purchased_on": "2026-08-14",
+                "items": json.dumps(
+                    [
+                        {
+                            "variant_id": first_variant_id,
+                            "quantity": 3,
+                            "unit_cost": "11,00",
+                            "supplier": "Druckerei A",
+                            "invoice_reference": "POS-1",
+                            "comment": "Shirts",
+                        },
+                        {
+                            "variant_id": second_variant_id,
+                            "quantity": 2,
+                            "unit_cost": "22,50",
+                            "supplier": "Druckerei B",
+                            "invoice_reference": "POS-2",
+                            "comment": "Hoodies",
+                        },
+                    ]
+                ),
+                "item_invoice_0": (io.BytesIO(b"%PDF-1.7\nitem invoice\n"), "position.pdf"),
+                "cart_invoice_files": (io.BytesIO(b"%PDF-1.7\ncart invoice\n"), "warenkorb.pdf"),
+            },
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json["item_count"], 2)
+        self.assertEqual(created.json["cart_attachment_count"], 1)
+        self.assertTrue(created.json["has_invoice_file"])
+        receipt_id = created.json["receipt_id"]
+
+        with self.app.app_context():
+            connection = get_db()
+            rows = connection.execute("SELECT * FROM purchases ORDER BY id").fetchall()
+            attachment = connection.execute(
+                "SELECT * FROM purchase_receipt_attachments WHERE receipt_id = ?", (receipt_id,)
+            ).fetchone()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["receipt_id"] for row in rows}, {receipt_id})
+        self.assertEqual([row["supplier"] for row in rows], ["Druckerei A", "Druckerei B"])
+        self.assertTrue(rows[0]["invoice_file_path"])
+        self.assertIsNone(rows[1]["invoice_file_path"])
+        self.assertIsNotNone(attachment)
+
+        page = self.client.get("/einkaeufe").get_data(as_text=True)
+        self.assertIn("Warenkorb (2 Artikel)", page)
+        self.assertIn('data-purchase-cart-toggle', page)
+        self.assertIn('data-delete-purchase-cart data-receipt-id="' + receipt_id + '"', page)
+        self.assertIn("Weitere Beleg-Anhänge", page)
+        script = (Path(__file__).parents[1] / "static" / "purchases.js").read_text(encoding="utf-8")
+        self.assertIn("cart_invoice_files", script)
+        self.assertIn("data-purchase-cart-index", script)
+
+        cart_invoice = self.client.get(
+            f"/api/purchase-receipts/{receipt_id}/attachments/{attachment['id']}"
+        )
+        self.assertEqual(cart_invoice.status_code, 200)
+        self.assertEqual(cart_invoice.data, b"%PDF-1.7\ncart invoice\n")
+        cart_invoice.close()
+
+        extra_attachment = self.client.post(
+            f"/api/purchase-receipts/{receipt_id}/attachments",
+            data={"cart_invoice_files": (io.BytesIO(b"\x89PNG\r\n\x1a\nextra"), "extra.png")},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(extra_attachment.status_code, 200)
+        self.assertEqual(extra_attachment.json["attachment_count"], 1)
+
+        # The cart UI deliberately omits the date while editing one line; the
+        # server must keep the receipt date rather than replacing it by today.
+        edited = self.client.patch(
+            f"/api/purchases/{rows[0]['id']}",
+            data={
+                "variant_id": str(first_variant_id),
+                "quantity": "4",
+                "unit_cost": "12,00",
+                "supplier": "Druckerei A",
+                "invoice_reference": "POS-1b",
+                "comment": "Shirts korrigiert",
+            },
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(edited.status_code, 200)
+        with self.app.app_context():
+            connection = get_db()
+            edited_row = connection.execute("SELECT * FROM purchases WHERE id = ?", (rows[0]["id"],)).fetchone()
+            attachment_count = connection.execute(
+                "SELECT COUNT(*) FROM purchase_receipt_attachments WHERE receipt_id = ?", (receipt_id,)
+            ).fetchone()[0]
+        self.assertEqual(edited_row["purchased_on"], "2026-08-14")
+        self.assertEqual(edited_row["quantity"], 4)
+        self.assertEqual(attachment_count, 2)
+
+        # Older clients still send a date while editing a single line.  That
+        # correction must move the whole receipt, never split one cart across
+        # two days.
+        moved = self.client.patch(
+            f"/api/purchases/{rows[0]['id']}",
+            data={
+                "variant_id": str(first_variant_id),
+                "quantity": "4",
+                "unit_cost": "12,00",
+                "purchased_on": "2026-08-15",
+                "supplier": "Druckerei A",
+                "invoice_reference": "POS-1b",
+                "comment": "Shirts korrigiert",
+            },
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(moved.status_code, 200)
+        with self.app.app_context():
+            dates_in_cart = [
+                row[0]
+                for row in get_db().execute(
+                    "SELECT DISTINCT purchased_on FROM purchases WHERE receipt_id = ?", (receipt_id,)
+                ).fetchall()
+            ]
+        self.assertEqual(dates_in_cart, ["2026-08-15"])
+
+        item_deletion = self.client.delete(
+            f"/api/purchases/{rows[1]['id']}", headers={"X-CSRF-Token": "test-csrf"}
+        )
+        self.assertEqual(item_deletion.status_code, 200)
+        self.assertFalse(item_deletion.json["receipt_deleted"])
+        with self.app.app_context():
+            connection = get_db()
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM purchases").fetchone()[0], 1)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM purchase_receipt_attachments WHERE receipt_id = ?", (receipt_id,)
+                ).fetchone()[0],
+                2,
+            )
+
+        cart_deletion = self.client.delete(
+            f"/api/purchase-receipts/{receipt_id}", headers={"X-CSRF-Token": "test-csrf"}
+        )
+        self.assertEqual(cart_deletion.status_code, 200)
+        with self.app.app_context():
+            connection = get_db()
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM purchases").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM purchase_receipt_attachments").fetchone()[0], 0)
+        self.assertEqual(list(Path(self.app.config["INVOICE_UPLOAD_DIR"]).iterdir()), [])
+
+    def test_purchase_page_shows_more_than_the_former_fifteen_rows(self) -> None:
+        variant_id = self.seed_variant()
+        receipt_ids = []
+        for _ in range(16):
+            response = self.api_post(
+                "/api/purchases",
+                {"variant_id": variant_id, "quantity": 1, "unit_cost": "11", "purchased_on": "2026-08-14"},
+            )
+            self.assertEqual(response.status_code, 200)
+            receipt_ids.append(response.json["receipt_id"])
+
+        page = self.client.get("/einkaeufe").get_data(as_text=True)
+        self.assertIn("Alle Einkaufswarenkörbe", page)
+        self.assertIn("16 Warenkörbe", page)
+        self.assertIn(receipt_ids[0], page)
+        self.assertIn(receipt_ids[-1], page)
+        self.assertNotIn("Letzte Einkäufe", page)
+
+    def test_purchase_rejects_non_invoice_uploads(self) -> None:
+        variant_id = self.seed_variant()
+        response = self.client.post(
+            "/api/purchases",
+            data={
+                "variant_id": str(variant_id),
+                "quantity": "1",
+                "unit_cost": "11",
+                "purchased_on": "2026-08-14",
+                "invoice_file": (io.BytesIO(b"not an invoice"), "rechnung.txt"),
+            },
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("PDF, PNG oder JPG", response.json["error"])
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM purchases").fetchone()[0], 0)
+        self.assertEqual(list(Path(self.app.config["INVOICE_UPLOAD_DIR"]).iterdir()), [])
 
 
 if __name__ == "__main__":
