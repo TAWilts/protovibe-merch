@@ -70,7 +70,9 @@ Bestand, Bilanz und CSV-Export.
   verkaufen und Einkaufsdaten lesen, Manager verwalten zusätzlich Artikel und
   Einkaufswarenkörbe, nur der Admin verwaltet Konten oder setzt Betriebsdaten
   zurück. Konten, Passwörter und 2FA liegen unabhängig von Artikeln und
-  Buchungen in einer eigenen SQLite-Datei.
+  Buchungen in einer eigenen SQLite-Datei. Nicht-Admin-Konten lassen sich
+  nach erneuter Passwort- und 2FA-Bestätigung löschen, ohne ihre historischen
+  Buchungen zu entfernen.
   Jede Person kann ihren eigenen Benutzernamen nach einer frischen
   Sicherheitsbestätigung ändern. Der Admin benötigt eine kostenlose, lokale TOTP-2FA; die anderen Rollen
   können sie freiwillig aktivieren. Profilzugriff, Passwortwechsel und der
@@ -291,7 +293,13 @@ Projektordners empfehlenswert.
 
 Die Sicherungen enthalten bewusst keine Benutzerdatei. Die normalen
 CSV-Dateien sind zum Nachsehen/Weitergeben gedacht; die SQLite-Datei ist die
-vollständige Wiederherstellung der Betriebsdaten.
+vollständige Wiederherstellung der Betriebsdaten. Im Admin-Reiter kann ein
+bestimmter Sicherungspunkt ausgewählt und nach aktuellem Passwort plus 2FA
+wiederhergestellt werden. Vorher legt die App immer zusätzlich einen neuen
+Sicherungspunkt des aktuellen Zustands an. Dabei werden ausschließlich
+`merch.sqlite3` und Rechnungsanhänge ersetzt; `users.sqlite3` mit Konten,
+Rollen und MFA bleibt unverändert. Alte Ein-Datei-Sicherungen, die noch eine
+`users`-Tabelle enthalten, werden absichtlich nicht automatisch geladen.
 
 ## Import der bisherigen ODS
 

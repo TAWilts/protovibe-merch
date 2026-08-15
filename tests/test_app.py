@@ -809,6 +809,102 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(decrypt_mfa_secret(users[0]["mfa_secret_encrypted"], self.app), secret)
         self.assertEqual(article_count, 0)
 
+    def test_admin_can_delete_user_without_erasing_historic_sales(self) -> None:
+        """A removed account leaves its immutable booking actor snapshot behind."""
+
+        variant_id = self.seed_variant()
+        seller_id = self.create_local_user("former-seller", "seller")
+        self.become_user(seller_id)
+        self.assertEqual(
+            self.api_post(
+                "/api/sales",
+                {
+                    "variant_id": variant_id,
+                    "quantity": 1,
+                    "is_paid": True,
+                    "is_received": True,
+                    "payment_method": "Bar",
+                    "sold_on": "2026-08-14",
+                },
+            ).status_code,
+            200,
+        )
+        secret = pyotp.random_base32()
+        with self.app.app_context():
+            user_connection = get_user_db()
+            user_connection.execute(
+                "UPDATE users SET mfa_enabled = 1, mfa_secret_encrypted = ? WHERE id = 1",
+                (encrypt_mfa_secret(secret, self.app),),
+            )
+            user_connection.commit()
+        self.become_user(1)
+
+        deleted = self.client.post(
+            f"/verwaltung/benutzer/{seller_id}/loeschen",
+            data={
+                "csrf_token": "test-csrf",
+                "password": "test-password",
+                "mfa_code": pyotp.TOTP(secret).now(),
+                "confirmation": "BENUTZER LÖSCHEN",
+            },
+        )
+        self.assertEqual(deleted.status_code, 302)
+        with self.app.app_context():
+            account = get_user_db().execute("SELECT id FROM users WHERE id = ?", (seller_id,)).fetchone()
+            sale = get_db().execute(
+                "SELECT created_by, created_by_username FROM sales ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertIsNone(account)
+        self.assertEqual(dict(sale), {"created_by": seller_id, "created_by_username": "former-seller"})
+
+    def test_admin_restores_selected_operational_backup_without_changing_accounts(self) -> None:
+        """Restore replaces ledger/invoices and makes a safety backup, never users."""
+
+        self.seed_variant("Backup Shirt")
+        invoice_dir = Path(self.app.config["INVOICE_UPLOAD_DIR"])
+        invoice_dir.mkdir(parents=True, exist_ok=True)
+        (invoice_dir / "at-backup.pdf").write_bytes(b"%PDF-backup")
+        restore_point = create_backup(self.app, force=True)
+        self.assertIsNotNone(restore_point)
+        admin_html = self.client.get("/verwaltung").get_data(as_text=True)
+        self.assertIn("Sicherung wiederherstellen", admin_html)
+        self.assertIn(restore_point.name, admin_html)
+        self.seed_variant("Later Shirt")
+        (invoice_dir / "after-backup.pdf").write_bytes(b"%PDF-later")
+        preserved_user_id = self.create_local_user("backup-manager", "manager")
+        secret = pyotp.random_base32()
+        with self.app.app_context():
+            user_connection = get_user_db()
+            user_connection.execute(
+                "UPDATE users SET mfa_enabled = 1, mfa_secret_encrypted = ? WHERE id = 1",
+                (encrypt_mfa_secret(secret, self.app),),
+            )
+            user_connection.commit()
+
+        restored = self.client.post(
+            "/verwaltung/backups/wiederherstellen",
+            data={
+                "csrf_token": "test-csrf",
+                "backup_name": restore_point.name,
+                "password": "test-password",
+                "mfa_code": pyotp.TOTP(secret).now(),
+                "confirmation": "SICHERUNG WIEDERHERSTELLEN",
+            },
+        )
+        self.assertEqual(restored.status_code, 302)
+        with self.app.app_context():
+            article_names = [
+                row[0] for row in get_db().execute("SELECT name FROM articles ORDER BY id").fetchall()
+            ]
+            preserved_account = get_user_db().execute(
+                "SELECT username FROM users WHERE id = ?", (preserved_user_id,)
+            ).fetchone()
+        self.assertEqual(article_names, ["Backup Shirt"])
+        self.assertEqual(preserved_account["username"], "backup-manager")
+        self.assertTrue((invoice_dir / "at-backup.pdf").is_file())
+        self.assertFalse((invoice_dir / "after-backup.pdf").exists())
+        self.assertGreaterEqual(len(list(Path(self.app.config["BACKUP_DIR"]).iterdir())), 2)
+
     def test_purchase_then_sale_updates_stock_and_creates_receipts(self) -> None:
         variant_id = self.seed_variant()
         purchase = self.api_post(

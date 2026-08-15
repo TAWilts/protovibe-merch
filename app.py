@@ -786,6 +786,30 @@ def has_profile_reauth(user: dict[str, Any] | None) -> bool:
     )
 
 
+def verify_admin_sensitive_action(
+    connection: sqlite3.Connection, *, password: Any, mfa_code: Any, context: str
+) -> sqlite3.Row:
+    """Require the current admin password and MFA for destructive actions."""
+
+    admin = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+    if admin is None or not check_password_hash(admin["password_hash"], str(password or "")):
+        raise ValueError("Das Passwort ist nicht korrekt. Es wurden keine Daten verändert.")
+    mfa_method = verify_mfa_code(connection, admin, mfa_code)
+    if mfa_method is None:
+        raise ValueError("Der Zwei-Faktor-Code ist nicht gültig. Es wurden keine Daten verändert.")
+    if mfa_method == "recovery":
+        audit(
+            connection,
+            "use_recovery_code",
+            "user",
+            admin["id"],
+            {"context": context},
+            user_id=admin["id"],
+        )
+    connection.commit()
+    return admin
+
+
 def default_new_article_option_configuration() -> list[dict[str, Any]]:
     """Return fresh, editable default option columns for a new article.
 
@@ -1075,6 +1099,14 @@ def close_db(_: BaseException | None = None) -> None:
         connection = g.pop(key, None)
         if connection is not None:
             connection.close()
+
+
+def close_operational_db() -> None:
+    """Close only ``merch.sqlite3`` before atomically replacing it."""
+
+    connection = g.pop("db", None)
+    if connection is not None:
+        connection.close()
 
 
 def sales_receipt_id_is_unique(connection: sqlite3.Connection) -> bool:
@@ -1759,7 +1791,12 @@ def migrate_combined_database(app: Flask) -> None:
         Path(f"{database_path}-shm").unlink(missing_ok=True)
         app.logger.info("Migrated combined merch database; original archive: %s", archive_path.name)
     except Exception:
-        temporary_path.unlink(missing_ok=True)
+        for temporary_file in (
+            temporary_path,
+            Path(f"{temporary_path}-wal"),
+            Path(f"{temporary_path}-shm"),
+        ):
+            temporary_file.unlink(missing_ok=True)
         raise
     finally:
         if source is not None:
@@ -1768,6 +1805,8 @@ def migrate_combined_database(app: Flask) -> None:
             target.close()
         if users_connection is not None:
             users_connection.close()
+        for temporary_file in (Path(f"{temporary_path}-wal"), Path(f"{temporary_path}-shm")):
+            temporary_file.unlink(missing_ok=True)
 
 
 def initialise_operations_database(app: Flask) -> None:
@@ -2810,7 +2849,7 @@ def csv_bytes(headers: list[str], rows: Iterable[Iterable[Any]]) -> bytes:
     return ("\ufeff" + buffer.getvalue()).encode("utf-8")
 
 
-def create_backup(app: Flask) -> None:
+def create_backup(app: Flask, *, force: bool = False) -> Path | None:
     """Create a restorable SQLite snapshot, CSV exports and invoice files.
 
     It runs after every successful write.  The application database itself stays
@@ -2818,8 +2857,8 @@ def create_backup(app: Flask) -> None:
     ad-hoc inspection and migration straightforward.
     """
 
-    if not app.config.get("AUTO_BACKUP", True):
-        return
+    if not force and not app.config.get("AUTO_BACKUP", True):
+        return None
     backup_root = Path(app.config["BACKUP_DIR"])
     backup_root.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -2864,6 +2903,7 @@ def create_backup(app: Flask) -> None:
     for child in backup_root.iterdir():
         if child.is_dir() and child.stat().st_mtime < cutoff:
             shutil.rmtree(child)
+    return target
 
 
 def backup_after_commit() -> None:
@@ -2873,6 +2913,146 @@ def backup_after_commit() -> None:
         create_backup(current_app._get_current_object())
     except Exception:  # pragma: no cover - failure is logged, not hidden from ops
         current_app.logger.exception("Automatic backup failed after a committed write")
+
+
+def operational_backup_points(app: Flask) -> list[dict[str, Any]]:
+    """Return only valid, direct-child operational restore points for the UI."""
+
+    backup_root = Path(app.config["BACKUP_DIR"])
+    if not backup_root.is_dir():
+        return []
+    points: list[dict[str, Any]] = []
+    for directory in backup_root.iterdir():
+        snapshot = directory / "merch.sqlite3"
+        if not directory.is_dir() or not snapshot.is_file():
+            continue
+        invoices = directory / "invoices"
+        points.append(
+            {
+                "name": directory.name,
+                "modified_at": datetime.fromtimestamp(directory.stat().st_mtime).strftime("%d.%m.%Y %H:%M:%S"),
+                "database_bytes": snapshot.stat().st_size,
+                "invoice_count": sum(1 for item in invoices.rglob("*") if item.is_file()) if invoices.is_dir() else 0,
+            }
+        )
+    return sorted(points, key=lambda point: point["name"], reverse=True)
+
+
+def selected_operational_backup(app: Flask, backup_name: Any) -> Path:
+    """Resolve an admin-selected backup without accepting traversal paths."""
+
+    name = str(backup_name or "").strip()
+    root = Path(app.config["BACKUP_DIR"]).resolve()
+    candidate = (root / name).resolve()
+    if not name or candidate.parent != root or not candidate.is_dir():
+        raise ValueError("Der ausgewählte Sicherungspunkt wurde nicht gefunden.")
+    if not (candidate / "merch.sqlite3").is_file():
+        raise ValueError("Dieser Sicherungspunkt enthält keine Datenbankkopie.")
+    return candidate
+
+
+def validate_operational_snapshot(snapshot_path: Path) -> None:
+    """Reject malformed or old combined-file backups before any replacement."""
+
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(snapshot_path.resolve().as_uri() + "?mode=ro", uri=True)
+        tables = {
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+    except sqlite3.DatabaseError as exc:
+        raise ValueError("Die Sicherungsdatei ist keine lesbare SQLite-Datenbank.") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    required = {"articles", "variants", "purchases", "sales"}
+    if not required.issubset(tables):
+        raise ValueError("Die Sicherung enthält keine vollständigen Betriebsdaten.")
+    if "users" in tables:
+        raise ValueError(
+            "Diese alte Sicherung enthält noch Benutzerkonten und wird deshalb nicht automatisch wiederhergestellt."
+        )
+
+
+def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path]:
+    """Restore one operational backup while keeping ``users.sqlite3`` intact.
+
+    A fresh backup is forced first, even when automatic backups are disabled.
+    Database and invoice directory are staged beside the live files and then
+    swapped with rollback protection, so an invalid/incomplete backup cannot
+    leave the running installation half-restored.
+    """
+
+    source_directory = selected_operational_backup(app, backup_name)
+    source_database = source_directory / "merch.sqlite3"
+    validate_operational_snapshot(source_database)
+    safety_backup = create_backup(app, force=True)
+    if safety_backup is None:  # Defensive: force=True always creates one.
+        raise RuntimeError("Vor der Wiederherstellung konnte keine Sicherheitskopie angelegt werden.")
+
+    database_path = Path(app.config["DATABASE"])
+    invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
+    staging_dir = database_path.parent / f".restore-{uuid.uuid4().hex}"
+    staged_database = staging_dir / "merch.sqlite3"
+    staged_invoices = staging_dir / "invoices"
+    previous_database = staging_dir / "previous-merch.sqlite3"
+    previous_invoices = staging_dir / "previous-invoices"
+    staging_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        source = sqlite3.connect(source_database)
+        try:
+            destination = sqlite3.connect(staged_database)
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
+        finally:
+            source.close()
+        validate_operational_snapshot(staged_database)
+        staged_invoices.mkdir()
+        source_invoices = source_directory / "invoices"
+        if source_invoices.is_dir():
+            for item in source_invoices.rglob("*"):
+                if item.is_file():
+                    target = staged_invoices / item.relative_to(source_invoices)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(item, target)
+
+        close_operational_db()
+        moved_old_database = False
+        moved_old_invoices = False
+        placed_new_database = False
+        placed_new_invoices = False
+        try:
+            if database_path.exists():
+                os.replace(database_path, previous_database)
+                moved_old_database = True
+            for sidecar in (Path(f"{database_path}-wal"), Path(f"{database_path}-shm")):
+                sidecar.unlink(missing_ok=True)
+            if invoice_dir.exists():
+                os.replace(invoice_dir, previous_invoices)
+                moved_old_invoices = True
+            os.replace(staged_database, database_path)
+            placed_new_database = True
+            os.replace(staged_invoices, invoice_dir)
+            placed_new_invoices = True
+            initialise_operations_database(app)
+        except Exception:
+            if placed_new_database:
+                database_path.unlink(missing_ok=True)
+            for sidecar in (Path(f"{database_path}-wal"), Path(f"{database_path}-shm")):
+                sidecar.unlink(missing_ok=True)
+            if moved_old_database and previous_database.exists():
+                os.replace(previous_database, database_path)
+            if placed_new_invoices:
+                shutil.rmtree(invoice_dir, ignore_errors=True)
+            if moved_old_invoices and previous_invoices.exists():
+                os.replace(previous_invoices, invoice_dir)
+            raise
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    return source_directory, safety_backup
 
 
 def create_reset_archive(app: Flask, source_connection: sqlite3.Connection) -> Path:
@@ -3680,6 +3860,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "admin.html",
             title="Verwaltung",
             users=administration_users(),
+            backups=operational_backup_points(app),
             setup_credential=setup_credential,
             reset_archive_name=reset_archive_name,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
@@ -3837,6 +4018,54 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         flash("Die 2FA von „{}“ wurde zurückgesetzt.".format(user["username"]), "success")
         return redirect(url_for("administration_page"))
 
+    @app.post("/verwaltung/benutzer/<int:user_id>/loeschen")
+    @login_required
+    @admin_required
+    def delete_user(user_id: int):
+        """Remove a non-admin account without changing historic bookings."""
+
+        if request.form.get("confirmation", "").strip() != "BENUTZER LÖSCHEN":
+            flash("Bitte die Bestätigung exakt als „BENUTZER LÖSCHEN“ eingeben.", "error")
+            return redirect(url_for("administration_page"))
+        connection = get_user_db()
+        user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            abort(404)
+        if int(user["id"]) == int(g.user["id"]) or normalized_role(user) == "admin":
+            flash("Das eigene oder das einzige Admin-Konto kann nicht gelöscht werden.", "error")
+            return redirect(url_for("administration_page"))
+        try:
+            admin = verify_admin_sensitive_action(
+                connection,
+                password=request.form.get("password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="delete_user",
+            )
+            connection.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            audit(
+                connection,
+                "delete",
+                "user",
+                user_id,
+                {
+                    "username": user["username"],
+                    "role": normalized_role(user),
+                    "performed_by": admin["username"],
+                    "historic_bookings_preserved": True,
+                },
+            )
+            connection.commit()
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("administration_page"))
+        flash(
+            "Das Konto „{}“ wurde gelöscht. Historische Buchungen bleiben unverändert erhalten.".format(
+                user["username"]
+            ),
+            "success",
+        )
+        return redirect(url_for("administration_page"))
+
     @app.post("/verwaltung/daten-zuruecksetzen")
     @login_required
     @admin_required
@@ -3847,29 +4076,19 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash("Bitte die Bestätigung exakt als „DATEN ZURÜCKSETZEN“ eingeben.", "error")
             return render_administration()
         connection = get_user_db()
-        admin = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
-        if not check_password_hash(admin["password_hash"], request.form.get("password", "")):
-            flash("Das Passwort ist nicht korrekt. Es wurden keine Daten verändert.", "error")
-            return render_administration()
-        mfa_method = verify_mfa_code(connection, admin, request.form.get("mfa_code"))
-        if mfa_method is None:
-            flash("Der Zwei-Faktor-Code ist nicht gültig. Es wurden keine Daten verändert.", "error")
-            return render_administration()
-        if mfa_method == "recovery":
-            audit(
+        try:
+            admin = verify_admin_sensitive_action(
                 connection,
-                "use_recovery_code",
-                "user",
-                admin["id"],
-                {"context": "data_reset"},
-                user_id=admin["id"],
+                password=request.form.get("password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="data_reset",
             )
-        connection.commit()
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return render_administration()
         try:
             archive_path = create_reset_archive(app, get_db())
-            operational_connection = g.pop("db", None)
-            if operational_connection is not None:
-                operational_connection.close()
+            close_operational_db()
             reset_data_store(app)
             fresh_connection = get_db()
             audit(
@@ -3892,6 +4111,60 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "success",
         )
         return redirect(url_for("login"))
+
+    @app.post("/verwaltung/backups/wiederherstellen")
+    @login_required
+    @admin_required
+    def restore_application_backup():
+        """Restore an explicitly selected operational backup after fresh MFA."""
+
+        if request.form.get("confirmation", "").strip() != "SICHERUNG WIEDERHERSTELLEN":
+            flash("Bitte die Bestätigung exakt als „SICHERUNG WIEDERHERSTELLEN“ eingeben.", "error")
+            return redirect(url_for("administration_page"))
+        try:
+            preview_backup = selected_operational_backup(app, request.form.get("backup_name"))
+            validate_operational_snapshot(preview_backup / "merch.sqlite3")
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("administration_page"))
+        connection = get_user_db()
+        try:
+            admin = verify_admin_sensitive_action(
+                connection,
+                password=request.form.get("password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="restore_operational_backup",
+            )
+            restored_backup, safety_backup = restore_operational_backup(
+                app, request.form.get("backup_name")
+            )
+            restored_connection = get_db()
+            audit(
+                restored_connection,
+                "restore_operational_backup",
+                "system",
+                None,
+                {
+                    "restored_backup": restored_backup.name,
+                    "safety_backup": safety_backup.name,
+                    "performed_by": admin["username"],
+                },
+                user_id=admin["id"],
+            )
+            restored_connection.commit()
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("administration_page"))
+        except Exception:
+            current_app.logger.exception("Could not restore operational backup")
+            flash("Die Sicherung konnte nicht wiederhergestellt werden. Die aktuelle Sicherheitskopie bleibt erhalten.", "error")
+            return redirect(url_for("administration_page"))
+        flash(
+            "Die Betriebsdaten aus „{}“ wurden wiederhergestellt. Die vorherigen Daten liegen zusätzlich in „{}“. "
+            "Benutzerkonten und 2FA wurden nicht verändert.".format(restored_backup.name, safety_backup.name),
+            "success",
+        )
+        return redirect(url_for("administration_page"))
 
     @app.get("/updates")
     @login_required

@@ -54,11 +54,54 @@
         <form action="{{ url_for('reset_user_password', user_id=user.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button compact-button" type="submit">Passwort zurücksetzen</button></form>
         <form action="{{ url_for('update_user_active_state', user_id=user.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="active" value="{{ 0 if user.is_active else 1 }}"><button class="{{ 'danger-button' if user.is_active else 'secondary-button' }} compact-button" type="submit">{{ 'Deaktivieren' if user.is_active else 'Aktivieren' }}</button></form>
         {% if user.mfa_enabled %}<form action="{{ url_for('reset_user_mfa', user_id=user.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button compact-button" type="submit">2FA zurücksetzen</button></form>{% endif %}
+        <details class="admin-danger-confirmation">
+          <summary>Benutzer endgültig löschen</summary>
+          <form action="{{ url_for('delete_user', user_id=user.id) }}" method="post" class="admin-sensitive-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <p>Das Konto kann sich danach nicht mehr anmelden. Historische Buchungen von {{ user.username }} bleiben erhalten.</p>
+            <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+            <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+            <label>Zur Bestätigung <code>BENUTZER LÖSCHEN</code><input name="confirmation" autocomplete="off" required></label>
+            <button class="danger-button compact-button" type="submit">Konto löschen</button>
+          </form>
+        </details>
         {% else %}<span class="muted">Eigenes Profil verwenden</span>{% endif %}
       </td>
     </tr>
     {% endfor %}
   </tbody></table></div>
+</section>
+
+<section class="table-section restore-area">
+  <div class="section-heading"><div><p class="eyebrow">Betriebsdaten</p><h2>Sicherung wiederherstellen</h2><p>Wähle einen automatischen Sicherungspunkt. Vor der Wiederherstellung wird immer zusätzlich eine neue Sicherheitskopie der aktuellen Betriebsdaten angelegt. Benutzerkonten und 2FA bleiben unangetastet.</p></div></div>
+  {% if backups %}
+  <div class="table-scroll"><table class="backups-table"><thead><tr><th>Sicherungspunkt</th><th>Erstellt/aktualisiert</th><th>Datenbank</th><th>Rechnungen</th><th>Aktion</th></tr></thead><tbody>
+    {% for backup in backups %}
+    <tr>
+      <td><code>{{ backup.name }}</code></td>
+      <td>{{ backup.modified_at }}</td>
+      <td>{{ (backup.database_bytes / 1024)|round(1) }} KB</td>
+      <td>{{ backup.invoice_count }}</td>
+      <td>
+        <details class="admin-danger-confirmation restore-confirmation">
+          <summary>Sicherung wiederherstellen</summary>
+          <form action="{{ url_for('restore_application_backup') }}" method="post" class="admin-sensitive-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="backup_name" value="{{ backup.name }}">
+            <p>Artikel, Buchungen und Rechnungen werden durch diesen Stand ersetzt. Aktuelle Benutzerkonten bleiben unverändert.</p>
+            <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+            <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+            <label>Zur Bestätigung <code>SICHERUNG WIEDERHERSTELLEN</code><input name="confirmation" autocomplete="off" required></label>
+            <button class="danger-button compact-button" type="submit">Diesen Stand laden</button>
+          </form>
+        </details>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <p class="muted">Es gibt noch keinen automatischen Sicherungspunkt. Nach der nächsten Änderung wird einer angelegt.</p>
+  {% endif %}
 </section>
 
 <section class="table-section dangerous-area">

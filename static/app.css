@@ -363,8 +363,19 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .setup-code-card .setup-code { margin-bottom: 14px; font-size: 1.13rem; }
 .admin-create-card .stack-form { margin-top: 17px; }
 .users-table { min-width: 1060px; }
+.backups-table { min-width: 940px; }
 .inline-form { display: inline; }
 .admin-actions { display: flex; flex-wrap: wrap; gap: 7px; min-width: 300px; }
+.admin-danger-confirmation { position: relative; }
+.admin-danger-confirmation > summary { min-height: 34px; padding: 7px 9px; border: 1px solid rgba(242,121,131,.68); border-radius: 8px; color: #ffd6da; background: rgba(116,38,53,.35); cursor: pointer; font-size: .78rem; font-weight: 750; list-style: none; }
+.admin-danger-confirmation > summary::-webkit-details-marker { display: none; }
+.admin-danger-confirmation[open] > summary { margin-bottom: 9px; border-color: var(--danger); background: rgba(116,38,53,.55); }
+.admin-sensitive-form { display: grid; gap: 9px; width: min(100%, 410px); padding: 12px; border: 1px solid rgba(242,121,131,.45); border-radius: 10px; background: #21161d; box-shadow: var(--shadow); }
+.admin-sensitive-form p { margin: 0; color: var(--muted); font-size: .81rem; line-height: 1.4; }
+.admin-sensitive-form label { display: grid; gap: 5px; color: var(--muted); font-size: .78rem; font-weight: 750; }
+.admin-sensitive-form input { min-width: 0; }
+.restore-confirmation { min-width: 260px; }
+.restore-area { border-color: rgba(240,142,255,.42); }
 .dangerous-area { border-color: rgba(242,121,131,.55); background: linear-gradient(135deg, rgba(84,31,44,.42), rgba(26,22,34,.94)); }
 .dangerous-area .eyebrow { color: #ffadb5; }
 .reset-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 12px; align-items: end; margin-top: 16px; }
