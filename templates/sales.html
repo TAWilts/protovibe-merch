@@ -45,7 +45,7 @@
     <div class="checkbox-row">
       <label class="toggle-label"><input id="is-paid" type="checkbox" checked><span>Bezahlt</span></label>
       <label class="toggle-label"><input id="is-received" type="checkbox" checked><span>Artikel erhalten</span></label>
-      <label class="seller-field"><span>Verkauft von</span><input id="sold-by" placeholder="Optional"></label>
+      <label class="seller-field"><span>Verkauft von</span><input id="sold-by" value="{{ current_user.username }}" placeholder="Optional"></label>
     </div>
 
     <div class="contact-fields" id="contact-fields" hidden>

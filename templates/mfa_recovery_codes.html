@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block page_class %}auth-page{% endblock %}
+{% block content %}
+<section class="auth-card auth-card-wide recovery-card">
+  <div class="brand brand-login"><span class="brand-mark">P</span><span>Merch Manager</span></div>
+  <p class="eyebrow">Notfallzugang</p>
+  <h1>Wiederherstellungscodes sichern</h1>
+  <p class="page-intro">Diese Codes werden nur jetzt angezeigt. Bewahre sie getrennt von deinem Handy auf. Jeder Code ist genau einmal verwendbar.</p>
+  <div class="recovery-code-grid" aria-label="Wiederherstellungscodes">
+    {% for code in recovery_codes %}<code>{{ code }}</code>{% endfor %}
+  </div>
+  <p class="notice">Beim Erzeugen neuer Wiederherstellungscodes werden die bisherigen sofort ungültig.</p>
+  <div class="button-group recovery-actions"><button class="secondary-button" type="button" onclick="window.print()">Drucken</button><a class="primary-button" href="{{ return_url }}">Ich habe die Codes gesichert</a></div>
+</section>
+{% endblock %}

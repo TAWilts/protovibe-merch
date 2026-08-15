@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block page_class %}auth-page{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <div class="brand brand-login"><span class="brand-mark">P</span><span>Merch Manager</span></div>
+  <p class="eyebrow">Zweiter Faktor</p>
+  <h1>Sicherheitscode eingeben</h1>
+  <p class="page-intro">Für {{ username }} ist zusätzlich zum Passwort ein Code aus der Authenticator-App erforderlich. Falls nötig, kannst du stattdessen einen Wiederherstellungscode verwenden.</p>
+  <form method="post" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>6-stelliger Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" inputmode="text" spellcheck="false" required autofocus></label>
+    <button class="primary-button full-width" type="submit">Anmeldung bestätigen</button>
+  </form>
+  <p class="muted compact-copy">Ein Wiederherstellungscode ist nur einmal gültig.</p>
+</section>
+{% endblock %}

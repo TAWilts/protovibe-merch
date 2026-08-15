@@ -53,6 +53,13 @@ Bestand, Bilanz und CSV-Export.
   nach jeder erfolgreichen Änderung, einschließlich Versand- und
   Zahlungsstatus. Hochgeladene Rechnungen gehören zum jeweiligen
   Sicherungspunkt dazu.
+- **Konten, Rollen & Schutz:** Der einzelne Admin kann Seller und Manager mit
+  zeitlich begrenztem Einrichtungscode anlegen und zurücksetzen. Seller können
+  verkaufen und Einkaufsdaten lesen, Manager verwalten zusätzlich Artikel und
+  Einkaufswarenkörbe, nur der Admin verwaltet Konten oder setzt Daten zurück.
+  Der Admin benötigt eine kostenlose, lokale TOTP-2FA; die anderen Rollen
+  können sie freiwillig aktivieren. Profilzugriff, Passwortwechsel und der
+  Datenreset verlangen eine erneute Passwortbestätigung.
 - **Legacy-Import:** ein Skript importiert die vorhandene ODS als echte
   Buchungen, nicht als fragile Tabellenformeln.
 
@@ -154,6 +161,43 @@ Die folgenden Schritte sind bewusst ohne SSH-Zwang beschrieben.
 Beim ersten Start erzeugt die App automatisch die SQLite-Datenbank und den
 Administrator.  Alle dauerhaften Daten liegen ausschließlich in `data/`.
 
+### Benutzerkonten, Rollen und 2FA
+
+Es ist kein externer Login-Dienst, kein E-Mail-Versand und kein kostenpflichtiger
+2FA-Anbieter nötig. Nach dem Update meldest du dich einmal als bisheriger
+Admin an und richtest die verpflichtende Zwei-Faktor-Authentifizierung per
+QR-Code in einer Authenticator-App ein. Anschließend speicherst du die zehn
+einmalig nutzbaren Wiederherstellungscodes an einem sicheren, vom Handy
+getrennten Ort. Bestehende Sitzungen werden beim Update einmal abgemeldet,
+damit ein bereits geöffneter Admin-Browser die 2FA-Einrichtung nicht umgehen
+kann.
+
+Im Reiter **Verwaltung** kannst du danach Seller und Manager anlegen. Sie
+melden sich zuerst mit dem ausgegebenen Einrichtungscode an und setzen sofort
+ihr eigenes Passwort. Der angemeldete Benutzername steht standardmäßig im Feld
+**Verkauft von**, kann dort aber weiterhin überschrieben werden.
+
+Die Standardwerte in `.env` müssen nicht ergänzt werden. Optional kannst du
+sie anpassen:
+
+```dotenv
+ACCOUNT_SETUP_CODE_DAYS=14      # Gültigkeit neuer/erneuerter Einrichtungscodes
+PROFILE_REAUTH_SECONDS=600      # Dauer einer Profil-Sicherheitsbestätigung
+MFA_ISSUER=Protovibe Merch Manager
+```
+
+`SECRET_KEY` muss dauerhaft unverändert bleiben. Er schützt bereits die
+Sitzungen und verschlüsselt nun auch die lokal gespeicherten TOTP-Geheimnisse;
+ein Wechsel würde eingerichtete 2FA-Geräte ungültig machen. Die Uhr der
+Synology sollte über die DSM-Zeitsynchronisation korrekt laufen, weil
+Authenticator-Codes zeitbasiert sind.
+
+Der Datenreset im Admin-Reiter fordert das aktuelle Passwort, einen 2FA- oder
+Wiederherstellungscode und die exakte Bestätigungsphrase. Vorher schreibt die
+App ein ZIP unter `data/reset-archives/`. Danach bleiben nur das verifizierte
+Admin-Konto samt 2FA erhalten; Artikel, Buchungen, Rechnungen, Backups und
+alle weiteren Benutzer werden frisch angelegt.
+
 ### Sichere Erreichbarkeit bei Konzerten
 
 Die App sollte nicht per Router-Portfreigabe ins öffentliche Internet gestellt
@@ -241,7 +285,7 @@ Rechnungsnummer und Kommentar bleiben dabei an der jeweiligen Position.
 | `static/operations.js` | Speichert die Statusänderungen für offene Sendungen und Zahlungen. |
 | `static/articles.js` | Dynamische Optionsspalten, Live-Vorschau der Varianten sowie Mindestbestands- und Angebotssteuerung. |
 | `scripts/import_ods.py` | Einmaliger ODS-Migrationsimport. |
-| `tests/test_app.py` | Regressionstests für Bestand, Statusvorgänge, Artikeldefaults, Pflichtkontaktdaten und rückwirkende Optionsnamen. |
+| `tests/test_app.py` | Regressionstests für Bestand, Rollen, 2FA, Profil-Reauthentifizierung, Datenreset, Statusvorgänge und Artikeldefaults. |
 
 Die Anwendung speichert Geldbeträge immer als ganzzahlige Cent-Werte und
 Bestände als Bewegungen.  Deshalb gibt es weder Gleitkomma-Rundungsfehler noch
@@ -358,7 +402,6 @@ Beide gehören ausschließlich in `.env`, niemals ins Git-Repository.
 
 ## Nächste sinnvolle Erweiterungen
 
-- Benutzerverwaltung und persönliche Konten für Bandmitglieder.
 - Separater Dialog für Fehldrucke, Geschenke und Inventurkorrekturen.
 - Offline-fähige PWA mit Konfliktauflösung beim späteren Synchronisieren.
 - Zeitbasierte Umsatzgrafiken und Mindestbestandswarnungen.

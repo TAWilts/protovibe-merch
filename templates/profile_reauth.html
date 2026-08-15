@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block page_class %}auth-page{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <div class="brand brand-login"><span class="brand-mark">P</span><span>Merch Manager</span></div>
+  <p class="eyebrow">Sicherheitsabfrage</p>
+  <h1>Zugriff bestätigen</h1>
+  <p class="page-intro">Profil- und Sicherheitseinstellungen werden erst nach erneuter Bestätigung deines Passworts geöffnet.</p>
+  <form method="post" action="{{ url_for('profile_reauth', next=target) }}" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required autofocus></label>
+    {% if needs_mfa %}<label>Code aus der Authenticator-App oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+    <button class="primary-button full-width" type="submit">Zugriff bestätigen</button>
+  </form>
+</section>
+{% endblock %}

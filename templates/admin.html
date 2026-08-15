@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title-row">
+  <div><p class="eyebrow">Nur Admin</p><h1>Verwaltung</h1><p class="page-intro">Benutzerkonten, Rollen und besonders geschützte Systemaktionen.</p></div>
+</div>
+
+{% if setup_credential %}
+<section class="setup-code-card" aria-live="polite">
+  <p class="eyebrow">{{ 'Passwort zurückgesetzt' if setup_credential.purpose == 'reset' else 'Benutzer angelegt' }}</p>
+  <h2>Einrichtungscode für {{ setup_credential.username }}</h2>
+  <p>Gib diesen einmaligen Code sicher an die Person weiter. Er ist {{ setup_code_days }} Tage gültig und wird nach dem ersten eigenen Passwort nicht mehr funktionieren.</p>
+  <code class="setup-code" data-setup-code>{{ setup_credential.code }}</code>
+  <p class="notice">Der Code wird nicht gespeichert und nach dem Verlassen dieser Seite nicht erneut angezeigt.</p>
+</section>
+{% endif %}
+
+<section class="admin-grid">
+  <article class="table-section admin-create-card">
+    <h2>Benutzer anlegen</h2>
+    <p class="muted">Neue Konten beginnen mit einem einmaligen Einrichtungscode. Ein Admin-Konto kann nur beim ersten Start angelegt werden; es bleibt genau eines.</p>
+    <form action="{{ url_for('create_user') }}" method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Benutzername<input name="username" autocomplete="username" pattern="[A-Za-z0-9._-]{3,64}" required></label>
+      <label>Rolle<select name="role"><option value="seller">Seller</option><option value="manager">Manager</option></select></label>
+      <button class="primary-button" type="submit">Benutzer anlegen</button>
+    </form>
+  </article>
+
+  <article class="table-section admin-role-card">
+    <h2>Rollen</h2>
+    <dl class="role-list">
+      <div><dt>Seller</dt><dd>Verkäufe erfassen/stornieren, offene Vorgänge und Bilanzen bearbeiten bzw. einsehen; Einkäufe nur ansehen.</dd></div>
+      <div><dt>Manager</dt><dd>Zusätzlich Artikel und Einkaufswarenkörbe inklusive Rechnungen verwalten.</dd></div>
+      <div><dt>Admin</dt><dd>Zusätzlich Benutzer verwalten und die Datenbank mit Archiv zurücksetzen.</dd></div>
+    </dl>
+  </article>
+</section>
+
+<section class="table-section">
+  <div class="section-heading"><div><h2>Benutzer</h2><p>Änderungen an Rolle, Passwort oder Aktivstatus melden bestehende Sitzungen des jeweiligen Kontos ab.</p></div></div>
+  <div class="table-scroll"><table class="users-table"><thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>2FA</th><th>Letzte Anmeldung</th><th>Aktionen</th></tr></thead><tbody>
+    {% for user in users %}
+    <tr>
+      <td><strong>{{ user.username }}</strong>{% if user.must_set_password %}<small class="table-subline">Passwort-Einrichtung ausstehend</small>{% endif %}</td>
+      <td>
+        {% if user.is_admin %}<span class="status good">Admin</span>
+        {% else %}<form action="{{ url_for('update_user_role', user_id=user.id) }}" method="post" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select name="role" class="status-select" onchange="this.form.requestSubmit()"><option value="seller" {{ 'selected' if user.role == 'seller' else '' }}>Seller</option><option value="manager" {{ 'selected' if user.role == 'manager' else '' }}>Manager</option></select></form>{% endif %}
+      </td>
+      <td><span class="status {{ 'good' if user.is_active else 'cancelled' }}">{{ 'Aktiv' if user.is_active else 'Deaktiviert' }}</span></td>
+      <td>{% if user.mfa_enabled %}<span class="status good">Aktiv · {{ user.recovery_code_count }} Codes</span>{% else %}<span class="status warning">Nicht aktiv</span>{% endif %}</td>
+      <td>{{ user.last_login_at or '—' }}</td>
+      <td class="admin-actions">
+        {% if not user.is_admin %}
+        <form action="{{ url_for('reset_user_password', user_id=user.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button compact-button" type="submit">Passwort zurücksetzen</button></form>
+        <form action="{{ url_for('update_user_active_state', user_id=user.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="active" value="{{ 0 if user.is_active else 1 }}"><button class="{{ 'danger-button' if user.is_active else 'secondary-button' }} compact-button" type="submit">{{ 'Deaktivieren' if user.is_active else 'Aktivieren' }}</button></form>
+        {% if user.mfa_enabled %}<form action="{{ url_for('reset_user_mfa', user_id=user.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button compact-button" type="submit">2FA zurücksetzen</button></form>{% endif %}
+        {% else %}<span class="muted">Eigenes Profil verwenden</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody></table></div>
+</section>
+
+<section class="table-section dangerous-area">
+  <div class="section-heading"><div><p class="eyebrow">Nicht rückgängig machbar</p><h2>Datenbank zurücksetzen</h2><p>Vor dem Zurücksetzen wird ein ZIP-Archiv des vollständigen Datenordners erstellt. Danach werden Artikel, Buchungen, Anhänge, Backups und alle Konten außer dem verifizierten Admin neu angelegt.</p></div></div>
+  <form action="{{ url_for('reset_application_data') }}" method="post" class="reset-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+    <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+    <label>Zur Bestätigung exakt <code>DATEN ZURÜCKSETZEN</code> eingeben<input name="confirmation" autocomplete="off" required></label>
+    <button class="danger-button" type="submit">Archiv erstellen und Datenbank zurücksetzen</button>
+  </form>
+</section>
+{% endblock %}

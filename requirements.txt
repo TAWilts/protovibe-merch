@@ -1,2 +1,5 @@
 Flask==3.1.0
 gunicorn==23.0.0
+cryptography>=45,<47
+PyOTP>=2.9,<3
+qrcode[pil]>=8,<9

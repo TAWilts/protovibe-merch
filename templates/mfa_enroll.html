@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block page_class %}auth-page{% endblock %}
+{% block content %}
+<section class="auth-card auth-card-wide">
+  <div class="brand brand-login"><span class="brand-mark">P</span><span>Merch Manager</span></div>
+  <p class="eyebrow">Kontoschutz</p>
+  <h1>Zwei-Faktor-Authentifizierung einrichten</h1>
+  <p class="page-intro">{% if is_required %}Für den Admin ist 2FA verpflichtend.{% else %}2FA ist für dieses Konto optional, schützt es aber zusätzlich.{% endif %} Öffne eine Authenticator-App und scanne den QR-Code.</p>
+  <div class="mfa-enrolment">
+    <img class="mfa-qr" src="{{ url_for('mfa_qr') }}" alt="QR-Code für die Zwei-Faktor-Authentifizierung">
+    <div>
+      <h2>{{ username }}</h2>
+      <p class="muted">Falls du nicht scannen kannst, füge diesen Schlüssel manuell in deiner Authenticator-App ein:</p>
+      <code class="secret-code">{{ manual_secret }}</code>
+      <p class="muted compact-copy">Kontoname: {{ username }}. Die App erzeugt danach fortlaufend 6-stellige Codes.</p>
+    </div>
+  </div>
+  <form method="post" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Aktuellen 6-stelligen Code bestätigen<input name="mfa_code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]{6}" required autofocus></label>
+    <button class="primary-button full-width" type="submit">2FA aktivieren</button>
+  </form>
+  {% if is_pre_auth %}<p class="notice">Nach der Bestätigung wird die Anmeldung abgeschlossen.</p>{% endif %}
+</section>
+{% endblock %}

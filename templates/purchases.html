@@ -3,9 +3,14 @@
 {% block content %}
 <div class="page-title-row">
   <div><p class="eyebrow">Wareneingang</p><h1>Einkäufe</h1></div>
+  {% if can_manage_purchases %}
   <div class="receipt-preview" aria-label="Vorschau der Beleg-ID"><span>Beleg-ID</span><strong id="purchase-receipt-preview">Wird geladen …</strong></div>
+  {% else %}
+  <span class="status warning">Nur Lesezugriff</span>
+  {% endif %}
 </div>
 
+{% if can_manage_purchases %}
 <section class="transaction-layout" id="purchase-app">
   <aside class="selection-panel product-panel">
     <h2>Artikel</h2>
@@ -69,6 +74,12 @@
     <p class="form-error" id="purchase-error" role="alert" hidden></p>
   </section>
 </section>
+{% else %}
+<section class="table-section read-only-notice">
+  <h2>Einkäufe ansehen</h2>
+  <p>Als Seller kannst du alle Einkaufswarenkörbe und Rechnungen einsehen, aber keine Einkäufe, Anhänge oder Preise verändern.</p>
+</section>
+{% endif %}
 
 <section class="table-section">
   <div class="section-heading"><div><h2>Alle Einkaufswarenkörbe</h2><p>{{ receipts|length }} Warenkörbe, absteigend nach Datum sortiert.</p></div><a class="secondary-button" href="{{ url_for('export_csv', kind='purchases') }}">CSV exportieren</a></div>
@@ -80,7 +91,7 @@
       <td><strong>{{ receipt.summary_label }}</strong>{% if receipt.summary_options %}<small class="table-subline">{{ receipt.summary_options }}</small>{% endif %}</td>
       <td>{{ receipt.total_quantity }}</td><td>{{ receipt.total_cost_cents|money }}</td>
       <td>{% if receipt["attachments"] %}{{ receipt["attachments"]|length }} am Warenkorb{% else %}—{% endif %}</td>
-      <td class="purchase-actions"><button type="button" class="danger-button compact-button" data-delete-purchase-cart data-receipt-id="{{ receipt.receipt_id }}">Warenkorb löschen</button></td>
+      <td class="purchase-actions">{% if can_manage_purchases %}<button type="button" class="danger-button compact-button" data-delete-purchase-cart data-receipt-id="{{ receipt.receipt_id }}">Warenkorb löschen</button>{% else %}—{% endif %}</td>
     </tr>
     <tr class="cart-details-row" data-purchase-cart-details="{{ receipt.receipt_id }}" hidden><td colspan="8">
       <div class="cart-details-panel purchase-cart-details-panel">
@@ -90,18 +101,18 @@
               {% for attachment in receipt["attachments"] %}<a class="invoice-link" href="{{ url_for('purchase_receipt_attachment', receipt_id=receipt.receipt_id, attachment_id=attachment.id) }}" target="_blank" rel="noopener">Rechnung {{ loop.index }} öffnen</a>{% else %}<span class="muted">Noch kein Anhang am Warenkorb.</span>{% endfor %}
             </div>
           </div>
-          <div class="file-dropzone compact-dropzone" role="button" tabindex="0" data-receipt-attachment-dropzone data-receipt-id="{{ receipt.receipt_id }}" aria-describedby="receipt-attachment-status-{{ receipt.primary_purchase_id }}">
+          {% if can_manage_purchases %}<div class="file-dropzone compact-dropzone" role="button" tabindex="0" data-receipt-attachment-dropzone data-receipt-id="{{ receipt.receipt_id }}" aria-describedby="receipt-attachment-status-{{ receipt.primary_purchase_id }}">
             <input id="receipt-attachment-input-{{ receipt.primary_purchase_id }}" type="file" multiple hidden accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" data-receipt-attachment-input data-receipt-id="{{ receipt.receipt_id }}">
             <strong>Weitere Beleg-Anhänge</strong><span>Datei(en) ablegen oder auswählen</span>
           </div>
-          <p id="receipt-attachment-status-{{ receipt.primary_purchase_id }}" class="file-status" data-receipt-attachment-status data-receipt-id="{{ receipt.receipt_id }}"></p>
+          <p id="receipt-attachment-status-{{ receipt.primary_purchase_id }}" class="file-status" data-receipt-attachment-status data-receipt-id="{{ receipt.receipt_id }}"></p>{% endif %}
         </div>
         <p class="cart-details-title">Positionen dieses Einkaufs</p>
         <div class="table-scroll cart-detail-scroll"><table class="cart-detail-table"><thead><tr><th>Artikel</th><th>Stück</th><th>Preis/Stück</th><th>Gesamt</th><th>Lieferant</th><th>Rechnung</th><th>Kommentar</th><th></th></tr></thead><tbody>
           {% for purchase in receipt["items"] %}<tr>
             <td><strong>{{ purchase.article_name }}</strong>{% if purchase.option_text %}<small class="table-subline">{{ purchase.option_text }}</small>{% endif %}</td><td>{{ purchase.quantity }}</td><td>{{ purchase.unit_cost_cents|money }}</td><td>{{ (purchase.quantity * purchase.unit_cost_cents)|money }}</td><td>{{ purchase.supplier or '—' }}</td>
             <td>{% if purchase.invoice_file_path %}<a class="invoice-link" href="{{ url_for('purchase_invoice', purchase_id=purchase.purchase_id) }}" target="_blank" rel="noopener">Position öffnen</a>{% endif %}{% if purchase.invoice_reference %}<small class="table-subline">{{ purchase.invoice_reference }}</small>{% elif not purchase.invoice_file_path %}—{% endif %}</td><td>{{ purchase.comment or '—' }}</td>
-            <td class="purchase-actions"><div class="button-group"><button type="button" class="secondary-button compact-button" data-edit-purchase data-purchase-id="{{ purchase.purchase_id }}">Bearbeiten</button><button type="button" class="danger-button compact-button" data-delete-purchase data-purchase-id="{{ purchase.purchase_id }}">Entfernen</button></div></td>
+            <td class="purchase-actions">{% if can_manage_purchases %}<div class="button-group"><button type="button" class="secondary-button compact-button" data-edit-purchase data-purchase-id="{{ purchase.purchase_id }}">Bearbeiten</button><button type="button" class="danger-button compact-button" data-delete-purchase data-purchase-id="{{ purchase.purchase_id }}">Entfernen</button></div>{% else %}—{% endif %}</td>
           </tr>{% endfor %}
         </tbody></table></div>
       </div>
@@ -109,6 +120,7 @@
   {% else %}<tr><td colspan="8" class="empty-cell">Noch keine Einkäufe erfasst.</td></tr>{% endfor %}</tbody></table></div>
 </section>
 
+{% if can_manage_purchases %}
 <dialog id="purchase-edit-dialog" class="confirmation-dialog purchase-edit-dialog" aria-labelledby="purchase-edit-title">
   <h2 id="purchase-edit-title">Position bearbeiten?</h2>
   <p>Du bearbeitest eine Position aus <strong id="purchase-edit-receipt"></strong> vom <span id="purchase-edit-date"></span>.</p>
@@ -146,5 +158,26 @@
 <dialog id="purchase-success-dialog" class="success-dialog"><div class="success-icon">✓</div><h2>Einkaufswarenkorb erfolgreich</h2><p>Der Einkauf wurde mit der Beleg-ID <strong id="purchase-success-receipt"></strong> gespeichert.</p><button id="purchase-close-success" class="primary-button" type="button">Nächsten Einkauf erfassen</button></dialog>
 <script id="purchase-articles-data" type="application/json">{{ articles|tojson }}</script>
 <script id="purchase-history-data" type="application/json">{{ receipts|tojson }}</script>
+{% endif %}
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='transaction.js') }}"></script><script src="{{ url_for('static', filename='purchases.js') }}"></script>{% endblock %}
+{% block scripts %}
+{% if can_manage_purchases %}
+<script src="{{ url_for('static', filename='transaction.js') }}"></script>
+<script src="{{ url_for('static', filename='purchases.js') }}"></script>
+{% else %}
+<script>
+document.addEventListener("click", (event) => {
+  const toggle = event.target.closest("[data-purchase-cart-toggle]");
+  if (!toggle) return;
+  const details = Array.from(document.querySelectorAll("[data-purchase-cart-details]")).find(
+    (element) => element.dataset.purchaseCartDetails === toggle.dataset.receiptId,
+  );
+  if (!details) return;
+  const willOpen = details.hidden;
+  details.hidden = !willOpen;
+  toggle.setAttribute("aria-expanded", String(willOpen));
+  toggle.textContent = willOpen ? "▾" : "▸";
+});
+</script>
+{% endif %}
+{% endblock %}

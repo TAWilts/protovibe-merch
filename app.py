@@ -18,7 +18,9 @@ directly to the public internet.
 
 from __future__ import annotations
 
+import base64
 import csv
+import hashlib
 import io
 import itertools
 import json
@@ -27,10 +29,11 @@ import re
 import secrets
 import shutil
 import sqlite3
+import string
 import tempfile
 import time
 from collections import defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
 from pathlib import Path
@@ -57,6 +60,9 @@ from flask import (
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.exceptions import RequestEntityTooLarge
+from cryptography.fernet import Fernet, InvalidToken
+import pyotp
+import qrcode
 
 
 SCHEMA_SQL = """
@@ -66,7 +72,23 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,
-    is_admin INTEGER NOT NULL DEFAULT 1,
+    -- ``is_admin`` remains for safe upgrades from the first single-admin
+    -- release.  New authorization decisions use the explicit role below.
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    role TEXT NOT NULL DEFAULT 'seller' CHECK(role IN ('seller', 'manager', 'admin')),
+    is_active INTEGER NOT NULL DEFAULT 1,
+    must_set_password INTEGER NOT NULL DEFAULT 0,
+    setup_code_hash TEXT,
+    setup_code_expires_at TEXT,
+    -- TOTP secrets are encrypted with a key derived from SECRET_KEY.  Recovery
+    -- codes are one-way hashes because they only need to be compared once.
+    mfa_secret_encrypted TEXT,
+    mfa_pending_secret_encrypted TEXT,
+    mfa_recovery_code_hashes_json TEXT NOT NULL DEFAULT '[]',
+    mfa_enabled INTEGER NOT NULL DEFAULT 0,
+    mfa_enrolled_at TEXT,
+    session_version INTEGER NOT NULL DEFAULT 0,
+    last_login_at TEXT,
     created_at TEXT NOT NULL
 );
 
@@ -208,6 +230,15 @@ CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
 """
 
 PAYMENT_METHODS = ["Bar", "PayPal", "Überweisung", "Karte", "Sonstiges"]
+
+# Roles are cumulative: every authenticated user is a seller, managers also
+# manage stock/purchases/articles, and exactly one configured account holds the
+# administrator role.  Keeping the hierarchy as a tiny mapping makes every
+# server-side authorization decision explicit and easy to audit.
+ROLE_LEVELS = {"seller": 1, "manager": 2, "admin": 3}
+ROLE_LABELS = {"seller": "Seller", "manager": "Manager", "admin": "Admin"}
+MANAGED_USER_ROLES = ("seller", "manager")
+SETUP_CODE_ALPHABET = string.ascii_uppercase + string.digits
 
 # ``is_received`` remains a useful, compact accounting flag.  The additional
 # state is only needed when a sale must be sent later: a shipment can be open,
@@ -423,6 +454,186 @@ def utc_now() -> str:
 
 def today_iso() -> str:
     return date.today().isoformat()
+
+
+def normalized_role(user: dict[str, Any] | sqlite3.Row | None) -> str:
+    """Return a safe role for current and pre-role database rows."""
+
+    if user is None:
+        return "seller"
+    role = str(user["role"] or "").strip().lower() if "role" in user.keys() else ""
+    if role in ROLE_LEVELS:
+        return role
+    return "admin" if bool(user["is_admin"]) else "seller"
+
+
+def has_role(user: dict[str, Any] | sqlite3.Row | None, required_role: str) -> bool:
+    """Check a cumulative role without trusting a client-side navigation hint."""
+
+    return ROLE_LEVELS.get(normalized_role(user), 0) >= ROLE_LEVELS[required_role]
+
+
+def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Add only display conveniences; routes still enforce the same rights."""
+
+    if user is None:
+        return None
+    role = normalized_role(user)
+    user["role"] = role
+    user["role_label"] = ROLE_LABELS[role]
+    user["is_admin"] = role == "admin"
+    user["can_manage_purchases"] = has_role(user, "manager")
+    user["can_manage_articles"] = has_role(user, "manager")
+    return user
+
+
+def valid_username(value: Any) -> str:
+    """Accept readable local account names while avoiding whitespace ambiguity."""
+
+    username = str(value or "").strip()
+    if not re.fullmatch(r"[^\s]{3,48}", username):
+        raise ValueError("Der Benutzername muss 3 bis 48 Zeichen lang sein und darf keine Leerzeichen enthalten.")
+    return username
+
+
+def validate_new_password(value: Any, confirmation: Any) -> str:
+    """Require a memorable, reasonably long password without artificial rules."""
+
+    password = str(value or "")
+    if password != str(confirmation or ""):
+        raise ValueError("Die beiden Passwörter stimmen nicht überein.")
+    if len(password) < 12:
+        raise ValueError("Das Passwort muss mindestens 12 Zeichen lang sein.")
+    if len(password) > 256:
+        raise ValueError("Das Passwort ist zu lang.")
+    return password
+
+
+def generate_setup_code() -> str:
+    """Create an easily communicable, one-time account setup code."""
+
+    raw = "".join(secrets.choice(SETUP_CODE_ALPHABET) for _ in range(16))
+    return "-".join(raw[index : index + 4] for index in range(0, len(raw), 4))
+
+
+def setup_code_expiry(days: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).replace(microsecond=0).isoformat()
+
+
+def is_setup_code_current(user: sqlite3.Row | dict[str, Any]) -> bool:
+    expires_at = user["setup_code_expires_at"]
+    if not expires_at:
+        return False
+    try:
+        expiry = datetime.fromisoformat(str(expires_at))
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    return expiry > datetime.now(timezone.utc)
+
+
+def mfa_fernet(app: Flask | None = None) -> Fernet:
+    """Derive a stable encryption key from the already mandatory SECRET_KEY.
+
+    This avoids a second secret that people may forget to back up.  The tradeoff
+    is intentional and documented: SECRET_KEY must stay stable after 2FA was
+    enabled, which is already necessary for stable Flask sessions.
+    """
+
+    configured_app = app or current_app._get_current_object()
+    material = str(configured_app.config["SECRET_KEY"]).encode("utf-8")
+    key = base64.urlsafe_b64encode(hashlib.sha256(b"protovibe-merch:mfa:" + material).digest())
+    return Fernet(key)
+
+
+def encrypt_mfa_secret(secret: str, app: Flask | None = None) -> str:
+    return mfa_fernet(app).encrypt(secret.encode("ascii")).decode("ascii")
+
+
+def decrypt_mfa_secret(value: str | None, app: Flask | None = None) -> str | None:
+    if not value:
+        return None
+    try:
+        return mfa_fernet(app).decrypt(str(value).encode("ascii")).decode("ascii")
+    except (InvalidToken, UnicodeError, ValueError):
+        return None
+
+
+def recovery_code_hashes(user: sqlite3.Row | dict[str, Any]) -> list[str]:
+    try:
+        parsed = json.loads(user["mfa_recovery_code_hashes_json"] or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return [str(item) for item in parsed if isinstance(item, str)]
+
+
+def generate_recovery_codes() -> list[str]:
+    """Create one-use emergency codes; only their hashes are persisted."""
+
+    return [f"{secrets.token_hex(4).upper()}-{secrets.token_hex(4).upper()}" for _ in range(10)]
+
+
+def verify_mfa_code(
+    connection: sqlite3.Connection, user: sqlite3.Row | dict[str, Any], submitted_code: Any
+) -> str | None:
+    """Verify a TOTP code or consume one recovery code.
+
+    The return value tells the caller whether an emergency code was consumed so
+    it can make that unusually important event visible in the audit log.
+    """
+
+    code = str(submitted_code or "").strip().upper().replace(" ", "")
+    if not code or not bool(user["mfa_enabled"]):
+        return None
+    secret = decrypt_mfa_secret(user["mfa_secret_encrypted"])
+    if secret and pyotp.TOTP(secret).verify(code, valid_window=1):
+        return "totp"
+    hashes = recovery_code_hashes(user)
+    for index, stored_hash in enumerate(hashes):
+        if check_password_hash(stored_hash, code):
+            del hashes[index]
+            connection.execute(
+                "UPDATE users SET mfa_recovery_code_hashes_json = ? WHERE id = ?",
+                (json.dumps(hashes), user["id"]),
+            )
+            return "recovery"
+    return None
+
+
+def safe_next_url(value: Any, *, fallback: str = "/verkauf") -> str:
+    candidate = str(value or "")
+    return candidate if candidate.startswith("/") and not candidate.startswith("//") else fallback
+
+
+def establish_authenticated_session(user: sqlite3.Row | dict[str, Any]) -> None:
+    """Start a fresh session after password and, if configured, MFA checks."""
+
+    session.clear()
+    session["user_id"] = int(user["id"])
+    session["user_session_version"] = int(user["session_version"] or 0)
+    csrf_token()
+
+
+def begin_auth_challenge(kind: str, user: sqlite3.Row | dict[str, Any], next_url: Any) -> None:
+    """Keep pre-authentication state separate from a signed-in user session."""
+
+    session.clear()
+    session[f"{kind}_user_id"] = int(user["id"])
+    session["post_auth_next"] = safe_next_url(next_url)
+    csrf_token()
+
+
+def take_post_auth_next() -> str:
+    return safe_next_url(session.get("post_auth_next"))
+
+
+def has_profile_reauth(user: dict[str, Any] | None) -> bool:
+    return bool(
+        user
+        and session.get("profile_reauth_user_id") == user["id"]
+        and float(session.get("profile_reauth_until", 0)) > time.time()
+    )
 
 
 def default_new_article_option_configuration() -> list[dict[str, Any]]:
@@ -955,6 +1166,54 @@ def initialise_database(app: Flask) -> None:
             CREATE INDEX IF NOT EXISTS idx_sales_cancelled ON sales(is_cancelled);
             """
         )
+
+        # Upgrade the former single-admin account table in place.  Existing
+        # administrator rows become the one admin account; any unexpected
+        # extra legacy admins are conservatively downgraded to managers rather
+        # than silently leaving several all-powerful accounts behind.
+        user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()}
+        user_column_migrations = (
+            ("role", "TEXT NOT NULL DEFAULT 'seller'"),
+            ("is_active", "INTEGER NOT NULL DEFAULT 1"),
+            ("must_set_password", "INTEGER NOT NULL DEFAULT 0"),
+            ("setup_code_hash", "TEXT"),
+            ("setup_code_expires_at", "TEXT"),
+            ("mfa_secret_encrypted", "TEXT"),
+            ("mfa_pending_secret_encrypted", "TEXT"),
+            ("mfa_recovery_code_hashes_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("mfa_enabled", "INTEGER NOT NULL DEFAULT 0"),
+            ("mfa_enrolled_at", "TEXT"),
+            ("session_version", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_login_at", "TEXT"),
+        )
+        added_role_column = "role" not in user_columns
+        for column_name, column_definition in user_column_migrations:
+            if column_name not in user_columns:
+                connection.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_definition}")
+        if added_role_column:
+            connection.execute(
+                "UPDATE users SET role = CASE WHEN is_admin = 1 THEN 'admin' ELSE 'seller' END"
+            )
+        connection.execute(
+            "UPDATE users SET role = 'seller' WHERE role NOT IN ('seller', 'manager', 'admin') OR role IS NULL"
+        )
+        admin_rows = connection.execute(
+            "SELECT id FROM users WHERE role = 'admin' ORDER BY id"
+        ).fetchall()
+        if len(admin_rows) > 1:
+            connection.executemany(
+                "UPDATE users SET role = 'manager' WHERE id = ?",
+                [(row["id"],) for row in admin_rows[1:]],
+            )
+        elif not admin_rows:
+            legacy_admin = connection.execute(
+                "SELECT id FROM users WHERE is_admin = 1 ORDER BY id LIMIT 1"
+            ).fetchone()
+            if legacy_admin is not None:
+                connection.execute("UPDATE users SET role = 'admin' WHERE id = ?", (legacy_admin["id"],))
+        connection.execute("UPDATE users SET is_admin = CASE WHEN role = 'admin' THEN 1 ELSE 0 END")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role, is_active)")
+
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
             username = app.config["ADMIN_USERNAME"].strip()
@@ -964,7 +1223,10 @@ def initialise_database(app: Flask) -> None:
                     "Set ADMIN_USERNAME and a strong ADMIN_PASSWORD in .env before starting the app."
                 )
             connection.execute(
-                "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, 1, ?)",
+                """
+                INSERT INTO users (username, password_hash, is_admin, role, is_active, created_at)
+                VALUES (?, ?, 1, 'admin', 1, ?)
+                """,
                 (username, generate_password_hash(password), utc_now()),
             )
         # Explicitly commit both schema migrations and initial user creation.
@@ -989,13 +1251,42 @@ def login_required(view):
     return wrapped
 
 
+def role_required(required_role: str):
+    """Return a decorator for a cumulative, server-enforced role check."""
+
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            if g.get("user") is None or not has_role(g.user, required_role):
+                abort(403)
+            return view(*args, **kwargs)
+
+        return wrapped
+
+    return decorator
+
+
+def manager_required(view):
+    """Permit stock and article management only to Manager and Admin."""
+
+    return role_required("manager")(view)
+
+
 def admin_required(view):
-    """Keep article configuration restricted to administrators."""
+    """Restrict system and account administration to the single Admin role."""
+
+    return role_required("admin")(view)
+
+
+def profile_reauth_required(view):
+    """Require a fresh password confirmation before account-sensitive views."""
 
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if g.get("user") is None or not g.user["is_admin"]:
-            abort(403)
+        if g.get("user") is None:
+            return redirect(url_for("login", next=request.path))
+        if not has_profile_reauth(g.user):
+            return redirect(url_for("profile_reauth", next=request.path))
         return view(*args, **kwargs)
 
     return wrapped
@@ -1031,10 +1322,13 @@ def audit(
     entity_type: str,
     entity_id: int | None,
     details: dict[str, Any] | None = None,
+    *,
+    user_id: int | None = None,
 ) -> None:
     """Append a compact, human-inspectable record of an important change."""
 
-    user_id = g.user["id"] if g.get("user") else None
+    if user_id is None:
+        user_id = g.user["id"] if g.get("user") else None
     connection.execute(
         """
         INSERT INTO audit_log (created_at, user_id, action, entity_type, entity_id, details_json)
@@ -1968,6 +2262,119 @@ def backup_after_commit() -> None:
         current_app.logger.exception("Automatic backup failed after a committed write")
 
 
+def create_reset_archive(app: Flask, source_connection: sqlite3.Connection) -> Path:
+    """Zip a consistent database snapshot and every current data-directory file.
+
+    The reset archive deliberately lives below ``data/reset-archives`` but is
+    excluded from itself.  That makes it persistent with the regular Docker
+    data volume without recursively zipping older reset archives forever.
+    """
+
+    data_dir = Path(app.config["DATABASE"]).parent
+    archive_dir = Path(app.config["RESET_ARCHIVE_DIR"])
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    archive_path = archive_dir / f"merch-reset-before-{timestamp}.zip"
+    suffix = 1
+    while archive_path.exists():
+        suffix += 1
+        archive_path = archive_dir / f"merch-reset-before-{timestamp}-{suffix}.zip"
+
+    snapshot_file = tempfile.NamedTemporaryFile(prefix="merch-reset-", suffix=".sqlite3", delete=False)
+    snapshot_path = Path(snapshot_file.name)
+    snapshot_file.close()
+    try:
+        snapshot_connection = sqlite3.connect(snapshot_path)
+        try:
+            source_connection.backup(snapshot_connection)
+        finally:
+            snapshot_connection.close()
+        database_path = Path(app.config["DATABASE"])
+        database_sidecars = {
+            database_path,
+            Path(f"{database_path}-wal"),
+            Path(f"{database_path}-shm"),
+        }
+        with ZipFile(archive_path, "w", ZIP_DEFLATED) as archive:
+            archive.write(snapshot_path, "data/merch.sqlite3")
+            for item in data_dir.rglob("*"):
+                if not item.is_file() or item in database_sidecars:
+                    continue
+                # A ZIP below the data directory must never contain itself or
+                # a previous reset archive. Normal automatic backups remain
+                # useful historic data and are intentionally included.
+                try:
+                    item.relative_to(archive_dir)
+                    continue
+                except ValueError:
+                    pass
+                archive.write(item, Path("data") / item.relative_to(data_dir))
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+    finally:
+        snapshot_path.unlink(missing_ok=True)
+    return archive_path
+
+
+def reset_data_store(app: Flask, preserved_admin: dict[str, Any]) -> None:
+    """Replace all operational data while preserving the sole Admin account.
+
+    The calling route has already written a ZIP snapshot and re-authenticated
+    the admin.  Retaining that account is deliberate: a true blank user table
+    would otherwise make the system depend on an old environment password after
+    every reset and could lock the only administrator out.
+    """
+
+    database_path = Path(app.config["DATABASE"])
+    invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
+    backup_dir = Path(app.config["BACKUP_DIR"])
+    for path in (database_path, Path(f"{database_path}-wal"), Path(f"{database_path}-shm")):
+        path.unlink(missing_ok=True)
+    shutil.rmtree(invoice_dir, ignore_errors=True)
+    shutil.rmtree(backup_dir, ignore_errors=True)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    invoice_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialise a new complete schema, then replace its bootstrap account by
+    # the current verified administrator and the same password/MFA material.
+    initialise_database(app)
+    connection = db_connect(database_path)
+    try:
+        connection.execute("DELETE FROM users")
+        connection.execute(
+            """
+            INSERT INTO users (
+                id, username, password_hash, is_admin, role, is_active,
+                must_set_password, setup_code_hash, setup_code_expires_at,
+                mfa_secret_encrypted, mfa_pending_secret_encrypted,
+                mfa_recovery_code_hashes_json, mfa_enabled, mfa_enrolled_at,
+                session_version, last_login_at, created_at
+            ) VALUES (?, ?, ?, 1, 'admin', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                preserved_admin["id"],
+                preserved_admin["username"],
+                preserved_admin["password_hash"],
+                preserved_admin["must_set_password"],
+                preserved_admin["setup_code_hash"],
+                preserved_admin["setup_code_expires_at"],
+                preserved_admin["mfa_secret_encrypted"],
+                preserved_admin["mfa_pending_secret_encrypted"],
+                preserved_admin["mfa_recovery_code_hashes_json"],
+                preserved_admin["mfa_enabled"],
+                preserved_admin["mfa_enrolled_at"],
+                int(preserved_admin["session_version"] or 0) + 1,
+                preserved_admin["last_login_at"],
+                preserved_admin["created_at"],
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
     """Calculate the article balance table and headline figures from ledgers."""
 
@@ -2062,6 +2469,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         SECRET_KEY=os.environ.get("SECRET_KEY", "development-only-change-me"),
         DATABASE=str(data_dir / "merch.sqlite3"),
         BACKUP_DIR=str(data_dir / "backups"),
+        RESET_ARCHIVE_DIR=str(data_dir / "reset-archives"),
         INVOICE_UPLOAD_DIR=str(data_dir / "invoices"),
         MAX_INVOICE_FILE_BYTES=MAX_INVOICE_FILE_BYTES,
         # Leave modest room for the multipart envelope while independently
@@ -2070,6 +2478,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         BACKUP_RETENTION_DAYS=int(os.environ.get("BACKUP_RETENTION_DAYS", "90")),
         ADMIN_USERNAME=os.environ.get("ADMIN_USERNAME", "admin"),
         ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD", "replace-this-password"),
+        ACCOUNT_SETUP_CODE_DAYS=int(os.environ.get("ACCOUNT_SETUP_CODE_DAYS", "14")),
+        PROFILE_REAUTH_SECONDS=int(os.environ.get("PROFILE_REAUTH_SECONDS", "600")),
+        MFA_ISSUER=os.environ.get("MFA_ISSUER", "Protovibe Merch Manager").strip(),
         # A published image receives the GitHub release tag at Docker build
         # time.  The neutral fallback only applies to local development builds.
         APP_VERSION=os.environ.get("APP_VERSION", "0.0.0").strip(),
@@ -2092,6 +2503,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
     Path(app.config["BACKUP_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(app.config["RESET_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["INVOICE_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
     initialise_database(app)
     app.teardown_appcontext(close_db)
@@ -2105,6 +2517,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return {
             "csrf_token": csrf_token,
             "current_user": g.get("user"),
+            "role_labels": ROLE_LABELS,
             "payment_methods": PAYMENT_METHODS,
             "app_version": app.config["APP_VERSION"],
             "app_version_label": display_version(app.config["APP_VERSION"]),
@@ -2116,7 +2529,39 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         user_id = session.get("user_id")
         g.user = None
         if user_id:
-            g.user = row_to_dict(get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+            user = row_to_dict(get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+            expected_session_version = session.get("user_session_version")
+            if (
+                user is None
+                or not bool(user["is_active"])
+                # Sessions from the former one-account release do not carry a
+                # version.  Expire them once on this upgrade so an existing
+                # Admin browser must pass through the mandatory MFA setup.
+                or expected_session_version is None
+                or int(expected_session_version) != int(user["session_version"] or 0)
+            ):
+                # Password resets, role changes and deactivations increment the
+                # version and thereby invalidate every existing browser session.
+                session.clear()
+            else:
+                g.user = user_capabilities(user)
+
+    @app.after_request
+    def prevent_sensitive_page_caching(response: Response) -> Response:
+        """Keep passwords, QR codes and one-time recovery codes out of caches."""
+
+        if request.endpoint in {
+            "account_setup",
+            "mfa_login",
+            "mfa_enroll",
+            "mfa_qr",
+            "regenerate_recovery_codes",
+            "profile_reauth",
+            "profile_page",
+        }:
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+        return response
 
     @app.get("/")
     def index():
@@ -2126,24 +2571,623 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def login():
         if request.method == "POST":
             username = request.form.get("username", "").strip()
-            password = request.form.get("password", "")
+            password_or_setup_code = request.form.get("password", "")
             user = get_db().execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-            if user is None or not check_password_hash(user["password_hash"], password):
+            if user is None or not bool(user["is_active"]):
+                flash("Benutzername oder Passwort ist nicht korrekt.", "error")
+            elif bool(user["must_set_password"]):
+                if (
+                    not user["setup_code_hash"]
+                    or not is_setup_code_current(user)
+                    or not check_password_hash(user["setup_code_hash"], password_or_setup_code)
+                ):
+                    flash("Benutzername oder Passwort ist nicht korrekt.", "error")
+                else:
+                    begin_auth_challenge("password_setup", user, request.args.get("next"))
+                    return redirect(url_for("account_setup"))
+            elif not check_password_hash(user["password_hash"], password_or_setup_code):
                 flash("Benutzername oder Passwort ist nicht korrekt.", "error")
             else:
-                session.clear()
-                session["user_id"] = user["id"]
-                csrf_token()
-                next_url = request.args.get("next")
-                if not next_url or not next_url.startswith("/") or next_url.startswith("//"):
-                    next_url = url_for("sales_page")
+                # Admin access is deliberately impossible before its TOTP
+                # device has been enrolled.  Other roles can opt into it in
+                # their profile later.
+                if normalized_role(user) == "admin" and not bool(user["mfa_enabled"]):
+                    begin_auth_challenge("mfa_enrollment", user, request.args.get("next"))
+                    return redirect(url_for("mfa_enroll"))
+                if bool(user["mfa_enabled"]):
+                    begin_auth_challenge("mfa_login", user, request.args.get("next"))
+                    return redirect(url_for("mfa_login"))
+                get_db().execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
+                get_db().commit()
+                next_url = safe_next_url(request.args.get("next"), fallback=url_for("sales_page"))
+                establish_authenticated_session(user)
                 return redirect(next_url)
         return render_template("login.html", title="Anmelden")
+
+    @app.route("/konto/einrichten", methods=["GET", "POST"])
+    def account_setup():
+        """Turn an admin-issued, one-time setup code into a private password."""
+
+        user_id = session.get("password_setup_user_id")
+        user = (
+            get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if user_id
+            else None
+        )
+        if user is None or not bool(user["is_active"]) or not bool(user["must_set_password"]):
+            session.clear()
+            flash("Der Einrichtungsvorgang ist nicht mehr gültig. Bitte einen neuen Code anfordern.", "error")
+            return redirect(url_for("login"))
+        if request.method == "POST":
+            try:
+                password = validate_new_password(
+                    request.form.get("password"), request.form.get("password_confirmation")
+                )
+                connection = get_db()
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET password_hash = ?, must_set_password = 0,
+                        setup_code_hash = NULL, setup_code_expires_at = NULL
+                    WHERE id = ?
+                    """,
+                    (generate_password_hash(password), user["id"]),
+                )
+                audit(connection, "set_password", "user", user["id"], {"via": "setup_code"}, user_id=user["id"])
+                connection.commit()
+                refreshed_user = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+                next_url = take_post_auth_next()
+                if normalized_role(refreshed_user) == "admin" and not bool(refreshed_user["mfa_enabled"]):
+                    begin_auth_challenge("mfa_enrollment", refreshed_user, next_url)
+                    return redirect(url_for("mfa_enroll"))
+                if bool(refreshed_user["mfa_enabled"]):
+                    begin_auth_challenge("mfa_login", refreshed_user, next_url)
+                    return redirect(url_for("mfa_login"))
+                connection.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
+                connection.commit()
+                establish_authenticated_session(refreshed_user)
+                return redirect(next_url)
+            except ValueError as exc:
+                flash(str(exc), "error")
+        return render_template("account_setup.html", title="Passwort einrichten", username=user["username"])
+
+    @app.route("/mfa/anmelden", methods=["GET", "POST"])
+    def mfa_login():
+        """Finish a password login with a time-based code or recovery code."""
+
+        user_id = session.get("mfa_login_user_id")
+        user = (
+            get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if user_id
+            else None
+        )
+        if user is None or not bool(user["is_active"]) or not bool(user["mfa_enabled"]):
+            session.clear()
+            flash("Die Zwei-Faktor-Anmeldung ist nicht mehr gültig. Bitte erneut anmelden.", "error")
+            return redirect(url_for("login"))
+        if request.method == "POST":
+            connection = get_db()
+            method = verify_mfa_code(connection, user, request.form.get("mfa_code"))
+            if method is None:
+                flash("Der Sicherheitscode ist nicht gültig.", "error")
+            else:
+                if method == "recovery":
+                    refreshed_user = connection.execute(
+                        "SELECT * FROM users WHERE id = ?", (user["id"],)
+                    ).fetchone()
+                    audit(
+                        connection,
+                        "use_recovery_code",
+                        "user",
+                        user["id"],
+                        {"remaining_codes": len(recovery_code_hashes(refreshed_user))},
+                        user_id=user["id"],
+                    )
+                connection.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
+                connection.commit()
+                next_url = take_post_auth_next()
+                refreshed_user = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+                establish_authenticated_session(refreshed_user)
+                return redirect(next_url)
+        return render_template("mfa_login.html", title="Sicherheitscode", username=user["username"])
+
+    def mfa_enrollment_target() -> tuple[sqlite3.Row | None, bool]:
+        """Return the user currently allowed to enrol/re-enrol a TOTP device."""
+
+        if g.get("user") is not None:
+            if not has_profile_reauth(g.user):
+                return None, False
+            return get_db().execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone(), False
+        user_id = session.get("mfa_enrollment_user_id")
+        if not user_id:
+            return None, False
+        user = get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None or not bool(user["is_active"]) or normalized_role(user) != "admin":
+            return None, False
+        return user, True
+
+    @app.route("/profil/2fa/einrichten", methods=["GET", "POST"])
+    @app.route("/mfa/einrichten", methods=["GET", "POST"])
+    def mfa_enroll():
+        """Show a QR code and only enable TOTP after a live-code confirmation."""
+
+        user, is_pre_auth = mfa_enrollment_target()
+        if user is None:
+            if g.get("user") is not None:
+                return redirect(url_for("profile_reauth", next=request.path))
+            session.clear()
+            flash("Die Zwei-Faktor-Einrichtung ist nicht mehr gültig. Bitte erneut anmelden.", "error")
+            return redirect(url_for("login"))
+        connection = get_db()
+        pending_secret = decrypt_mfa_secret(user["mfa_pending_secret_encrypted"])
+        if pending_secret is None:
+            pending_secret = pyotp.random_base32()
+            connection.execute(
+                "UPDATE users SET mfa_pending_secret_encrypted = ? WHERE id = ?",
+                (encrypt_mfa_secret(pending_secret), user["id"]),
+            )
+            connection.commit()
+            user = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+        if request.method == "POST":
+            code = str(request.form.get("mfa_code", "")).strip().replace(" ", "")
+            if not pyotp.TOTP(pending_secret).verify(code, valid_window=1):
+                flash("Der Sicherheitscode stimmt nicht. Bitte QR-Code erneut scannen und einen aktuellen Code eingeben.", "error")
+            else:
+                recovery_codes = generate_recovery_codes()
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET mfa_secret_encrypted = ?, mfa_pending_secret_encrypted = NULL,
+                        mfa_recovery_code_hashes_json = ?, mfa_enabled = 1, mfa_enrolled_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        encrypt_mfa_secret(pending_secret),
+                        json.dumps([generate_password_hash(item) for item in recovery_codes]),
+                        utc_now(),
+                        user["id"],
+                    ),
+                )
+                audit(
+                    connection,
+                    "enable_mfa",
+                    "user",
+                    user["id"],
+                    {"role": normalized_role(user)},
+                    user_id=user["id"],
+                )
+                connection.commit()
+                backup_after_commit()
+                return_url = url_for("profile_page")
+                template_user: dict[str, Any] | None = g.get("user")
+                if is_pre_auth:
+                    return_url = take_post_auth_next()
+                    refreshed_user = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+                    establish_authenticated_session(refreshed_user)
+                    template_user = user_capabilities(dict(refreshed_user))
+                return render_template(
+                    "mfa_recovery_codes.html",
+                    title="Wiederherstellungscodes",
+                    recovery_codes=recovery_codes,
+                    return_url=return_url,
+                    current_user=template_user,
+                )
+        provisioning_uri = pyotp.TOTP(pending_secret).provisioning_uri(
+            name=user["username"], issuer_name=current_app.config["MFA_ISSUER"]
+        )
+        return render_template(
+            "mfa_enroll.html",
+            title="Zwei-Faktor-Authentifizierung",
+            username=user["username"],
+            manual_secret=pending_secret,
+            provisioning_uri=provisioning_uri,
+            is_required=normalized_role(user) == "admin",
+            is_pre_auth=is_pre_auth,
+        )
+
+    @app.get("/mfa/qr")
+    def mfa_qr():
+        """Serve the short-lived, session-bound QR image for an enrolment."""
+
+        user, _ = mfa_enrollment_target()
+        if user is None:
+            abort(403)
+        pending_secret = decrypt_mfa_secret(user["mfa_pending_secret_encrypted"])
+        if pending_secret is None:
+            abort(404)
+        provisioning_uri = pyotp.TOTP(pending_secret).provisioning_uri(
+            name=user["username"], issuer_name=current_app.config["MFA_ISSUER"]
+        )
+        image = qrcode.make(provisioning_uri)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        buffer.seek(0)
+        return send_file(buffer, mimetype="image/png", max_age=0)
+
+    @app.route("/profil/zugriff", methods=["GET", "POST"])
+    @login_required
+    def profile_reauth():
+        """Freshly verify the current password before exposing account data."""
+
+        target = safe_next_url(request.args.get("next"), fallback=url_for("profile_page"))
+        if has_profile_reauth(g.user):
+            return redirect(target)
+        if request.method == "POST":
+            password = request.form.get("password", "")
+            connection = get_db()
+            user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+            if not check_password_hash(user["password_hash"], password):
+                flash("Das Passwort ist nicht korrekt.", "error")
+            else:
+                method = "password"
+                if bool(user["mfa_enabled"]):
+                    method = verify_mfa_code(connection, user, request.form.get("mfa_code")) or ""
+                    if not method:
+                        flash("Der Sicherheitscode ist nicht gültig.", "error")
+                        return render_template(
+                            "profile_reauth.html",
+                            title="Zugriff bestätigen",
+                            target=target,
+                            needs_mfa=True,
+                        )
+                if method == "recovery":
+                    audit(
+                        connection,
+                        "use_recovery_code",
+                        "user",
+                        user["id"],
+                        {"context": "profile_reauth"},
+                        user_id=user["id"],
+                    )
+                connection.commit()
+                session["profile_reauth_user_id"] = int(user["id"])
+                session["profile_reauth_until"] = time.time() + int(current_app.config["PROFILE_REAUTH_SECONDS"])
+                return redirect(target)
+        return render_template(
+            "profile_reauth.html",
+            title="Zugriff bestätigen",
+            target=target,
+            needs_mfa=bool(g.user["mfa_enabled"]),
+        )
+
+    @app.get("/profil")
+    @login_required
+    @profile_reauth_required
+    def profile_page():
+        user = get_db().execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+        return render_template(
+            "profile.html",
+            title="Mein Profil",
+            profile_user=user_capabilities(dict(user)),
+            recovery_code_count=len(recovery_code_hashes(user)),
+        )
+
+    @app.post("/profil/passwort")
+    @login_required
+    @profile_reauth_required
+    def update_own_password():
+        try:
+            connection = get_db()
+            user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+            if not check_password_hash(user["password_hash"], request.form.get("current_password", "")):
+                raise ValueError("Das aktuelle Passwort ist nicht korrekt.")
+            password = validate_new_password(
+                request.form.get("password"), request.form.get("password_confirmation")
+            )
+            connection.execute(
+                """
+                UPDATE users
+                SET password_hash = ?, session_version = session_version + 1,
+                    must_set_password = 0, setup_code_hash = NULL, setup_code_expires_at = NULL
+                WHERE id = ?
+                """,
+                (generate_password_hash(password), g.user["id"]),
+            )
+            audit(connection, "change_password", "user", g.user["id"], {"via": "profile"})
+            connection.commit()
+            refreshed = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+            session["user_session_version"] = int(refreshed["session_version"])
+            flash("Dein Passwort wurde geändert. Andere Sitzungen wurden abgemeldet.", "success")
+        except ValueError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page"))
+
+    @app.post("/profil/2fa/deaktivieren")
+    @login_required
+    @profile_reauth_required
+    def disable_own_mfa():
+        if normalized_role(g.user) == "admin":
+            flash("Für den Admin ist die Zwei-Faktor-Authentifizierung verpflichtend.", "error")
+            return redirect(url_for("profile_page"))
+        connection = get_db()
+        connection.execute(
+            """
+            UPDATE users
+            SET mfa_enabled = 0, mfa_secret_encrypted = NULL, mfa_pending_secret_encrypted = NULL,
+                mfa_recovery_code_hashes_json = '[]', mfa_enrolled_at = NULL
+            WHERE id = ?
+            """,
+            (g.user["id"],),
+        )
+        audit(connection, "disable_mfa", "user", g.user["id"], {"via": "profile"})
+        connection.commit()
+        backup_after_commit()
+        flash("Die Zwei-Faktor-Authentifizierung wurde deaktiviert.", "success")
+        return redirect(url_for("profile_page"))
+
+    @app.post("/profil/2fa/wiederherstellungscodes")
+    @login_required
+    @profile_reauth_required
+    def regenerate_recovery_codes():
+        connection = get_db()
+        user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+        if not bool(user["mfa_enabled"]):
+            flash("Aktiviere zuerst die Zwei-Faktor-Authentifizierung.", "error")
+            return redirect(url_for("profile_page"))
+        recovery_codes = generate_recovery_codes()
+        connection.execute(
+            "UPDATE users SET mfa_recovery_code_hashes_json = ? WHERE id = ?",
+            (json.dumps([generate_password_hash(item) for item in recovery_codes]), user["id"]),
+        )
+        audit(connection, "regenerate_recovery_codes", "user", user["id"], {})
+        connection.commit()
+        backup_after_commit()
+        return render_template(
+            "mfa_recovery_codes.html",
+            title="Neue Wiederherstellungscodes",
+            recovery_codes=recovery_codes,
+            return_url=url_for("profile_page"),
+        )
 
     @app.post("/logout")
     @login_required
     def logout():
         session.clear()
+        return redirect(url_for("login"))
+
+    def administration_users() -> list[dict[str, Any]]:
+        """Return safe, display-ready user records for the admin screen."""
+
+        rows = get_db().execute(
+            """
+            SELECT * FROM users
+            ORDER BY CASE role WHEN 'admin' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END,
+                     username COLLATE NOCASE
+            """
+        ).fetchall()
+        users = []
+        for row in rows:
+            user = user_capabilities(dict(row))
+            user["recovery_code_count"] = len(recovery_code_hashes(row))
+            users.append(user)
+        return users
+
+    def render_administration(
+        *, setup_credential: dict[str, str] | None = None, reset_archive_name: str | None = None
+    ):
+        return render_template(
+            "admin.html",
+            title="Verwaltung",
+            users=administration_users(),
+            setup_credential=setup_credential,
+            reset_archive_name=reset_archive_name,
+            setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
+        )
+
+    @app.get("/verwaltung")
+    @login_required
+    @admin_required
+    def administration_page():
+        return render_administration()
+
+    @app.post("/verwaltung/benutzer")
+    @login_required
+    @admin_required
+    def create_user():
+        try:
+            username = valid_username(request.form.get("username"))
+            role = str(request.form.get("role", "seller")).strip().lower()
+            if role not in MANAGED_USER_ROLES:
+                raise ValueError("Neue Benutzer können nur die Rollen Seller oder Manager erhalten.")
+            setup_code = generate_setup_code()
+            connection = get_db()
+            connection.execute(
+                """
+                INSERT INTO users (
+                    username, password_hash, is_admin, role, is_active, must_set_password,
+                    setup_code_hash, setup_code_expires_at, created_at
+                ) VALUES (?, ?, 0, ?, 1, 1, ?, ?, ?)
+                """,
+                (
+                    username,
+                    generate_password_hash(secrets.token_urlsafe(48)),
+                    role,
+                    generate_password_hash(setup_code),
+                    setup_code_expiry(int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"])),
+                    utc_now(),
+                ),
+            )
+            user_id = connection.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()[0]
+            audit(connection, "create", "user", user_id, {"username": username, "role": role})
+            connection.commit()
+            backup_after_commit()
+            return render_administration(
+                setup_credential={"username": username, "code": setup_code, "purpose": "new"}
+            )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            flash("Dieser Benutzer konnte nicht angelegt werden: " + str(exc), "error")
+            return redirect(url_for("administration_page"))
+
+    @app.post("/verwaltung/benutzer/<int:user_id>/passwort-zuruecksetzen")
+    @login_required
+    @admin_required
+    def reset_user_password(user_id: int):
+        connection = get_db()
+        user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            abort(404)
+        if normalized_role(user) == "admin":
+            flash("Das Admin-Passwort wird ausschließlich im eigenen Profil geändert.", "error")
+            return redirect(url_for("administration_page"))
+        setup_code = generate_setup_code()
+        connection.execute(
+            """
+            UPDATE users
+            SET password_hash = ?, must_set_password = 1, setup_code_hash = ?,
+                setup_code_expires_at = ?, session_version = session_version + 1
+            WHERE id = ?
+            """,
+            (
+                generate_password_hash(secrets.token_urlsafe(48)),
+                generate_password_hash(setup_code),
+                setup_code_expiry(int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"])),
+                user_id,
+            ),
+        )
+        audit(connection, "reset_password", "user", user_id, {"username": user["username"]})
+        connection.commit()
+        backup_after_commit()
+        return render_administration(
+            setup_credential={"username": user["username"], "code": setup_code, "purpose": "reset"}
+        )
+
+    @app.post("/verwaltung/benutzer/<int:user_id>/rolle")
+    @login_required
+    @admin_required
+    def update_user_role(user_id: int):
+        role = str(request.form.get("role", "")).strip().lower()
+        if role not in MANAGED_USER_ROLES:
+            flash("Es sind nur die Rollen Seller und Manager auswählbar.", "error")
+            return redirect(url_for("administration_page"))
+        connection = get_db()
+        user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            abort(404)
+        if normalized_role(user) == "admin":
+            flash("Die einzige Admin-Rolle kann nicht geändert werden.", "error")
+            return redirect(url_for("administration_page"))
+        connection.execute(
+            "UPDATE users SET role = ?, is_admin = 0, session_version = session_version + 1 WHERE id = ?",
+            (role, user_id),
+        )
+        audit(connection, "change_role", "user", user_id, {"username": user["username"], "role": role})
+        connection.commit()
+        backup_after_commit()
+        flash("Die Rolle von „{}“ wurde geändert.".format(user["username"]), "success")
+        return redirect(url_for("administration_page"))
+
+    @app.post("/verwaltung/benutzer/<int:user_id>/aktiv")
+    @login_required
+    @admin_required
+    def update_user_active_state(user_id: int):
+        connection = get_db()
+        user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            abort(404)
+        if normalized_role(user) == "admin":
+            flash("Der einzige Admin kann nicht deaktiviert werden.", "error")
+            return redirect(url_for("administration_page"))
+        active = request.form.get("active") == "1"
+        connection.execute(
+            "UPDATE users SET is_active = ?, session_version = session_version + 1 WHERE id = ?",
+            (int(active), user_id),
+        )
+        audit(
+            connection,
+            "activate_user" if active else "deactivate_user",
+            "user",
+            user_id,
+            {"username": user["username"], "is_active": active},
+        )
+        connection.commit()
+        backup_after_commit()
+        flash("Der Benutzer wurde {}.".format("aktiviert" if active else "deaktiviert"), "success")
+        return redirect(url_for("administration_page"))
+
+    @app.post("/verwaltung/benutzer/<int:user_id>/2fa-zuruecksetzen")
+    @login_required
+    @admin_required
+    def reset_user_mfa(user_id: int):
+        connection = get_db()
+        user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if user is None:
+            abort(404)
+        if normalized_role(user) == "admin":
+            flash("Die verpflichtende Admin-2FA kann nur durch die Wiederherstellungscodes des Admins ersetzt werden.", "error")
+            return redirect(url_for("administration_page"))
+        connection.execute(
+            """
+            UPDATE users
+            SET mfa_enabled = 0, mfa_secret_encrypted = NULL, mfa_pending_secret_encrypted = NULL,
+                mfa_recovery_code_hashes_json = '[]', mfa_enrolled_at = NULL,
+                session_version = session_version + 1
+            WHERE id = ?
+            """,
+            (user_id,),
+        )
+        audit(connection, "reset_mfa", "user", user_id, {"username": user["username"]})
+        connection.commit()
+        backup_after_commit()
+        flash("Die 2FA von „{}“ wurde zurückgesetzt.".format(user["username"]), "success")
+        return redirect(url_for("administration_page"))
+
+    @app.post("/verwaltung/daten-zuruecksetzen")
+    @login_required
+    @admin_required
+    def reset_application_data():
+        """Archive all data, then start a blank ledger with the verified admin."""
+
+        if request.form.get("confirmation", "").strip() != "DATEN ZURÜCKSETZEN":
+            flash("Bitte die Bestätigung exakt als „DATEN ZURÜCKSETZEN“ eingeben.", "error")
+            return render_administration()
+        connection = get_db()
+        admin = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+        if not check_password_hash(admin["password_hash"], request.form.get("password", "")):
+            flash("Das Passwort ist nicht korrekt. Es wurden keine Daten verändert.", "error")
+            return render_administration()
+        mfa_method = verify_mfa_code(connection, admin, request.form.get("mfa_code"))
+        if mfa_method is None:
+            flash("Der Zwei-Faktor-Code ist nicht gültig. Es wurden keine Daten verändert.", "error")
+            return render_administration()
+        if mfa_method == "recovery":
+            audit(
+                connection,
+                "use_recovery_code",
+                "user",
+                admin["id"],
+                {"context": "data_reset"},
+                user_id=admin["id"],
+            )
+        connection.commit()
+        try:
+            archive_path = create_reset_archive(app, connection)
+            # A recovery code may have been consumed while confirming this
+            # reset. Preserve the post-verification state, never a stale copy
+            # that would accidentally make that code valid again.
+            admin = connection.execute("SELECT * FROM users WHERE id = ?", (admin["id"],)).fetchone()
+            preserved_admin = dict(admin)
+            close_db(None)
+            reset_data_store(app, preserved_admin)
+            fresh_connection = get_db()
+            audit(
+                fresh_connection,
+                "reset_application_data",
+                "system",
+                None,
+                {"archive": archive_path.name, "preserved_admin": preserved_admin["username"]},
+                user_id=preserved_admin["id"],
+            )
+            fresh_connection.commit()
+        except Exception:
+            current_app.logger.exception("Could not reset application data")
+            flash("Die Daten konnten nicht zurückgesetzt werden. Das Reset-Archiv wurde nicht gelöscht.", "error")
+            return redirect(url_for("administration_page"))
+        session.clear()
+        flash(
+            "Alle Artikel, Buchungen, Anhänge und weiteren Benutzer wurden zurückgesetzt. "
+            f"Das Archiv „{archive_path.name}“ wurde angelegt; der Admin-Zugang bleibt erhalten.",
+            "success",
+        )
         return redirect(url_for("login"))
 
     @app.get("/updates")
@@ -2361,6 +3405,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             articles=article_payload(connection),
             receipts=purchase_receipt_payload(connection, purchase_rows),
             today=today_iso(),
+            can_manage_purchases=has_role(g.user, "manager"),
         )
 
     @app.get("/api/variants/<int:variant_id>/last-purchase-price")
@@ -2374,6 +3419,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.post("/api/purchases")
     @login_required
+    @manager_required
     def create_purchase():
         """Create a single legacy purchase or a complete multi-item cart."""
 
@@ -2471,6 +3517,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.patch("/api/purchases/<int:purchase_id>")
     @login_required
+    @manager_required
     def update_purchase(purchase_id: int):
         """Correct a purchase after an explicit client-side safety delay."""
 
@@ -2565,6 +3612,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.delete("/api/purchases/<int:purchase_id>")
     @login_required
+    @manager_required
     def delete_purchase(purchase_id: int):
         """Delete one item from a purchase cart after client confirmation."""
 
@@ -2626,6 +3674,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.delete("/api/purchase-receipts/<receipt_id>")
     @login_required
+    @manager_required
     def delete_purchase_receipt(receipt_id: str):
         """Delete an entire purchase cart, including its item/cart invoices."""
 
@@ -2685,6 +3734,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.post("/api/purchase-receipts/<receipt_id>/attachments")
     @login_required
+    @manager_required
     def add_purchase_receipt_attachments(receipt_id: str):
         """Attach one or more invoice files to an already saved purchase cart."""
 
@@ -3011,7 +4061,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/artikelverwaltung")
     @login_required
-    @admin_required
+    @manager_required
     def article_management_page():
         connection = get_db()
         article_rows = connection.execute(
@@ -3030,7 +4080,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.post("/artikelverwaltung/neu")
     @login_required
-    @admin_required
+    @manager_required
     def create_article():
         connection = get_db()
         now = utc_now()
@@ -3085,7 +4135,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.post("/artikelverwaltung/<int:article_id>/speichern")
     @login_required
-    @admin_required
+    @manager_required
     def save_article(article_id: int):
         connection = get_db()
         try:

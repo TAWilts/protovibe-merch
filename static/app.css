@@ -46,6 +46,8 @@ a { color: inherit; text-decoration: none; }
 .main-nav a:hover, .main-nav a.active { color: var(--text); border-bottom-color: var(--accent); }
 .user-menu { margin-left: auto; display: flex; gap: 12px; align-items: center; color: var(--muted); font-size: .88rem; white-space: nowrap; }
 .text-button { border: 0; padding: 0; color: var(--muted); background: transparent; text-decoration: underline; text-underline-offset: 3px; }
+.user-profile-link { padding: 5px 7px; border: 1px solid transparent; border-radius: 7px; color: var(--muted); transition: color .15s, background .15s, border-color .15s; }
+.user-profile-link:hover { color: var(--text); border-color: var(--border); background: rgba(255,255,255,.04); }
 .update-link { max-width: 180px; overflow: hidden; text-overflow: ellipsis; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; color: var(--muted); background: rgba(255,255,255,.025); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .74rem; transition: border .15s, background .15s, color .15s; }
 .update-link:hover { color: var(--text); border-color: var(--accent); background: #34213f; }
 .update-link.update-available { color: #2a132d; border-color: #f4aaff; background: linear-gradient(135deg, var(--accent-bright), var(--accent)); font-family: inherit; font-weight: 780; }
@@ -289,12 +291,55 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .login-card > p { margin: 0 0 24px; color: var(--muted); }
 .stack-form { display: flex; flex-direction: column; gap: 15px; }
 
+.auth-page { min-height: calc(100vh - 66px); display: grid; place-items: center; padding-top: 18px; padding-bottom: 28px; }
+.auth-card { width: min(470px, 100%); padding: 32px; border: 1px solid var(--border); border-radius: 20px; background: rgba(26,22,34,.94); box-shadow: var(--shadow); }
+.auth-card-wide { width: min(680px, 100%); }
+.auth-card h1 { margin: 3px 0 8px; letter-spacing: -.04em; }
+.auth-card .page-intro { margin: 0 0 24px; }
+.auth-card .notice { margin-top: 2px; }
+.mfa-enrolment { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 23px; align-items: center; margin: 8px 0 24px; padding: 18px; border: 1px solid #5c3e68; border-radius: 13px; background: rgba(51,35,61,.38); }
+.mfa-enrolment h2 { margin: 0 0 7px; font-size: 1.08rem; }
+.mfa-qr { width: 170px; height: 170px; padding: 8px; border-radius: 10px; background: #fff; image-rendering: pixelated; }
+.secret-code, .setup-code { display: inline-block; overflow-wrap: anywhere; padding: 9px 11px; border: 1px solid #674577; border-radius: 8px; color: #ffe8ff; background: #120e17; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; letter-spacing: .06em; }
+.recovery-card { text-align: left; }
+.recovery-code-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 20px 0; }
+.recovery-code-grid code { padding: 10px 12px; border: 1px solid #5e416a; border-radius: 8px; color: #ffe8ff; background: #120e17; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; letter-spacing: .04em; }
+.recovery-actions { justify-content: flex-end; margin-top: 18px; }
+
+.profile-grid, .admin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.profile-grid .table-section, .admin-grid .table-section { margin-top: 0; }
+.profile-card h2, .admin-create-card h2, .admin-role-card h2 { margin-top: 0; }
+.profile-facts, .role-list { display: grid; gap: 10px; margin: 18px 0 0; }
+.profile-facts div, .role-list div { padding: 10px 12px; border: 1px solid rgba(255,255,255,.08); border-radius: 9px; background: rgba(17,14,22,.3); }
+.profile-facts dt, .role-list dt { color: var(--muted); font-size: .75rem; font-weight: 750; }
+.profile-facts dd, .role-list dd { margin: 4px 0 0; line-height: 1.42; }
+.role-list dt { color: var(--accent-bright); }
+.role-list dd { color: var(--muted); font-size: .84rem; }
+.profile-card .button-group { margin-top: 17px; }
+.profile-card .button-group form, .admin-actions form { margin: 0; }
+.password-card { margin-top: 16px; }
+.form-grid-inline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 12px; align-items: end; }
+
+.setup-code-card { margin-bottom: 20px; padding: 22px; border: 1px solid #a45ab6; border-radius: var(--radius); background: linear-gradient(135deg, rgba(102,45,117,.62), rgba(27,21,36,.95)); box-shadow: var(--shadow); }
+.setup-code-card h2 { margin: 4px 0 7px; }
+.setup-code-card > p:not(.eyebrow):not(.notice) { max-width: 760px; margin: 0 0 15px; color: var(--muted); line-height: 1.45; }
+.setup-code-card .setup-code { margin-bottom: 14px; font-size: 1.13rem; }
+.admin-create-card .stack-form { margin-top: 17px; }
+.users-table { min-width: 1060px; }
+.inline-form { display: inline; }
+.admin-actions { display: flex; flex-wrap: wrap; gap: 7px; min-width: 300px; }
+.dangerous-area { border-color: rgba(242,121,131,.55); background: linear-gradient(135deg, rgba(84,31,44,.42), rgba(26,22,34,.94)); }
+.dangerous-area .eyebrow { color: #ffadb5; }
+.reset-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 12px; align-items: end; margin-top: 16px; }
+.reset-form code { color: #ffe1e4; }
+
 @media (max-width: 1080px) {
   .transaction-layout { grid-template-columns: minmax(190px, .78fr) minmax(280px, 1.1fr); }
   .sale-details { grid-column: 1 / -1; }
   .sale-details > .quantity-and-total, .sale-details > .payment-inputs { max-width: 520px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .article-management-layout { grid-template-columns: 220px 1fr; }
+  .reset-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
   .app-header { height: auto; min-height: 60px; padding: 10px 15px; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
@@ -320,6 +365,12 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
   .purchase-receipt-attachments { grid-template-columns: 1fr; }
   .purchase-receipt-attachments > .file-status { grid-column: auto; }
   .metric-grid, .small-metrics { grid-template-columns: 1fr; }
+  .profile-grid, .admin-grid, .form-grid-inline, .reset-form { grid-template-columns: 1fr; }
+  .mfa-enrolment { grid-template-columns: 1fr; }
+  .mfa-qr { width: 170px; height: 170px; }
+  .recovery-code-grid { grid-template-columns: 1fr; }
+  .recovery-actions { flex-direction: column; }
+  .recovery-actions > * { width: 100%; }
   .metric-card { min-height: 95px; }
   .update-version-grid { grid-template-columns: 1fr; }
   .update-status-row { align-items: stretch; flex-direction: column; }

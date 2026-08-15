@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-title-row">
+  <div><p class="eyebrow">Konto</p><h1>Mein Profil</h1><p class="page-intro">Persönliche Zugangsdaten und zusätzlicher Kontoschutz.</p></div>
+  <span class="status {{ 'good' if profile_user.mfa_enabled else 'warning' }}">{{ '2FA aktiv' if profile_user.mfa_enabled else '2FA nicht aktiv' }}</span>
+</div>
+
+<section class="profile-grid">
+  <article class="table-section profile-card">
+    <h2>Konto</h2>
+    <dl class="profile-facts">
+      <div><dt>Benutzername</dt><dd>{{ profile_user.username }}</dd></div>
+      <div><dt>Rolle</dt><dd>{{ profile_user.role_label }}</dd></div>
+      <div><dt>Letzte Anmeldung</dt><dd>{{ profile_user.last_login_at or 'Noch nie' }}</dd></div>
+      <div><dt>2FA</dt><dd>{{ 'Aktiviert' if profile_user.mfa_enabled else 'Nicht aktiviert' }}</dd></div>
+    </dl>
+  </article>
+
+  <article class="table-section profile-card">
+    <h2>Zwei-Faktor-Authentifizierung</h2>
+    {% if profile_user.mfa_enabled %}
+    <p class="muted">Dein Konto ist mit einer Authenticator-App geschützt. Noch verfügbare Wiederherstellungscodes: <strong>{{ recovery_code_count }}</strong>.</p>
+    <div class="button-group">
+      <a class="secondary-button" href="{{ url_for('mfa_enroll') }}">Authenticator-App neu einrichten</a>
+      <form action="{{ url_for('regenerate_recovery_codes') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button" type="submit">Neue Wiederherstellungscodes</button></form>
+      {% if not profile_user.is_admin %}<form action="{{ url_for('disable_own_mfa') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="danger-button" type="submit">2FA deaktivieren</button></form>{% endif %}
+    </div>
+    {% else %}
+    <p class="muted">Mit 2FA benötigst du zusätzlich zum Passwort einen zeitbasierten Code aus einer kostenlosen Authenticator-App.</p>
+    <a class="primary-button" href="{{ url_for('mfa_enroll') }}">2FA einrichten</a>
+    {% endif %}
+    {% if profile_user.is_admin %}<p class="notice">Für den Admin ist 2FA verpflichtend und kann hier nicht deaktiviert werden.</p>{% endif %}
+  </article>
+</section>
+
+<section class="table-section password-card">
+  <div class="section-heading"><div><h2>Passwort ändern</h2><p>Die aktuelle Sicherheitsbestätigung gilt nur kurz. Nach dem Ändern werden andere Sitzungen dieses Kontos abgemeldet.</p></div></div>
+  <form action="{{ url_for('update_own_password') }}" method="post" class="form-grid-inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Aktuelles Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
+    <label>Neues Passwort<input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+    <label>Passwort wiederholen<input name="password_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
+    <button class="primary-button" type="submit">Passwort ändern</button>
+  </form>
+</section>
+{% endblock %}

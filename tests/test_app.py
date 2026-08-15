@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sqlite3
 import tempfile
 import unittest
+from zipfile import ZipFile
 from pathlib import Path
 from unittest.mock import patch
+
+import pyotp
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from app import (
     apply_option_configuration,
@@ -16,6 +21,8 @@ from app import (
     create_backup,
     csv_rows,
     create_app,
+    decrypt_mfa_secret,
+    encrypt_mfa_secret,
     get_db,
     sync_variants,
     variant_label_map,
@@ -32,6 +39,7 @@ class MerchAppTestCase(unittest.TestCase):
                 "SECRET_KEY": "test-secret",
                 "DATABASE": str(root / "merch.sqlite3"),
                 "BACKUP_DIR": str(root / "backups"),
+                "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
                 "INVOICE_UPLOAD_DIR": str(root / "invoices"),
                 "ADMIN_USERNAME": "tester",
                 "ADMIN_PASSWORD": "test-password",
@@ -42,6 +50,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.client = self.app.test_client()
         with self.client.session_transaction() as session:
             session["user_id"] = 1
+            session["user_session_version"] = 0
             session["csrf_token"] = "test-csrf"
 
     def tearDown(self) -> None:
@@ -145,6 +154,65 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("is_offered", variant_columns)
         self.assertIn("is_offered", article_columns)
         self.assertTrue(legacy_variant_is_offered)
+
+    def test_existing_single_admin_table_is_upgraded_to_roles_and_security_columns(self) -> None:
+        """The existing deployed admin becomes the unique Admin without a data reset."""
+
+        legacy_database = Path(self.tempdir.name) / "legacy-users.sqlite3"
+        connection = sqlite3.connect(legacy_database)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO users (id, username, password_hash, is_admin, created_at)
+                VALUES (1, 'old-admin', 'unused', 1, '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        legacy_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": str(legacy_database),
+                "BACKUP_DIR": str(Path(self.tempdir.name) / "legacy-user-backups"),
+                "RESET_ARCHIVE_DIR": str(Path(self.tempdir.name) / "legacy-user-reset-archives"),
+                "INVOICE_UPLOAD_DIR": str(Path(self.tempdir.name) / "legacy-user-invoices"),
+                "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password",
+                "APP_VERSION": "v0.3.0",
+                "AUTO_BACKUP": False,
+            }
+        )
+        with legacy_app.app_context():
+            columns = {row["name"] for row in get_db().execute("PRAGMA table_info(users)").fetchall()}
+            user = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+        self.assertTrue(
+            {
+                "role",
+                "is_active",
+                "must_set_password",
+                "setup_code_hash",
+                "mfa_secret_encrypted",
+                "mfa_enabled",
+                "session_version",
+            }.issubset(columns)
+        )
+        self.assertEqual(user["role"], "admin")
+        self.assertTrue(user["is_admin"])
+        self.assertTrue(user["is_active"])
 
     def test_existing_purchase_table_gets_invoice_attachment_column(self) -> None:
         """A deployed database upgrades without losing its free-text reference."""
@@ -252,6 +320,32 @@ class MerchAppTestCase(unittest.TestCase):
             headers={"X-CSRF-Token": "test-csrf"},
         )
 
+    def csrf_token(self) -> str:
+        with self.client.session_transaction() as session:
+            return session["csrf_token"]
+
+    def become_user(self, user_id: int) -> None:
+        """Switch a test browser to a direct, already authenticated session."""
+
+        with self.client.session_transaction() as session:
+            session.clear()
+            session["user_id"] = user_id
+            session["user_session_version"] = 0
+            session["csrf_token"] = "test-csrf"
+
+    def create_local_user(self, username: str, role: str) -> int:
+        with self.app.app_context():
+            connection = get_db()
+            cursor = connection.execute(
+                """
+                INSERT INTO users (username, password_hash, is_admin, role, is_active, created_at)
+                VALUES (?, ?, 0, ?, 1, '2026-08-14T00:00:00+00:00')
+                """,
+                (username, generate_password_hash("test-password"), role),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
     @patch("app.fetch_latest_github_release")
     def test_admin_update_check_detects_and_caches_a_new_release(self, fetch_release) -> None:
         """The first post-login check is cached; the explicit button refreshes it."""
@@ -313,6 +407,7 @@ class MerchAppTestCase(unittest.TestCase):
             connection.commit()
         with self.client.session_transaction() as session:
             session["user_id"] = 2
+            session["user_session_version"] = 0
             session["csrf_token"] = "test-csrf"
         self.assertEqual(self.client.get("/updates").status_code, 403)
 
@@ -320,6 +415,231 @@ class MerchAppTestCase(unittest.TestCase):
             session.clear()
         unauthenticated = self.client.get("/api/update-status")
         self.assertEqual(unauthenticated.status_code, 401)
+
+    def test_admin_creates_user_who_sets_a_private_password_on_first_login(self) -> None:
+        """A setup credential is one-time only and never becomes the password."""
+
+        response = self.client.post(
+            "/verwaltung/benutzer",
+            data={"csrf_token": "test-csrf", "username": "seller-one", "role": "seller"},
+        )
+        self.assertEqual(response.status_code, 200)
+        match = re.search(r'data-setup-code>([^<]+)</code>', response.get_data(as_text=True))
+        self.assertIsNotNone(match)
+        setup_code = match.group(1)
+
+        with self.app.app_context():
+            created = get_db().execute("SELECT * FROM users WHERE username = 'seller-one'").fetchone()
+        self.assertTrue(created["must_set_password"])
+        self.assertTrue(created["setup_code_hash"])
+        self.assertFalse(check_password_hash(created["password_hash"], setup_code))
+
+        with self.client.session_transaction() as session:
+            session.clear()
+            session["csrf_token"] = "login-token"
+        login = self.client.post(
+            "/login",
+            data={"csrf_token": "login-token", "username": "seller-one", "password": setup_code},
+        )
+        self.assertEqual(login.status_code, 302)
+        self.assertTrue(login.location.endswith("/konto/einrichten"))
+
+        setup = self.client.post(
+            "/konto/einrichten",
+            data={
+                "csrf_token": self.csrf_token(),
+                "password": "a-private-password",
+                "password_confirmation": "a-private-password",
+            },
+        )
+        self.assertEqual(setup.status_code, 302)
+        self.assertTrue(setup.location.endswith("/verkauf"))
+        with self.app.app_context():
+            created = get_db().execute("SELECT * FROM users WHERE username = 'seller-one'").fetchone()
+        self.assertFalse(created["must_set_password"])
+        self.assertIsNone(created["setup_code_hash"])
+        self.assertTrue(check_password_hash(created["password_hash"], "a-private-password"))
+        self.assertIn('value="seller-one"', self.client.get("/verkauf").get_data(as_text=True))
+
+    def test_admin_login_requires_mfa_and_accepts_totp_after_enrolment(self) -> None:
+        """The sole admin cannot complete a password-only login."""
+
+        with self.client.session_transaction() as session:
+            session.clear()
+            session["csrf_token"] = "login-token"
+        password_login = self.client.post(
+            "/login",
+            data={"csrf_token": "login-token", "username": "tester", "password": "test-password"},
+        )
+        self.assertEqual(password_login.status_code, 302)
+        self.assertTrue(password_login.location.endswith("/mfa/einrichten"))
+        self.assertEqual(self.client.get("/mfa/einrichten").status_code, 200)
+
+        with self.app.app_context():
+            enrolled = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            pending_secret = decrypt_mfa_secret(enrolled["mfa_pending_secret_encrypted"], self.app)
+        self.assertIsNotNone(pending_secret)
+        activation = self.client.post(
+            "/mfa/einrichten",
+            data={"csrf_token": self.csrf_token(), "mfa_code": pyotp.TOTP(pending_secret).now()},
+        )
+        self.assertEqual(activation.status_code, 200)
+        self.assertIn("Wiederherstellungscodes", activation.get_data(as_text=True))
+        with self.app.app_context():
+            enrolled = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+        self.assertTrue(enrolled["mfa_enabled"])
+        self.assertEqual(decrypt_mfa_secret(enrolled["mfa_secret_encrypted"], self.app), pending_secret)
+
+        self.client.post("/logout", data={"csrf_token": self.csrf_token()})
+        with self.client.session_transaction() as session:
+            session["csrf_token"] = "login-again"
+        password_login = self.client.post(
+            "/login",
+            data={"csrf_token": "login-again", "username": "tester", "password": "test-password"},
+        )
+        self.assertEqual(password_login.status_code, 302)
+        self.assertTrue(password_login.location.endswith("/mfa/anmelden"))
+        second_factor = self.client.post(
+            "/mfa/anmelden",
+            data={"csrf_token": self.csrf_token(), "mfa_code": pyotp.TOTP(pending_secret).now()},
+        )
+        self.assertEqual(second_factor.status_code, 302)
+        self.assertTrue(second_factor.location.endswith("/verkauf"))
+
+    def test_pre_upgrade_session_is_expired_before_admin_can_bypass_mfa_setup(self) -> None:
+        """Old session cookies cannot keep an Admin logged in around the new MFA rule."""
+
+        with self.client.session_transaction() as session:
+            session.clear()
+            session["user_id"] = 1
+            session["csrf_token"] = "old-session-token"
+        response = self.client.get("/verwaltung")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response.location)
+
+    def test_profile_requires_fresh_password_confirmation_before_view_or_password_change(self) -> None:
+        blocked = self.client.get("/profil")
+        self.assertEqual(blocked.status_code, 302)
+        self.assertIn("/profil/zugriff", blocked.location)
+
+        confirmation = self.client.post(
+            "/profil/zugriff?next=/profil",
+            data={"csrf_token": "test-csrf", "password": "test-password"},
+        )
+        self.assertEqual(confirmation.status_code, 302)
+        self.assertTrue(confirmation.location.endswith("/profil"))
+        self.assertEqual(self.client.get("/profil").status_code, 200)
+
+        changed = self.client.post(
+            "/profil/passwort",
+            data={
+                "csrf_token": "test-csrf",
+                "current_password": "test-password",
+                "password": "a-new-private-password",
+                "password_confirmation": "a-new-private-password",
+            },
+        )
+        self.assertEqual(changed.status_code, 302)
+        with self.app.app_context():
+            user = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+        self.assertTrue(check_password_hash(user["password_hash"], "a-new-private-password"))
+        with self.client.session_transaction() as session:
+            self.assertEqual(session["user_session_version"], user["session_version"])
+
+    def test_roles_are_enforced_on_the_server_not_only_in_navigation(self) -> None:
+        """Seller may view purchases but cannot mutate them through direct URLs."""
+
+        variant_id = self.seed_variant()
+        seller_id = self.create_local_user("seller-role", "seller")
+        manager_id = self.create_local_user("manager-role", "manager")
+
+        self.become_user(seller_id)
+        purchase_page = self.client.get("/einkaeufe")
+        self.assertEqual(purchase_page.status_code, 200)
+        self.assertIn("Nur Lesezugriff", purchase_page.get_data(as_text=True))
+        self.assertEqual(self.client.get("/artikelverwaltung").status_code, 403)
+        self.assertEqual(self.client.get("/verwaltung").status_code, 403)
+        self.assertEqual(
+            self.api_post(
+                "/api/purchases",
+                {"variant_id": variant_id, "quantity": 1, "unit_cost": "11", "purchased_on": "2026-08-14"},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.api_post(
+                "/api/sales",
+                {
+                    "variant_id": variant_id,
+                    "quantity": 1,
+                    "is_paid": True,
+                    "is_received": True,
+                    "payment_method": "Bar",
+                    "sold_on": "2026-08-14",
+                },
+            ).status_code,
+            200,
+        )
+
+        self.become_user(manager_id)
+        self.assertEqual(self.client.get("/artikelverwaltung").status_code, 200)
+        self.assertEqual(self.client.get("/verwaltung").status_code, 403)
+        self.assertEqual(
+            self.api_post(
+                "/api/purchases",
+                {"variant_id": variant_id, "quantity": 1, "unit_cost": "11", "purchased_on": "2026-08-14"},
+            ).status_code,
+            200,
+        )
+
+    def test_database_reset_archives_everything_and_preserves_only_verified_admin(self) -> None:
+        """Reset is protected by password, TOTP and an immutable ZIP snapshot."""
+
+        self.seed_variant()
+        invoice_dir = Path(self.app.config["INVOICE_UPLOAD_DIR"])
+        invoice_dir.mkdir(parents=True, exist_ok=True)
+        (invoice_dir / "before-reset.pdf").write_bytes(b"%PDF-test")
+        secret = pyotp.random_base32()
+        with self.app.app_context():
+            connection = get_db()
+            connection.execute(
+                """
+                UPDATE users
+                SET mfa_enabled = 1, mfa_secret_encrypted = ?,
+                    mfa_recovery_code_hashes_json = '[]'
+                WHERE id = 1
+                """,
+                (encrypt_mfa_secret(secret, self.app),),
+            )
+            connection.commit()
+
+        reset = self.client.post(
+            "/verwaltung/daten-zuruecksetzen",
+            data={
+                "csrf_token": "test-csrf",
+                "password": "test-password",
+                "mfa_code": pyotp.TOTP(secret).now(),
+                "confirmation": "DATEN ZURÜCKSETZEN",
+            },
+        )
+        self.assertEqual(reset.status_code, 302)
+        self.assertTrue(reset.location.endswith("/login"))
+        archives = list(Path(self.app.config["RESET_ARCHIVE_DIR"]).glob("*.zip"))
+        self.assertEqual(len(archives), 1)
+        with ZipFile(archives[0]) as archive:
+            self.assertIn("data/merch.sqlite3", archive.namelist())
+            self.assertIn("data/invoices/before-reset.pdf", archive.namelist())
+
+        with self.app.app_context():
+            connection = get_db()
+            users = connection.execute("SELECT * FROM users").fetchall()
+            article_count = connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        self.assertEqual(len(users), 1)
+        self.assertEqual(users[0]["username"], "tester")
+        self.assertEqual(users[0]["role"], "admin")
+        self.assertTrue(users[0]["mfa_enabled"])
+        self.assertEqual(decrypt_mfa_secret(users[0]["mfa_secret_encrypted"], self.app), secret)
+        self.assertEqual(article_count, 0)
 
     def test_purchase_then_sale_updates_stock_and_creates_receipts(self) -> None:
         variant_id = self.seed_variant()
