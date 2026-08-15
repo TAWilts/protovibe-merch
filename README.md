@@ -21,7 +21,8 @@ Bestand, Bilanz und CSV-Export.
   bleibt für die nächsten Eingaben erhalten.
 - **Artikeloptionen:** ein Artikel kann beliebige Optionsspalten haben, etwa
   `Farbe`, `Größe`, `Schnitt` oder `Material`.  Aus den Werten erzeugt die App
-  automatisch die gültigen Varianten. Neue Artikel starten mit `Schwarz`,
+  automatisch die gültigen Varianten. Die Varianten-/Preistabelle aktualisiert
+  sich bereits beim Bearbeiten der Optionen. Neue Artikel starten mit `Schwarz`,
   `Weiß` sowie `S` bis `XXL`, die jederzeit editierbar sind.
 - **Einkäufe:** der zuletzt für eine Variante bezahlte Preis wird übernommen,
   kann aber pro Einkauf geändert werden.
@@ -35,7 +36,9 @@ Bestand, Bilanz und CSV-Export.
   Listen.
 - **Bilanzen:** gekauft, verkauft und Bestand je Variante sowie Ausgaben,
   Umsatz, Spenden, Saldo und den aus der ODS übernommenen
-  „Nicht nachbestellen“-Status.
+  „Nicht nachbestellen“-Status. Pro Variante lassen sich optionale
+  Mindestbestände hinterlegen; unterschrittene Grenzwerte werden in der Bilanz
+  und vor einem direkten Verkauf hervorgehoben.
 - **Stornierungen:** ganze Warenkörbe oder einzelne Artikel können in der
   Historie mit einer dreisekündigen Sicherheitsbestätigung storniert werden.
   Sie bleiben nachvollziehbar, werden aber aus Bestand, Bilanzen und offenen
@@ -54,9 +57,12 @@ Ein **Artikel** ist beispielsweise `Geometry Shirt`.  Seine **Optionen** sind
 frei definierbar: `Farbe = weiß, schwarz` und `Größe = S, M, L`.  Daraus werden
 Varianten erzeugt, etwa `Geometry Shirt — Farbe: schwarz · Größe: M`.
 
-Jede Variante kann einen abweichenden Verkaufspreis und Standard-Einkaufspreis
-haben.  Das ist wichtig, weil beispielsweise Pullover oder Sondergrößen einen
-anderen Preis haben können.
+Jede Variante kann einen abweichenden Verkaufspreis, Standard-Einkaufspreis
+und Mindestbestand haben. Das ist wichtig, weil beispielsweise Pullover oder
+Sondergrößen einen anderen Preis haben können. Ein Mindestbestand kann zuerst
+mit einem Klick auf alle Varianten eines Artikels übertragen und danach für
+einzelne Varianten überschrieben werden. Ein leeres Feld deaktiviert die
+Warnung; `0` bedeutet, dass erst bei ausverkauftem Bestand gewarnt wird.
 
 ### Sammelbelege und Warenkorb
 
@@ -198,7 +204,7 @@ entdeckte, um eine Zeile verschobene Einkaufsformel.
 | `static/sales.js` | Verkaufsspezifische Logik, Warenkorb, Belegvorschau und Spendenberechnung. |
 | `static/purchases.js` | Einkaufsspezifische Logik und Übernahme des letzten Einkaufspreises. |
 | `static/operations.js` | Speichert die Statusänderungen für offene Sendungen und Zahlungen. |
-| `static/articles.js` | Dynamische Optionsspalten und die Warnung vor rückwirkenden Änderungen. |
+| `static/articles.js` | Dynamische Optionsspalten, Live-Vorschau der Varianten sowie Mindestbestands-Übernahme. |
 | `scripts/import_ods.py` | Einmaliger ODS-Migrationsimport. |
 | `tests/test_app.py` | Regressionstests für Bestand, Statusvorgänge, Artikeldefaults, Pflichtkontaktdaten und rückwirkende Optionsnamen. |
 

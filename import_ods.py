@@ -289,7 +289,8 @@ def main() -> None:
     source = Path(sys.argv[1])
     if not source.is_file():
         raise SystemExit(f"Nicht gefunden: {source}")
-    data_dir = Path(os.environ.get("DATA_DIR", "/data"))
+    data_dir = Path(os.environ.get("DATA_DIR", ".\\data"))
+    print(f"Importiere {source} in {data_dir}\\merch.sqlite3 ...")
     database = data_dir / "merch.sqlite3"
     if not database.is_file():
         raise SystemExit("Die Anwendung muss einmal gestartet sein, bevor der Import ausgeführt wird.")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ from unittest.mock import patch
 from app import (
     apply_option_configuration,
     balance_payload,
+    csv_rows,
     create_app,
     get_db,
     sync_variants,
@@ -59,6 +62,48 @@ class MerchAppTestCase(unittest.TestCase):
             )
 
         self.assertEqual(local_app.config["APP_VERSION"], "0.0.0")
+
+    def test_existing_database_gets_the_minimum_stock_column(self) -> None:
+        """An update must not require manually recreating the merch database."""
+
+        legacy_database = Path(self.tempdir.name) / "legacy.sqlite3"
+        connection = sqlite3.connect(legacy_database)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE variants (
+                    id INTEGER PRIMARY KEY,
+                    article_id INTEGER NOT NULL,
+                    option_value_ids_json TEXT NOT NULL DEFAULT '[]',
+                    combination_key TEXT NOT NULL,
+                    sale_price_cents INTEGER NOT NULL DEFAULT 0,
+                    default_purchase_price_cents INTEGER NOT NULL DEFAULT 0,
+                    no_reorder INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(article_id, combination_key)
+                )
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        legacy_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": str(legacy_database),
+                "BACKUP_DIR": str(Path(self.tempdir.name) / "legacy-backups"),
+                "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password",
+                "AUTO_BACKUP": False,
+            }
+        )
+        with legacy_app.app_context():
+            columns = {row["name"] for row in get_db().execute("PRAGMA table_info(variants)").fetchall()}
+        self.assertIn("minimum_stock", columns)
 
     def seed_variant(self, article_name: str = "Test Shirt") -> int:
         """Create an article with generic Farbe/Größe options and one variant."""
@@ -556,6 +601,110 @@ class MerchAppTestCase(unittest.TestCase):
         history_script = (Path(__file__).parents[1] / "static" / "history.js").read_text(encoding="utf-8")
         self.assertIn("CONFIRMATION_SECONDS = 3", history_script)
         self.assertIn("Stornierung bestätigen", history_script)
+
+    def test_minimum_stock_can_be_applied_to_all_and_overridden_per_variant(self) -> None:
+        """A bulk threshold is a one-shot default, not a lock on variant values."""
+
+        self.seed_variant()
+        with self.app.app_context():
+            connection = get_db()
+            article_id = connection.execute("SELECT id FROM articles WHERE name = 'Test Shirt'").fetchone()[0]
+            color_group = connection.execute(
+                "SELECT id FROM option_groups WHERE article_id = ? AND name = 'Farbe'", (article_id,)
+            ).fetchone()[0]
+            size_group = connection.execute(
+                "SELECT id FROM option_groups WHERE article_id = ? AND name = 'Größe'", (article_id,)
+            ).fetchone()[0]
+            color_value = connection.execute(
+                "SELECT id, value FROM option_values WHERE option_group_id = ?", (color_group,)
+            ).fetchone()
+            size_value = connection.execute(
+                "SELECT id, value FROM option_values WHERE option_group_id = ?", (size_group,)
+            ).fetchone()
+            option_payload = [
+                {
+                    "id": color_group,
+                    "name": "Farbe",
+                    "position": 0,
+                    "values": [
+                        {"id": color_value["id"], "value": color_value["value"], "position": 0},
+                        {"id": None, "value": "weiß", "position": 1},
+                    ],
+                },
+                {
+                    "id": size_group,
+                    "name": "Größe",
+                    "position": 1,
+                    "values": [{"id": size_value["id"], "value": size_value["value"], "position": 0}],
+                },
+            ]
+            apply_option_configuration(connection, article_id, option_payload)
+            sync_variants(connection, article_id)
+            connection.commit()
+            # Submit the now persistent IDs just as the browser does after an
+            # option edit.  Reusing the initial ``None`` for Weiß would model
+            # a second, newly added value instead of the same variant.
+            option_payload = []
+            for group in connection.execute(
+                "SELECT id, name, position FROM option_groups WHERE article_id = ? ORDER BY position", (article_id,)
+            ).fetchall():
+                values = [
+                    {"id": value["id"], "value": value["value"], "position": value["position"]}
+                    for value in connection.execute(
+                        "SELECT id, value, position FROM option_values WHERE option_group_id = ? ORDER BY position",
+                        (group["id"],),
+                    ).fetchall()
+                ]
+                option_payload.append(
+                    {"id": group["id"], "name": group["name"], "position": group["position"], "values": values}
+                )
+            variants = connection.execute(
+                "SELECT id FROM variants WHERE article_id = ? AND is_active = 1 ORDER BY id", (article_id,)
+            ).fetchall()
+
+        self.assertEqual(len(variants), 2)
+        first_variant_id, second_variant_id = (row["id"] for row in variants)
+        response = self.client.post(
+            f"/artikelverwaltung/{article_id}/speichern",
+            data={
+                "csrf_token": "test-csrf",
+                "name": "Test Shirt",
+                "default_sale_price": "20,00",
+                "default_purchase_price": "11,00",
+                "options_json": json.dumps(option_payload),
+                "apply_minimum_stock_to_all": "3",
+                f"minimum_stock_{first_variant_id}": "5",
+                f"minimum_stock_{second_variant_id}": "3",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+
+        with self.app.app_context():
+            connection = get_db()
+            thresholds = {
+                row["id"]: row["minimum_stock"]
+                for row in connection.execute(
+                    "SELECT id, minimum_stock FROM variants WHERE article_id = ? AND is_active = 1", (article_id,)
+                ).fetchall()
+            }
+            balances = balance_payload(connection)
+            _, inventory_headers, inventory_rows = csv_rows(connection, "inventory")
+        self.assertEqual(thresholds, {first_variant_id: 5, second_variant_id: 3})
+        self.assertEqual(balances["summary"]["minimum_stock_warning_count"], 2)
+        self.assertTrue(all(row["minimum_stock_warning"] for row in balances["rows"]))
+        self.assertIn("Mindestbestand", inventory_headers)
+        self.assertTrue(all(row[-1] == "ja" for row in inventory_rows))
+
+        article_html = self.client.get(f"/artikelverwaltung?article={article_id}").get_data(as_text=True)
+        self.assertIn('id="minimum-stock-for-all"', article_html)
+        self.assertIn("Mindestbestandswarnungen", self.client.get("/bilanzen").get_data(as_text=True))
+        article_script = (Path(__file__).parents[1] / "static" / "articles.js").read_text(encoding="utf-8")
+        self.assertIn("renderVariantTable", article_script)
+        self.assertIn("apply-minimum-stock-to-all", article_script)
+        self.assertIn("syncFromInputs: false", article_script)
+        sales_script = (Path(__file__).parents[1] / "static" / "sales.js").read_text(encoding="utf-8")
+        self.assertIn("Mindestbestandswarnung", sales_script)
 
     def test_option_rename_is_visible_in_historic_labels(self) -> None:
         variant_id = self.seed_variant()

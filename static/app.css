@@ -166,6 +166,8 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .empty-cell { text-align: center; padding: 28px; color: var(--muted); }
 .stock-cell { font-weight: 760; }
 .out-of-stock { color: var(--danger); }
+.low-stock-row { background: rgba(243,179,90,.075); }
+.low-stock-row:hover { background: rgba(243,179,90,.12); }
 .cancelled-row { opacity: .62; background: rgba(242,121,131,.055); }
 .history-action { min-width: 120px; white-space: nowrap; text-align: right; }
 .button-group { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -199,9 +201,11 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .metric-card strong { margin: 4px 0; font-size: 1.42rem; letter-spacing: -.035em; }
 .metric-card.accent { background: linear-gradient(140deg, #492151, #2b1a34); border-color: #8b429e; }
 .metric-card.accent strong { color: var(--accent-bright); }
-.small-metrics { grid-template-columns: repeat(3, 1fr); margin-top: 14px; }
+.small-metrics { grid-template-columns: repeat(4, 1fr); margin-top: 14px; }
 .metric-card.subtle { min-height: 87px; padding: 15px 18px; background: #18131f; }
 .metric-card.subtle strong { font-size: 1.1rem; }
+.stock-warning-metric { border-color: rgba(243,179,90,.62); background: rgba(243,179,90,.09); }
+.stock-warning-metric strong { color: #ffd69b; }
 
 .update-card { padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: linear-gradient(138deg, rgba(72,35,83,.76), rgba(26,22,34,.9)); box-shadow: var(--shadow); }
 .update-version-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
@@ -233,6 +237,10 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .value-cell input { padding: 7px 8px; font-size: .86rem; }
 .add-row-button { margin-top: 10px; }
 .inline-money { min-width: 105px; padding: 7px 8px; }
+.inline-number { width: 94px; padding: 7px 8px; }
+.apply-minimum-stock { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; }
+.apply-minimum-stock label { display: grid; gap: 5px; color: var(--muted); font-size: .75rem; font-weight: 700; }
+.apply-minimum-stock input { width: 118px; padding: 7px 8px; }
 .editor-actions { display: flex; justify-content: flex-end; margin-top: 22px; }
 
 .flash-stack { margin-bottom: 18px; display: grid; gap: 8px; }

@@ -126,19 +126,36 @@
       return;
     }
     const shortages = [];
+    const minimumStockWarnings = [];
     quantitiesForStockWarning().forEach((wanted, variantId) => {
       const variant = variantForId(variantId);
-      if (variant && wanted > Number(variant.stock)) {
+      if (!variant) return;
+      const currentStock = Number(variant.stock);
+      const stockAfterSale = currentStock - wanted;
+      if (wanted > currentStock) {
         shortages.push(`${variant.label} (Bestand: ${variant.stock})`);
       }
+      const configuredMinimum = variant.minimum_stock;
+      const minimumStock = Number(configuredMinimum);
+      if (
+        configuredMinimum !== null && configuredMinimum !== undefined && configuredMinimum !== "" &&
+        Number.isFinite(minimumStock) && stockAfterSale <= minimumStock
+      ) {
+        minimumStockWarnings.push(
+          `${variant.label} (nach Verkauf: ${stockAfterSale}, Mindestbestand: ${minimumStock})`
+        );
+      }
     });
+    const messages = [];
     if (shortages.length) {
-      showStockWarning(
+      messages.push(
         `Warnung: Laut Bestand sind folgende Artikel nicht ausreichend verfügbar: ${shortages.join(", ")}. Der Verkauf wird trotzdem gespeichert.`
       );
-    } else {
-      showStockWarning("");
     }
+    if (minimumStockWarnings.length) {
+      messages.push(`Mindestbestandswarnung: ${minimumStockWarnings.join(", ")}.`);
+    }
+    showStockWarning(messages.join(" "));
   }
 
   function updateSummary() {
