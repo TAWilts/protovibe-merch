@@ -1,0 +1,19 @@
+{
+  "name": "Protovibe Merch Manager",
+  "short_name": "Merch Manager",
+  "description": "Lokale Merch-Verkäufe mit sicherer Nachsynchronisierung.",
+  "lang": "de",
+  "start_url": "/verkauf",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#100d16",
+  "theme_color": "#16131d",
+  "icons": [
+    {
+      "src": "/static/pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -199,6 +199,7 @@ class MerchAppTestCase(unittest.TestCase):
         with legacy_app.app_context():
             columns = {row["name"] for row in get_db().execute("PRAGMA table_info(users)").fetchall()}
             user = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            tables = {row["name"] for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         self.assertTrue(
             {
                 "role",
@@ -213,6 +214,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(user["role"], "admin")
         self.assertTrue(user["is_admin"])
         self.assertTrue(user["is_active"])
+        self.assertIn("sync_events", tables)
 
     def test_existing_purchase_table_gets_invoice_attachment_column(self) -> None:
         """A deployed database upgrades without losing its free-text reference."""
@@ -892,6 +894,61 @@ class MerchAppTestCase(unittest.TestCase):
             {(row["variant_id"], row["quantity"], row["unit_price_cents"], row["amount_due_cents"]) for row in rows},
             {(first_variant_id, 2, 1450, 2900), (second_variant_id, 1, 1700, 1700)},
         )
+
+    def test_offline_sale_event_is_idempotent_and_rejects_id_collisions(self) -> None:
+        """A lost browser response may be retried, but must never duplicate a sale."""
+
+        variant_id = self.seed_variant("Offline Shirt")
+        payload = {
+            "items": [{"variant_id": variant_id, "quantity": 2, "unit_price": "18,00"}],
+            "is_paid": True,
+            "is_received": True,
+            "payment_method": "Bar",
+            "sold_on": "2026-08-15",
+            "event_name": "Ohne Empfang",
+            "sold_by": "Tester",
+            "client_event_id": "62f4cfe2-5205-4f0f-8317-4c90960763bb",
+            "client_device_id": "fb73af63-1e9e-4a8f-a53f-1e1ed8af3a7d",
+            "client_actor_id": 1,
+            "client_created_at": "2026-08-15T17:42:00.000Z",
+        }
+        first = self.api_post("/api/sales", payload)
+        with self.app.app_context():
+            get_db().execute("UPDATE variants SET is_offered = 0 WHERE id = ?", (variant_id,))
+            get_db().commit()
+        retry = self.api_post("/api/sales", payload)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(retry.status_code, 200)
+        self.assertFalse(first.json.get("duplicate", False))
+        self.assertTrue(retry.json["duplicate"])
+        self.assertEqual(first.json["receipt_id"], retry.json["receipt_id"])
+        with self.app.app_context():
+            sale_count = get_db().execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            event = get_db().execute("SELECT * FROM sync_events").fetchone()
+        self.assertEqual(sale_count, 1)
+        self.assertEqual(event["event_id"], payload["client_event_id"])
+        self.assertEqual(event["actor_user_id"], 1)
+
+        collision = {**payload, "items": [{"variant_id": variant_id, "quantity": 3, "unit_price": "18,00"}]}
+        conflict = self.api_post("/api/sales", collision)
+        self.assertEqual(conflict.status_code, 409)
+        self.assertIn("bereits", conflict.json["error"])
+
+    def test_sales_pwa_shell_is_exposed_without_caching_admin_pages(self) -> None:
+        """The worker is root-scoped and the sales page loads the local outbox UI."""
+
+        sales_html = self.client.get("/verkauf").get_data(as_text=True)
+        worker = self.client.get("/service-worker.js")
+        self.assertIn('rel="manifest"', sales_html)
+        self.assertIn('id="offline-sync-panel"', sales_html)
+        self.assertIn("static/offline-sales.js", sales_html)
+        self.assertEqual(worker.status_code, 200)
+        self.assertEqual(worker.headers["Service-Worker-Allowed"], "/")
+        self.assertIn('url.pathname === "/verkauf"', worker.get_data(as_text=True))
+        worker.close()
+        offline_script = (Path(__file__).parents[1] / "static" / "offline-sales.js").read_text(encoding="utf-8")
+        self.assertIn("client_event_id", offline_script)
+        self.assertIn("syncPending", offline_script)
 
     def test_transaction_price_inputs_are_prepopulated_from_variant_defaults(self) -> None:
         self.seed_variant()

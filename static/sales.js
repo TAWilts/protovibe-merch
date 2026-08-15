@@ -43,6 +43,7 @@
     error: $("sale-error"),
     dialog: $("success-dialog"),
     dialogReceipt: $("success-receipt"),
+    dialogMessage: $("success-message"),
     closeDialog: $("close-success"),
   };
   let currentVariant = null;
@@ -247,6 +248,10 @@
   }
 
   async function loadReceiptPreview() {
+    if (window.MerchOffline?.isOffline()) {
+      ui.receipt.textContent = "Offline – wird beim Synchronisieren vergeben";
+      return;
+    }
     try {
       const response = await fetch("/api/receipt-preview?kind=sale");
       const body = await response.json();
@@ -284,6 +289,34 @@
     }
   }
 
+  function localOfflineStockUpdate(payload) {
+    // The server will return authoritative stock values after synchronization.
+    // Until then, decrement this device's cached values so a second offline
+    // sale still gets an honest local stock/minimum-stock warning.
+    const remainingByVariant = new Map();
+    const updates = (payload.items || []).map((item) => {
+      const variant = variantForId(item.variant_id);
+      const previous = remainingByVariant.has(Number(item.variant_id))
+        ? remainingByVariant.get(Number(item.variant_id))
+        : Number(variant?.stock || 0);
+      const remaining = previous - Number(item.quantity || 0);
+      remainingByVariant.set(Number(item.variant_id), remaining);
+      return { variant_id: Number(item.variant_id), stock_after_sale: remaining };
+    });
+    applySaleStockUpdate({ items: updates });
+  }
+
+  function showConfirmedSale(receiptId, message) {
+    ui.dialogReceipt.textContent = receiptId;
+    ui.dialogMessage.replaceChildren(
+      document.createTextNode(message),
+      document.createTextNode(" "),
+      ui.dialogReceipt,
+      document.createTextNode(".")
+    );
+    ui.dialog.showModal();
+  }
+
   async function confirmSale() {
     const { dueCents } = updateSummary();
     if (!cartItems.length) return showError("Bitte mindestens einen Artikel zum Warenkorb hinzufügen.");
@@ -298,35 +331,58 @@
     ui.error.dataset.serverError = "";
     ui.confirm.disabled = true;
     ui.confirm.textContent = "Speichert …";
+    const salePayload = {
+      receipt_id: ui.receipt.textContent,
+      items: cartItems.map((item) => ({
+        variant_id: item.variantId,
+        quantity: item.quantity,
+        unit_price: window.MerchTransaction.centsToInput(item.unitPriceCents),
+      })),
+      is_paid: ui.paid.checked,
+      is_received: ui.received.checked,
+      payment_method: ui.method.value,
+      sold_on: ui.soldOn.value,
+      amount_given: ui.amountGiven.value.trim(),
+      customer_name: ui.customerName.value.trim(),
+      customer_address: ui.customerAddress.value.trim(),
+      event_name: ui.eventName.value.trim(),
+      sold_by: ui.soldBy.value.trim(),
+      comment: ui.comment.value.trim(),
+    };
+    const offline = window.MerchOffline;
+    let requestPayload = salePayload;
+    let responseReceived = false;
     try {
+      if (offline) requestPayload = await offline.prepareSale(salePayload);
       const response = await fetch("/api/sales", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
-        body: JSON.stringify({
-          receipt_id: ui.receipt.textContent,
-          items: cartItems.map((item) => ({
-            variant_id: item.variantId,
-            quantity: item.quantity,
-            unit_price: window.MerchTransaction.centsToInput(item.unitPriceCents),
-          })),
-          is_paid: ui.paid.checked,
-          is_received: ui.received.checked,
-          payment_method: ui.method.value,
-          sold_on: ui.soldOn.value,
-          amount_given: ui.amountGiven.value.trim(),
-          customer_name: ui.customerName.value.trim(),
-          customer_address: ui.customerAddress.value.trim(),
-          event_name: ui.eventName.value.trim(),
-          sold_by: ui.soldBy.value.trim(),
-          comment: ui.comment.value.trim(),
-        }),
+        body: JSON.stringify(requestPayload),
       });
+      responseReceived = true;
       const body = await response.json();
       if (!response.ok || !body.ok) throw new Error(body.error || "Der Kauf konnte nicht gespeichert werden.");
+      if (offline) await offline.acknowledgeSale(requestPayload.client_event_id);
       applySaleStockUpdate(body);
-      ui.dialogReceipt.textContent = body.receipt_id;
-      ui.dialog.showModal();
+      showConfirmedSale(body.receipt_id, body.duplicate ? "Offline-Verkauf bereits synchronisiert als" : "Der Verkauf wurde mit der Beleg-ID");
     } catch (error) {
+      // Only a missing/ambiguous response is queued. A clear 4xx/5xx response
+      // remains visible as an error instead of silently turning a rejected
+      // sale into an offline booking.
+      const ambiguousResponse = !responseReceived || error instanceof SyntaxError;
+      if (offline && ambiguousResponse && requestPayload.client_event_id) {
+        try {
+          await offline.queueSale(requestPayload);
+          localOfflineStockUpdate(requestPayload);
+          showConfirmedSale(
+            `Offline-${requestPayload.client_event_id.slice(0, 8)}`,
+            "Der Verkauf wurde lokal vorgemerkt und erhält beim Synchronisieren seine Beleg-ID"
+          );
+          return;
+        } catch (queueError) {
+          error = queueError;
+        }
+      }
       ui.error.dataset.serverError = "1";
       showError(error.message);
       updateSummary();
@@ -379,6 +435,9 @@
   ui.confirm.addEventListener("click", confirmSale);
   ui.closeDialog.addEventListener("click", () => ui.dialog.close());
   ui.dialog.addEventListener("close", resetSaleForm);
+  window.addEventListener("merch-offline-sale-synced", (event) => {
+    if (event.detail?.ok) applySaleStockUpdate(event.detail);
+  });
 
   updateContactFields();
   updatePaidFields();

@@ -52,6 +52,11 @@ Bestand, Bilanz und CSV-Export.
   Veranstaltung oder Verkäufer filtern. Auf Smartphones sind Pinch-Zoom und
   horizontales Wischen in breiten Tabellen ausdrücklich aktiviert, sodass auch
   eine vollständige Tabellenzeile kontrolliert werden kann.
+- **Offline-Verkauf:** Die Verkaufsansicht lässt sich als PWA auf einem zuvor
+  online vorbereiteten Gerät öffnen. Ohne Empfang werden Verkaufswarenkörbe
+  mit einer zufälligen Ereignis-ID lokal vorgemerkt und später mit genau dieser
+  ID übertragen. Der Server führt eine dauerhafte Synchronisationsliste und
+  legt denselben Verkauf bei Wiederholungen höchstens einmal an.
 - **Stornierungen:** ganze Warenkörbe oder einzelne Artikel können in der
   Historie mit einer dreisekündigen Sicherheitsbestätigung storniert werden.
   Sie bleiben nachvollziehbar, werden aber aus Bestand, Bilanzen und offenen
@@ -212,9 +217,43 @@ Die App sollte nicht per Router-Portfreigabe ins öffentliche Internet gestellt
 werden.  Im Heimnetz genügt die lokale IP.  Für unterwegs empfiehlt sich ein
 VPN-Zugang zur Synology; dann bleibt die App genauso privat wie im Heimnetz.
 
-Dieser erste Stand erwartet eine erreichbare Synology.  Eine Offline-PWA mit
-späterer Synchronisation ist sinnvoll, wenn mehrere Geräte am Gig unabhängig
-vom Mobilfunk verkaufen sollen, aber bewusst nicht Teil dieses stabilen Kerns.
+### Offline-Verkauf ohne mitgenommenen Server
+
+Für den Offline-Modus muss kein Server zum Konzert mit. Die Synology bleibt
+zu Hause; ein vorbereitetes Handy oder Tablet speichert nur neue
+**Verkaufsereignisse** lokal und überträgt sie später an die Synology.
+
+Service Worker – und damit der installierbare Offline-Modus – funktionieren
+nur in einem sicheren Kontext: **HTTPS** (oder `localhost` bei lokaler
+Entwicklung). Richte für die Synology deshalb einen DSM-Reverse-Proxy mit
+gültigem Zertifikat und einer festen HTTPS-Adresse ein. Der normale Online-
+Betrieb über `http://<IP>:8088` bleibt möglich, kann aber nicht als
+Offline-PWA installiert werden.
+
+Vor einem Gig:
+
+1. Mit dem vorgesehenen Seller-/Manager-Konto online anmelden.
+2. Die Seite **Verkauf** einmal vollständig öffnen und optional über den
+   Browser zum Startbildschirm hinzufügen.
+3. Den Status „Online und synchron“ abwarten und das Gerät mit einer
+   Bildschirmsperre schützen.
+
+Am Gig zeigt die Verkaufsansicht deutlich „Offline-Modus aktiv“. Jeder
+bestätigte Verkauf landet dann in der lokalen Warteschlange. Nach Rückkehr ins
+Netz genügt derselbe Account und der Button **Jetzt synchronisieren** (die
+Synchronisierung startet zusätzlich automatisch). Jede Buchung trägt eine
+zufällige UUID; der Server speichert diese Ereignis-ID samt
+Payload-Fingerabdruck dauerhaft und antwortet bei Wiederholungen mit dem
+bereits erstellten Beleg statt eine Doppelbuchung anzulegen.
+
+Offline unterstützt bewusst nur neue **Verkäufe**. Einkäufe, Artikel- und
+Benutzerverwaltung, Stornierungen sowie Statusänderungen benötigen weiterhin
+eine Verbindung. Wenn sich auf dem Server Artikelpreise oder Varianten ändern,
+während ein Gerät offline ist, bleibt die Buchung in der Warteschlange und
+zeigt nach dem Sync eine nachvollziehbare Fehlermeldung statt stillschweigend
+anders gebucht zu werden. Ein absichtlicher Admin-Datenreset löscht wie bisher
+die gesamte operative Datenbank; vorherige Offline-Warteschlangen dürfen dann
+nicht weiter synchronisiert werden.
 
 ## Automatische Backups und Wiederherstellung
 
@@ -289,6 +328,8 @@ Rechnungsnummer und Kommentar bleiben dabei an der jeweiligen Position.
 | `templates/` | Deutsche servergerenderte Oberflächen, ein Template pro Reiter. |
 | `static/transaction.js` | Generische Artikelauswahl – kennt keine fest verdrahteten Optionen wie Farbe/Größe. |
 | `static/sales.js` | Verkaufsspezifische Logik, Warenkorb, Belegvorschau und Spendenberechnung. |
+| `static/offline-sales.js` | IndexedDB-Warteschlange für Offline-Verkäufe sowie sichere Nachsynchronisierung. |
+| `static/service-worker.js` | Beschränktes PWA-Caching: statische Dateien und die letzte Verkaufsansicht, keine Admin-/Profildaten. |
 | `static/purchases.js` | Einkaufswarenkorb, positions- und warenkorbbezogene Rechnungsanhänge sowie abgesicherte Korrektur/Löschung. |
 | `static/operations.js` | Speichert die Statusänderungen für offene Sendungen und Zahlungen. |
 | `static/articles.js` | Dynamische Optionsspalten, Live-Vorschau der Varianten sowie Mindestbestands- und Angebotssteuerung. |

@@ -32,6 +32,7 @@ import sqlite3
 import string
 import tempfile
 import time
+import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -55,6 +56,7 @@ from flask import (
     render_template,
     request,
     send_file,
+    send_from_directory,
     session,
     url_for,
 )
@@ -219,6 +221,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
     details_json TEXT NOT NULL DEFAULT '{}'
 );
 
+-- Offline clients never create ledger rows directly. They submit a durable,
+-- client-generated event ID after a connection is available again. Keeping
+-- the accepted event and its exact response makes retries idempotent even if
+-- a browser lost the response after the server had already committed.
+CREATE TABLE IF NOT EXISTS sync_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL CHECK(event_type IN ('sale')),
+    actor_user_id INTEGER NOT NULL REFERENCES users(id),
+    device_id TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    client_created_at TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_option_groups_article ON option_groups(article_id, position);
 CREATE INDEX IF NOT EXISTS idx_option_values_group ON option_values(option_group_id, position);
 CREATE INDEX IF NOT EXISTS idx_variants_article ON variants(article_id, is_active);
@@ -227,6 +244,7 @@ CREATE INDEX IF NOT EXISTS idx_purchases_receipt_id ON purchases(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_receipt_attachments_receipt ON purchase_receipt_attachments(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_sales_variant ON sales(variant_id, sold_on);
 CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
+CREATE INDEX IF NOT EXISTS idx_sync_events_actor_created ON sync_events(actor_user_id, created_at);
 """
 
 PAYMENT_METHODS = ["Bar", "PayPal", "Überweisung", "Karte", "Sonstiges"]
@@ -239,6 +257,13 @@ ROLE_LEVELS = {"seller": 1, "manager": 2, "admin": 3}
 ROLE_LABELS = {"seller": "Seller", "manager": "Manager", "admin": "Admin"}
 MANAGED_USER_ROLES = ("seller", "manager")
 SETUP_CODE_ALPHABET = string.ascii_uppercase + string.digits
+SYNC_EVENT_METADATA_FIELDS = frozenset(
+    {"client_event_id", "client_device_id", "client_actor_id", "client_created_at"}
+)
+
+
+class SyncEventConflict(Exception):
+    """A reused offline event ID describes a different transaction."""
 
 # ``is_received`` remains a useful, compact accounting flag.  The additional
 # state is only needed when a sale must be sent later: a shipment can be open,
@@ -494,6 +519,86 @@ def valid_username(value: Any) -> str:
     if not re.fullmatch(r"[^\s]{3,48}", username):
         raise ValueError("Der Benutzername muss 3 bis 48 Zeichen lang sein und darf keine Leerzeichen enthalten.")
     return username
+
+
+def offline_sync_event(payload: dict[str, Any], actor_user_id: int) -> dict[str, str | int] | None:
+    """Validate and fingerprint an optional idempotency event from a PWA.
+
+    A normal browser sale remains fully supported without these fields. Once a
+    client sends any offline-event metadata, however, all four fields are
+    required. The UUID is intentionally random rather than derived from the
+    sale contents: a timestamp-based hash can collide or be guessed, whereas
+    the payload hash below still detects a malicious/accidental ID reuse.
+    """
+
+    present = {field for field in SYNC_EVENT_METADATA_FIELDS if payload.get(field) not in (None, "")}
+    if not present:
+        return None
+    if present != SYNC_EVENT_METADATA_FIELDS:
+        raise ValueError("Die Offline-Buchung ist unvollständig. Bitte erneut synchronisieren.")
+    try:
+        event_id = str(uuid.UUID(str(payload["client_event_id"])))
+        device_id = str(uuid.UUID(str(payload["client_device_id"])))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError("Die Kennung dieser Offline-Buchung ist ungültig.") from exc
+    try:
+        claimed_actor_id = int(payload["client_actor_id"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Die Offline-Buchung enthält keinen gültigen Benutzerbezug.") from exc
+    if claimed_actor_id != int(actor_user_id):
+        raise ValueError("Diese Offline-Buchung gehört zu einem anderen Benutzerkonto.")
+    client_created_at = str(payload["client_created_at"]).strip()
+    try:
+        parsed_client_time = datetime.fromisoformat(client_created_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("Der Zeitstempel dieser Offline-Buchung ist ungültig.") from exc
+    if parsed_client_time.tzinfo is None:
+        raise ValueError("Der Zeitstempel dieser Offline-Buchung benötigt eine Zeitzone.")
+    transaction_payload = {
+        key: value for key, value in payload.items() if key not in SYNC_EVENT_METADATA_FIELDS
+    }
+    try:
+        canonical_payload = json.dumps(
+            transaction_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Die Offline-Buchung enthält ungültige Daten.") from exc
+    return {
+        "event_id": event_id,
+        "event_type": "sale",
+        "actor_user_id": claimed_actor_id,
+        "device_id": device_id,
+        "payload_hash": hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest(),
+        "client_created_at": client_created_at,
+    }
+
+
+def duplicate_sync_event_response(
+    connection: sqlite3.Connection, event: dict[str, str | int]
+) -> dict[str, Any] | None:
+    """Return an old response or reject an event-ID collision under a DB lock."""
+
+    existing = connection.execute(
+        "SELECT * FROM sync_events WHERE event_id = ?", (event["event_id"],)
+    ).fetchone()
+    if existing is None:
+        return None
+    expected = ("event_type", "actor_user_id", "device_id", "payload_hash")
+    if any(str(existing[field]) != str(event[field]) for field in expected):
+        raise SyncEventConflict("Diese Offline-Kennung wurde bereits für eine andere Buchung verwendet.")
+    try:
+        response = json.loads(existing["response_json"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Die gespeicherte Synchronisationsantwort ist beschädigt.") from exc
+    if not isinstance(response, dict):
+        raise RuntimeError("Die gespeicherte Synchronisationsantwort ist ungültig.")
+    response["duplicate"] = True
+    response["message"] = "Bereits synchronisierte Offline-Buchung bestätigt."
+    return response
 
 
 def validate_new_password(value: Any, confirmation: Any) -> str:
@@ -2697,6 +2802,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def index():
         return redirect(url_for("sales_page"))
 
+    @app.get("/service-worker.js")
+    def service_worker():
+        """Expose the worker at the origin root so it can cache /verkauf."""
+
+        response = send_from_directory(app.static_folder, "service-worker.js", mimetype="application/javascript")
+        # A browser must revalidate this small loader on each visit; the worker
+        # itself controls versioned asset caches after it has been updated.
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Service-Worker-Allowed"] = "/"
+        return response
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
@@ -3409,6 +3525,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         payload = request.get_json(silent=True) or {}
         connection = get_db()
         try:
+            sync_event = offline_sync_event(payload, int(g.user["id"]))
+            # A duplicate must be recognized before current article rules are
+            # evaluated: a valid historic offline sale remains idempotent even
+            # if somebody withdrew its variant before the browser retried.
+            # The lock also closes the race between two simultaneous retries.
+            if sync_event is not None:
+                connection.execute("BEGIN IMMEDIATE")
+                duplicate_response = duplicate_sync_event_response(connection, sync_event)
+                if duplicate_response is not None:
+                    connection.rollback()
+                    return jsonify(duplicate_response)
             raw_items = payload.get("items")
             if raw_items is None:
                 raw_items = [{"variant_id": payload.get("variant_id"), "quantity": payload.get("quantity")}]
@@ -3494,7 +3621,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             event_name = str(payload.get("event_name", "")).strip() or None
             comment = str(payload.get("comment", "")).strip() or None
 
-            connection.execute("BEGIN IMMEDIATE")
+            if sync_event is None:
+                connection.execute("BEGIN IMMEDIATE")
             # The inventory is a ledger, not a hard sales lock: a missed
             # purchase entry or a later shipment must not prevent the merch
             # stand from recording a real sale.  Holding the write lock gives
@@ -3534,27 +3662,49 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                         "payment_follow_up": bool(payment_follow_up),
                         "delivery_status": delivery_status,
                         "sold_by": sold_by or None,
+                        "offline_event_id": sync_event["event_id"] if sync_event else None,
                     },
                 )
             for item in basket_items:
                 item["stock_after_sale"] = stock_for_variant(connection, item["variant_id"])
+            first_item = basket_items[0]
+            response_payload = {
+                "ok": True,
+                "receipt_id": receipt_id,
+                # Keep these two top-level fields for a browser that was
+                # still open on the one-item UI during an upgrade.
+                "variant_id": first_item["variant_id"],
+                "stock_after_sale": first_item["stock_after_sale"],
+                "amount_due_cents": amount_due,
+                "donation_cents": donation,
+                "items": basket_items,
+                "message": "Kauf erfolgreich erfasst.",
+            }
+            if sync_event is not None:
+                connection.execute(
+                    """
+                    INSERT INTO sync_events (
+                        event_id, event_type, actor_user_id, device_id,
+                        payload_hash, client_created_at, response_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        sync_event["event_id"],
+                        sync_event["event_type"],
+                        sync_event["actor_user_id"],
+                        sync_event["device_id"],
+                        sync_event["payload_hash"],
+                        sync_event["client_created_at"],
+                        json.dumps(response_payload, ensure_ascii=False, separators=(",", ":")),
+                        utc_now(),
+                    ),
+                )
             connection.commit()
             backup_after_commit()
-            first_item = basket_items[0]
-            return jsonify(
-                {
-                    "ok": True,
-                    "receipt_id": receipt_id,
-                    # Keep these two top-level fields for a browser that was
-                    # still open on the one-item UI during an upgrade.
-                    "variant_id": first_item["variant_id"],
-                    "stock_after_sale": first_item["stock_after_sale"],
-                    "amount_due_cents": amount_due,
-                    "donation_cents": donation,
-                    "items": basket_items,
-                    "message": "Kauf erfolgreich erfasst.",
-                }
-            )
+            return jsonify(response_payload)
+        except SyncEventConflict as exc:
+            connection.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 409
         except (ValueError, TypeError) as exc:
             connection.rollback()
             return jsonify({"ok": False, "error": str(exc)}), 400

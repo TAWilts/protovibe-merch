@@ -12,6 +12,11 @@
   </div>
 </div>
 
+<section id="offline-sync-panel" class="offline-sync-panel" data-connection="online" aria-live="polite">
+  <div><strong id="offline-sync-title">Offline-Modus wird vorbereitet …</strong><small id="offline-sync-detail">Die lokale Verkaufswarteschlange wird geprüft.</small></div>
+  <button id="sync-offline-sales" class="secondary-button compact-button" type="button" disabled>Jetzt synchronisieren</button>
+</section>
+
 <section class="transaction-layout" id="sales-app">
   <aside class="selection-panel product-panel">
     <h2>Artikel</h2>
@@ -103,10 +108,10 @@
 <dialog id="success-dialog" class="success-dialog">
   <div class="success-icon">✓</div>
   <h2>Kauf erfolgreich</h2>
-  <p>Der Verkauf wurde mit der Beleg-ID <strong id="success-receipt"></strong> gespeichert.</p>
+  <p id="success-message">Der Verkauf wurde mit der Beleg-ID <strong id="success-receipt"></strong> gespeichert.</p>
   <button id="close-success" class="primary-button" type="button">Neuen Kauf erfassen</button>
 </dialog>
 
 <script id="articles-data" type="application/json">{{ articles|tojson }}</script>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='transaction.js') }}"></script><script src="{{ url_for('static', filename='sales.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='transaction.js') }}"></script><script src="{{ url_for('static', filename='offline-sales.js') }}"></script><script src="{{ url_for('static', filename='sales.js') }}"></script>{% endblock %}
