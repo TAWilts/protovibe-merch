@@ -31,7 +31,7 @@
     <dl class="role-list">
       <div><dt>Seller</dt><dd>Verkäufe erfassen/stornieren, offene Vorgänge und Bilanzen bearbeiten bzw. einsehen; Einkäufe nur ansehen.</dd></div>
       <div><dt>Manager</dt><dd>Zusätzlich Artikel und Einkaufswarenkörbe inklusive Rechnungen verwalten.</dd></div>
-      <div><dt>Admin</dt><dd>Zusätzlich Benutzer verwalten und die Datenbank mit Archiv zurücksetzen.</dd></div>
+      <div><dt>Admin</dt><dd>Zusätzlich Benutzer verwalten und die Betriebsdaten mit Archiv zurücksetzen.</dd></div>
     </dl>
   </article>
 </section>
@@ -62,13 +62,13 @@
 </section>
 
 <section class="table-section dangerous-area">
-  <div class="section-heading"><div><p class="eyebrow">Nicht rückgängig machbar</p><h2>Datenbank zurücksetzen</h2><p>Vor dem Zurücksetzen wird ein ZIP-Archiv des vollständigen Datenordners erstellt. Danach werden Artikel, Buchungen, Anhänge, Backups und alle Konten außer dem verifizierten Admin neu angelegt.</p></div></div>
+  <div class="section-heading"><div><p class="eyebrow">Nicht rückgängig machbar</p><h2>Betriebsdaten zurücksetzen</h2><p>Vor dem Zurücksetzen wird ein ZIP-Archiv von Artikeln, Buchungen und Anhängen erstellt. Benutzerkonten, Rollen, Passwörter und 2FA bleiben vollständig erhalten.</p></div></div>
   <form action="{{ url_for('reset_application_data') }}" method="post" class="reset-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
     <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
     <label>Zur Bestätigung exakt <code>DATEN ZURÜCKSETZEN</code> eingeben<input name="confirmation" autocomplete="off" required></label>
-    <button class="danger-button" type="submit">Archiv erstellen und Datenbank zurücksetzen</button>
+    <button class="danger-button" type="submit">Archiv erstellen und Betriebsdaten zurücksetzen</button>
   </form>
 </section>
 {% endblock %}

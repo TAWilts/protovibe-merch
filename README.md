@@ -68,7 +68,9 @@ Bestand, Bilanz und CSV-Export.
 - **Konten, Rollen & Schutz:** Der einzelne Admin kann Seller und Manager mit
   zeitlich begrenztem Einrichtungscode anlegen und zurücksetzen. Seller können
   verkaufen und Einkaufsdaten lesen, Manager verwalten zusätzlich Artikel und
-  Einkaufswarenkörbe, nur der Admin verwaltet Konten oder setzt Daten zurück.
+  Einkaufswarenkörbe, nur der Admin verwaltet Konten oder setzt Betriebsdaten
+  zurück. Konten, Passwörter und 2FA liegen unabhängig von Artikeln und
+  Buchungen in einer eigenen SQLite-Datei.
   Jede Person kann ihren eigenen Benutzernamen nach einer frischen
   Sicherheitsbestätigung ändern. Der Admin benötigt eine kostenlose, lokale TOTP-2FA; die anderen Rollen
   können sie freiwillig aktivieren. Profilzugriff, Passwortwechsel und der
@@ -171,8 +173,20 @@ Die folgenden Schritte sind bewusst ohne SSH-Zwang beschrieben.
 6. Öffne im Heimnetz `http://<IP-der-Synology>:8088` und melde dich mit den
    Werten aus `.env` an.
 
-Beim ersten Start erzeugt die App automatisch die SQLite-Datenbank und den
-Administrator.  Alle dauerhaften Daten liegen ausschließlich in `data/`.
+Beim ersten Start erzeugt die App automatisch die beiden SQLite-Dateien und
+den Administrator. Alle dauerhaften Daten liegen ausschließlich in `data/`:
+
+- `merch.sqlite3` enthält ausschließlich Artikel, Varianten, Verkäufe,
+  Einkäufe, Rechnungsbezüge und die betriebliche Historie;
+- `users.sqlite3` enthält Benutzerkonten, Rollen, Passwörter und 2FA.
+
+Bei einem Update von einer älteren Ein-Datei-Installation erkennt die App die
+alte `merch.sqlite3` automatisch. Vor der Aufteilung wird ein unverändertes
+ZIP unter `data/migration-archives/` angelegt, anschließend werden die
+Benutzer mit ihren IDs und MFA-Daten nach `users.sqlite3` kopiert. Bereits
+gebuchte Verkäufe und Einkäufe behalten zusätzlich den damaligen
+Benutzernamen als Historien-Schnappschuss, sodass das Löschen eines Kontos
+keine Buchung unlesbar macht.
 
 ### Benutzerkonten, Rollen und 2FA
 
@@ -207,9 +221,9 @@ Authenticator-Codes zeitbasiert sind.
 
 Der Datenreset im Admin-Reiter fordert das aktuelle Passwort, einen 2FA- oder
 Wiederherstellungscode und die exakte Bestätigungsphrase. Vorher schreibt die
-App ein ZIP unter `data/reset-archives/`. Danach bleiben nur das verifizierte
-Admin-Konto samt 2FA erhalten; Artikel, Buchungen, Rechnungen, Backups und
-alle weiteren Benutzer werden frisch angelegt.
+App ein ZIP unter `data/reset-archives/`. Danach werden nur Artikel,
+Buchungen und Rechnungen frisch angelegt; sämtliche Benutzerkonten, Rollen,
+Passwörter und 2FA-Einstellungen bleiben erhalten.
 
 ### Sichere Erreichbarkeit bei Konzerten
 
@@ -260,7 +274,7 @@ nicht weiter synchronisiert werden.
 Nach jedem erfolgreichen Verkauf, Einkauf oder Artikel-Update legt die App in
 `data/backups/<Zeitstempel>/` an:
 
-- `merch.sqlite3` – vollständige, wiederherstellbare Datenbankkopie;
+- `merch.sqlite3` – vollständige, wiederherstellbare Kopie der Betriebsdaten;
 - `artikel.csv`, `verkaeufe.csv`, `einkaeufe.csv`, `bestand.csv` – lesbare
   Tabellenexporte.
 - `invoices/` – die zum Sicherungszeitpunkt vorhandenen hochgeladenen
@@ -275,10 +289,9 @@ Alte Sicherungsordner werden nach der in `.env` gesetzten Anzahl von Tagen
 gelöscht.  Ergänzend ist ein Synology-Snapshot oder Hyper Backup des gesamten
 Projektordners empfehlenswert.
 
-Für eine Wiederherstellung Projekt zuerst stoppen, `data/merch.sqlite3` durch
-die gewünschte Snapshot-Datei ersetzen und dann erneut starten.  Die normalen
+Die Sicherungen enthalten bewusst keine Benutzerdatei. Die normalen
 CSV-Dateien sind zum Nachsehen/Weitergeben gedacht; die SQLite-Datei ist die
-vollständige Wiederherstellung.
+vollständige Wiederherstellung der Betriebsdaten.
 
 ## Import der bisherigen ODS
 

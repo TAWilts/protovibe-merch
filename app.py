@@ -67,7 +67,7 @@ import pyotp
 import qrcode
 
 
-SCHEMA_SQL = """
+USERS_SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
@@ -93,6 +93,25 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at TEXT,
     created_at TEXT NOT NULL
 );
+
+-- Account-related audit entries deliberately live with the accounts.  This
+-- keeps password/MFA/user-administration history available when an admin
+-- resets or restores the operational ledger.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    user_id INTEGER,
+    user_username TEXT,
+    action TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER,
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+
+"""
+
+OPERATIONS_SCHEMA_SQL = """
+PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS articles (
     id INTEGER PRIMARY KEY,
@@ -166,7 +185,10 @@ CREATE TABLE IF NOT EXISTS purchases (
     invoice_file_path TEXT,
     comment TEXT,
     created_at TEXT NOT NULL,
-    created_by INTEGER REFERENCES users(id)
+    -- This ID is intentionally not a foreign key: accounts live in
+    -- users.sqlite3 and can be removed without touching booking history.
+    created_by INTEGER,
+    created_by_username TEXT
 );
 
 CREATE TABLE IF NOT EXISTS purchase_receipt_attachments (
@@ -174,7 +196,8 @@ CREATE TABLE IF NOT EXISTS purchase_receipt_attachments (
     receipt_id TEXT NOT NULL,
     file_path TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
-    created_by INTEGER REFERENCES users(id)
+    created_by INTEGER,
+    created_by_username TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sales (
@@ -208,13 +231,17 @@ CREATE TABLE IF NOT EXISTS sales (
     comment TEXT,
     sold_on TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    created_by INTEGER REFERENCES users(id)
+    created_by INTEGER,
+    created_by_username TEXT
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY,
     created_at TEXT NOT NULL,
-    user_id INTEGER REFERENCES users(id),
+    -- IDs remain useful for forensic correlation, while the immutable name
+    -- snapshot makes old booking history readable after a user was removed.
+    user_id INTEGER,
+    user_username TEXT,
     action TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     entity_id INTEGER,
@@ -228,7 +255,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE TABLE IF NOT EXISTS sync_events (
     event_id TEXT PRIMARY KEY,
     event_type TEXT NOT NULL CHECK(event_type IN ('sale')),
-    actor_user_id INTEGER NOT NULL REFERENCES users(id),
+    actor_user_id INTEGER NOT NULL,
+    actor_username TEXT,
     device_id TEXT NOT NULL,
     payload_hash TEXT NOT NULL,
     client_created_at TEXT NOT NULL,
@@ -246,6 +274,23 @@ CREATE INDEX IF NOT EXISTS idx_sales_variant ON sales(variant_id, sold_on);
 CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
 CREATE INDEX IF NOT EXISTS idx_sync_events_actor_created ON sync_events(actor_user_id, created_at);
 """
+
+# This schema is only used to make a deployed pre-split database current
+# before its rows are copied into the two new files.  New installations never
+# create a combined database again.
+LEGACY_COMBINED_SCHEMA_SQL = USERS_SCHEMA_SQL + OPERATIONS_SCHEMA_SQL
+
+OPERATION_TABLES = (
+    "articles",
+    "option_groups",
+    "option_values",
+    "variants",
+    "purchases",
+    "purchase_receipt_attachments",
+    "sales",
+    "audit_log",
+    "sync_events",
+)
 
 PAYMENT_METHODS = ["Bar", "PayPal", "Überweisung", "Karte", "Sonstiges"]
 
@@ -1003,17 +1048,33 @@ def db_connect(path: str | Path) -> sqlite3.Connection:
 
 
 def get_db() -> sqlite3.Connection:
-    """Return the current request's connection and close it after the request."""
+    """Return the current request's operational-data connection.
+
+    ``merch.sqlite3`` contains catalogue, ledger, attachments and the
+    operational audit trail.  Authentication deliberately uses
+    :func:`get_user_db` below so a data reset never affects accounts.
+    """
 
     if "db" not in g:
         g.db = db_connect(current_app.config["DATABASE"])
     return g.db
 
 
+def get_user_db() -> sqlite3.Connection:
+    """Return the request-local account database connection."""
+
+    if "users_db" not in g:
+        g.users_db = db_connect(current_app.config["USERS_DATABASE"])
+    return g.users_db
+
+
 def close_db(_: BaseException | None = None) -> None:
-    connection = g.pop("db", None)
-    if connection is not None:
-        connection.close()
+    """Close both independent request-local SQLite connections."""
+
+    for key in ("db", "users_db"):
+        connection = g.pop(key, None)
+        if connection is not None:
+            connection.close()
 
 
 def sales_receipt_id_is_unique(connection: sqlite3.Connection) -> bool:
@@ -1066,21 +1127,24 @@ def rebuild_sales_for_multi_item_receipts(connection: sqlite3.Connection) -> Non
             comment TEXT,
             sold_on TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            created_by INTEGER REFERENCES users(id)
+            created_by INTEGER,
+            created_by_username TEXT
         );
         INSERT INTO sales_multi_item_receipts (
             id, receipt_id, variant_id, quantity, unit_price_cents,
             amount_due_cents, amount_given_cents, donation_cents,
             payment_method, is_paid, payment_follow_up, is_received,
             delivery_status, is_cancelled, customer_name, customer_address,
-            event_name, sold_by, comment, sold_on, created_at, created_by
+            event_name, sold_by, comment, sold_on, created_at, created_by,
+            created_by_username
         )
         SELECT
             id, receipt_id, variant_id, quantity, unit_price_cents,
             amount_due_cents, amount_given_cents, donation_cents,
             payment_method, is_paid, payment_follow_up, is_received,
             delivery_status, is_cancelled, customer_name, customer_address,
-            event_name, sold_by, comment, sold_on, created_at, created_by
+            event_name, sold_by, comment, sold_on, created_at, created_by,
+            created_by_username
         FROM sales;
         DROP TABLE sales;
         ALTER TABLE sales_multi_item_receipts RENAME TO sales;
@@ -1123,15 +1187,18 @@ def rebuild_purchases_for_multi_item_receipts(connection: sqlite3.Connection) ->
             invoice_file_path TEXT,
             comment TEXT,
             created_at TEXT NOT NULL,
-            created_by INTEGER REFERENCES users(id)
+            created_by INTEGER,
+            created_by_username TEXT
         );
         INSERT INTO purchases_multi_item_receipts (
             id, receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
-            supplier, invoice_reference, invoice_file_path, comment, created_at, created_by
+            supplier, invoice_reference, invoice_file_path, comment, created_at, created_by,
+            created_by_username
         )
         SELECT
             id, receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
-            supplier, invoice_reference, invoice_file_path, comment, created_at, created_by
+            supplier, invoice_reference, invoice_file_path, comment, created_at, created_by,
+            created_by_username
         FROM purchases;
         DROP TABLE purchases;
         ALTER TABLE purchases_multi_item_receipts RENAME TO purchases;
@@ -1163,14 +1230,20 @@ def group_legacy_purchases_by_date(connection: sqlite3.Connection) -> None:
         )
 
 
-def initialise_database(app: Flask) -> None:
-    """Create/update the schema and bootstrap the configured administrator."""
+def upgrade_legacy_combined_database(app: Flask) -> None:
+    """Bring a pre-split ``merch.sqlite3`` to the last combined schema.
+
+    This is intentionally kept separate from normal startup: it runs only
+    while the one-file database is being copied into ``merch.sqlite3`` and
+    ``users.sqlite3``.  It guarantees that old releases can be migrated
+    without losing columns that were introduced by earlier patches.
+    """
 
     database_path = Path(app.config["DATABASE"])
     database_path.parent.mkdir(parents=True, exist_ok=True)
     connection = db_connect(database_path)
     try:
-        connection.executescript(SCHEMA_SQL)
+        connection.executescript(LEGACY_COMBINED_SCHEMA_SQL)
         article_columns = {row["name"] for row in connection.execute("PRAGMA table_info(articles)").fetchall()}
         if "is_offered" not in article_columns:
             connection.execute("ALTER TABLE articles ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
@@ -1194,6 +1267,15 @@ def initialise_database(app: Flask) -> None:
         purchase_columns = {row["name"] for row in connection.execute("PRAGMA table_info(purchases)").fetchall()}
         if "invoice_file_path" not in purchase_columns:
             connection.execute("ALTER TABLE purchases ADD COLUMN invoice_file_path TEXT")
+        if "created_by_username" not in purchase_columns:
+            connection.execute("ALTER TABLE purchases ADD COLUMN created_by_username TEXT")
+        attachment_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(purchase_receipt_attachments)").fetchall()
+        }
+        if "created_by_username" not in attachment_columns:
+            connection.execute(
+                "ALTER TABLE purchase_receipt_attachments ADD COLUMN created_by_username TEXT"
+            )
 
         # Purchases now mirror sale carts: several rows can share one receipt.
         # During the one-time upgrade, legacy/imported single rows from one
@@ -1251,6 +1333,8 @@ def initialise_database(app: Flask) -> None:
             connection.execute(
                 "ALTER TABLE sales ADD COLUMN is_cancelled INTEGER NOT NULL DEFAULT 0"
             )
+        if "created_by_username" not in sales_columns:
+            connection.execute("ALTER TABLE sales ADD COLUMN created_by_username TEXT")
 
         # Until v0.2.4, a receipt was forced to contain exactly one sale row.
         # Rebuild that one table for a safe in-place upgrade; all existing rows
@@ -1271,6 +1355,13 @@ def initialise_database(app: Flask) -> None:
             CREATE INDEX IF NOT EXISTS idx_sales_cancelled ON sales(is_cancelled);
             """
         )
+
+        audit_columns = {row["name"] for row in connection.execute("PRAGMA table_info(audit_log)").fetchall()}
+        if "user_username" not in audit_columns:
+            connection.execute("ALTER TABLE audit_log ADD COLUMN user_username TEXT")
+        sync_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sync_events)").fetchall()}
+        if "actor_username" not in sync_columns:
+            connection.execute("ALTER TABLE sync_events ADD COLUMN actor_username TEXT")
 
         # Upgrade the former single-admin account table in place.  Existing
         # administrator rows become the one admin account; any unexpected
@@ -1295,6 +1386,11 @@ def initialise_database(app: Flask) -> None:
         for column_name, column_definition in user_column_migrations:
             if column_name not in user_columns:
                 connection.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_definition}")
+        user_audit_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(audit_log)").fetchall()
+        }
+        if "user_username" not in user_audit_columns:
+            connection.execute("ALTER TABLE audit_log ADD COLUMN user_username TEXT")
         if added_role_column:
             connection.execute(
                 "UPDATE users SET role = CASE WHEN is_admin = 1 THEN 'admin' ELSE 'seller' END"
@@ -1340,6 +1436,373 @@ def initialise_database(app: Flask) -> None:
         connection.commit()
     finally:
         connection.close()
+
+
+def table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
+    """Return whether a table exists without treating user input as SQL."""
+
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
+        ).fetchone()
+        is not None
+    )
+
+
+def table_columns(connection: sqlite3.Connection, table_name: str) -> list[str]:
+    """Return table columns in SQLite's stable declaration order."""
+
+    return [row["name"] for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()]
+
+
+def upgrade_operations_schema(connection: sqlite3.Connection) -> None:
+    """Create and safely upgrade the operational-only database schema."""
+
+    connection.executescript(OPERATIONS_SCHEMA_SQL)
+    article_columns = set(table_columns(connection, "articles"))
+    if "is_offered" not in article_columns:
+        connection.execute("ALTER TABLE articles ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
+
+    variant_columns = set(table_columns(connection, "variants"))
+    if "no_reorder" not in variant_columns:
+        connection.execute("ALTER TABLE variants ADD COLUMN no_reorder INTEGER NOT NULL DEFAULT 0")
+    if "minimum_stock" not in variant_columns:
+        connection.execute("ALTER TABLE variants ADD COLUMN minimum_stock INTEGER CHECK(minimum_stock >= 0)")
+    if "is_offered" not in variant_columns:
+        connection.execute("ALTER TABLE variants ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
+
+    purchase_columns = set(table_columns(connection, "purchases"))
+    if "invoice_file_path" not in purchase_columns:
+        connection.execute("ALTER TABLE purchases ADD COLUMN invoice_file_path TEXT")
+    if "created_by_username" not in purchase_columns:
+        connection.execute("ALTER TABLE purchases ADD COLUMN created_by_username TEXT")
+    attachment_columns = set(table_columns(connection, "purchase_receipt_attachments"))
+    if "created_by_username" not in attachment_columns:
+        connection.execute(
+            "ALTER TABLE purchase_receipt_attachments ADD COLUMN created_by_username TEXT"
+        )
+    if purchases_receipt_id_is_unique(connection):
+        rebuild_purchases_for_multi_item_receipts(connection)
+        group_legacy_purchases_by_date(connection)
+    connection.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_purchases_variant ON purchases(variant_id, purchased_on);
+        CREATE INDEX IF NOT EXISTS idx_purchases_receipt_id ON purchases(receipt_id);
+        CREATE INDEX IF NOT EXISTS idx_purchase_receipt_attachments_receipt
+            ON purchase_receipt_attachments(receipt_id);
+        """
+    )
+
+    sales_columns = set(table_columns(connection, "sales"))
+    if "delivery_status" not in sales_columns:
+        connection.execute("ALTER TABLE sales ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'not_applicable'")
+        connection.execute("UPDATE sales SET delivery_status = 'pending' WHERE is_received = 0")
+    if "payment_follow_up" not in sales_columns:
+        connection.execute("ALTER TABLE sales ADD COLUMN payment_follow_up INTEGER NOT NULL DEFAULT 0")
+        connection.execute("UPDATE sales SET payment_follow_up = 1 WHERE is_paid = 0")
+    if "sold_by" not in sales_columns:
+        connection.execute("ALTER TABLE sales ADD COLUMN sold_by TEXT")
+    if "is_cancelled" not in sales_columns:
+        connection.execute("ALTER TABLE sales ADD COLUMN is_cancelled INTEGER NOT NULL DEFAULT 0")
+    if "created_by_username" not in sales_columns:
+        connection.execute("ALTER TABLE sales ADD COLUMN created_by_username TEXT")
+    if sales_receipt_id_is_unique(connection):
+        rebuild_sales_for_multi_item_receipts(connection)
+    connection.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_sales_variant ON sales(variant_id, sold_on);
+        CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
+        CREATE INDEX IF NOT EXISTS idx_sales_receipt_id ON sales(receipt_id);
+        CREATE INDEX IF NOT EXISTS idx_sales_delivery_status ON sales(delivery_status);
+        CREATE INDEX IF NOT EXISTS idx_sales_payment_follow_up ON sales(payment_follow_up, is_paid);
+        CREATE INDEX IF NOT EXISTS idx_sales_cancelled ON sales(is_cancelled);
+        """
+    )
+
+    audit_columns = set(table_columns(connection, "audit_log"))
+    if "user_username" not in audit_columns:
+        connection.execute("ALTER TABLE audit_log ADD COLUMN user_username TEXT")
+    sync_columns = set(table_columns(connection, "sync_events"))
+    if "actor_username" not in sync_columns:
+        connection.execute("ALTER TABLE sync_events ADD COLUMN actor_username TEXT")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sync_events_actor_created ON sync_events(actor_user_id, created_at)"
+    )
+
+
+def upgrade_users_schema(
+    connection: sqlite3.Connection, app: Flask, *, bootstrap_administrator: bool = True
+) -> None:
+    """Create/upgrade the account database and enforce the one-admin rule."""
+
+    connection.executescript(USERS_SCHEMA_SQL)
+    user_columns = set(table_columns(connection, "users"))
+    user_column_migrations = (
+        ("role", "TEXT NOT NULL DEFAULT 'seller'"),
+        ("is_active", "INTEGER NOT NULL DEFAULT 1"),
+        ("must_set_password", "INTEGER NOT NULL DEFAULT 0"),
+        ("setup_code_hash", "TEXT"),
+        ("setup_code_expires_at", "TEXT"),
+        ("mfa_secret_encrypted", "TEXT"),
+        ("mfa_pending_secret_encrypted", "TEXT"),
+        ("mfa_recovery_code_hashes_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("mfa_enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("mfa_enrolled_at", "TEXT"),
+        ("session_version", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_login_at", "TEXT"),
+    )
+    added_role_column = "role" not in user_columns
+    for column_name, column_definition in user_column_migrations:
+        if column_name not in user_columns:
+            connection.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_definition}")
+    audit_columns = set(table_columns(connection, "audit_log"))
+    if "user_username" not in audit_columns:
+        connection.execute("ALTER TABLE audit_log ADD COLUMN user_username TEXT")
+    if added_role_column:
+        connection.execute("UPDATE users SET role = CASE WHEN is_admin = 1 THEN 'admin' ELSE 'seller' END")
+    connection.execute(
+        "UPDATE users SET role = 'seller' WHERE role NOT IN ('seller', 'manager', 'admin') OR role IS NULL"
+    )
+    admin_rows = connection.execute("SELECT id FROM users WHERE role = 'admin' ORDER BY id").fetchall()
+    if len(admin_rows) > 1:
+        connection.executemany(
+            "UPDATE users SET role = 'manager' WHERE id = ?", [(row["id"],) for row in admin_rows[1:]]
+        )
+    elif not admin_rows:
+        legacy_admin = connection.execute(
+            "SELECT id FROM users WHERE is_admin = 1 ORDER BY id LIMIT 1"
+        ).fetchone()
+        if legacy_admin is not None:
+            connection.execute("UPDATE users SET role = 'admin' WHERE id = ?", (legacy_admin["id"],))
+    connection.execute("UPDATE users SET is_admin = CASE WHEN role = 'admin' THEN 1 ELSE 0 END")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role, is_active)")
+
+    user_count = int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+    if user_count == 0 and bootstrap_administrator:
+        username = app.config["ADMIN_USERNAME"].strip()
+        password = app.config["ADMIN_PASSWORD"]
+        if not username or not password or password.startswith("replace-this"):
+            raise RuntimeError(
+                "Set ADMIN_USERNAME and a strong ADMIN_PASSWORD in .env before starting the app."
+            )
+        connection.execute(
+            """
+            INSERT INTO users (username, password_hash, is_admin, role, is_active, created_at)
+            VALUES (?, ?, 1, 'admin', 1, ?)
+            """,
+            (username, generate_password_hash(password), utc_now()),
+        )
+
+
+def database_contains_table(database_path: Path, table_name: str) -> bool:
+    """Inspect an existing SQLite file without creating a missing one."""
+
+    if not database_path.is_file():
+        return False
+    connection = sqlite3.connect(database_path)
+    try:
+        return (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
+            ).fetchone()
+            is not None
+        )
+    finally:
+        connection.close()
+
+
+def create_user_split_archive(app: Flask) -> Path:
+    """Archive the original combined database before changing any rows."""
+
+    archive_dir = Path(app.config["MIGRATION_ARCHIVE_DIR"])
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    archive_path = archive_dir / f"merch-before-user-split-{timestamp}.zip"
+    suffix = 1
+    while archive_path.exists():
+        suffix += 1
+        archive_path = archive_dir / f"merch-before-user-split-{timestamp}-{suffix}.zip"
+
+    snapshot_file = tempfile.NamedTemporaryFile(prefix="merch-user-split-", suffix=".sqlite3", delete=False)
+    snapshot_path = Path(snapshot_file.name)
+    snapshot_file.close()
+    source = sqlite3.connect(app.config["DATABASE"])
+    try:
+        destination = sqlite3.connect(snapshot_path)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+        with ZipFile(archive_path, "w", ZIP_DEFLATED) as archive:
+            archive.write(snapshot_path, "data/merch.sqlite3")
+            invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
+            if invoice_dir.is_dir():
+                for item in invoice_dir.rglob("*"):
+                    if item.is_file():
+                        archive.write(item, Path("data/invoices") / item.relative_to(invoice_dir))
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+    finally:
+        source.close()
+        snapshot_path.unlink(missing_ok=True)
+    return archive_path
+
+
+def copy_users_to_separate_database(
+    source: sqlite3.Connection, target: sqlite3.Connection, app: Flask
+) -> None:
+    """Copy account rows verbatim, retaining IDs used by historic bookings."""
+
+    upgrade_users_schema(target, app, bootstrap_administrator=False)
+    source_rows = source.execute("SELECT * FROM users ORDER BY id").fetchall()
+    target_count = int(target.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+    if target_count:
+        existing = {
+            int(row["id"]): (str(row["username"]), str(row["password_hash"]))
+            for row in target.execute("SELECT id, username, password_hash FROM users").fetchall()
+        }
+        expected = {
+            int(row["id"]): (str(row["username"]), str(row["password_hash"])) for row in source_rows
+        }
+        if existing != expected:
+            raise RuntimeError(
+                "users.sqlite3 enthält andere Konten als die bisherige merch.sqlite3. "
+                "Die automatische Migration wurde zur Sicherheit nicht fortgesetzt."
+            )
+    else:
+        columns = [column for column in table_columns(target, "users") if column in set(source_rows[0].keys())] if source_rows else []
+        if columns:
+            placeholders = ", ".join("?" for _ in columns)
+            target.executemany(
+                f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})",
+                [tuple(row[column] for column in columns) for row in source_rows],
+            )
+    upgrade_users_schema(target, app, bootstrap_administrator=True)
+
+
+def copy_operational_tables(
+    source: sqlite3.Connection, target: sqlite3.Connection, usernames: dict[int, str]
+) -> None:
+    """Copy operational rows, adding immutable actor-name snapshots."""
+
+    snapshot_columns = {
+        "purchases": ("created_by", "created_by_username"),
+        "purchase_receipt_attachments": ("created_by", "created_by_username"),
+        "sales": ("created_by", "created_by_username"),
+        "audit_log": ("user_id", "user_username"),
+        "sync_events": ("actor_user_id", "actor_username"),
+    }
+    for table_name in OPERATION_TABLES:
+        source_columns = set(table_columns(source, table_name))
+        target_columns = table_columns(target, table_name)
+        rows = source.execute(f"SELECT * FROM {table_name} ORDER BY rowid").fetchall()
+        if not rows:
+            continue
+        placeholders = ", ".join("?" for _ in target_columns)
+        values: list[tuple[Any, ...]] = []
+        actor_columns = snapshot_columns.get(table_name)
+        for row in rows:
+            row_values: list[Any] = []
+            for column in target_columns:
+                value = row[column] if column in source_columns else None
+                if actor_columns and column == actor_columns[1] and not value:
+                    actor_id = row[actor_columns[0]] if actor_columns[0] in source_columns else None
+                    value = usernames.get(int(actor_id)) if actor_id is not None else None
+                row_values.append(value)
+            values.append(tuple(row_values))
+        target.executemany(
+            f"INSERT INTO {table_name} ({', '.join(target_columns)}) VALUES ({placeholders})", values
+        )
+
+
+def migrate_combined_database(app: Flask) -> None:
+    """Atomically replace the old combined file after a verified copy.
+
+    The backup is intentionally created first.  If anything below fails, the
+    original ``merch.sqlite3`` remains authoritative and its exact pre-migrate
+    state is available in ``migration-archives``.
+    """
+
+    database_path = Path(app.config["DATABASE"])
+    users_path = Path(app.config["USERS_DATABASE"])
+    archive_path = create_user_split_archive(app)
+    upgrade_legacy_combined_database(app)
+    source = db_connect(database_path)
+    temporary_path = database_path.with_name(f".{database_path.name}.user-split-{uuid.uuid4().hex}.tmp")
+    target: sqlite3.Connection | None = None
+    users_connection: sqlite3.Connection | None = None
+    try:
+        users_path.parent.mkdir(parents=True, exist_ok=True)
+        users_connection = db_connect(users_path)
+        copy_users_to_separate_database(source, users_connection, app)
+        users_connection.commit()
+        usernames = {
+            int(row["id"]): str(row["username"])
+            for row in source.execute("SELECT id, username FROM users").fetchall()
+        }
+
+        target = db_connect(temporary_path)
+        upgrade_operations_schema(target)
+        copy_operational_tables(source, target, usernames)
+        target.commit()
+        target.close()
+        target = None
+        source.close()
+        source = None  # type: ignore[assignment]
+
+        # WAL sidecars still belong to the former combined file.  The copied
+        # temporary database is self-contained, so removing them after the
+        # atomic replacement prevents SQLite from replaying stale pages.
+        os.replace(temporary_path, database_path)
+        Path(f"{database_path}-wal").unlink(missing_ok=True)
+        Path(f"{database_path}-shm").unlink(missing_ok=True)
+        app.logger.info("Migrated combined merch database; original archive: %s", archive_path.name)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    finally:
+        if source is not None:
+            source.close()
+        if target is not None:
+            target.close()
+        if users_connection is not None:
+            users_connection.close()
+
+
+def initialise_operations_database(app: Flask) -> None:
+    database_path = Path(app.config["DATABASE"])
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = db_connect(database_path)
+    try:
+        upgrade_operations_schema(connection)
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def initialise_users_database(app: Flask) -> None:
+    users_path = Path(app.config["USERS_DATABASE"])
+    users_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = db_connect(users_path)
+    try:
+        upgrade_users_schema(connection, app)
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def initialise_database(app: Flask) -> None:
+    """Initialise separate operational and account files, migrating safely."""
+
+    database_path = Path(app.config["DATABASE"])
+    users_path = Path(app.config["USERS_DATABASE"])
+    if database_path.resolve() == users_path.resolve():
+        raise RuntimeError("DATABASE und USERS_DATABASE müssen unterschiedliche Dateien sein.")
+    if database_contains_table(database_path, "users"):
+        migrate_combined_database(app)
+    initialise_operations_database(app)
+    initialise_users_database(app)
 
 
 def login_required(view):
@@ -1434,12 +1897,25 @@ def audit(
 
     if user_id is None:
         user_id = g.user["id"] if g.get("user") else None
+    username = str(g.user["username"]) if g.get("user") else None
+    if username is None and user_id is not None and table_exists(connection, "users"):
+        actor = connection.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+        username = str(actor["username"]) if actor is not None else None
     connection.execute(
         """
-        INSERT INTO audit_log (created_at, user_id, action, entity_type, entity_id, details_json)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_log (
+            created_at, user_id, user_username, action, entity_type, entity_id, details_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (utc_now(), user_id, action, entity_type, entity_id, json.dumps(details or {}, ensure_ascii=False)),
+        (
+            utc_now(),
+            user_id,
+            username,
+            action,
+            entity_type,
+            entity_id,
+            json.dumps(details or {}, ensure_ascii=False),
+        ),
     )
 
 
@@ -2400,14 +2876,13 @@ def backup_after_commit() -> None:
 
 
 def create_reset_archive(app: Flask, source_connection: sqlite3.Connection) -> Path:
-    """Zip a consistent database snapshot and every current data-directory file.
+    """Archive only the operational database and its invoices before a reset.
 
-    The reset archive deliberately lives below ``data/reset-archives`` but is
-    excluded from itself.  That makes it persistent with the regular Docker
-    data volume without recursively zipping older reset archives forever.
+    ``users.sqlite3`` is deliberately never included here: accounts, password
+    hashes, MFA settings and their security audit are independent from the
+    merchandise ledger and survive an operational reset unchanged.
     """
 
-    data_dir = Path(app.config["DATABASE"]).parent
     archive_dir = Path(app.config["RESET_ARCHIVE_DIR"])
     archive_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -2426,26 +2901,13 @@ def create_reset_archive(app: Flask, source_connection: sqlite3.Connection) -> P
             source_connection.backup(snapshot_connection)
         finally:
             snapshot_connection.close()
-        database_path = Path(app.config["DATABASE"])
-        database_sidecars = {
-            database_path,
-            Path(f"{database_path}-wal"),
-            Path(f"{database_path}-shm"),
-        }
         with ZipFile(archive_path, "w", ZIP_DEFLATED) as archive:
             archive.write(snapshot_path, "data/merch.sqlite3")
-            for item in data_dir.rglob("*"):
-                if not item.is_file() or item in database_sidecars:
-                    continue
-                # A ZIP below the data directory must never contain itself or
-                # a previous reset archive. Normal automatic backups remain
-                # useful historic data and are intentionally included.
-                try:
-                    item.relative_to(archive_dir)
-                    continue
-                except ValueError:
-                    pass
-                archive.write(item, Path("data") / item.relative_to(data_dir))
+            invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
+            if invoice_dir.is_dir():
+                for item in invoice_dir.rglob("*"):
+                    if item.is_file():
+                        archive.write(item, Path("data/invoices") / item.relative_to(invoice_dir))
     except Exception:
         archive_path.unlink(missing_ok=True)
         raise
@@ -2454,62 +2916,17 @@ def create_reset_archive(app: Flask, source_connection: sqlite3.Connection) -> P
     return archive_path
 
 
-def reset_data_store(app: Flask, preserved_admin: dict[str, Any]) -> None:
-    """Replace all operational data while preserving the sole Admin account.
-
-    The calling route has already written a ZIP snapshot and re-authenticated
-    the admin.  Retaining that account is deliberate: a true blank user table
-    would otherwise make the system depend on an old environment password after
-    every reset and could lock the only administrator out.
-    """
+def reset_data_store(app: Flask) -> None:
+    """Replace only catalogue, ledger and invoice data with a fresh database."""
 
     database_path = Path(app.config["DATABASE"])
     invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
-    backup_dir = Path(app.config["BACKUP_DIR"])
     for path in (database_path, Path(f"{database_path}-wal"), Path(f"{database_path}-shm")):
         path.unlink(missing_ok=True)
     shutil.rmtree(invoice_dir, ignore_errors=True)
-    shutil.rmtree(backup_dir, ignore_errors=True)
     database_path.parent.mkdir(parents=True, exist_ok=True)
     invoice_dir.mkdir(parents=True, exist_ok=True)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-
-    # Initialise a new complete schema, then replace its bootstrap account by
-    # the current verified administrator and the same password/MFA material.
-    initialise_database(app)
-    connection = db_connect(database_path)
-    try:
-        connection.execute("DELETE FROM users")
-        connection.execute(
-            """
-            INSERT INTO users (
-                id, username, password_hash, is_admin, role, is_active,
-                must_set_password, setup_code_hash, setup_code_expires_at,
-                mfa_secret_encrypted, mfa_pending_secret_encrypted,
-                mfa_recovery_code_hashes_json, mfa_enabled, mfa_enrolled_at,
-                session_version, last_login_at, created_at
-            ) VALUES (?, ?, ?, 1, 'admin', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                preserved_admin["id"],
-                preserved_admin["username"],
-                preserved_admin["password_hash"],
-                preserved_admin["must_set_password"],
-                preserved_admin["setup_code_hash"],
-                preserved_admin["setup_code_expires_at"],
-                preserved_admin["mfa_secret_encrypted"],
-                preserved_admin["mfa_pending_secret_encrypted"],
-                preserved_admin["mfa_recovery_code_hashes_json"],
-                preserved_admin["mfa_enabled"],
-                preserved_admin["mfa_enrolled_at"],
-                int(preserved_admin["session_version"] or 0) + 1,
-                preserved_admin["last_login_at"],
-                preserved_admin["created_at"],
-            ),
-        )
-        connection.commit()
-    finally:
-        connection.close()
+    initialise_operations_database(app)
 
 
 def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
@@ -2703,8 +3120,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app.config.from_mapping(
         SECRET_KEY=os.environ.get("SECRET_KEY", "development-only-change-me"),
         DATABASE=str(data_dir / "merch.sqlite3"),
+        USERS_DATABASE=os.environ.get("USERS_DATABASE", str(data_dir / "users.sqlite3")),
         BACKUP_DIR=str(data_dir / "backups"),
         RESET_ARCHIVE_DIR=str(data_dir / "reset-archives"),
+        MIGRATION_ARCHIVE_DIR=str(data_dir / "migration-archives"),
         INVOICE_UPLOAD_DIR=str(data_dir / "invoices"),
         MAX_INVOICE_FILE_BYTES=MAX_INVOICE_FILE_BYTES,
         # Leave modest room for the multipart envelope while independently
@@ -2731,14 +3150,24 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
+    # Test instances and manual local installations often override only the
+    # old DATABASE setting.  Keep the account file next to it unless the
+    # caller deliberately configured a different USERS_DATABASE path.
+    if not test_config or "USERS_DATABASE" not in test_config:
+        database_parent = Path(app.config["DATABASE"]).parent
+        app.config["USERS_DATABASE"] = str(database_parent / "users.sqlite3")
+    if not test_config or "MIGRATION_ARCHIVE_DIR" not in test_config:
+        app.config["MIGRATION_ARCHIVE_DIR"] = str(Path(app.config["DATABASE"]).parent / "migration-archives")
     if version_tuple(str(app.config["APP_VERSION"])) is None:
         raise RuntimeError("APP_VERSION muss dem Format vX.Y.Z entsprechen, zum Beispiel v0.3.0.")
     if app.config["SECRET_KEY"] == "development-only-change-me" and not app.config.get("TESTING"):
         raise RuntimeError("Set SECRET_KEY in .env before starting the app.")
 
     Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(app.config["USERS_DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
     Path(app.config["BACKUP_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["RESET_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(app.config["MIGRATION_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["INVOICE_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
     initialise_database(app)
     app.teardown_appcontext(close_db)
@@ -2764,7 +3193,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         user_id = session.get("user_id")
         g.user = None
         if user_id:
-            user = row_to_dict(get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+            user = row_to_dict(get_user_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
             expected_session_version = session.get("user_session_version")
             if (
                 user is None
@@ -2818,7 +3247,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if request.method == "POST":
             username = request.form.get("username", "").strip()
             password_or_setup_code = request.form.get("password", "")
-            user = get_db().execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+            user = get_user_db().execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
             if user is None or not bool(user["is_active"]):
                 flash("Benutzername oder Passwort ist nicht korrekt.", "error")
             elif bool(user["must_set_password"]):
@@ -2843,8 +3272,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 if bool(user["mfa_enabled"]):
                     begin_auth_challenge("mfa_login", user, request.args.get("next"))
                     return redirect(url_for("mfa_login"))
-                get_db().execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
-                get_db().commit()
+                get_user_db().execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
+                get_user_db().commit()
                 next_url = safe_next_url(request.args.get("next"), fallback=url_for("sales_page"))
                 establish_authenticated_session(user)
                 return redirect(next_url)
@@ -2856,7 +3285,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
         user_id = session.get("password_setup_user_id")
         user = (
-            get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            get_user_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             if user_id
             else None
         )
@@ -2869,7 +3298,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 password = validate_new_password(
                     request.form.get("password"), request.form.get("password_confirmation")
                 )
-                connection = get_db()
+                connection = get_user_db()
                 connection.execute(
                     """
                     UPDATE users
@@ -2903,7 +3332,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
         user_id = session.get("mfa_login_user_id")
         user = (
-            get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            get_user_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             if user_id
             else None
         )
@@ -2912,7 +3341,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash("Die Zwei-Faktor-Anmeldung ist nicht mehr gültig. Bitte erneut anmelden.", "error")
             return redirect(url_for("login"))
         if request.method == "POST":
-            connection = get_db()
+            connection = get_user_db()
             method = verify_mfa_code(connection, user, request.form.get("mfa_code"))
             if method is None:
                 flash("Der Sicherheitscode ist nicht gültig.", "error")
@@ -2943,11 +3372,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if g.get("user") is not None:
             if not has_profile_reauth(g.user):
                 return None, False
-            return get_db().execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone(), False
+            return get_user_db().execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone(), False
         user_id = session.get("mfa_enrollment_user_id")
         if not user_id:
             return None, False
-        user = get_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        user = get_user_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None or not bool(user["is_active"]) or normalized_role(user) != "admin":
             return None, False
         return user, True
@@ -2964,7 +3393,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             session.clear()
             flash("Die Zwei-Faktor-Einrichtung ist nicht mehr gültig. Bitte erneut anmelden.", "error")
             return redirect(url_for("login"))
-        connection = get_db()
+        connection = get_user_db()
         pending_secret = decrypt_mfa_secret(user["mfa_pending_secret_encrypted"])
         if pending_secret is None:
             pending_secret = pyotp.random_base32()
@@ -3003,7 +3432,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     user_id=user["id"],
                 )
                 connection.commit()
-                backup_after_commit()
                 return_url = url_for("profile_page")
                 template_user: dict[str, Any] | None = g.get("user")
                 if is_pre_auth:
@@ -3060,7 +3488,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return redirect(target)
         if request.method == "POST":
             password = request.form.get("password", "")
-            connection = get_db()
+            connection = get_user_db()
             user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
             if not check_password_hash(user["password_hash"], password):
                 flash("Das Passwort ist nicht korrekt.", "error")
@@ -3100,7 +3528,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @profile_reauth_required
     def profile_page():
-        user = get_db().execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+        user = get_user_db().execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
         return render_template(
             "profile.html",
             title="Mein Profil",
@@ -3113,7 +3541,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @profile_reauth_required
     def update_own_password():
         try:
-            connection = get_db()
+            connection = get_user_db()
             user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
             if not check_password_hash(user["password_hash"], request.form.get("current_password", "")):
                 raise ValueError("Das aktuelle Passwort ist nicht korrekt.")
@@ -3144,7 +3572,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def update_own_username():
         """Change the locally displayed/login username after fresh re-auth."""
 
-        connection = get_db()
+        connection = get_user_db()
         try:
             user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
             username = valid_username(request.form.get("username"))
@@ -3184,7 +3612,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if normalized_role(g.user) == "admin":
             flash("Für den Admin ist die Zwei-Faktor-Authentifizierung verpflichtend.", "error")
             return redirect(url_for("profile_page"))
-        connection = get_db()
+        connection = get_user_db()
         connection.execute(
             """
             UPDATE users
@@ -3196,7 +3624,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         )
         audit(connection, "disable_mfa", "user", g.user["id"], {"via": "profile"})
         connection.commit()
-        backup_after_commit()
         flash("Die Zwei-Faktor-Authentifizierung wurde deaktiviert.", "success")
         return redirect(url_for("profile_page"))
 
@@ -3204,7 +3631,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @profile_reauth_required
     def regenerate_recovery_codes():
-        connection = get_db()
+        connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
         if not bool(user["mfa_enabled"]):
             flash("Aktiviere zuerst die Zwei-Faktor-Authentifizierung.", "error")
@@ -3216,7 +3643,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         )
         audit(connection, "regenerate_recovery_codes", "user", user["id"], {})
         connection.commit()
-        backup_after_commit()
         return render_template(
             "mfa_recovery_codes.html",
             title="Neue Wiederherstellungscodes",
@@ -3233,7 +3659,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def administration_users() -> list[dict[str, Any]]:
         """Return safe, display-ready user records for the admin screen."""
 
-        rows = get_db().execute(
+        rows = get_user_db().execute(
             """
             SELECT * FROM users
             ORDER BY CASE role WHEN 'admin' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END,
@@ -3275,7 +3701,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             if role not in MANAGED_USER_ROLES:
                 raise ValueError("Neue Benutzer können nur die Rollen Seller oder Manager erhalten.")
             setup_code = generate_setup_code()
-            connection = get_db()
+            connection = get_user_db()
             connection.execute(
                 """
                 INSERT INTO users (
@@ -3295,7 +3721,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             user_id = connection.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()[0]
             audit(connection, "create", "user", user_id, {"username": username, "role": role})
             connection.commit()
-            backup_after_commit()
             return render_administration(
                 setup_credential={"username": username, "code": setup_code, "purpose": "new"}
             )
@@ -3307,7 +3732,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @admin_required
     def reset_user_password(user_id: int):
-        connection = get_db()
+        connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             abort(404)
@@ -3331,7 +3756,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         )
         audit(connection, "reset_password", "user", user_id, {"username": user["username"]})
         connection.commit()
-        backup_after_commit()
         return render_administration(
             setup_credential={"username": user["username"], "code": setup_code, "purpose": "reset"}
         )
@@ -3344,7 +3768,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if role not in MANAGED_USER_ROLES:
             flash("Es sind nur die Rollen Seller und Manager auswählbar.", "error")
             return redirect(url_for("administration_page"))
-        connection = get_db()
+        connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             abort(404)
@@ -3357,7 +3781,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         )
         audit(connection, "change_role", "user", user_id, {"username": user["username"], "role": role})
         connection.commit()
-        backup_after_commit()
         flash("Die Rolle von „{}“ wurde geändert.".format(user["username"]), "success")
         return redirect(url_for("administration_page"))
 
@@ -3365,7 +3788,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @admin_required
     def update_user_active_state(user_id: int):
-        connection = get_db()
+        connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             abort(404)
@@ -3385,7 +3808,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             {"username": user["username"], "is_active": active},
         )
         connection.commit()
-        backup_after_commit()
         flash("Der Benutzer wurde {}.".format("aktiviert" if active else "deaktiviert"), "success")
         return redirect(url_for("administration_page"))
 
@@ -3393,7 +3815,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @admin_required
     def reset_user_mfa(user_id: int):
-        connection = get_db()
+        connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             abort(404)
@@ -3412,7 +3834,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         )
         audit(connection, "reset_mfa", "user", user_id, {"username": user["username"]})
         connection.commit()
-        backup_after_commit()
         flash("Die 2FA von „{}“ wurde zurückgesetzt.".format(user["username"]), "success")
         return redirect(url_for("administration_page"))
 
@@ -3420,12 +3841,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @admin_required
     def reset_application_data():
-        """Archive all data, then start a blank ledger with the verified admin."""
+        """Archive and reset only the operational ledger after fresh MFA."""
 
         if request.form.get("confirmation", "").strip() != "DATEN ZURÜCKSETZEN":
             flash("Bitte die Bestätigung exakt als „DATEN ZURÜCKSETZEN“ eingeben.", "error")
             return render_administration()
-        connection = get_db()
+        connection = get_user_db()
         admin = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
         if not check_password_hash(admin["password_hash"], request.form.get("password", "")):
             flash("Das Passwort ist nicht korrekt. Es wurden keine Daten verändert.", "error")
@@ -3445,22 +3866,19 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             )
         connection.commit()
         try:
-            archive_path = create_reset_archive(app, connection)
-            # A recovery code may have been consumed while confirming this
-            # reset. Preserve the post-verification state, never a stale copy
-            # that would accidentally make that code valid again.
-            admin = connection.execute("SELECT * FROM users WHERE id = ?", (admin["id"],)).fetchone()
-            preserved_admin = dict(admin)
-            close_db(None)
-            reset_data_store(app, preserved_admin)
+            archive_path = create_reset_archive(app, get_db())
+            operational_connection = g.pop("db", None)
+            if operational_connection is not None:
+                operational_connection.close()
+            reset_data_store(app)
             fresh_connection = get_db()
             audit(
                 fresh_connection,
                 "reset_application_data",
                 "system",
                 None,
-                {"archive": archive_path.name, "preserved_admin": preserved_admin["username"]},
-                user_id=preserved_admin["id"],
+                {"archive": archive_path.name, "preserved_admin": admin["username"]},
+                user_id=admin["id"],
             )
             fresh_connection.commit()
         except Exception:
@@ -3469,8 +3887,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return redirect(url_for("administration_page"))
         session.clear()
         flash(
-            "Alle Artikel, Buchungen, Anhänge und weiteren Benutzer wurden zurückgesetzt. "
-            f"Das Archiv „{archive_path.name}“ wurde angelegt; der Admin-Zugang bleibt erhalten.",
+            "Artikel, Buchungen und Anhänge wurden zurückgesetzt. Benutzerkonten, Rollen und 2FA bleiben erhalten. "
+            f"Das Archiv „{archive_path.name}“ wurde angelegt.",
             "success",
         )
         return redirect(url_for("login"))
@@ -3636,15 +4054,15 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                         receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
                         amount_given_cents, donation_cents, payment_method, is_paid, payment_follow_up, is_received,
                         delivery_status, customer_name, customer_address, event_name, sold_by, comment,
-                        sold_on, created_at, created_by
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        sold_on, created_at, created_by, created_by_username
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         receipt_id, item["variant_id"], item["quantity"], item["unit_price_cents"],
                         item["amount_due_cents"], item["amount_given_cents"], item["donation_cents"],
                         payment_method, int(is_paid), payment_follow_up, int(is_received), delivery_status,
                         customer_name or None, customer_address or None, event_name, sold_by or None,
-                        comment, sold_on, utc_now(), g.user["id"],
+                        comment, sold_on, utc_now(), g.user["id"], g.user["username"],
                     ),
                 )
                 item["sale_id"] = cursor.lastrowid
@@ -3684,14 +4102,15 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 connection.execute(
                     """
                     INSERT INTO sync_events (
-                        event_id, event_type, actor_user_id, device_id,
+                        event_id, event_type, actor_user_id, actor_username, device_id,
                         payload_hash, client_created_at, response_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         sync_event["event_id"],
                         sync_event["event_type"],
                         sync_event["actor_user_id"],
+                        g.user["username"],
                         sync_event["device_id"],
                         sync_event["payload_hash"],
                         sync_event["client_created_at"],
@@ -3760,13 +4179,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     """
                     INSERT INTO purchases (
                         receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
-                        supplier, invoice_reference, invoice_file_path, comment, created_at, created_by
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        supplier, invoice_reference, invoice_file_path, comment, created_at, created_by,
+                        created_by_username
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         receipt_id, item["variant_id"], item["quantity"], item["unit_cost_cents"], purchased_on,
                         item["supplier"], item["invoice_reference"], invoice_file_path, item["comment"],
-                        utc_now(), g.user["id"],
+                        utc_now(), g.user["id"], g.user["username"],
                     ),
                 )
                 item["purchase_id"] = cursor.lastrowid
@@ -3791,10 +4211,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     connection.execute(
                         """
                         INSERT INTO purchase_receipt_attachments (
-                            receipt_id, file_path, created_at, created_by
-                        ) VALUES (?, ?, ?, ?)
+                            receipt_id, file_path, created_at, created_by, created_by_username
+                        ) VALUES (?, ?, ?, ?, ?)
                         """,
-                        (receipt_id, invoice_file_path, utc_now(), g.user["id"]),
+                        (receipt_id, invoice_file_path, utc_now(), g.user["id"], g.user["username"]),
                     )
             audit(
                 connection,
@@ -4081,10 +4501,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 stored_files.append(file_path)
                 connection.execute(
                     """
-                    INSERT INTO purchase_receipt_attachments (receipt_id, file_path, created_at, created_by)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO purchase_receipt_attachments (
+                        receipt_id, file_path, created_at, created_by, created_by_username
+                    ) VALUES (?, ?, ?, ?, ?)
                     """,
-                    (receipt_id, file_path, utc_now(), g.user["id"]),
+                    (receipt_id, file_path, utc_now(), g.user["id"], g.user["username"]),
                 )
             audit(
                 connection,

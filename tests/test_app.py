@@ -16,6 +16,7 @@ import pyotp
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app import (
+    LEGACY_COMBINED_SCHEMA_SQL,
     apply_option_configuration,
     balance_payload,
     create_backup,
@@ -24,6 +25,7 @@ from app import (
     decrypt_mfa_secret,
     encrypt_mfa_secret,
     get_db,
+    get_user_db,
     sync_variants,
     variant_label_map,
 )
@@ -187,6 +189,7 @@ class MerchAppTestCase(unittest.TestCase):
                 "TESTING": True,
                 "SECRET_KEY": "test-secret",
                 "DATABASE": str(legacy_database),
+                "USERS_DATABASE": str(Path(self.tempdir.name) / "legacy-user-accounts.sqlite3"),
                 "BACKUP_DIR": str(Path(self.tempdir.name) / "legacy-user-backups"),
                 "RESET_ARCHIVE_DIR": str(Path(self.tempdir.name) / "legacy-user-reset-archives"),
                 "INVOICE_UPLOAD_DIR": str(Path(self.tempdir.name) / "legacy-user-invoices"),
@@ -197,8 +200,8 @@ class MerchAppTestCase(unittest.TestCase):
             }
         )
         with legacy_app.app_context():
-            columns = {row["name"] for row in get_db().execute("PRAGMA table_info(users)").fetchall()}
-            user = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            columns = {row["name"] for row in get_user_db().execute("PRAGMA table_info(users)").fetchall()}
+            user = get_user_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
             tables = {row["name"] for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         self.assertTrue(
             {
@@ -215,6 +218,81 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertTrue(user["is_admin"])
         self.assertTrue(user["is_active"])
         self.assertIn("sync_events", tables)
+        self.assertNotIn("users", tables)
+        self.assertTrue(list(Path(legacy_app.config["MIGRATION_ARCHIVE_DIR"]).glob("*.zip")))
+
+    def test_combined_database_split_keeps_bookings_and_actor_snapshots(self) -> None:
+        """The one-time migration preserves IDs, rows and a readable actor name."""
+
+        legacy_database = Path(self.tempdir.name) / "combined.sqlite3"
+        connection = sqlite3.connect(legacy_database)
+        try:
+            connection.executescript(LEGACY_COMBINED_SCHEMA_SQL)
+            connection.execute(
+                """
+                INSERT INTO users (id, username, password_hash, is_admin, role, is_active, created_at)
+                VALUES (7, 'historic-seller', 'unused', 1, 'admin', 1, '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO articles (id, name, created_at, updated_at)
+                VALUES (3, 'Historisches Shirt', '2026-08-14T00:00:00+00:00', '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO variants (
+                    id, article_id, option_value_ids_json, combination_key,
+                    sale_price_cents, default_purchase_price_cents, created_at, updated_at
+                ) VALUES (11, 3, '[]', '', 2500, 1200, '2026-08-14T00:00:00+00:00', '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO sales (
+                    id, receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
+                    payment_method, is_paid, is_received, delivery_status, sold_on, created_at,
+                    created_by, created_by_username
+                ) VALUES (19, 'V-20260814-001', 11, 1, 2500, 2500, 'Bar', 1, 1,
+                          'not_applicable', '2026-08-14', '2026-08-14T00:00:00+00:00', 7, NULL)
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        split_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": str(legacy_database),
+                "USERS_DATABASE": str(Path(self.tempdir.name) / "split-users.sqlite3"),
+                "BACKUP_DIR": str(Path(self.tempdir.name) / "split-backups"),
+                "RESET_ARCHIVE_DIR": str(Path(self.tempdir.name) / "split-reset-archives"),
+                "INVOICE_UPLOAD_DIR": str(Path(self.tempdir.name) / "split-invoices"),
+                "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password",
+                "APP_VERSION": "v0.3.0",
+                "AUTO_BACKUP": False,
+            }
+        )
+        with split_app.app_context():
+            actor = get_user_db().execute("SELECT id, username FROM users WHERE id = 7").fetchone()
+            sale = get_db().execute(
+                "SELECT id, variant_id, created_by, created_by_username FROM sales WHERE id = 19"
+            ).fetchone()
+            operational_tables = {
+                row["name"]
+                for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
+        self.assertEqual(dict(actor), {"id": 7, "username": "historic-seller"})
+        self.assertEqual(dict(sale), {"id": 19, "variant_id": 11, "created_by": 7, "created_by_username": "historic-seller"})
+        self.assertNotIn("users", operational_tables)
+        archives = list(Path(split_app.config["MIGRATION_ARCHIVE_DIR"]).glob("*.zip"))
+        self.assertEqual(len(archives), 1)
+        with ZipFile(archives[0]) as archive:
+            self.assertIn("data/merch.sqlite3", archive.namelist())
 
     def test_existing_purchase_table_gets_invoice_attachment_column(self) -> None:
         """A deployed database upgrades without losing its free-text reference."""
@@ -337,7 +415,7 @@ class MerchAppTestCase(unittest.TestCase):
 
     def create_local_user(self, username: str, role: str) -> int:
         with self.app.app_context():
-            connection = get_db()
+            connection = get_user_db()
             cursor = connection.execute(
                 """
                 INSERT INTO users (username, password_hash, is_admin, role, is_active, created_at)
@@ -400,7 +478,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn('static/updates.js', sales_html)
 
         with self.app.app_context():
-            connection = get_db()
+            connection = get_user_db()
             password_hash = connection.execute("SELECT password_hash FROM users WHERE id = 1").fetchone()[0]
             connection.execute(
                 "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?, ?, 0, ?)",
@@ -431,7 +509,7 @@ class MerchAppTestCase(unittest.TestCase):
         setup_code = match.group(1)
 
         with self.app.app_context():
-            created = get_db().execute("SELECT * FROM users WHERE username = 'seller-one'").fetchone()
+            created = get_user_db().execute("SELECT * FROM users WHERE username = 'seller-one'").fetchone()
         self.assertTrue(created["must_set_password"])
         self.assertTrue(created["setup_code_hash"])
         self.assertFalse(check_password_hash(created["password_hash"], setup_code))
@@ -457,7 +535,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(setup.status_code, 302)
         self.assertTrue(setup.location.endswith("/verkauf"))
         with self.app.app_context():
-            created = get_db().execute("SELECT * FROM users WHERE username = 'seller-one'").fetchone()
+            created = get_user_db().execute("SELECT * FROM users WHERE username = 'seller-one'").fetchone()
         self.assertFalse(created["must_set_password"])
         self.assertIsNone(created["setup_code_hash"])
         self.assertTrue(check_password_hash(created["password_hash"], "a-private-password"))
@@ -478,7 +556,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(self.client.get("/mfa/einrichten").status_code, 200)
 
         with self.app.app_context():
-            enrolled = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            enrolled = get_user_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
             pending_secret = decrypt_mfa_secret(enrolled["mfa_pending_secret_encrypted"], self.app)
         self.assertIsNotNone(pending_secret)
         activation = self.client.post(
@@ -488,7 +566,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(activation.status_code, 200)
         self.assertIn("Wiederherstellungscodes", activation.get_data(as_text=True))
         with self.app.app_context():
-            enrolled = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            enrolled = get_user_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
         self.assertTrue(enrolled["mfa_enabled"])
         self.assertEqual(decrypt_mfa_secret(enrolled["mfa_secret_encrypted"], self.app), pending_secret)
 
@@ -543,7 +621,7 @@ class MerchAppTestCase(unittest.TestCase):
         )
         self.assertEqual(changed.status_code, 302)
         with self.app.app_context():
-            user = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            user = get_user_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
         self.assertTrue(check_password_hash(user["password_hash"], "a-new-private-password"))
         with self.client.session_transaction() as session:
             self.assertEqual(session["user_session_version"], user["session_version"])
@@ -562,8 +640,8 @@ class MerchAppTestCase(unittest.TestCase):
         )
         self.assertEqual(changed.status_code, 302)
         with self.app.app_context():
-            user = get_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
-            audit_row = get_db().execute(
+            user = get_user_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            audit_row = get_user_db().execute(
                 "SELECT details_json FROM audit_log WHERE action = 'change_username' ORDER BY id DESC LIMIT 1"
             ).fetchone()
         self.assertEqual(user["username"], "tester-neu")
@@ -681,16 +759,17 @@ class MerchAppTestCase(unittest.TestCase):
             200,
         )
 
-    def test_database_reset_archives_everything_and_preserves_only_verified_admin(self) -> None:
-        """Reset is protected by password, TOTP and an immutable ZIP snapshot."""
+    def test_database_reset_archives_operations_and_preserves_all_accounts(self) -> None:
+        """Reset is protected by password/TOTP but never touches user storage."""
 
         self.seed_variant()
+        self.create_local_user("reset-manager", "manager")
         invoice_dir = Path(self.app.config["INVOICE_UPLOAD_DIR"])
         invoice_dir.mkdir(parents=True, exist_ok=True)
         (invoice_dir / "before-reset.pdf").write_bytes(b"%PDF-test")
         secret = pyotp.random_base32()
         with self.app.app_context():
-            connection = get_db()
+            connection = get_user_db()
             connection.execute(
                 """
                 UPDATE users
@@ -718,12 +797,12 @@ class MerchAppTestCase(unittest.TestCase):
         with ZipFile(archives[0]) as archive:
             self.assertIn("data/merch.sqlite3", archive.namelist())
             self.assertIn("data/invoices/before-reset.pdf", archive.namelist())
+            self.assertNotIn("data/users.sqlite3", archive.namelist())
 
         with self.app.app_context():
-            connection = get_db()
-            users = connection.execute("SELECT * FROM users").fetchall()
-            article_count = connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
-        self.assertEqual(len(users), 1)
+            users = get_user_db().execute("SELECT * FROM users ORDER BY id").fetchall()
+            article_count = get_db().execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        self.assertEqual(len(users), 2)
         self.assertEqual(users[0]["username"], "tester")
         self.assertEqual(users[0]["role"], "admin")
         self.assertTrue(users[0]["mfa_enabled"])
