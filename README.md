@@ -184,23 +184,35 @@ vollständige Wiederherstellung.
 > Einkaufsdatenbank vorgesehen. Vorher daher zuerst den Teststart machen und
 > dann importieren, bevor neue Buchungen angelegt werden.
 
+Für die bereinigte Neuaufstellung verwende die vorbereitete Datei
+`protovibe-merch-bereinigt.ods`. Sie enthält eine nachvollziehbare
+`Zuordnung` der alten Namen, explizite Varianten-IDs, die dynamischen Optionen
+(`Farbe`, `Passform`, `Größe`, `Motiv`) und gruppierte historische
+Verkaufsbelege.
+
 1. Kopiere die ODS in den Ordner `imports`, etwa als
-   `imports/merch-bisher.ods`.
+   `imports/protovibe-merch-bereinigt.ods`.
 2. Öffne im Container Manager die Konsole des laufenden Containers oder nutze
    SSH auf der Synology.
 3. Führe aus:
 
    ```bash
-   docker exec -it protovibe-merch python scripts/import_ods.py /import/merch-bisher.ods
+   docker exec -it protovibe-merch python scripts/import_ods.py /import/protovibe-merch-bereinigt.ods
    ```
 
 4. Lade die App neu und kontrolliere zuerst Artikelbilanz, einzelne Einkäufe
    und ein paar alte Verkäufe.
 
-Das Importskript verwendet die Eingangsdaten `Stück × Preis/Stück`.  Es kopiert
-also nicht versehentlich eine fehlerhafte Berechnung aus einer abgeleiteten
-ODS-Spalte.  Das ist insbesondere relevant für die in der bisherigen Datei
-entdeckte, um eine Zeile verschobene Einkaufsformel.
+Das Skript erkennt weiterhin auch die ursprüngliche ODS mit den Spalten
+`Name`, `Art` und `Größe`. Die bereinigte Fassung ist jedoch vorzuziehen: Der
+Importer liest dort nur die tatsächlich vorhandenen Varianten ein. Durch
+Optionen technisch erzeugte, aber in der ODS nicht vorhandene Kombinationen
+werden automatisch als **nicht angeboten** markiert und erscheinen deshalb
+nicht im Verkaufsfenster.
+
+Das Importskript verwendet für Buchungen immer die Eingangsdaten
+`Stück × Preis/Stück`. Es kopiert also nicht versehentlich eine fehlerhafte
+Berechnung aus einer abgeleiteten ODS-Spalte.
 
 ## Für Entwickler: Orientierung im Quellcode
 

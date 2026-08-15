@@ -30,6 +30,7 @@ from app import (
     csv_rows,
     db_connect,
     money_to_cents,
+    sorted_combination_key,
     sync_variants,
     utc_now,
 )
@@ -39,6 +40,16 @@ TABLE_NS = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
 OFFICE_NS = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
 TABLE = f"{{{TABLE_NS}}}"
 OFFICE = f"{{{OFFICE_NS}}}"
+
+
+NORMALISED_ARTICLE_COLUMNS = {
+    "Varianten-ID",
+    "Artikel",
+    "Standard-Einkaufspreis",
+    "Standard-Verkaufspreis",
+    "Mindestbestand",
+    "Angeboten",
+}
 
 
 def read_ods(path: Path) -> dict[str, list[list[dict[str, str | None]]]]:
@@ -96,6 +107,40 @@ def cell_quantity(row: list[dict[str, str | None]], index: int | None) -> int:
     return int(float(str(value).replace(",", ".")))
 
 
+def cell_optional_quantity(row: list[dict[str, str | None]], index: int | None, name: str) -> int | None:
+    """Read an optional non-negative whole-number field such as minimum stock."""
+
+    if index is None or index >= len(row):
+        return None
+    value = row[index]["value"] or row[index]["text"] or ""
+    if not str(value).strip():
+        return None
+    try:
+        quantity = int(float(str(value).replace(",", ".")))
+    except ValueError as error:
+        raise ValueError(f"{name} „{value}“ muss eine ganze Zahl sein.") from error
+    if quantity < 0:
+        raise ValueError(f"{name} darf nicht negativ sein.")
+    return quantity
+
+
+def cell_bool(
+    row: list[dict[str, str | None]], index: int | None, name: str, *, default: bool = True
+) -> bool:
+    """Read a human-readable yes/no value from an ODS input cell."""
+
+    if index is None or index >= len(row):
+        return default
+    value = str(row[index]["text"] or row[index]["value"] or "").strip().casefold()
+    if not value:
+        return default
+    if value in {"ja", "j", "yes", "y", "true", "1", "x"}:
+        return True
+    if value in {"nein", "n", "no", "false", "0"}:
+        return False
+    raise ValueError(f"{name} „{value}“ muss Ja oder Nein sein.")
+
+
 def normalise_date(row: list[dict[str, str | None]], index: int | None) -> str:
     """Return an ISO date from Calc's typed date or its displayed German text."""
 
@@ -136,8 +181,250 @@ def create_initial_backup(connection: sqlite3.Connection, database: Path) -> Non
         (backup_dir / f"{filename}.csv").write_bytes(csv_bytes(headers, rows))
 
 
+def has_header(rows: list[list[dict[str, str | None]]], header: str) -> bool:
+    """Return whether an ODS table contains a named header cell."""
+
+    return any(header in [cell["text"] or "" for cell in row] for row in rows)
+
+
+def import_normalised_sheets(
+    sheets: dict[str, list[list[dict[str, str | None]]]], database: Path
+) -> None:
+    """Import the cleaned ODS with explicit variant IDs and dynamic options.
+
+    The normalised format contains one row per actually existing variant.  The
+    app itself creates the Cartesian product required by its option model; any
+    combinations absent from the ODS are therefore retained but marked as not
+    offered.  This keeps the sales screen clean without deleting future option
+    combinations from the article administration.
+    """
+
+    article_headers, article_rows = find_records(sheets["Artikel"], "Varianten-ID")
+    purchase_headers, purchase_rows = find_records(sheets["Einkäufe"], "Varianten-ID")
+    sale_headers, sale_rows = find_records(sheets["Verkäufe"], "Varianten-ID")
+    for required in ("Artikel", "Standard-Einkaufspreis", "Standard-Verkaufspreis"):
+        if required not in article_headers:
+            raise ValueError(f"Die Spalte „{required}“ fehlt in Artikel.")
+
+    option_names = [header for header in article_headers if header not in NORMALISED_ARTICLE_COLUMNS]
+    entries_by_article: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    seen_variant_keys: set[str] = set()
+    for row_number, row in enumerate(article_rows, start=1):
+        source_variant_key = cell_text(row, article_headers.get("Varianten-ID"))
+        article_name = cell_text(row, article_headers.get("Artikel"))
+        if not source_variant_key:
+            raise ValueError(f"Artikelzeile {row_number} enthält keine Varianten-ID.")
+        if source_variant_key in seen_variant_keys:
+            raise ValueError(f"Die Varianten-ID „{source_variant_key}“ kommt mehrfach vor.")
+        if not article_name:
+            raise ValueError(f"Artikelzeile {row_number} enthält keinen Artikelnamen.")
+        seen_variant_keys.add(source_variant_key)
+        entries_by_article[article_name].append(
+            {
+                "source_variant_key": source_variant_key,
+                "options": {
+                    option_name: cell_text(row, article_headers.get(option_name))
+                    for option_name in option_names
+                    if cell_text(row, article_headers.get(option_name))
+                },
+                "cost_cents": cell_number(
+                    row, article_headers.get("Standard-Einkaufspreis"), "Standard-Einkaufspreis"
+                ),
+                "price_cents": cell_number(
+                    row, article_headers.get("Standard-Verkaufspreis"), "Standard-Verkaufspreis"
+                ),
+                "minimum_stock": cell_optional_quantity(
+                    row, article_headers.get("Mindestbestand"), "Mindestbestand"
+                ),
+                "is_offered": cell_bool(row, article_headers.get("Angeboten"), "Angeboten"),
+            }
+        )
+
+    connection = db_connect(database)
+    try:
+        ensure_empty_database(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        now = utc_now()
+        variant_ids: dict[str, int] = {}
+
+        for article_name, entries in entries_by_article.items():
+            default_cost = entries[0]["cost_cents"]
+            default_price = entries[0]["price_cents"]
+            article_is_offered = int(any(entry["is_offered"] for entry in entries))
+            cursor = connection.execute(
+                """
+                INSERT INTO articles (
+                    name, default_sale_price_cents, default_purchase_price_cents, is_offered, is_active,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 1, ?, ?)
+                """,
+                (article_name, default_price, default_cost, article_is_offered, now, now),
+            )
+            article_id = cursor.lastrowid
+
+            config = []
+            for position, option_name in enumerate(option_names):
+                values: list[str] = []
+                for entry in entries:
+                    value = entry["options"].get(option_name)
+                    if value and value not in values:
+                        values.append(value)
+                if values:
+                    config.append(
+                        {
+                            "id": None,
+                            "name": option_name,
+                            "position": position,
+                            "values": [
+                                {"id": None, "value": value, "position": value_position}
+                                for value_position, value in enumerate(values)
+                            ],
+                        }
+                    )
+            apply_option_configuration(connection, article_id, config)
+            sync_variants(connection, article_id)
+
+            option_value_ids: dict[str, dict[str, int]] = defaultdict(dict)
+            for option_row in connection.execute(
+                """
+                SELECT og.name, ov.value, ov.id
+                FROM option_values ov
+                JOIN option_groups og ON og.id = ov.option_group_id
+                WHERE og.article_id = ? AND og.is_active = 1 AND ov.is_active = 1
+                """,
+                (article_id,),
+            ).fetchall():
+                option_value_ids[option_row["name"]][option_row["value"]] = option_row["id"]
+            variants_by_key = {
+                variant_row["combination_key"]: variant_row["id"]
+                for variant_row in connection.execute(
+                    "SELECT id, combination_key FROM variants WHERE article_id = ?", (article_id,)
+                ).fetchall()
+            }
+
+            # Every combination created by sync_variants starts as sellable.
+            # Only the explicitly listed source variants belong to the
+            # assortment; all other generated combinations stay in the model
+            # but are hidden from the sales window.
+            connection.execute(
+                "UPDATE variants SET is_offered = 0, updated_at = ? WHERE article_id = ?",
+                (now, article_id),
+            )
+            for entry in entries:
+                value_ids = [
+                    option_value_ids[option_name][value]
+                    for option_name, value in entry["options"].items()
+                ]
+                key = sorted_combination_key(value_ids)
+                variant_id = variants_by_key.get(key)
+                if variant_id is None:
+                    raise RuntimeError(
+                        f"Die Varianten-ID „{entry['source_variant_key']}“ konnte nicht erzeugt werden."
+                    )
+                connection.execute(
+                    """
+                    UPDATE variants
+                    SET sale_price_cents = ?, default_purchase_price_cents = ?, minimum_stock = ?,
+                        is_offered = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        entry["price_cents"],
+                        entry["cost_cents"],
+                        entry["minimum_stock"],
+                        int(entry["is_offered"]),
+                        now,
+                        variant_id,
+                    ),
+                )
+                variant_ids[entry["source_variant_key"]] = variant_id
+
+        imported_purchases = 0
+        for row_number, row in enumerate(purchase_rows, start=1):
+            source_variant_key = cell_text(row, purchase_headers.get("Varianten-ID"))
+            variant_id = variant_ids.get(source_variant_key)
+            if not variant_id:
+                raise ValueError(f"Einkauf {row_number} hat eine unbekannte Varianten-ID: {source_variant_key}")
+            quantity = cell_quantity(row, purchase_headers.get("Stück"))
+            if quantity <= 0:
+                continue
+            receipt_id = cell_text(row, purchase_headers.get("Einkauf-ID")) or f"IMPORT-E-{row_number:04d}"
+            invoice_reference = (
+                cell_text(row, purchase_headers.get("Rechnungsnummer/Name"))
+                or cell_text(row, purchase_headers.get("Rechnungsnummer/Name (Dateipfad auf dem Server)"))
+                or None
+            )
+            connection.execute(
+                """
+                INSERT INTO purchases (
+                    receipt_id, variant_id, quantity, unit_cost_cents, purchased_on, supplier,
+                    invoice_reference, comment, created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)
+                """,
+                (
+                    receipt_id,
+                    variant_id,
+                    quantity,
+                    cell_number(row, purchase_headers.get("Preis/Stück"), "Preis/Stück"),
+                    normalise_date(row, purchase_headers.get("Datum")),
+                    invoice_reference,
+                    cell_text(row, purchase_headers.get("Kommentar")) or None,
+                    now,
+                ),
+            )
+            imported_purchases += 1
+
+        imported_sales = 0
+        for row_number, row in enumerate(sale_rows, start=1):
+            source_variant_key = cell_text(row, sale_headers.get("Varianten-ID"))
+            variant_id = variant_ids.get(source_variant_key)
+            if not variant_id:
+                raise ValueError(f"Verkauf {row_number} hat eine unbekannte Varianten-ID: {source_variant_key}")
+            quantity = cell_quantity(row, sale_headers.get("Stück"))
+            if quantity <= 0:
+                continue
+            unit_price = cell_number(row, sale_headers.get("Verkaufspreis/Stück"), "Verkaufspreis/Stück")
+            receipt_id = cell_text(row, sale_headers.get("Beleg-ID")) or f"IMPORT-V-{row_number:04d}"
+            connection.execute(
+                """
+                INSERT INTO sales (
+                    receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
+                    amount_given_cents, donation_cents, payment_method, is_paid, is_received,
+                    delivery_status, customer_name, customer_address, event_name, comment,
+                    sold_on, created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, NULL, 0, 'Import', 1, 1, 'not_applicable', NULL, NULL, ?, NULL, ?, ?, NULL)
+                """,
+                (
+                    receipt_id,
+                    variant_id,
+                    quantity,
+                    unit_price,
+                    quantity * unit_price,
+                    cell_text(row, sale_headers.get("Kommentar")) or None,
+                    normalise_date(row, sale_headers.get("Datum")),
+                    now,
+                ),
+            )
+            imported_sales += 1
+
+        connection.commit()
+        create_initial_backup(connection, database)
+        print(
+            f"Import abgeschlossen: {len(entries_by_article)} Artikel, "
+            f"{imported_purchases} Einkäufe, {imported_sales} Verkäufe."
+        )
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def import_file(path: Path, database: Path) -> None:
     sheets = read_ods(path)
+    if has_header(sheets.get("Artikel", []), "Varianten-ID"):
+        import_normalised_sheets(sheets, database)
+        return
     article_headers, article_rows = find_records(sheets["Artikel"], "Name")
     purchase_headers, purchase_rows = find_records(sheets["Einkäufe"], "Artikel")
     sale_headers, sale_rows = find_records(sheets["Verkäufe"], "Artikel")
