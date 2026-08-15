@@ -63,12 +63,25 @@ class MerchAppTestCase(unittest.TestCase):
 
         self.assertEqual(local_app.config["APP_VERSION"], "0.0.0")
 
-    def test_existing_database_gets_the_minimum_stock_column(self) -> None:
+    def test_existing_database_gets_minimum_stock_and_offered_columns(self) -> None:
         """An update must not require manually recreating the merch database."""
 
         legacy_database = Path(self.tempdir.name) / "legacy.sqlite3"
         connection = sqlite3.connect(legacy_database)
         try:
+            connection.execute(
+                """
+                CREATE TABLE articles (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    default_sale_price_cents INTEGER NOT NULL DEFAULT 0,
+                    default_purchase_price_cents INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             connection.execute(
                 """
                 CREATE TABLE variants (
@@ -84,6 +97,23 @@ class MerchAppTestCase(unittest.TestCase):
                     updated_at TEXT NOT NULL,
                     UNIQUE(article_id, combination_key)
                 )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO articles (
+                    id, name, default_sale_price_cents, default_purchase_price_cents,
+                    is_active, created_at, updated_at
+                ) VALUES (1, 'Legacy Shirt', 0, 0, 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO variants (
+                    id, article_id, option_value_ids_json, combination_key,
+                    sale_price_cents, default_purchase_price_cents, no_reorder,
+                    is_active, created_at, updated_at
+                ) VALUES (1, 1, '[]', '', 0, 0, 1, 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
                 """
             )
             connection.commit()
@@ -102,8 +132,15 @@ class MerchAppTestCase(unittest.TestCase):
             }
         )
         with legacy_app.app_context():
-            columns = {row["name"] for row in get_db().execute("PRAGMA table_info(variants)").fetchall()}
-        self.assertIn("minimum_stock", columns)
+            variant_columns = {row["name"] for row in get_db().execute("PRAGMA table_info(variants)").fetchall()}
+            article_columns = {row["name"] for row in get_db().execute("PRAGMA table_info(articles)").fetchall()}
+            legacy_variant_is_offered = get_db().execute(
+                "SELECT is_offered FROM variants WHERE id = 1"
+            ).fetchone()[0]
+        self.assertIn("minimum_stock", variant_columns)
+        self.assertIn("is_offered", variant_columns)
+        self.assertIn("is_offered", article_columns)
+        self.assertTrue(legacy_variant_is_offered)
 
     def seed_variant(self, article_name: str = "Test Shirt") -> int:
         """Create an article with generic Farbe/Größe options and one variant."""
@@ -694,7 +731,10 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(balances["summary"]["minimum_stock_warning_count"], 2)
         self.assertTrue(all(row["minimum_stock_warning"] for row in balances["rows"]))
         self.assertIn("Mindestbestand", inventory_headers)
-        self.assertTrue(all(row[-1] == "ja" for row in inventory_rows))
+        self.assertTrue(
+            all(row[inventory_headers.index("Mindestbestandswarnung")] == "ja" for row in inventory_rows)
+        )
+        self.assertTrue(all(row[inventory_headers.index("Angeboten")] == "ja" for row in inventory_rows))
 
         article_html = self.client.get(f"/artikelverwaltung?article={article_id}").get_data(as_text=True)
         self.assertIn('id="minimum-stock-for-all"', article_html)
@@ -705,6 +745,98 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("syncFromInputs: false", article_script)
         sales_script = (Path(__file__).parents[1] / "static" / "sales.js").read_text(encoding="utf-8")
         self.assertIn("Mindestbestandswarnung", sales_script)
+
+    def test_article_and_variant_can_be_withdrawn_from_sales_assortment(self) -> None:
+        """Withdrawing an item hides it from sale, not from inventory history."""
+
+        variant_id = self.seed_variant()
+        with self.app.app_context():
+            connection = get_db()
+            article_id = connection.execute(
+                "SELECT article_id FROM variants WHERE id = ?", (variant_id,)
+            ).fetchone()[0]
+            option_payload = []
+            for group in connection.execute(
+                "SELECT id, name, position FROM option_groups WHERE article_id = ? ORDER BY position", (article_id,)
+            ).fetchall():
+                values = [
+                    {"id": value["id"], "value": value["value"], "position": value["position"]}
+                    for value in connection.execute(
+                        "SELECT id, value, position FROM option_values WHERE option_group_id = ? ORDER BY position",
+                        (group["id"],),
+                    ).fetchall()
+                ]
+                option_payload.append(
+                    {"id": group["id"], "name": group["name"], "position": group["position"], "values": values}
+                )
+
+        variant_withdrawal_form = {
+            "csrf_token": "test-csrf",
+            "name": "Test Shirt",
+            "default_sale_price": "20,00",
+            "default_purchase_price": "11,00",
+            "options_json": json.dumps(option_payload),
+            f"not_offered_{variant_id}": "on",
+        }
+        response = self.client.post(
+            f"/artikelverwaltung/{article_id}/speichern",
+            data=variant_withdrawal_form,
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+
+        with self.app.app_context():
+            connection = get_db()
+            self.assertFalse(connection.execute("SELECT is_offered FROM variants WHERE id = ?", (variant_id,)).fetchone()[0])
+            _, article_headers, article_rows = csv_rows(connection, "articles")
+            balances = balance_payload(connection)
+        balance_row = next(row for row in balances["rows"] if row["variant_id"] == variant_id)
+        self.assertFalse(balance_row["is_available_for_sale"])
+        self.assertEqual(
+            next(row for row in article_rows if row[2] == variant_id)[article_headers.index("Angeboten")], "nein"
+        )
+
+        sales_html = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertNotIn("Test Shirt", sales_html)
+        rejected_sale = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "is_paid": True,
+                "is_received": True,
+                "payment_method": "Bar",
+                "sold_on": "2026-08-14",
+            },
+        )
+        self.assertEqual(rejected_sale.status_code, 400)
+        self.assertIn("nicht mehr angeboten", rejected_sale.json["error"])
+
+        # Discontinued variants remain available in the purchase workflow so
+        # existing stock can still be entered or reconciled.
+        purchase = self.api_post(
+            "/api/purchases",
+            {"variant_id": variant_id, "quantity": 2, "unit_cost": "11,00", "purchased_on": "2026-08-14"},
+        )
+        self.assertEqual(purchase.status_code, 200)
+
+        article_withdrawal_form = dict(variant_withdrawal_form)
+        article_withdrawal_form.pop(f"not_offered_{variant_id}")
+        article_withdrawal_form["not_offered"] = "on"
+        response = self.client.post(
+            f"/artikelverwaltung/{article_id}/speichern",
+            data=article_withdrawal_form,
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            connection = get_db()
+            self.assertFalse(connection.execute("SELECT is_offered FROM articles WHERE id = ?", (article_id,)).fetchone()[0])
+            self.assertTrue(connection.execute("SELECT is_offered FROM variants WHERE id = ?", (variant_id,)).fetchone()[0])
+        self.assertNotIn("Test Shirt", self.client.get("/verkauf").get_data(as_text=True))
+        article_html = self.client.get(f"/artikelverwaltung?article={article_id}").get_data(as_text=True)
+        self.assertIn("Artikel nicht mehr anbieten", article_html)
+        self.assertIn("Nicht angeboten", article_html)
 
     def test_option_rename_is_visible_in_historic_labels(self) -> None:
         variant_id = self.seed_variant()

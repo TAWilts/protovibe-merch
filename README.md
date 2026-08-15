@@ -34,9 +34,12 @@ Bestand, Bilanz und CSV-Export.
   Verkäufe lassen sich dort separat als bezahlt markieren. Beide abgeschlossenen
   Vorgänge erscheinen jeweils in einer getrennten Historie unterhalb der offenen
   Listen.
+- **Angebotssteuerung:** Artikel oder einzelne Varianten lassen sich aus dem
+  Verkauf nehmen, ohne ihre Historie oder ihren Bestand zu verlieren. Sie
+  verschwinden sofort aus dem Verkaufsfenster, bleiben aber für Einkäufe,
+  Bilanzen und Exporte verfügbar.
 - **Bilanzen:** gekauft, verkauft und Bestand je Variante sowie Ausgaben,
-  Umsatz, Spenden, Saldo und den aus der ODS übernommenen
-  „Nicht nachbestellen“-Status. Pro Variante lassen sich optionale
+  Umsatz, Spenden, Saldo und Angebotsstatus. Pro Variante lassen sich optionale
   Mindestbestände hinterlegen; unterschrittene Grenzwerte werden in der Bilanz
   und vor einem direkten Verkauf hervorgehoben.
 - **Stornierungen:** ganze Warenkörbe oder einzelne Artikel können in der
@@ -63,6 +66,11 @@ Sondergrößen einen anderen Preis haben können. Ein Mindestbestand kann zuerst
 mit einem Klick auf alle Varianten eines Artikels übertragen und danach für
 einzelne Varianten überschrieben werden. Ein leeres Feld deaktiviert die
 Warnung; `0` bedeutet, dass erst bei ausverkauftem Bestand gewarnt wird.
+
+Ein Artikel oder eine einzelne Variante kann außerdem als **nicht mehr
+angeboten** markiert werden. Das ist keine Löschung: Bestehende Buchungen,
+Bestände und mögliche spätere Einkäufe bleiben erhalten. Die Verkaufsauswahl
+und die Verkaufs-API schließen nicht angebotene Einträge jedoch aus.
 
 ### Sammelbelege und Warenkorb
 
@@ -204,7 +212,7 @@ entdeckte, um eine Zeile verschobene Einkaufsformel.
 | `static/sales.js` | Verkaufsspezifische Logik, Warenkorb, Belegvorschau und Spendenberechnung. |
 | `static/purchases.js` | Einkaufsspezifische Logik und Übernahme des letzten Einkaufspreises. |
 | `static/operations.js` | Speichert die Statusänderungen für offene Sendungen und Zahlungen. |
-| `static/articles.js` | Dynamische Optionsspalten, Live-Vorschau der Varianten sowie Mindestbestands-Übernahme. |
+| `static/articles.js` | Dynamische Optionsspalten, Live-Vorschau der Varianten sowie Mindestbestands- und Angebotssteuerung. |
 | `scripts/import_ods.py` | Einmaliger ODS-Migrationsimport. |
 | `tests/test_app.py` | Regressionstests für Bestand, Statusvorgänge, Artikeldefaults, Pflichtkontaktdaten und rückwirkende Optionsnamen. |
 

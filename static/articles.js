@@ -133,7 +133,7 @@
       salePrice: centsToInput(variant.sale_price_cents),
       purchasePrice: centsToInput(variant.default_purchase_price_cents),
       minimumStock: minimumStockInputValue(variant.minimum_stock),
-      noReorder: Boolean(variant.no_reorder),
+      isOffered: Number(variant.is_offered) !== 0,
     });
   });
 
@@ -181,7 +181,7 @@
       salePrice: defaultMoneyInput(defaultSalePrice),
       purchasePrice: defaultMoneyInput(defaultPurchasePrice),
       minimumStock: applyMinimumStockValue.value,
-      noReorder: false,
+      isOffered: true,
     };
     variantStateByKey.set(combination.key, fresh);
     return fresh;
@@ -194,11 +194,11 @@
       const sale = row.querySelector('[data-variant-field="sale-price"]');
       const purchase = row.querySelector('[data-variant-field="purchase-price"]');
       const minimum = row.querySelector('[data-variant-field="minimum-stock"]');
-      const noReorder = row.querySelector('[data-variant-field="no-reorder"]');
+      const notOffered = row.querySelector('[data-variant-field="not-offered"]');
       if (sale) state.salePrice = sale.value;
       if (purchase) state.purchasePrice = purchase.value;
       if (minimum) state.minimumStock = minimum.value;
-      if (noReorder) state.noReorder = noReorder.checked;
+      if (notOffered) state.isOffered = !notOffered.checked;
     });
   }
 
@@ -317,13 +317,13 @@
       const warningCell = document.createElement("td");
       warningCell.dataset.minimumWarning = "";
       renderWarningCell(warningCell, state);
-      const noReorderInput = variantInput({
+      const notOfferedInput = variantInput({
         className: "",
         type: "checkbox",
-        name: savedVariant ? `no_reorder_${state.id}` : "",
-        field: "no-reorder",
+        name: savedVariant ? `not_offered_${state.id}` : "",
+        field: "not-offered",
         disabled: !savedVariant,
-        checked: state.noReorder,
+        checked: !state.isOffered,
       });
 
       row.append(
@@ -333,7 +333,7 @@
         cellWith(purchaseInput),
         cellWith(minimumInput),
         warningCell,
-        cellWith(noReorderInput)
+        cellWith(notOfferedInput)
       );
       variantBody.append(row);
     });
@@ -428,10 +428,10 @@
   });
   variantBody.addEventListener("change", (event) => {
     const input = event.target;
-    if (!(input instanceof HTMLInputElement) || input.dataset.variantField !== "no-reorder") return;
+    if (!(input instanceof HTMLInputElement) || input.dataset.variantField !== "not-offered") return;
     const row = input.closest("tr[data-variant-key]");
     const state = row && variantStateByKey.get(row.dataset.variantKey);
-    if (state) state.noReorder = input.checked;
+    if (state) state.isOffered = !input.checked;
   });
 
   applyMinimumStockButton.addEventListener("click", () => {

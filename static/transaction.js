@@ -60,8 +60,39 @@
       config.onVariantChanged(variant || null, selectedArticle);
     }
 
+    function selectableValues(group) {
+      if (!selectedArticle) return [];
+      const groupId = Number(group.id);
+      return (group.values || []).filter((value) => {
+        const valueId = Number(value.id);
+        return (selectedArticle.variants || []).some((variant) => {
+          const optionIds = new Set((variant.option_value_ids || []).map(Number));
+          if (!optionIds.has(valueId)) return false;
+          return [...selectedValues.entries()].every(([selectedGroupId, selectedValueId]) => {
+            // The current group is intentionally ignored: this is the value
+            // the person can still choose or change right now.
+            if (Number(selectedGroupId) === groupId) return true;
+            return optionIds.has(Number(selectedValueId));
+          });
+        });
+      });
+    }
+
     function selectValue(groupId, valueId) {
       selectedValues.set(Number(groupId), Number(valueId));
+      // When an earlier choice changes, clear only the now-impossible choices
+      // in the other groups. This prevents a withdrawn variant from being
+      // reconstructed through a stale option selection.
+      (selectedArticle?.groups || []).forEach((group) => {
+        if (Number(group.id) === Number(groupId)) return;
+        const selectedValueId = selectedValues.get(Number(group.id));
+        if (
+          selectedValueId !== undefined &&
+          !selectableValues(group).some((value) => Number(value.id) === Number(selectedValueId))
+        ) {
+          selectedValues.delete(Number(group.id));
+        }
+      });
       renderOptions();
       emitVariant();
     }
@@ -90,7 +121,7 @@
         heading.textContent = group.name;
         const choices = document.createElement("div");
         choices.className = "option-choice-list";
-        group.values.forEach((value) => {
+        selectableValues(group).forEach((value) => {
           const choice = document.createElement("button");
           choice.type = "button";
           choice.className = "option-choice";
@@ -116,7 +147,8 @@
       // a tap without imposing an arbitrary default for larger lists.
       if (selectedArticle) {
         (selectedArticle.groups || []).forEach((group) => {
-          if (group.values.length === 1) selectedValues.set(Number(group.id), Number(group.values[0].id));
+          const values = selectableValues(group);
+          if (values.length === 1) selectedValues.set(Number(group.id), Number(values[0].id));
         });
       }
       renderOptions();

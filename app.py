@@ -73,6 +73,9 @@ CREATE TABLE IF NOT EXISTS articles (
     name TEXT NOT NULL COLLATE NOCASE UNIQUE,
     default_sale_price_cents INTEGER NOT NULL DEFAULT 0 CHECK(default_sale_price_cents >= 0),
     default_purchase_price_cents INTEGER NOT NULL DEFAULT 0 CHECK(default_purchase_price_cents >= 0),
+    -- Kept separate from is_active: an article can leave the assortment while
+    -- its historic bookings and stock management remain fully available.
+    is_offered INTEGER NOT NULL DEFAULT 1,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -109,6 +112,9 @@ CREATE TABLE IF NOT EXISTS variants (
     -- This keeps an explicit threshold of zero meaningful: warn only once the
     -- variant is actually sold out.
     minimum_stock INTEGER CHECK(minimum_stock >= 0),
+    -- Like articles, variants can be withdrawn from the sales assortment
+    -- without being deleted or hidden from purchase/history workflows.
+    is_offered INTEGER NOT NULL DEFAULT 1,
     no_reorder INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
@@ -581,6 +587,9 @@ def initialise_database(app: Flask) -> None:
     connection = db_connect(database_path)
     try:
         connection.executescript(SCHEMA_SQL)
+        article_columns = {row["name"] for row in connection.execute("PRAGMA table_info(articles)").fetchall()}
+        if "is_offered" not in article_columns:
+            connection.execute("ALTER TABLE articles ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
         # The first released schema did not have this legacy-ODS convenience
         # flag.  Keeping this tiny migration here makes a future update safe.
         variant_columns = {row["name"] for row in connection.execute("PRAGMA table_info(variants)").fetchall()}
@@ -592,6 +601,8 @@ def initialise_database(app: Flask) -> None:
             # sold-out historic variant, even though nobody opted into a
             # minimum-stock warning for it.
             connection.execute("ALTER TABLE variants ADD COLUMN minimum_stock INTEGER CHECK(minimum_stock >= 0)")
+        if "is_offered" not in variant_columns:
+            connection.execute("ALTER TABLE variants ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
 
         # Version 0.2 adds a small delivery state machine.  Existing counter
         # sales remain outside it, while older sales marked "not received" are
@@ -786,8 +797,9 @@ def variant_label_map(
     params: list[Any] = []
     sql = """
         SELECT v.id, v.article_id, v.option_value_ids_json, v.sale_price_cents,
-               v.default_purchase_price_cents, v.minimum_stock, v.no_reorder, v.is_active,
-               a.name AS article_name, a.is_active AS article_is_active
+               v.default_purchase_price_cents, v.minimum_stock, v.is_offered, v.is_active,
+               a.name AS article_name, a.is_offered AS article_is_offered,
+               a.is_active AS article_is_active
         FROM variants v
         JOIN articles a ON a.id = v.article_id
     """
@@ -982,17 +994,23 @@ def receipt_history_payload(
     return receipts
 
 
-def article_payload(connection: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Return all active, sellable article data for the sale/purchase screens."""
+def article_payload(
+    connection: sqlite3.Connection, *, offered_only: bool = False
+) -> list[dict[str, Any]]:
+    """Return active article data, optionally limited to the sales assortment.
+
+    Purchases intentionally use the complete active catalogue: stock can still
+    be received for an article or variant that is no longer offered for sale.
+    """
 
     stock = variant_stock_map(connection)
-    article_rows = connection.execute(
-        """
+    article_sql = """
         SELECT * FROM articles
         WHERE is_active = 1
-        ORDER BY name COLLATE NOCASE
-        """
-    ).fetchall()
+    """
+    if offered_only:
+        article_sql += " AND is_offered = 1"
+    article_rows = connection.execute(f"{article_sql} ORDER BY name COLLATE NOCASE").fetchall()
     result: list[dict[str, Any]] = []
 
     for raw_article in article_rows:
@@ -1021,15 +1039,14 @@ def article_payload(connection: sqlite3.Connection) -> list[dict[str, Any]]:
             group_payload.append({"id": group["id"], "name": group["name"], "values": values})
             group_ids.append(group["id"])
 
-        variant_rows = connection.execute(
-            """
+        variant_sql = """
             SELECT id, option_value_ids_json, sale_price_cents, default_purchase_price_cents
             FROM variants
             WHERE article_id = ? AND is_active = 1
-            ORDER BY id
-            """,
-            (article["id"],),
-        ).fetchall()
+        """
+        if offered_only:
+            variant_sql += " AND is_offered = 1"
+        variant_rows = connection.execute(f"{variant_sql} ORDER BY id", (article["id"],)).fetchall()
         labels = variant_label_map(connection, [row["id"] for row in variant_rows])
         variants = []
         for raw_variant in variant_rows:
@@ -1044,6 +1061,10 @@ def article_payload(connection: sqlite3.Connection) -> list[dict[str, Any]]:
         # article where an option group has no values is intentionally disabled
         # until it is fully configured, so no ambiguous sale can be entered.
         is_config_complete = not group_payload or all(group["values"] for group in group_payload)
+        # Hide an article from the sale screen entirely when all of its
+        # variants have been individually withdrawn from the assortment.
+        if offered_only and not variants:
+            continue
         article["groups"] = group_payload
         article["variants"] = variants
         article["is_config_complete"] = is_config_complete and bool(variants)
@@ -1422,7 +1443,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
                         "ja" if variant["minimum_stock_warning"] else "nein",
                         variant["sale_price_cents"] / 100,
                         variant["default_purchase_price_cents"] / 100,
-                        "nein" if variant["no_reorder"] else "ja",
+                        "ja" if article["is_offered"] and variant["is_offered"] else "nein",
                         "aktiv" if variant["is_active"] else "inaktiv",
                     ]
                 )
@@ -1430,7 +1451,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
             "artikel",
             [
                 "Artikel-ID", "Artikel", "Varianten-ID", "Optionen", "Bestand", "Mindestbestand",
-                "Mindestbestandswarnung", "Verkaufspreis", "Standard-Einkaufspreis", "Nachbestellen", "Status",
+                "Mindestbestandswarnung", "Verkaufspreis", "Standard-Einkaufspreis", "Angeboten", "Status",
             ],
             rows,
         )
@@ -1492,11 +1513,15 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
                     label["article_name"], label["option_text"], purchased, sold, current_stock,
                     "" if minimum_stock is None else minimum_stock,
                     "ja" if is_at_or_below_minimum_stock(current_stock, minimum_stock) else "nein",
+                    "ja" if label["article_is_offered"] and label["is_offered"] else "nein",
                 ]
             )
         return (
             "bestand",
-            ["Artikel", "Optionen", "Gekauft", "Verkauft", "Aktueller Bestand", "Mindestbestand", "Mindestbestandswarnung"],
+            [
+                "Artikel", "Optionen", "Gekauft", "Verkauft", "Aktueller Bestand", "Mindestbestand",
+                "Mindestbestandswarnung", "Angeboten",
+            ],
             rows,
         )
     raise ValueError("Unbekannter Export.")
@@ -1609,7 +1634,14 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
                 "revenue_cents": int(sale_row["revenue"]),
                 "collected_cents": int(sale_row["collected"]),
                 "donation_cents": int(sale_row["donation"]),
-                "no_reorder": bool(label["no_reorder"]),
+                "is_offered": bool(label["is_offered"]),
+                "article_is_offered": bool(label["article_is_offered"]),
+                "is_available_for_sale": bool(
+                    label["is_active"]
+                    and label["article_is_active"]
+                    and label["is_offered"]
+                    and label["article_is_offered"]
+                ),
                 "is_active": bool(label["is_active"]),
             }
         )
@@ -1752,7 +1784,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.get("/verkauf")
     @login_required
     def sales_page():
-        return render_template("sales.html", title="Verkauf", articles=article_payload(get_db()), today=today_iso())
+        return render_template(
+            "sales.html", title="Verkauf", articles=article_payload(get_db(), offered_only=True), today=today_iso()
+        )
 
     @app.get("/api/receipt-preview")
     @login_required
@@ -1787,10 +1821,18 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 variant_id = int(raw_item.get("variant_id"))
                 quantity = parse_positive_int(raw_item.get("quantity"))
                 variant = connection.execute(
-                    "SELECT * FROM variants WHERE id = ? AND is_active = 1", (variant_id,)
+                    """
+                    SELECT v.*
+                    FROM variants v
+                    JOIN articles a ON a.id = v.article_id
+                    WHERE v.id = ?
+                      AND v.is_active = 1 AND v.is_offered = 1
+                      AND a.is_active = 1 AND a.is_offered = 1
+                    """,
+                    (variant_id,),
                 ).fetchone()
                 if variant is None:
-                    raise ValueError("Diese Artikelvariante ist nicht mehr verfügbar.")
+                    raise ValueError("Diese Artikelvariante wird nicht mehr angeboten.")
                 amount_due = quantity * int(variant["sale_price_cents"])
                 basket_items.append(
                     {
@@ -2243,7 +2285,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def article_management_page():
         connection = get_db()
         article_rows = connection.execute(
-            "SELECT id, name FROM articles WHERE is_active = 1 ORDER BY name COLLATE NOCASE"
+            """
+            SELECT id, name, is_offered FROM articles
+            WHERE is_active = 1
+            ORDER BY is_offered DESC, name COLLATE NOCASE
+            """
         ).fetchall()
         requested_id = request.args.get("article", type=int)
         selected_id = requested_id or (article_rows[0]["id"] if article_rows else None)
@@ -2321,6 +2367,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 raise ValueError("Der Artikelname darf nicht leer sein.")
             sale_price = money_to_cents(request.form.get("default_sale_price"), field_name="Standard-Verkaufspreis")
             purchase_price = money_to_cents(request.form.get("default_purchase_price"), field_name="Standard-Einkaufspreis")
+            is_offered = 0 if request.form.get("not_offered") else 1
             apply_minimum_stock_to_all = parse_optional_non_negative_int(
                 request.form.get("apply_minimum_stock_to_all"),
                 field_name="Mindestbestand für alle Varianten",
@@ -2332,10 +2379,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             connection.execute(
                 """
                 UPDATE articles
-                SET name = ?, default_sale_price_cents = ?, default_purchase_price_cents = ?, updated_at = ?
+                SET name = ?, default_sale_price_cents = ?, default_purchase_price_cents = ?, is_offered = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (name, sale_price, purchase_price, utc_now(), article_id),
+                (name, sale_price, purchase_price, is_offered, utc_now(), article_id),
             )
             apply_option_configuration(connection, article_id, option_groups)
             sync_variants(connection, article_id)
@@ -2348,9 +2395,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "UPDATE variants SET minimum_stock = ?, updated_at = ? WHERE article_id = ? AND is_active = 1",
                     (apply_minimum_stock_to_all, utc_now(), article_id),
                 )
-            # Checkboxes are absent from regular forms when unchecked, so reset
-            # the article's active variants before applying checked entries.
-            connection.execute("UPDATE variants SET no_reorder = 0 WHERE article_id = ? AND is_active = 1", (article_id,))
+            # Checkboxes are absent from regular forms when unchecked, so put
+            # all current variants back into the sales assortment before
+            # applying the explicitly withdrawn entries below.
+            connection.execute(
+                "UPDATE variants SET is_offered = 1, updated_at = ? WHERE article_id = ? AND is_active = 1",
+                (utc_now(), article_id),
+            )
             # Variant price overrides arrive as regular form fields, so prices
             # still survive if JavaScript is unavailable during a save.
             for key, value in request.form.items():
@@ -2364,11 +2415,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     )
                     continue
                 if not match:
-                    reorder_match = re.fullmatch(r"no_reorder_(\d+)", key)
-                    if reorder_match:
+                    not_offered_match = re.fullmatch(r"not_offered_(\d+)", key)
+                    if not_offered_match:
                         connection.execute(
-                            "UPDATE variants SET no_reorder = 1, updated_at = ? WHERE id = ? AND article_id = ?",
-                            (utc_now(), int(reorder_match.group(1)), article_id),
+                            "UPDATE variants SET is_offered = 0, updated_at = ? WHERE id = ? AND article_id = ?",
+                            (utc_now(), int(not_offered_match.group(1)), article_id),
                         )
                     continue
                 field, variant_id = match.groups()
@@ -2396,7 +2447,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     f"UPDATE variants SET {column} = ?, updated_at = ? WHERE id = ? AND article_id = ?",
                     (cents, utc_now(), int(variant_id), article_id),
                 )
-            audit(connection, "update", "article", article_id, {"name": name, "options_changed": True})
+            audit(
+                connection,
+                "update",
+                "article",
+                article_id,
+                {"name": name, "options_changed": True, "is_offered": bool(is_offered)},
+            )
             connection.commit()
             backup_after_commit()
             flash("Artikel und Varianten wurden gespeichert.", "success")
