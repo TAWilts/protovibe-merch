@@ -11,14 +11,20 @@
     return window.MERCH_APP.moneyFormatter.format((Number(cents) || 0) / 100);
   }
 
-  function inputToCents(input) {
+  function moneyInputToCents(input) {
     const raw = String(input || "").trim();
-    if (!raw) return 0;
-    const normalised = raw.includes(",")
-      ? raw.replace(/\./g, "").replace(",", ".")
-      : raw;
+    if (!raw) return null;
+    const cleaned = raw.replace(/€/g, "").replace(/\s/g, "");
+    if (!cleaned) return null;
+    const normalised = cleaned.includes(",")
+      ? cleaned.replace(/\./g, "").replace(",", ".")
+      : cleaned;
     const value = Number(normalised);
-    return Number.isFinite(value) && value >= 0 ? Math.round(value * 100) : 0;
+    return Number.isFinite(value) && value >= 0 ? Math.round(value * 100) : null;
+  }
+
+  function inputToCents(input) {
+    return moneyInputToCents(input) ?? 0;
   }
 
   function centsToInput(cents) {
@@ -180,5 +186,5 @@
     };
   }
 
-  window.MerchTransaction = { setupVariantSelector, centsToEuro, inputToCents, centsToInput };
+  window.MerchTransaction = { setupVariantSelector, centsToEuro, moneyInputToCents, inputToCents, centsToInput };
 })();

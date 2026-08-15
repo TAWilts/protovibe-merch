@@ -450,6 +450,59 @@ class MerchAppTestCase(unittest.TestCase):
             ]
         self.assertEqual(final_states, [1, 1])
 
+    def test_sale_accepts_an_explicit_unit_price_for_each_cart_line(self) -> None:
+        """Discounted cart lines keep their actual, independently chosen prices."""
+
+        first_variant_id = self.seed_variant("Discount Shirt")
+        second_variant_id = self.seed_variant("Discount Hoodie")
+        sale = self.api_post(
+            "/api/sales",
+            {
+                "items": [
+                    {"variant_id": first_variant_id, "quantity": 2, "unit_price": "14,50"},
+                    {"variant_id": second_variant_id, "quantity": 1, "unit_price": "17,00"},
+                ],
+                "is_paid": True,
+                "is_received": True,
+                "payment_method": "Bar",
+                "amount_given": "50,00",
+                "sold_on": "2026-08-14",
+            },
+        )
+        self.assertEqual(sale.status_code, 200)
+        self.assertEqual(sale.json["amount_due_cents"], 4600)
+        self.assertEqual(sale.json["donation_cents"], 400)
+        self.assertEqual(
+            {(item["variant_id"], item["unit_price_cents"], item["amount_due_cents"]) for item in sale.json["items"]},
+            {(first_variant_id, 1450, 2900), (second_variant_id, 1700, 1700)},
+        )
+
+        with self.app.app_context():
+            rows = get_db().execute(
+                "SELECT variant_id, quantity, unit_price_cents, amount_due_cents FROM sales ORDER BY id"
+            ).fetchall()
+        self.assertEqual(
+            {(row["variant_id"], row["quantity"], row["unit_price_cents"], row["amount_due_cents"]) for row in rows},
+            {(first_variant_id, 2, 1450, 2900), (second_variant_id, 1, 1700, 1700)},
+        )
+
+    def test_transaction_price_inputs_are_prepopulated_from_variant_defaults(self) -> None:
+        self.seed_variant()
+
+        sales_html = self.client.get("/verkauf").get_data(as_text=True)
+        purchases_html = self.client.get("/einkaeufe").get_data(as_text=True)
+        self.assertIn('id="unit-price"', sales_html)
+        self.assertIn("Standard-Verkaufspreis", sales_html)
+        self.assertIn('id="unit-cost"', purchases_html)
+        self.assertIn("Standard-Einkaufspreis", purchases_html)
+
+        sales_script = (Path(__file__).parents[1] / "static" / "sales.js").read_text(encoding="utf-8")
+        purchases_script = (Path(__file__).parents[1] / "static" / "purchases.js").read_text(encoding="utf-8")
+        self.assertIn("variant.sale_price_cents", sales_script)
+        self.assertIn("unit_price: window.MerchTransaction.centsToInput(item.unitPriceCents)", sales_script)
+        self.assertIn("variant.default_purchase_price_cents", purchases_script)
+        self.assertNotIn("loadLastCost", purchases_script)
+
     def test_delivery_and_payment_queues_update_sale_statuses(self) -> None:
         """A later-delivery sale must move through both requested work queues."""
 

@@ -28,6 +28,7 @@
     soldOn: $("sold-on"),
     eventName: $("event-name"),
     comment: $("comment"),
+    unitPrice: $("unit-price"),
     quantity: $("quantity"),
     minus: $("quantity-minus"),
     plus: $("quantity-plus"),
@@ -57,8 +58,12 @@
         ui.selectedCard.hidden = false;
         ui.selectedLabel.textContent = variant.label;
         ui.selectedStock.textContent = `${variant.stock} Stück verfügbar`;
+        ui.unitPrice.disabled = false;
+        ui.unitPrice.value = window.MerchTransaction.centsToInput(variant.sale_price_cents);
       } else {
         ui.selectedCard.hidden = true;
+        ui.unitPrice.value = "";
+        ui.unitPrice.disabled = true;
       }
       updateSummary();
     },
@@ -160,15 +165,16 @@
 
   function updateSummary() {
     const dueCents = cartTotalCents();
+    const unitPriceCents = window.MerchTransaction.moneyInputToCents(ui.unitPrice.value);
     const givenCents = window.MerchTransaction.inputToCents(ui.amountGiven.value);
     const donationCents = ui.paid.checked ? Math.max(0, givenCents - dueCents) : 0;
     ui.amountDue.textContent = window.MerchTransaction.centsToEuro(dueCents);
     ui.donation.textContent = window.MerchTransaction.centsToEuro(donationCents);
-    ui.addCart.disabled = !currentVariant;
+    ui.addCart.disabled = !currentVariant || unitPriceCents === null;
     ui.confirm.disabled = cartItems.length === 0;
     updateStockWarning();
     if (!ui.error.dataset.serverError) showError("");
-    return { dueCents };
+    return { dueCents, unitPriceCents };
   }
 
   function renderCart() {
@@ -207,19 +213,28 @@
   }
 
   function addCurrentItem() {
+    const { unitPriceCents } = updateSummary();
     if (!currentVariant) {
       showError("Bitte Artikel und alle Optionen auswählen.");
       return;
     }
+    if (unitPriceCents === null) {
+      showError("Bitte einen gültigen Preis pro Stück eintragen.");
+      return;
+    }
     const currentQuantity = quantity();
-    const existing = cartItems.find((item) => Number(item.variantId) === Number(currentVariant.id));
+    // The same variant may legitimately appear twice with different prices,
+    // for example when only one of several shirts receives a discount.
+    const existing = cartItems.find(
+      (item) => Number(item.variantId) === Number(currentVariant.id) && item.unitPriceCents === unitPriceCents
+    );
     if (existing) {
       existing.quantity += currentQuantity;
     } else {
       cartItems.push({
         variantId: Number(currentVariant.id),
         quantity: currentQuantity,
-        unitPriceCents: Number(currentVariant.sale_price_cents),
+        unitPriceCents,
         label: currentVariant.label,
       });
     }
@@ -289,7 +304,11 @@
         headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
         body: JSON.stringify({
           receipt_id: ui.receipt.textContent,
-          items: cartItems.map((item) => ({ variant_id: item.variantId, quantity: item.quantity })),
+          items: cartItems.map((item) => ({
+            variant_id: item.variantId,
+            quantity: item.quantity,
+            unit_price: window.MerchTransaction.centsToInput(item.unitPriceCents),
+          })),
           is_paid: ui.paid.checked,
           is_received: ui.received.checked,
           payment_method: ui.method.value,
@@ -343,6 +362,7 @@
   ui.minus.addEventListener("click", () => { ui.quantity.value = Math.max(1, quantity() - 1); updateSummary(); });
   ui.plus.addEventListener("click", () => { ui.quantity.value = quantity() + 1; updateSummary(); });
   ui.quantity.addEventListener("input", updateSummary);
+  ui.unitPrice.addEventListener("input", updateSummary);
   ui.amountGiven.addEventListener("input", updateSummary);
   ui.paid.addEventListener("change", () => { updatePaidFields(); updateContactFields(); updateSummary(); });
   ui.received.addEventListener("change", () => { updateContactFields(); updateSummary(); });

@@ -2186,9 +2186,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def create_sale():
         """Create one receipt with one or more sale ledger rows.
 
-        ``items`` is the basket API introduced with v0.2.5.  The legacy
-        ``variant_id``/``quantity`` shape remains accepted so that a browser
-        tab left open during an update cannot lose a sale.
+        ``items`` is the basket API introduced with v0.2.5.  A basket item can
+        optionally carry ``unit_price``; without it the configured variant
+        price remains the default.  The legacy ``variant_id``/``quantity``
+        shape remains accepted so that a browser tab left open during an
+        update cannot lose a sale.
         """
 
         payload = request.get_json(silent=True) or {}
@@ -2219,12 +2221,18 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 ).fetchone()
                 if variant is None:
                     raise ValueError("Diese Artikelvariante wird nicht mehr angeboten.")
-                amount_due = quantity * int(variant["sale_price_cents"])
+                raw_unit_price = raw_item.get("unit_price")
+                unit_price_cents = (
+                    int(variant["sale_price_cents"])
+                    if raw_unit_price is None or not str(raw_unit_price).strip()
+                    else money_to_cents(raw_unit_price, field_name="Preis pro Stück")
+                )
+                amount_due = quantity * unit_price_cents
                 basket_items.append(
                     {
                         "variant_id": variant_id,
                         "quantity": quantity,
-                        "unit_price_cents": int(variant["sale_price_cents"]),
+                        "unit_price_cents": unit_price_cents,
                         "amount_due_cents": amount_due,
                     }
                 )
@@ -2307,6 +2315,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     {
                         "receipt_id": receipt_id,
                         "quantity": item["quantity"],
+                        "unit_price_cents": item["unit_price_cents"],
                         "cart_item_count": len(basket_items),
                         "is_paid": is_paid,
                         "payment_follow_up": bool(payment_follow_up),

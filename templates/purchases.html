@@ -30,9 +30,9 @@
   <section class="selection-panel sale-details">
     <div class="field-grid two-columns">
       <label>Datum des Warenkorbs<input id="purchased-on" type="date" value="{{ today }}"></label>
-      <label>Preis pro Stück<input id="unit-cost" inputmode="decimal" placeholder="z. B. 11,00"></label>
+      <label>Preis pro Stück<input id="unit-cost" inputmode="decimal" placeholder="z. B. 11,00" disabled></label>
     </div>
-    <p class="muted compact-copy" id="last-cost-hint">Nach Auswahl wird der letzte Einkaufspreis übernommen.</p>
+    <p class="muted compact-copy" id="default-cost-hint">Nach Auswahl wird der Standard-Einkaufspreis übernommen. Bei Bedarf einfach überschreiben.</p>
     <label>Lieferant dieser Position<input id="supplier" placeholder="Optional"></label>
     <label>Rechnungsnummer dieser Position<input id="invoice-reference" placeholder="Optional"></label>
     <div id="purchase-invoice-dropzone" class="file-dropzone" role="button" tabindex="0" aria-describedby="purchase-invoice-file-status">

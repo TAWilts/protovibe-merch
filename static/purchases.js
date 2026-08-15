@@ -31,7 +31,7 @@
     selectedLabel: $("purchase-selected-variant-label"),
     date: $("purchased-on"),
     unitCost: $("unit-cost"),
-    lastCostHint: $("last-cost-hint"),
+    defaultCostHint: $("default-cost-hint"),
     supplier: $("supplier"),
     invoice: $("invoice-reference"),
     comment: $("purchase-comment"),
@@ -109,7 +109,11 @@
       ui.selectedCard.hidden = !variant;
       if (variant) {
         ui.selectedLabel.textContent = variant.label;
-        loadLastCost(variant.id);
+        setDefaultCost(variant);
+      } else {
+        ui.unitCost.value = "";
+        ui.unitCost.disabled = true;
+        ui.defaultCostHint.textContent = "Nach Auswahl wird der Standard-Einkaufspreis übernommen."
       }
       updateSummary();
     },
@@ -136,9 +140,9 @@
   }
 
   function updateSummary() {
-    const unitCost = window.MerchTransaction.inputToCents(ui.unitCost.value);
-    ui.total.textContent = window.MerchTransaction.centsToEuro(unitCost * quantity());
-    ui.addCart.disabled = !currentVariant || !ui.unitCost.value.trim();
+    const unitCost = window.MerchTransaction.moneyInputToCents(ui.unitCost.value);
+    ui.total.textContent = window.MerchTransaction.centsToEuro((unitCost ?? 0) * quantity());
+    ui.addCart.disabled = !currentVariant || unitCost === null;
     ui.cartTotal.textContent = window.MerchTransaction.centsToEuro(cartTotalCents());
     ui.confirm.disabled = cartItems.length === 0;
     return { quantity: quantity(), unitCost };
@@ -278,18 +282,10 @@
     ui.cartInvoiceDropzone.addEventListener("drop", (event) => addCartInvoiceFiles(event.dataTransfer?.files));
   }
 
-  async function loadLastCost(variantId) {
-    ui.lastCostHint.textContent = "Letzten Einkaufspreis wird geladen …";
-    try {
-      const response = await fetch("/api/variants/" + variantId + "/last-purchase-price");
-      const body = await response.json();
-      if (!response.ok || !body.ok || currentVariant?.id !== variantId) return;
-      ui.unitCost.value = window.MerchTransaction.centsToInput(body.price_cents);
-      ui.lastCostHint.textContent = "Letzter Einkaufspreis wurde übernommen; bei Bedarf einfach überschreiben.";
-      updateSummary();
-    } catch (_) {
-      ui.lastCostHint.textContent = "Preis konnte nicht automatisch geladen werden.";
-    }
+  function setDefaultCost(variant) {
+    ui.unitCost.disabled = false;
+    ui.unitCost.value = window.MerchTransaction.centsToInput(variant.default_purchase_price_cents);
+    ui.defaultCostHint.textContent = "Standard-Einkaufspreis wurde übernommen; bei Bedarf einfach überschreiben.";
   }
 
   async function loadReceiptPreview() {
@@ -341,7 +337,7 @@
   function addCurrentItem() {
     const summary = updateSummary();
     if (!currentVariant) return showError("Bitte Artikel und alle Optionen auswählen.");
-    if (!ui.unitCost.value.trim()) return showError("Bitte den Preis pro Stück eintragen.");
+    if (summary.unitCost === null) return showError("Bitte einen gültigen Preis pro Stück eintragen.");
     cartItems.push({
       variantId: Number(currentVariant.id),
       quantity: summary.quantity,
