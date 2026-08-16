@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block page_class %}security-page{% endblock %}
+{% block content %}
+<section class="security-card">
+  <p class="eyebrow">Einmalige Einrichtung</p>
+  <h1>Datenbankverschlüsselung einrichten</h1>
+  <p>Artikel, Buchungen, Benutzerkonten, automatische Datenbank-Sicherungen und Rechnungsanhänge werden lokal verschlüsselt gespeichert. Die Entsperrpassphrase liegt nicht in der <code>.env</code> und wird nicht gespeichert.</p>
+  <p>Der erste Admin wird aus der vorhandenen Konfiguration übernommen: <strong>{{ bootstrap_username }}</strong>. Bestätige hierfür einmalig dessen <code>ADMIN_PASSWORD</code> aus der <code>.env</code>.</p>
+  <form method="post" class="stack-form security-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Einrichtungs-Admin-Passwort<input name="bootstrap_password" type="password" autocomplete="current-password" required autofocus></label>
+    <label>Datenbank-Passphrase <small>Mindestens 12 Zeichen. Sie wird nach jedem Neustart zum Entsperren benötigt.</small><input name="database_passphrase" type="password" autocomplete="new-password" minlength="12" required></label>
+    <label>Datenbank-Passphrase wiederholen<input name="database_passphrase_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
+    <button class="primary-button" type="submit">Verschlüsselte Datenbank erstellen</button>
+  </form>
+  <aside class="notice warning-notice">
+    <strong>Wichtig:</strong> Nach dem nächsten Container- oder App-Neustart ist die Anwendung gesperrt, bis ein Admin die Datenbank-Passphrase oder den danach angezeigten Wiederherstellungsschlüssel eingibt. Wenn beides verloren geht, können die Daten nicht entschlüsselt werden.
+  </aside>
+</section>
+{% endblock %}

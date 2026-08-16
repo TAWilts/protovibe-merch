@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block page_class %}security-page{% endblock %}
+{% block content %}
+<section class="security-card recovery-card">
+  <p class="eyebrow">Unbedingt sichern</p>
+  <h1>Wiederherstellungsschlüssel</h1>
+  <p>Speichere diesen Schlüssel offline, zum Beispiel in einem Passwortmanager und zusätzlich ausgedruckt an einem sicheren Ort. Er kann die Datenbank-Passphrase nach einem Neustart ersetzen.</p>
+  <code class="database-recovery-key">{{ recovery_key }}</code>
+  <p class="notice">Der Schlüssel wird nicht in der Datenbank, in der <code>.env</code> oder im Browser gespeichert. Nach dem Fortfahren kann er nicht erneut angezeigt werden.</p>
+  <form method="post" class="stack-form security-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="checkbox-label"><input type="checkbox" required> Ich habe den Wiederherstellungsschlüssel sicher gespeichert.</label>
+    <button class="primary-button" type="submit">{{ 'Gespeichert – zurück zur Verwaltung' if return_to_administration else 'Gespeichert – zur Anmeldung' }}</button>
+  </form>
+</section>
+{% endblock %}

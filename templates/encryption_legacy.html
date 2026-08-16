@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block page_class %}security-page{% endblock %}
+{% block content %}
+<section class="security-card">
+  <p class="eyebrow">Keine Daten verändert</p>
+  <h1>Ungesicherte Altdaten gefunden</h1>
+  <p>In diesem Datenordner liegen noch unverschlüsselte SQLite-Dateien. Diese Version verschlüsselt sie absichtlich nicht automatisch und überschreibt nichts.</p>
+  <ol class="instruction-list">
+    <li>Die alte Installation beenden und den gesamten bisherigen <code>data</code>-Ordner an einen sicheren Ort verschieben, etwa nach <code>data-legacy</code>.</li>
+    <li>Mit einem leeren <code>data</code>-Ordner diese Seite neu laden und die Verschlüsselung einrichten.</li>
+    <li>Als neuer Admin anmelden und unter <em>Verwaltung → Ungesicherte Altdaten importieren</em> die gesicherten <code>merch.sqlite3</code>, <code>users.sqlite3</code> und optional die Rechnungen importieren.</li>
+  </ol>
+  <p class="notice warning-notice">Die alten Daten bleiben solange unverschlüsselt, wie ihre Kopien oder alte Sicherungen auf dem Speicher liegen. Lösche sie erst, wenn der Import geprüft und die neue verschlüsselte Sicherung getestet wurde.</p>
+</section>
+{% endblock %}
