@@ -36,6 +36,64 @@
   </article>
 </section>
 
+<section class="table-section legacy-import-area">
+  <div class="section-heading"><div><p class="eyebrow">Kompatibilität</p><h2>Ungesicherte Altdaten importieren</h2><p>Übernimm eine frühere Protovibe-Installation in einem kontrollierten Schritt. Die Vorschau ändert noch nichts. Beim bestätigten Import werden Artikel, Buchungen, Benutzerkonten und Rechnungen vollständig ersetzt; zuvor legt die App ein ZIP des aktuellen vollständigen Stands an.</p></div></div>
+  <div class="legacy-import-layout">
+    <form action="{{ url_for('preview_legacy_import') }}" method="post" enctype="multipart/form-data" class="stack-form legacy-import-upload-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Betriebsdatenbank <small>Pflicht: <code>merch.sqlite3</code></small><input name="merchandise_database" type="file" accept=".sqlite3,.sqlite,.db,application/vnd.sqlite3" required></label>
+      <label>Benutzerdatenbank <small><code>users.sqlite3</code>; bei einer alten Ein-Datei-Installation leer lassen</small><input name="users_database" type="file" accept=".sqlite3,.sqlite,.db,application/vnd.sqlite3"></label>
+      <label>Rechnungen <small>Optionales ZIP mit den Dateien aus <code>data/invoices/</code></small><input name="invoices_archive" type="file" accept=".zip,application/zip"></label>
+      <p class="muted">Nur Datenbanken dieses Merch Managers werden akzeptiert. Die hochgeladenen Dateien werden vorübergehend geprüft und nach einer Stunde oder nach dem Import entfernt.</p>
+      <button class="secondary-button" type="submit">Altdaten prüfen</button>
+    </form>
+
+    {% if legacy_import_preview %}
+    <article class="legacy-import-preview" aria-live="polite">
+      <p class="eyebrow">Geprüfte Vorschau</p>
+      <h3>{{ 'Alte Ein-Datei-Installation' if legacy_import_preview.summary.source_kind == 'combined' else 'Getrennte Betriebs- und Benutzerdatenbank' }}</h3>
+      <dl class="legacy-import-summary">
+        <div><dt>Artikel / Varianten</dt><dd>{{ legacy_import_preview.summary.articles }} / {{ legacy_import_preview.summary.variants }}</dd></div>
+        <div><dt>Verkäufe / Einkäufe</dt><dd>{{ legacy_import_preview.summary.sales }} / {{ legacy_import_preview.summary.purchases }}</dd></div>
+        <div><dt>Benutzer / mit 2FA</dt><dd>{{ legacy_import_preview.summary.users }} / {{ legacy_import_preview.summary.mfa_users }}</dd></div>
+        <div><dt>Rechnungsdateien</dt><dd>{{ legacy_import_preview.summary.invoice_archive_files }} hochgeladen, {{ legacy_import_preview.summary.invoice_references }} referenziert</dd></div>
+      </dl>
+      {% if legacy_import_preview.summary.missing_invoice_files %}
+      <p class="notice warning-notice">{{ legacy_import_preview.summary.missing_invoice_files }} referenzierte Rechnungsdatei(en) fehlen im ZIP. Die Buchungen werden trotzdem importiert, die fehlenden Anhänge sind danach nicht verfügbar.</p>
+      {% endif %}
+      {% if legacy_import_preview.summary.mfa_users %}
+      <p class="notice">Für {{ legacy_import_preview.summary.mfa_users }} Konto/Konten ist 2FA eingerichtet. Zum Erhalt benötigst du beim endgültigen Import gegebenenfalls den bisherigen <code>SECRET_KEY</code>.</p>
+      {% endif %}
+      <p class="muted">Diese Vorschau ist bis {{ legacy_import_preview.expires_at }} gültig.</p>
+      <details class="admin-danger-confirmation legacy-import-confirmation" open>
+        <summary>Vollständigen Import bestätigen</summary>
+        <form action="{{ url_for('import_legacy_data') }}" method="post" class="admin-sensitive-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="import_token" value="{{ legacy_import_preview.token }}">
+          <p>Alle aktuellen Waren- und Benutzerdaten werden durch diese geprüfte Altinstallation ersetzt. Nach dem Import wirst du abgemeldet und meldest dich mit einem importierten Konto an. Währenddessen darf niemand anders Verkäufe, Einkäufe oder Offline-Synchronisierungen ausführen.</p>
+          {% if legacy_import_preview.summary.mfa_users %}
+          <label>2FA aus den Altdaten<select name="mfa_mode"><option value="preserve">Beibehalten</option><option value="reset">Für alle importierten Konten zurücksetzen</option></select></label>
+          <label>Bisheriger <code>SECRET_KEY</code> <small>Nur nötig, wenn die Altdaten eine andere <code>.env</code> genutzt haben. Er wird nicht gespeichert.</small><input name="former_secret_key" type="password" autocomplete="off"></label>
+          {% else %}
+          <input type="hidden" name="mfa_mode" value="preserve">
+          {% endif %}
+          <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+          <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+          <label>Zur Bestätigung <code>ALTDATEN IMPORTIEREN</code><input name="confirmation" autocomplete="off" required></label>
+          <button class="danger-button" type="submit">Altdaten endgültig übernehmen</button>
+        </form>
+      </details>
+    </article>
+    {% else %}
+    <aside class="legacy-import-hint">
+      <h3>Vorbereitung der alten Installation</h3>
+      <p>Die alte App vor dem Kopieren beenden, damit keine <code>-wal</code>-Datei mit aktuellen Buchungen zurückbleibt. Bei einer aktuellen Installation lädst du anschließend <code>merch.sqlite3</code> und <code>users.sqlite3</code> hoch.</p>
+      <p class="muted">Rechnungen liegen nicht in SQLite. Sie werden nur mit übernommen, wenn du den alten <code>invoices</code>-Ordner als ZIP hochlädst.</p>
+    </aside>
+    {% endif %}
+  </div>
+</section>
+
 <section class="table-section">
   <div class="section-heading"><div><h2>Benutzer</h2><p>Änderungen an Rolle, Passwort oder Aktivstatus melden bestehende Sitzungen des jeweiligen Kontos ab.</p></div></div>
   <div class="table-scroll"><table class="users-table"><thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>2FA</th><th>Letzte Anmeldung</th><th>Aktionen</th></tr></thead><tbody>

@@ -905,6 +905,209 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertFalse((invoice_dir / "after-backup.pdf").exists())
         self.assertGreaterEqual(len(list(Path(self.app.config["BACKUP_DIR"]).iterdir())), 2)
 
+    def test_admin_can_preview_and_import_separate_legacy_databases_with_mfa_and_invoices(self) -> None:
+        """A full legacy takeover copies only known rows, then logs out the old Admin."""
+
+        legacy_root = Path(self.tempdir.name) / "legacy-installation"
+        legacy_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "legacy-secret-key",
+                "DATABASE": str(legacy_root / "merch.sqlite3"),
+                "USERS_DATABASE": str(legacy_root / "users.sqlite3"),
+                "BACKUP_DIR": str(legacy_root / "backups"),
+                "RESET_ARCHIVE_DIR": str(legacy_root / "reset-archives"),
+                "INVOICE_UPLOAD_DIR": str(legacy_root / "invoices"),
+                "ADMIN_USERNAME": "legacy-admin",
+                "ADMIN_PASSWORD": "legacy-password",
+                "AUTO_BACKUP": False,
+            }
+        )
+        legacy_mfa_secret = pyotp.random_base32()
+        with legacy_app.app_context():
+            operations = get_db()
+            article_id = operations.execute(
+                """
+                INSERT INTO articles (
+                    name, default_sale_price_cents, default_purchase_price_cents,
+                    is_active, created_at, updated_at
+                ) VALUES ('Imported Hoodie', 4200, 2100, 1, '2026-08-15T00:00:00+00:00', '2026-08-15T00:00:00+00:00')
+                """
+            ).lastrowid
+            apply_option_configuration(
+                operations,
+                article_id,
+                [{"id": None, "name": "Größe", "position": 0, "values": [{"id": None, "value": "L", "position": 0}]}],
+            )
+            sync_variants(operations, article_id)
+            variant_id = operations.execute("SELECT id FROM variants WHERE article_id = ?", (article_id,)).fetchone()[0]
+            operations.execute(
+                """
+                INSERT INTO purchases (
+                    receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
+                    invoice_file_path, created_at, created_by, created_by_username
+                ) VALUES ('E-20260815-001', ?, 2, 2100, '2026-08-15', 'legacy-invoice.pdf',
+                          '2026-08-15T00:00:00+00:00', 1, 'legacy-admin')
+                """,
+                (variant_id,),
+            )
+            operations.commit()
+            users = get_user_db()
+            users.execute(
+                "UPDATE users SET mfa_enabled = 1, mfa_secret_encrypted = ? WHERE id = 1",
+                (encrypt_mfa_secret(legacy_mfa_secret, legacy_app),),
+            )
+            users.commit()
+        legacy_invoice = Path(legacy_app.config["INVOICE_UPLOAD_DIR"]) / "legacy-invoice.pdf"
+        legacy_invoice.write_bytes(b"%PDF-legacy import")
+
+        # The target deliberately contains different data and an MFA-protected
+        # Admin.  A successful import must replace both databases, not merge
+        # an accidental mixture of old and new account IDs.
+        self.seed_variant("Target-only Shirt")
+        target_mfa_secret = pyotp.random_base32()
+        with self.app.app_context():
+            users = get_user_db()
+            users.execute(
+                "UPDATE users SET mfa_enabled = 1, mfa_secret_encrypted = ? WHERE id = 1",
+                (encrypt_mfa_secret(target_mfa_secret, self.app),),
+            )
+            users.commit()
+
+        invoice_zip = io.BytesIO()
+        with ZipFile(invoice_zip, "w") as archive:
+            archive.writestr("invoices/legacy-invoice.pdf", legacy_invoice.read_bytes())
+        invoice_zip.seek(0)
+        preview = self.client.post(
+            "/verwaltung/altdaten/vorschau",
+            data={
+                "csrf_token": "test-csrf",
+                "merchandise_database": (
+                    io.BytesIO(Path(legacy_app.config["DATABASE"]).read_bytes()), "merch.sqlite3"
+                ),
+                "users_database": (
+                    io.BytesIO(Path(legacy_app.config["USERS_DATABASE"]).read_bytes()), "users.sqlite3"
+                ),
+                "invoices_archive": (invoice_zip, "invoices.zip"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(preview.status_code, 200)
+        preview_html = preview.get_data(as_text=True)
+        self.assertIn("1 / 1", preview_html)
+        self.assertIn("Vollständigen Import bestätigen", preview_html)
+        token_match = re.search(r'name="import_token" value="([a-f0-9]{32})"', preview_html)
+        self.assertIsNotNone(token_match)
+
+        imported = self.client.post(
+            "/verwaltung/altdaten/importieren",
+            data={
+                "csrf_token": "test-csrf",
+                "import_token": token_match.group(1),
+                "mfa_mode": "preserve",
+                "former_secret_key": "legacy-secret-key",
+                "password": "test-password",
+                "mfa_code": pyotp.TOTP(target_mfa_secret).now(),
+                "confirmation": "ALTDATEN IMPORTIEREN",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(imported.status_code, 302)
+        self.assertTrue(imported.location.endswith("/login"))
+        with self.app.app_context():
+            articles = [row[0] for row in get_db().execute("SELECT name FROM articles ORDER BY id").fetchall()]
+            imported_user = get_user_db().execute("SELECT * FROM users WHERE username = 'legacy-admin'").fetchone()
+            former_target = get_user_db().execute("SELECT id FROM users WHERE username = 'tester'").fetchone()
+            import_audit = get_db().execute(
+                "SELECT action FROM audit_log WHERE action = 'import_legacy_data'"
+            ).fetchone()
+        self.assertEqual(articles, ["Imported Hoodie"])
+        self.assertIsNotNone(imported_user)
+        self.assertIsNone(former_target)
+        self.assertEqual(decrypt_mfa_secret(imported_user["mfa_secret_encrypted"], self.app), legacy_mfa_secret)
+        self.assertIsNotNone(import_audit)
+        self.assertEqual(
+            (Path(self.app.config["INVOICE_UPLOAD_DIR"]) / "legacy-invoice.pdf").read_bytes(),
+            b"%PDF-legacy import",
+        )
+        archives = list(Path(self.app.config["LEGACY_IMPORT_ARCHIVE_DIR"]).glob("*.zip"))
+        self.assertEqual(len(archives), 1)
+        with ZipFile(archives[0]) as archive:
+            self.assertIn("data/merch.sqlite3", archive.namelist())
+            self.assertIn("data/users.sqlite3", archive.namelist())
+
+    def test_admin_can_import_a_combined_legacy_database_without_a_users_file(self) -> None:
+        """The compatibility screen accepts the oldest one-file database layout."""
+
+        combined_path = Path(self.tempdir.name) / "legacy-combined.sqlite3"
+        connection = sqlite3.connect(combined_path)
+        try:
+            connection.executescript(LEGACY_COMBINED_SCHEMA_SQL)
+            connection.execute(
+                """
+                INSERT INTO users (id, username, password_hash, is_admin, role, is_active, created_at)
+                VALUES (7, 'combined-admin', ?, 1, 'admin', 1, '2026-08-14T00:00:00+00:00')
+                """,
+                (generate_password_hash("combined-password"),),
+            )
+            connection.execute(
+                """
+                INSERT INTO articles (id, name, default_sale_price_cents, default_purchase_price_cents, is_active, created_at, updated_at)
+                VALUES (3, 'Combined Patch', 600, 180, 1, '2026-08-14T00:00:00+00:00', '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO variants (
+                    id, article_id, option_value_ids_json, combination_key, sale_price_cents,
+                    default_purchase_price_cents, is_active, created_at, updated_at
+                ) VALUES (11, 3, '[]', '', 600, 180, 1, '2026-08-14T00:00:00+00:00', '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        target_mfa_secret = pyotp.random_base32()
+        with self.app.app_context():
+            users = get_user_db()
+            users.execute(
+                "UPDATE users SET mfa_enabled = 1, mfa_secret_encrypted = ? WHERE id = 1",
+                (encrypt_mfa_secret(target_mfa_secret, self.app),),
+            )
+            users.commit()
+
+        preview = self.client.post(
+            "/verwaltung/altdaten/vorschau",
+            data={
+                "csrf_token": "test-csrf",
+                "merchandise_database": (io.BytesIO(combined_path.read_bytes()), "merch.sqlite3"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(preview.status_code, 200)
+        token_match = re.search(
+            r'name="import_token" value="([a-f0-9]{32})"', preview.get_data(as_text=True)
+        )
+        self.assertIsNotNone(token_match)
+        imported = self.client.post(
+            "/verwaltung/altdaten/importieren",
+            data={
+                "csrf_token": "test-csrf",
+                "import_token": token_match.group(1),
+                "mfa_mode": "preserve",
+                "password": "test-password",
+                "mfa_code": pyotp.TOTP(target_mfa_secret).now(),
+                "confirmation": "ALTDATEN IMPORTIEREN",
+            },
+            follow_redirects=False,
+        )
+        self.assertEqual(imported.status_code, 302)
+        with self.app.app_context():
+            article = get_db().execute("SELECT name FROM articles WHERE id = 3").fetchone()
+            user = get_user_db().execute("SELECT username FROM users WHERE id = 7").fetchone()
+        self.assertEqual(article["name"], "Combined Patch")
+        self.assertEqual(user["username"], "combined-admin")
+
     def test_purchase_then_sale_updates_stock_and_creates_receipts(self) -> None:
         variant_id = self.seed_variant()
         purchase = self.api_post(

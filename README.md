@@ -301,6 +301,63 @@ Sicherungspunkt des aktuellen Zustands an. Dabei werden ausschließlich
 Rollen und MFA bleibt unverändert. Alte Ein-Datei-Sicherungen, die noch eine
 `users`-Tabelle enthalten, werden absichtlich nicht automatisch geladen.
 
+### Vollständigen Altdaten-Stand importieren
+
+Unter **Verwaltung → Ungesicherte Altdaten importieren** kann ein bisheriger,
+nicht verschlüsselter Protovibe-Stand vollständig übernommen werden. Das ist
+für einen späteren Wechsel auf eine neue Installation gedacht, nicht für das
+Zusammenführen zweier parallel genutzter Datenbestände.
+
+Die Funktion akzeptiert:
+
+- die getrennte `merch.sqlite3` und `users.sqlite3` einer aktuellen älteren
+  Installation;
+- eine frühere kombinierte `merch.sqlite3`, die noch eine `users`-Tabelle
+  enthält;
+- optional ein ZIP der Rechnungen aus `data/invoices/`. Die ZIP kann die
+  Dateien direkt enthalten oder unter `invoices/` bzw. `data/invoices/`.
+
+Vor dem Upload muss die alte App vollständig gestoppt sein. Dadurch werden
+offene SQLite-`-wal`-Dateien in die Hauptdatenbank geschrieben und die Kopie
+enthält wirklich die letzten Buchungen. Bei Docker genügt zum Beispiel im
+alten Projektordner:
+
+```bash
+docker compose -f docker-compose.synology.yml stop
+```
+
+Danach kopierst du die beiden Datenbanken und erstellst bei Bedarf ein ZIP des
+alten `data/invoices`-Ordners. Starte die alte Installation anschließend
+wieder, falls sie bis zum eigentlichen Umstieg weiterlaufen soll.
+
+Im Admin-Reiter lädst du die Dateien hoch und erhältst zunächst nur eine
+Vorschau mit Artikel-, Buchungs-, Benutzer- und Rechnungsanzahl. Erst nach
+einer erneuten Bestätigung mit aktuellem Passwort, 2FA und der Phrase
+`ALTDATEN IMPORTIEREN` werden die Daten übernommen. Dabei geschieht Folgendes:
+
+1. Die App prüft SQLite-Integrität, erwartete Tabellen und Referenzen.
+2. Sie erzeugt ein vollständiges Rückfall-ZIP unter
+   `data/legacy-import-archives/` – einschließlich beider aktuellen
+   Datenbanken und Rechnungen.
+3. Sie ersetzt Warenwirtschaft, Benutzerkonten und Rechnungen gemeinsam.
+   Danach meldest du dich mit einem **importierten** Benutzerkonto wieder an.
+
+Während der endgültigen Übernahme darf niemand anders Verkäufe, Einkäufe oder
+Offline-Synchronisierungen ausführen.
+
+Der Import ist absichtlich ein vollständiger Austausch: aktuelle Testkonten
+oder neue Buchungen im Zielsystem werden nicht mit den Altdaten vermischt.
+Fehlende Rechnungsdateien werden in der Vorschau angezeigt; die zugehörigen
+Buchungen können dennoch importiert werden.
+
+Passwort-Hashes werden unverändert übernommen. Bei bereits eingerichteter
+2FA lässt du das Feld für den bisherigen `SECRET_KEY` leer, wenn alte und neue
+Installation dieselbe `.env` verwenden. Bei einer neuen `.env` gibst du den
+alten `SECRET_KEY` einmalig im Bestätigungsformular ein; er wird nicht
+gespeichert. Ist er nicht mehr vorhanden, wählst du **2FA für alle
+importierten Konten zurücksetzen**. Besonders das importierte Admin-Konto muss
+anschließend beim ersten Login seine 2FA neu einrichten.
+
 ## Import der bisherigen ODS
 
 > Wichtig: Der Import ist nur für eine noch leere Artikel-, Verkaufs- und

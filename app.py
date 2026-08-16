@@ -37,12 +37,12 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from threading import Lock
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from flask import (
     Flask,
@@ -327,6 +327,16 @@ DELIVERY_WORKFLOW_STATUSES = ("pending", "shipped", "received")
 # experience, but the server is the authoritative check.
 ALLOWED_INVOICE_FILE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 MAX_INVOICE_FILE_BYTES = 10 * 1024 * 1024
+
+# A legacy import is deliberately an exceptional, administrator-only workflow.
+# The limits below keep an accidentally selected NAS backup or a ZIP bomb from
+# filling the application volume.  Normal invoice uploads remain capped at
+# ``MAX_INVOICE_FILE_BYTES`` by ``invoice_file_extension``.
+MAX_LEGACY_IMPORT_BYTES = 128 * 1024 * 1024
+MAX_LEGACY_IMPORT_INVOICE_BYTES = 256 * 1024 * 1024
+MAX_LEGACY_IMPORT_INVOICE_FILES = 500
+LEGACY_IMPORT_STAGING_TTL_SECONDS = 60 * 60
+LEGACY_IMPORT_TOKEN_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
 # These values are intentionally only used when a *new* article is created.
 # Existing articles can have completely different option groups (for example a
@@ -683,18 +693,25 @@ def is_setup_code_current(user: sqlite3.Row | dict[str, Any]) -> bool:
     return expiry > datetime.now(timezone.utc)
 
 
-def mfa_fernet(app: Flask | None = None) -> Fernet:
-    """Derive a stable encryption key from the already mandatory SECRET_KEY.
+def mfa_fernet_for_secret(secret_key: str) -> Fernet:
+    """Return the Fernet instance historically used for one ``SECRET_KEY``.
 
-    This avoids a second secret that people may forget to back up.  The tradeoff
-    is intentional and documented: SECRET_KEY must stay stable after 2FA was
-    enabled, which is already necessary for stable Flask sessions.
+    Keeping the derivation in one small helper matters for the legacy-import
+    workflow: an imported account database may have been protected with a
+    different former ``SECRET_KEY`` and its TOTP secrets must be re-encrypted
+    for the receiving installation without ever persisting that former key.
     """
 
-    configured_app = app or current_app._get_current_object()
-    material = str(configured_app.config["SECRET_KEY"]).encode("utf-8")
+    material = str(secret_key).encode("utf-8")
     key = base64.urlsafe_b64encode(hashlib.sha256(b"protovibe-merch:mfa:" + material).digest())
     return Fernet(key)
+
+
+def mfa_fernet(app: Flask | None = None) -> Fernet:
+    """Derive the installation's stable TOTP-encryption key from SECRET_KEY."""
+
+    configured_app = app or current_app._get_current_object()
+    return mfa_fernet_for_secret(str(configured_app.config["SECRET_KEY"]))
 
 
 def encrypt_mfa_secret(secret: str, app: Flask | None = None) -> str:
@@ -1681,8 +1698,38 @@ def create_user_split_archive(app: Flask) -> Path:
     return archive_path
 
 
+def copy_matching_table_rows(
+    source: sqlite3.Connection, target: sqlite3.Connection, table_name: str
+) -> None:
+    """Copy one known table using the receiving schema's safe column subset.
+
+    This is intentionally never called with a request-provided table name.  It
+    lets a newer application keep the columns it introduced after an older
+    source backup was made without executing source-controlled schema SQL.
+    """
+
+    if not table_exists(source, table_name) or not table_exists(target, table_name):
+        return
+    source_columns = set(table_columns(source, table_name))
+    target_columns = [column for column in table_columns(target, table_name) if column in source_columns]
+    if not target_columns:
+        return
+    rows = source.execute(f"SELECT {', '.join(target_columns)} FROM {table_name} ORDER BY rowid").fetchall()
+    if not rows:
+        return
+    placeholders = ", ".join("?" for _ in target_columns)
+    target.executemany(
+        f"INSERT INTO {table_name} ({', '.join(target_columns)}) VALUES ({placeholders})",
+        [tuple(row[column] for column in target_columns) for row in rows],
+    )
+
+
 def copy_users_to_separate_database(
-    source: sqlite3.Connection, target: sqlite3.Connection, app: Flask
+    source: sqlite3.Connection,
+    target: sqlite3.Connection,
+    app: Flask,
+    *,
+    copy_audit_log: bool = False,
 ) -> None:
     """Copy account rows verbatim, retaining IDs used by historic bookings."""
 
@@ -1710,6 +1757,8 @@ def copy_users_to_separate_database(
                 f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})",
                 [tuple(row[column] for column in columns) for row in source_rows],
             )
+    if copy_audit_log and not target.execute("SELECT 1 FROM audit_log LIMIT 1").fetchone():
+        copy_matching_table_rows(source, target, "audit_log")
     upgrade_users_schema(target, app, bootstrap_administrator=True)
 
 
@@ -3109,6 +3158,712 @@ def reset_data_store(app: Flask) -> None:
     initialise_operations_database(app)
 
 
+def legacy_import_staging_root(app: Flask) -> Path:
+    """Return the private, short-lived directory for uploaded legacy files."""
+
+    return Path(app.config["LEGACY_IMPORT_STAGING_DIR"])
+
+
+def legacy_import_archive_root(app: Flask) -> Path:
+    """Return the protected rollback-archive directory for full imports."""
+
+    return Path(app.config["LEGACY_IMPORT_ARCHIVE_DIR"])
+
+
+def remove_expired_legacy_import_stages(app: Flask) -> None:
+    """Remove abandoned upload stages without touching any user-selected file."""
+
+    root = legacy_import_staging_root(app)
+    if not root.is_dir():
+        return
+    cutoff = time.time() - int(app.config["LEGACY_IMPORT_STAGING_TTL_SECONDS"])
+    for child in root.iterdir():
+        if not child.is_dir() or child.parent != root:
+            continue
+        try:
+            if child.stat().st_mtime < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            # A concurrently finishing request may already have removed the
+            # directory.  The import itself still validates its token below.
+            continue
+
+
+def legacy_import_stage_directory(app: Flask, token: Any, *, require_existing: bool = True) -> Path:
+    """Resolve an opaque import token below the staging root only."""
+
+    raw_token = str(token or "").strip().lower()
+    if not LEGACY_IMPORT_TOKEN_PATTERN.fullmatch(raw_token):
+        raise ValueError("Der vorbereitete Altdaten-Import wurde nicht gefunden.")
+    root = legacy_import_staging_root(app).resolve()
+    candidate = (root / raw_token).resolve()
+    if candidate.parent != root or (require_existing and not candidate.is_dir()):
+        raise ValueError("Der vorbereitete Altdaten-Import wurde nicht gefunden oder ist abgelaufen.")
+    return candidate
+
+
+def save_legacy_import_upload(
+    uploaded_file: Any, target: Path, *, label: str, max_bytes: int = MAX_LEGACY_IMPORT_BYTES
+) -> int:
+    """Copy one browser upload with an explicit size guard and no user path."""
+
+    if uploaded_file is None or not getattr(uploaded_file, "filename", ""):
+        raise ValueError(f"Bitte die {label} auswählen.")
+    stream = uploaded_file.stream
+    try:
+        stream.seek(0)
+    except (AttributeError, OSError):
+        pass
+    written = 0
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with target.open("xb") as destination:
+            while True:
+                chunk = stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise ValueError(f"Die {label} ist größer als {max_bytes // (1024 * 1024)} MB.")
+                destination.write(chunk)
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    if written == 0:
+        target.unlink(missing_ok=True)
+        raise ValueError(f"Die {label} ist leer.")
+    return written
+
+
+def readonly_legacy_sqlite_connection(database_path: Path) -> sqlite3.Connection:
+    """Open a source SQLite file without allowing schema or data changes."""
+
+    try:
+        connection = sqlite3.connect(database_path.resolve().as_uri() + "?mode=ro", uri=True)
+    except sqlite3.DatabaseError as exc:
+        raise ValueError("Die hochgeladene Datei ist keine lesbare SQLite-Datenbank.") from exc
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only = ON")
+    connection.execute("PRAGMA busy_timeout = 5000")
+    return connection
+
+
+def legacy_sqlite_tables(database_path: Path, *, label: str) -> set[str]:
+    """Validate an uploaded SQLite file before it reaches staging logic."""
+
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = readonly_legacy_sqlite_connection(database_path)
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        if str(integrity).lower() != "ok":
+            raise ValueError(f"Die {label} ist beschädigt (SQLite-Integritätsprüfung fehlgeschlagen).")
+        return {
+            str(row["name"])
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(f"Die {label} ist keine lesbare SQLite-Datenbank.") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def copy_legacy_sqlite_snapshot(source_path: Path, target_path: Path) -> None:
+    """Make a self-contained working copy of an unencrypted source database."""
+
+    source: sqlite3.Connection | None = None
+    target: sqlite3.Connection | None = None
+    target_path.unlink(missing_ok=True)
+    try:
+        source = readonly_legacy_sqlite_connection(source_path)
+        target = sqlite3.connect(target_path)
+        source.backup(target)
+    finally:
+        if target is not None:
+            target.close()
+        if source is not None:
+            source.close()
+
+
+def legacy_import_invoice_name(value: Any) -> str | None:
+    """Accept only the flat, opaque attachment names used by this application."""
+
+    if value is None:
+        return None
+    filename = str(value)
+    path = Path(filename)
+    if not filename or path.name != filename or path.suffix.lower() not in ALLOWED_INVOICE_FILE_EXTENSIONS:
+        return None
+    return filename
+
+
+def legacy_import_invoice_archive_member_name(member_name: str) -> str | None:
+    """Normalize supported invoice-archive layouts without accepting traversal."""
+
+    normalized = member_name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return None
+    parts = list(path.parts)
+    if parts[:2] == ["data", "invoices"]:
+        parts = parts[2:]
+    elif parts[:1] == ["invoices"]:
+        parts = parts[1:]
+    if len(parts) != 1:
+        return None
+    return legacy_import_invoice_name(parts[0])
+
+
+def valid_invoice_bytes(filename: str, content: bytes) -> bool:
+    """Apply the same conservative signature check to a ZIP member."""
+
+    extension = Path(filename).suffix.lower()
+    return bool(
+        content
+        and (
+            (extension == ".pdf" and content.startswith(b"%PDF-"))
+            or (extension == ".png" and content.startswith(b"\x89PNG\r\n\x1a\n"))
+            or (extension in {".jpg", ".jpeg"} and content.startswith(b"\xff\xd8\xff"))
+        )
+    )
+
+
+def extract_legacy_invoice_archive(archive_path: Path, target_directory: Path) -> int:
+    """Extract a small, safe invoice ZIP into a flat staged directory."""
+
+    total_bytes = 0
+    extracted = 0
+    target_directory.mkdir(parents=True, exist_ok=True)
+    try:
+        with ZipFile(archive_path) as archive:
+            members = [member for member in archive.infolist() if not member.is_dir()]
+            if len(members) > MAX_LEGACY_IMPORT_INVOICE_FILES:
+                raise ValueError(
+                    f"Das Rechnungsarchiv enthält mehr als {MAX_LEGACY_IMPORT_INVOICE_FILES} Dateien."
+                )
+            for member in members:
+                filename = legacy_import_invoice_archive_member_name(member.filename)
+                if filename is None:
+                    raise ValueError(
+                        "Das Rechnungsarchiv darf nur PDF-, PNG- oder JPG-Dateien direkt im Ordner "
+                        "„invoices“ enthalten."
+                    )
+                if member.file_size <= 0 or member.file_size > MAX_INVOICE_FILE_BYTES:
+                    raise ValueError("Jede Rechnung im Archiv muss zwischen 1 Byte und 10 MB groß sein.")
+                total_bytes += member.file_size
+                if total_bytes > MAX_LEGACY_IMPORT_INVOICE_BYTES:
+                    raise ValueError("Die entpackten Rechnungen sind zusammen größer als 256 MB.")
+                target = target_directory / filename
+                if target.exists():
+                    raise ValueError(f"Das Rechnungsarchiv enthält die Datei „{filename}“ mehrfach.")
+                with archive.open(member) as source:
+                    content = source.read(MAX_INVOICE_FILE_BYTES + 1)
+                if len(content) != member.file_size or not valid_invoice_bytes(filename, content):
+                    raise ValueError(f"Die Rechnung „{filename}“ ist keine gültige {Path(filename).suffix.upper()}-Datei.")
+                target.write_bytes(content)
+                extracted += 1
+    except (BadZipFile, OSError) as exc:
+        raise ValueError("Das Rechnungsarchiv ist keine lesbare ZIP-Datei.") from exc
+    return extracted
+
+
+def legacy_import_attachment_references(connection: sqlite3.Connection) -> set[str]:
+    """Return managed attachment names referenced by the prepared ledger."""
+
+    values: set[str] = set()
+    for row in connection.execute(
+        "SELECT invoice_file_path FROM purchases WHERE invoice_file_path IS NOT NULL"
+    ).fetchall():
+        filename = legacy_import_invoice_name(row["invoice_file_path"])
+        if filename is None:
+            raise ValueError("Die Altdaten enthalten einen ungültigen Rechnungspfad.")
+        values.add(filename)
+    for row in connection.execute("SELECT file_path FROM purchase_receipt_attachments").fetchall():
+        filename = legacy_import_invoice_name(row["file_path"])
+        if filename is None:
+            raise ValueError("Die Altdaten enthalten einen ungültigen Rechnungspfad.")
+        values.add(filename)
+    return values
+
+
+def legacy_import_summary(
+    operations_path: Path, users_path: Path, invoices_directory: Path, *, source_kind: str
+) -> dict[str, Any]:
+    """Build a preview from canonical staged files, never from the upload UI."""
+
+    operations = readonly_legacy_sqlite_connection(operations_path)
+    users = readonly_legacy_sqlite_connection(users_path)
+    try:
+        counts = {
+            "articles": int(operations.execute("SELECT COUNT(*) FROM articles").fetchone()[0]),
+            "variants": int(operations.execute("SELECT COUNT(*) FROM variants").fetchone()[0]),
+            "purchases": int(operations.execute("SELECT COUNT(*) FROM purchases").fetchone()[0]),
+            "sales": int(operations.execute("SELECT COUNT(*) FROM sales").fetchone()[0]),
+            "users": int(users.execute("SELECT COUNT(*) FROM users").fetchone()[0]),
+            "mfa_users": int(users.execute("SELECT COUNT(*) FROM users WHERE mfa_enabled = 1").fetchone()[0]),
+        }
+        admin_count = int(users.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'").fetchone()[0])
+        active_admin_count = int(
+            users.execute("SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1").fetchone()[0]
+        )
+        if counts["users"] == 0 or admin_count != 1 or active_admin_count != 1:
+            raise ValueError("Die Benutzerdatei muss genau ein aktives Admin-Konto enthalten.")
+        foreign_key_errors = operations.execute("PRAGMA foreign_key_check").fetchall()
+        if foreign_key_errors:
+            raise ValueError("Die Altdaten enthalten unvollständige Verweise zwischen Artikeln und Buchungen.")
+        attachment_references = legacy_import_attachment_references(operations)
+        staged_files = {
+            item.name for item in invoices_directory.iterdir() if item.is_file()
+        } if invoices_directory.is_dir() else set()
+        return {
+            "source_kind": source_kind,
+            **counts,
+            "invoice_archive_files": len(staged_files),
+            "invoice_references": len(attachment_references),
+            "missing_invoice_files": len(attachment_references - staged_files),
+        }
+    finally:
+        users.close()
+        operations.close()
+
+
+def prepare_legacy_import_files(
+    app: Flask,
+    stage_directory: Path,
+    merchandise_upload: Path,
+    users_upload: Path | None,
+    invoices_upload: Path | None,
+) -> dict[str, Any]:
+    """Convert recognised legacy SQLite files into a clean current schema.
+
+    Source databases are first copied to disposable work files and upgraded
+    there.  The final prepared databases contain only known application tables
+    and rows, not source-provided triggers, views or arbitrary extra tables.
+    """
+
+    core_operations_tables = {"articles", "variants", "purchases", "sales"}
+    merchandise_tables = legacy_sqlite_tables(merchandise_upload, label="Betriebsdatenbank")
+    is_combined = "users" in merchandise_tables
+    if not core_operations_tables.issubset(merchandise_tables):
+        raise ValueError("Die Betriebsdatenbank enthält keine vollständigen Protovibe-Warenwirtschaftsdaten.")
+    if is_combined and users_upload is not None:
+        raise ValueError(
+            "Die Betriebsdatenbank enthält bereits Benutzerkonten. Bitte keine zweite Benutzerdatei auswählen."
+        )
+    if not is_combined and users_upload is None:
+        raise ValueError("Bitte zusätzlich die zugehörige users.sqlite3 auswählen.")
+    if users_upload is not None:
+        user_tables = legacy_sqlite_tables(users_upload, label="Benutzerdatenbank")
+        if "users" not in user_tables:
+            raise ValueError("Die Benutzerdatenbank enthält keine Protovibe-Benutzerkonten.")
+
+    # Do this before a legacy schema migration: that migration can bootstrap a
+    # new administrator for an actually empty database, which would turn an
+    # invalid upload into a misleadingly valid preview.
+    raw_users_path = merchandise_upload if is_combined else users_upload
+    raw_users = readonly_legacy_sqlite_connection(raw_users_path)
+    try:
+        if int(raw_users.execute("SELECT COUNT(*) FROM users").fetchone()[0]) == 0:
+            raise ValueError("Die Altdaten enthalten keine Benutzerkonten und können nicht vollständig übernommen werden.")
+    finally:
+        raw_users.close()
+
+    working_merchandise = stage_directory / "working-merch.sqlite3"
+    working_users = stage_directory / "working-users.sqlite3"
+    prepared_operations = stage_directory / "prepared-merch.sqlite3"
+    prepared_users = stage_directory / "prepared-users.sqlite3"
+    prepared_invoices = stage_directory / "prepared-invoices"
+    copy_legacy_sqlite_snapshot(merchandise_upload, working_merchandise)
+    if users_upload is not None:
+        copy_legacy_sqlite_snapshot(users_upload, working_users)
+
+    source_operations: sqlite3.Connection | None = None
+    source_users: sqlite3.Connection | None = None
+    target_operations: sqlite3.Connection | None = None
+    target_users: sqlite3.Connection | None = None
+    try:
+        if is_combined:
+            # The established in-place migration already knows every released
+            # combined schema.  It runs on a disposable snapshot only.
+            staging_app = Flask("protovibe-legacy-import")
+            staging_app.config.from_mapping(app.config)
+            staging_app.config["DATABASE"] = str(working_merchandise)
+            upgrade_legacy_combined_database(staging_app)
+            source_operations = db_connect(working_merchandise)
+            source_users = source_operations
+        else:
+            source_operations = db_connect(working_merchandise)
+            upgrade_operations_schema(source_operations)
+            source_operations.commit()
+            source_users = db_connect(working_users)
+            upgrade_users_schema(source_users, app, bootstrap_administrator=False)
+            source_users.commit()
+
+        source_admin_count = int(
+            source_users.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'").fetchone()[0]
+        )
+        source_active_admin_count = int(
+            source_users.execute(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin' AND is_active = 1"
+            ).fetchone()[0]
+        )
+        if source_admin_count != 1 or source_active_admin_count != 1:
+            raise ValueError("Die Altdaten müssen genau ein aktives Admin-Konto enthalten.")
+
+        target_users = db_connect(prepared_users)
+        copy_users_to_separate_database(
+            source_users,
+            target_users,
+            app,
+            copy_audit_log=not is_combined,
+        )
+        target_users.commit()
+
+        usernames = {
+            int(row["id"]): str(row["username"])
+            for row in source_users.execute("SELECT id, username FROM users").fetchall()
+        }
+        target_operations = db_connect(prepared_operations)
+        upgrade_operations_schema(target_operations)
+        copy_operational_tables(source_operations, target_operations, usernames)
+        target_operations.commit()
+    finally:
+        if target_operations is not None:
+            target_operations.close()
+        if target_users is not None:
+            target_users.close()
+        if source_users is not None and source_users is not source_operations:
+            source_users.close()
+        if source_operations is not None:
+            source_operations.close()
+        working_merchandise.unlink(missing_ok=True)
+        for sidecar in (Path(f"{working_merchandise}-wal"), Path(f"{working_merchandise}-shm")):
+            sidecar.unlink(missing_ok=True)
+        working_users.unlink(missing_ok=True)
+        for sidecar in (Path(f"{working_users}-wal"), Path(f"{working_users}-shm")):
+            sidecar.unlink(missing_ok=True)
+
+    prepared_invoices.mkdir(parents=True, exist_ok=True)
+    if invoices_upload is not None:
+        extract_legacy_invoice_archive(invoices_upload, prepared_invoices)
+    summary = legacy_import_summary(
+        prepared_operations,
+        prepared_users,
+        prepared_invoices,
+        source_kind="combined" if is_combined else "separate",
+    )
+    return summary
+
+
+def stage_legacy_import(
+    app: Flask, *, merchandise_file: Any, users_file: Any | None, invoices_file: Any | None
+) -> dict[str, Any]:
+    """Save, validate and prepare one import preview without changing live data."""
+
+    remove_expired_legacy_import_stages(app)
+    root = legacy_import_staging_root(app)
+    root.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    stage_directory = legacy_import_stage_directory(app, token, require_existing=False)
+    stage_directory.mkdir(mode=0o700, parents=False, exist_ok=False)
+    merchandise_upload = stage_directory / "uploaded-merch.sqlite3"
+    users_upload = stage_directory / "uploaded-users.sqlite3"
+    invoices_upload = stage_directory / "uploaded-invoices.zip"
+    try:
+        save_legacy_import_upload(merchandise_file, merchandise_upload, label="Betriebsdatenbank")
+        has_users_file = users_file is not None and bool(getattr(users_file, "filename", ""))
+        has_invoices_file = invoices_file is not None and bool(getattr(invoices_file, "filename", ""))
+        if has_users_file:
+            save_legacy_import_upload(users_file, users_upload, label="Benutzerdatenbank")
+        else:
+            users_upload = None
+        if has_invoices_file:
+            save_legacy_import_upload(invoices_file, invoices_upload, label="Rechnungsarchiv")
+        else:
+            invoices_upload = None
+        summary = prepare_legacy_import_files(
+            app, stage_directory, merchandise_upload, users_upload, invoices_upload
+        )
+        manifest = {
+            "token": token,
+            "created_at": time.time(),
+            "summary": summary,
+        }
+        (stage_directory / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+        )
+        # Only the normalised files are needed after the preview.  Remove the
+        # raw uploads promptly, especially because they are unencrypted.
+        merchandise_upload.unlink(missing_ok=True)
+        if users_upload is not None:
+            users_upload.unlink(missing_ok=True)
+        if invoices_upload is not None:
+            invoices_upload.unlink(missing_ok=True)
+        return manifest
+    except Exception:
+        shutil.rmtree(stage_directory, ignore_errors=True)
+        raise
+
+
+def prepared_legacy_import(app: Flask, token: Any) -> tuple[Path, dict[str, Any]]:
+    """Load a still-valid prepared import and reject tampered/incomplete stages."""
+
+    remove_expired_legacy_import_stages(app)
+    directory = legacy_import_stage_directory(app, token)
+    manifest_path = directory / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Der vorbereitete Altdaten-Import ist unvollständig.") from exc
+    if not isinstance(manifest, dict) or manifest.get("token") != str(token).strip().lower():
+        raise ValueError("Der vorbereitete Altdaten-Import ist ungültig.")
+    if time.time() - float(manifest.get("created_at", 0)) > int(app.config["LEGACY_IMPORT_STAGING_TTL_SECONDS"]):
+        shutil.rmtree(directory, ignore_errors=True)
+        raise ValueError("Die Importvorschau ist abgelaufen. Bitte die Dateien erneut prüfen.")
+    required = (directory / "prepared-merch.sqlite3", directory / "prepared-users.sqlite3")
+    if not all(path.is_file() for path in required):
+        raise ValueError("Der vorbereitete Altdaten-Import ist unvollständig.")
+    summary = legacy_import_summary(
+        required[0], required[1], directory / "prepared-invoices", source_kind=str(manifest["summary"]["source_kind"])
+    )
+    manifest["summary"] = summary
+    return directory, manifest
+
+
+def next_legacy_import_archive_path(app: Flask) -> Path:
+    root = legacy_import_archive_root(app)
+    root.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    candidate = root / f"before-legacy-import-{timestamp}.zip"
+    suffix = 1
+    while candidate.exists():
+        suffix += 1
+        candidate = root / f"before-legacy-import-{timestamp}-{suffix}.zip"
+    return candidate
+
+
+def create_legacy_import_safety_archive(app: Flask) -> Path:
+    """Archive both live databases and invoices before a full account import."""
+
+    archive_path = next_legacy_import_archive_path(app)
+    temporary_root = Path(tempfile.mkdtemp(prefix="merch-import-safety-"))
+    operation_snapshot = temporary_root / "merch.sqlite3"
+    users_snapshot = temporary_root / "users.sqlite3"
+    try:
+        copy_legacy_sqlite_snapshot(Path(app.config["DATABASE"]), operation_snapshot)
+        copy_legacy_sqlite_snapshot(Path(app.config["USERS_DATABASE"]), users_snapshot)
+        with ZipFile(archive_path, "w", ZIP_DEFLATED) as archive:
+            archive.write(operation_snapshot, "data/merch.sqlite3")
+            archive.write(users_snapshot, "data/users.sqlite3")
+            invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
+            if invoice_dir.is_dir():
+                for item in invoice_dir.rglob("*"):
+                    if item.is_file():
+                        archive.write(item, Path("data/invoices") / item.relative_to(invoice_dir))
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+    finally:
+        shutil.rmtree(temporary_root, ignore_errors=True)
+    return archive_path
+
+
+def reencrypt_imported_mfa_secrets(
+    users_path: Path, app: Flask, *, mfa_mode: str, former_secret_key: Any
+) -> None:
+    """Move imported TOTP secrets to this installation's SECRET_KEY safely."""
+
+    if mfa_mode not in {"preserve", "reset"}:
+        raise ValueError("Ungültige Auswahl für die Zwei-Faktor-Authentifizierung.")
+    connection = db_connect(users_path)
+    try:
+        rows = connection.execute(
+            "SELECT id, username, mfa_enabled, mfa_secret_encrypted FROM users ORDER BY id"
+        ).fetchall()
+        if mfa_mode == "reset":
+            connection.execute(
+                """
+                UPDATE users
+                SET mfa_enabled = 0, mfa_secret_encrypted = NULL, mfa_pending_secret_encrypted = NULL,
+                    mfa_recovery_code_hashes_json = '[]', mfa_enrolled_at = NULL,
+                    session_version = session_version + 1
+                """
+            )
+            connection.commit()
+            return
+
+        source_fernet = mfa_fernet_for_secret(
+            str(former_secret_key).strip() or str(app.config["SECRET_KEY"])
+        )
+        target_fernet = mfa_fernet(app)
+        for row in rows:
+            if not bool(row["mfa_enabled"]):
+                connection.execute(
+                    "UPDATE users SET mfa_pending_secret_encrypted = NULL WHERE id = ?", (row["id"],)
+                )
+                continue
+            encrypted = row["mfa_secret_encrypted"]
+            try:
+                secret = source_fernet.decrypt(str(encrypted).encode("ascii")).decode("ascii") if encrypted else None
+            except (InvalidToken, UnicodeError, ValueError) as exc:
+                raise ValueError(
+                    "Die 2FA von „{}“ konnte nicht entschlüsselt werden. Bitte den bisherigen SECRET_KEY "
+                    "eingeben oder beim Import ‚2FA zurücksetzen‘ wählen.".format(row["username"])
+                ) from exc
+            if not secret:
+                raise ValueError(
+                    "Die 2FA von „{}“ ist unvollständig. Bitte beim Import ‚2FA zurücksetzen‘ wählen."
+                    .format(row["username"])
+                )
+            connection.execute(
+                """
+                UPDATE users
+                SET mfa_secret_encrypted = ?, mfa_pending_secret_encrypted = NULL
+                WHERE id = ?
+                """,
+                (target_fernet.encrypt(secret.encode("ascii")).decode("ascii"), row["id"]),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def append_legacy_import_audit(
+    connection: sqlite3.Connection, *, performed_by: str, archive_name: str, summary: dict[str, Any]
+) -> None:
+    """Record a full import without claiming that the prior account still exists."""
+
+    connection.execute(
+        """
+        INSERT INTO audit_log (created_at, user_id, user_username, action, entity_type, entity_id, details_json)
+        VALUES (?, NULL, ?, 'import_legacy_data', 'system', NULL, ?)
+        """,
+        (
+            utc_now(),
+            performed_by,
+            json.dumps({"safety_archive": archive_name, "summary": summary}, ensure_ascii=False),
+        ),
+    )
+
+
+def install_prepared_legacy_import(
+    app: Flask,
+    stage_directory: Path,
+    *,
+    former_secret_key: Any,
+    mfa_mode: str,
+    performed_by: str,
+    summary: dict[str, Any],
+) -> Path:
+    """Atomically replace both live databases and the invoice directory.
+
+    A full import is intentionally all-or-nothing: retaining a freshly created
+    account file next to an imported operational ledger would break historic
+    actor IDs.  A ZIP of all current live data is created before any path is
+    moved, and every replacement has a rollback path.
+    """
+
+    safety_archive = create_legacy_import_safety_archive(app)
+    data_parent = Path(app.config["DATABASE"]).parent
+    transition = data_parent / f".legacy-import-transition-{uuid.uuid4().hex}"
+    transition.mkdir(parents=True, exist_ok=False)
+    staged_operations = transition / "merch.sqlite3"
+    staged_users = transition / "users.sqlite3"
+    staged_invoices = transition / "invoices"
+    database_path = Path(app.config["DATABASE"])
+    users_path = Path(app.config["USERS_DATABASE"])
+    invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
+    previous_operations = transition / "previous-merch.sqlite3"
+    previous_users = transition / "previous-users.sqlite3"
+    previous_invoices = transition / "previous-invoices"
+    moved_old_operations = moved_old_users = moved_old_invoices = False
+    placed_operations = placed_users = placed_invoices = False
+    try:
+        copy_legacy_sqlite_snapshot(stage_directory / "prepared-merch.sqlite3", staged_operations)
+        copy_legacy_sqlite_snapshot(stage_directory / "prepared-users.sqlite3", staged_users)
+        reencrypt_imported_mfa_secrets(
+            staged_users, app, mfa_mode=mfa_mode, former_secret_key=former_secret_key
+        )
+        staged_invoices.mkdir()
+        source_invoices = stage_directory / "prepared-invoices"
+        if source_invoices.is_dir():
+            for item in source_invoices.iterdir():
+                if item.is_file():
+                    shutil.copy2(item, staged_invoices / item.name)
+        operations_connection = db_connect(staged_operations)
+        users_connection = db_connect(staged_users)
+        try:
+            append_legacy_import_audit(
+                operations_connection,
+                performed_by=performed_by,
+                archive_name=safety_archive.name,
+                summary=summary,
+            )
+            append_legacy_import_audit(
+                users_connection,
+                performed_by=performed_by,
+                archive_name=safety_archive.name,
+                summary=summary,
+            )
+            operations_connection.commit()
+            users_connection.commit()
+        finally:
+            operations_connection.close()
+            users_connection.close()
+
+        # The active request is the only one allowed to trigger this path.
+        # Close its request-local handles before any file move; administrators
+        # are also instructed in the UI not to use the app during the import.
+        close_db()
+        for sidecar in (
+            Path(f"{database_path}-wal"), Path(f"{database_path}-shm"),
+            Path(f"{users_path}-wal"), Path(f"{users_path}-shm"),
+        ):
+            sidecar.unlink(missing_ok=True)
+        if database_path.exists():
+            os.replace(database_path, previous_operations)
+            moved_old_operations = True
+        if users_path.exists():
+            os.replace(users_path, previous_users)
+            moved_old_users = True
+        if invoice_dir.exists():
+            os.replace(invoice_dir, previous_invoices)
+            moved_old_invoices = True
+        os.replace(staged_operations, database_path)
+        placed_operations = True
+        os.replace(staged_users, users_path)
+        placed_users = True
+        os.replace(staged_invoices, invoice_dir)
+        placed_invoices = True
+        initialise_operations_database(app)
+        initialise_users_database(app)
+    except Exception:
+        # Roll back every file that was already moved.  The safety archive is
+        # intentionally kept even if this local rollback succeeds.
+        close_db()
+        if placed_operations:
+            database_path.unlink(missing_ok=True)
+        if placed_users:
+            users_path.unlink(missing_ok=True)
+        if placed_invoices:
+            shutil.rmtree(invoice_dir, ignore_errors=True)
+        for sidecar in (
+            Path(f"{database_path}-wal"), Path(f"{database_path}-shm"),
+            Path(f"{users_path}-wal"), Path(f"{users_path}-shm"),
+        ):
+            sidecar.unlink(missing_ok=True)
+        if moved_old_operations and previous_operations.exists():
+            os.replace(previous_operations, database_path)
+        if moved_old_users and previous_users.exists():
+            os.replace(previous_users, users_path)
+        if moved_old_invoices and previous_invoices.exists():
+            os.replace(previous_invoices, invoice_dir)
+        raise
+    finally:
+        shutil.rmtree(transition, ignore_errors=True)
+    return safety_archive
+
+
 def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
     """Calculate the article balance table and headline figures from ledgers."""
 
@@ -3304,11 +4059,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         BACKUP_DIR=str(data_dir / "backups"),
         RESET_ARCHIVE_DIR=str(data_dir / "reset-archives"),
         MIGRATION_ARCHIVE_DIR=str(data_dir / "migration-archives"),
+        LEGACY_IMPORT_STAGING_DIR=str(data_dir / "legacy-import-staging"),
+        LEGACY_IMPORT_ARCHIVE_DIR=str(data_dir / "legacy-import-archives"),
         INVOICE_UPLOAD_DIR=str(data_dir / "invoices"),
         MAX_INVOICE_FILE_BYTES=MAX_INVOICE_FILE_BYTES,
-        # Leave modest room for the multipart envelope while independently
-        # enforcing the actual 10 MB file limit in ``invoice_file_extension``.
-        MAX_CONTENT_LENGTH=MAX_INVOICE_FILE_BYTES + 1024 * 1024,
+        # A legacy import may contain two SQLite files plus an invoice archive.
+        # Regular invoice uploads remain independently capped at 10 MB.
+        MAX_CONTENT_LENGTH=MAX_LEGACY_IMPORT_BYTES + 1024 * 1024,
+        LEGACY_IMPORT_STAGING_TTL_SECONDS=LEGACY_IMPORT_STAGING_TTL_SECONDS,
         BACKUP_RETENTION_DAYS=int(os.environ.get("BACKUP_RETENTION_DAYS", "90")),
         ADMIN_USERNAME=os.environ.get("ADMIN_USERNAME", "admin"),
         ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD", "replace-this-password"),
@@ -3338,6 +4096,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         app.config["USERS_DATABASE"] = str(database_parent / "users.sqlite3")
     if not test_config or "MIGRATION_ARCHIVE_DIR" not in test_config:
         app.config["MIGRATION_ARCHIVE_DIR"] = str(Path(app.config["DATABASE"]).parent / "migration-archives")
+    if not test_config or "LEGACY_IMPORT_STAGING_DIR" not in test_config:
+        app.config["LEGACY_IMPORT_STAGING_DIR"] = str(
+            Path(app.config["DATABASE"]).parent / "legacy-import-staging"
+        )
+    if not test_config or "LEGACY_IMPORT_ARCHIVE_DIR" not in test_config:
+        app.config["LEGACY_IMPORT_ARCHIVE_DIR"] = str(
+            Path(app.config["DATABASE"]).parent / "legacy-import-archives"
+        )
     if version_tuple(str(app.config["APP_VERSION"])) is None:
         raise RuntimeError("APP_VERSION muss dem Format vX.Y.Z entsprechen, zum Beispiel v0.3.0.")
     if app.config["SECRET_KEY"] == "development-only-change-me" and not app.config.get("TESTING"):
@@ -3348,7 +4114,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     Path(app.config["BACKUP_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["RESET_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["MIGRATION_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(app.config["LEGACY_IMPORT_STAGING_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(app.config["LEGACY_IMPORT_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["INVOICE_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
+    app.extensions["legacy_import_lock"] = Lock()
     initialise_database(app)
     app.teardown_appcontext(close_db)
 
@@ -3854,7 +4623,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return users
 
     def render_administration(
-        *, setup_credential: dict[str, str] | None = None, reset_archive_name: str | None = None
+        *,
+        setup_credential: dict[str, str] | None = None,
+        reset_archive_name: str | None = None,
+        legacy_import_preview: dict[str, Any] | None = None,
     ):
         return render_template(
             "admin.html",
@@ -3863,6 +4635,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             backups=operational_backup_points(app),
             setup_credential=setup_credential,
             reset_archive_name=reset_archive_name,
+            legacy_import_preview=legacy_import_preview,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
         )
 
@@ -3871,6 +4644,95 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @admin_required
     def administration_page():
         return render_administration()
+
+    @app.post("/verwaltung/altdaten/vorschau")
+    @login_required
+    @admin_required
+    def preview_legacy_import():
+        """Validate uploaded unencrypted legacy files without changing live data."""
+
+        lock = app.extensions["legacy_import_lock"]
+        if not lock.acquire(blocking=False):
+            flash("Ein anderer Altdaten-Import wird gerade vorbereitet. Bitte kurz warten.", "error")
+            return redirect(url_for("administration_page"))
+        try:
+            manifest = stage_legacy_import(
+                app,
+                merchandise_file=request.files.get("merchandise_database"),
+                users_file=request.files.get("users_database"),
+                invoices_file=request.files.get("invoices_archive"),
+            )
+            summary = manifest["summary"]
+            preview = {
+                "token": manifest["token"],
+                "summary": summary,
+                "expires_at": datetime.fromtimestamp(
+                    float(manifest["created_at"]) + int(app.config["LEGACY_IMPORT_STAGING_TTL_SECONDS"])
+                ).strftime("%d.%m.%Y %H:%M"),
+            }
+            flash("Die Altdaten wurden geprüft. Bitte die Vorschau kontrollieren und den Import ausdrücklich bestätigen.", "success")
+            return render_administration(legacy_import_preview=preview)
+        except (ValueError, sqlite3.DatabaseError, OSError) as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("administration_page"))
+        except Exception:
+            current_app.logger.exception("Could not prepare legacy import")
+            flash("Die Altdaten konnten nicht vorbereitet werden. Die bestehende Installation wurde nicht verändert.", "error")
+            return redirect(url_for("administration_page"))
+        finally:
+            lock.release()
+
+    @app.post("/verwaltung/altdaten/importieren")
+    @login_required
+    @admin_required
+    def import_legacy_data():
+        """Replace all data with the previously previewed legacy installation."""
+
+        if request.form.get("confirmation", "").strip() != "ALTDATEN IMPORTIEREN":
+            flash("Bitte die Bestätigung exakt als „ALTDATEN IMPORTIEREN“ eingeben.", "error")
+            return redirect(url_for("administration_page"))
+        lock = app.extensions["legacy_import_lock"]
+        if not lock.acquire(blocking=False):
+            flash("Ein anderer Altdaten-Import läuft bereits. Bitte nicht mehrfach bestätigen.", "error")
+            return redirect(url_for("administration_page"))
+        try:
+            stage_directory, manifest = prepared_legacy_import(app, request.form.get("import_token"))
+            summary = manifest["summary"]
+            admin = verify_admin_sensitive_action(
+                get_user_db(),
+                password=request.form.get("password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="import_legacy_data",
+            )
+            safety_archive = install_prepared_legacy_import(
+                app,
+                stage_directory,
+                former_secret_key=request.form.get("former_secret_key"),
+                mfa_mode=str(request.form.get("mfa_mode") or "preserve"),
+                performed_by=str(admin["username"]),
+                summary=summary,
+            )
+            shutil.rmtree(stage_directory, ignore_errors=True)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("administration_page"))
+        except Exception:
+            current_app.logger.exception("Could not import legacy data")
+            flash(
+                "Die Altdaten konnten nicht übernommen werden. Die bisherige Installation und die "
+                "angelegte Sicherheitskopie bleiben erhalten.",
+                "error",
+            )
+            return redirect(url_for("administration_page"))
+        finally:
+            lock.release()
+        session.clear()
+        flash(
+            "Die Altdaten wurden vollständig übernommen. Die vorherige Installation liegt zusätzlich in „{}“. "
+            "Bitte jetzt mit einem importierten Benutzerkonto erneut anmelden.".format(safety_archive.name),
+            "success",
+        )
+        return redirect(url_for("login"))
 
     @app.post("/verwaltung/benutzer")
     @login_required
@@ -5264,6 +6126,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.errorhandler(RequestEntityTooLarge)
     def invoice_request_too_large(_: RequestEntityTooLarge):
         message = "Die Rechnungsdatei darf höchstens 10 MB groß sein."
+        if request.path == "/verwaltung/altdaten/vorschau":
+            message = "Die Altdaten-Dateien dürfen zusammen höchstens 128 MB groß sein."
         if request.path.startswith("/api/"):
             return jsonify({"ok": False, "error": message}), 413
         return render_template("error.html", title="Datei zu groß", message=message), 413
