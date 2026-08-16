@@ -1,4 +1,19 @@
 {% extends "base.html" %}
+{% macro sort_header(view, key, label) -%}
+<th data-balance-sort-header data-balance-view="{{ view }}" data-balance-sort-key="{{ key }}" aria-sort="none"><button class="balance-sort-button" type="button" data-balance-sort-key="{{ key }}" data-balance-view="{{ view }}">{{ label }} <span aria-hidden="true" data-balance-sort-icon>↕</span></button></th>
+{%- endmacro %}
+{% macro balance_headers(view) -%}
+<thead><tr>{{ sort_header(view, 'article_name', 'Artikel') }}{{ sort_header(view, 'purchased_quantity', 'Gekauft') }}{{ sort_header(view, 'sold_quantity', 'Verkauft') }}{{ sort_header(view, 'stock', 'Aktueller Bestand') }}{{ sort_header(view, 'minimum_stock', 'Mindestbestand') }}{{ sort_header(view, 'minimum_stock_warning', 'Warnung') }}{{ sort_header(view, 'no_reorder', 'Nachbestellen') }}{{ sort_header(view, 'is_available_for_sale', 'Angeboten') }}{{ sort_header(view, 'purchase_cost_cents', 'Ausgaben') }}{{ sort_header(view, 'revenue_cents', 'Umsatz') }}{{ sort_header(view, 'donation_cents', 'Spenden') }}</tr></thead>
+{%- endmacro %}
+{% macro balance_row(row) -%}
+<tr class="{{ 'low-stock-row' if row.minimum_stock_warning else '' }}"{% if row.purchased_quantity == 0 %} hidden{% endif %}><td><strong>{{ row.article_name }}</strong>{% if row.option_text %}<small class="table-subline">{{ row.option_text }}</small>{% endif %}{% if not row.is_active %}<small class="table-subline muted">Variante nicht mehr erhältlich</small>{% endif %}</td><td>{{ row.purchased_quantity }}</td><td>{{ row.sold_quantity }}</td><td class="stock-cell {{ 'out-of-stock' if row.stock == 0 else '' }}">{{ row.stock }}</td><td>{{ row.minimum_stock if row.minimum_stock is not none else '—' }}</td><td>{% if row.minimum_stock_warning %}<span class="status warning">Grenzwert erreicht</span>{% else %}—{% endif %}</td><td>{% if row.no_reorder %}<span class="status warning">nein</span>{% else %}<span class="status good">ja</span>{% endif %}</td><td>{% if row.is_available_for_sale %}<span class="status good">ja</span>{% else %}<span class="status warning">nein</span>{% endif %}</td><td>{{ row.purchase_cost_cents|money }}</td><td>{{ row.revenue_cents|money }}</td><td>{{ row.donation_cents|money }}</td></tr>
+{%- endmacro %}
+{% macro balance_table(view, rows, empty_message) -%}
+<div class="table-scroll balance-flat-table" data-balance-flat="{{ view }}"><table class="balance-table" data-balance-table="{{ view }}">{{ balance_headers(view) }}<tbody data-balance-rows="{{ view }}">{% for row in rows %}{{ balance_row(row) }}{% else %}<tr><td colspan="11" class="empty-cell">{{ empty_message }}</td></tr>{% endfor %}</tbody></table></div><div class="balance-grouped-tables" data-balance-grouped="{{ view }}" hidden></div>
+{%- endmacro %}
+{% macro ranking_card(card_id, income_title, profit_title, income_description, profit_description, items) -%}
+<article class="table-section insight-card" data-ranking-card data-ranking-card-id="{{ card_id }}"><div class="section-heading ranking-heading"><div><h2 data-ranking-title data-income-title="{{ income_title }}" data-profit-title="{{ profit_title }}">{{ income_title }}</h2><p data-ranking-description data-income-description="{{ income_description }}" data-profit-description="{{ profit_description }}">{{ income_description }}</p></div><div class="ranking-mode-toggle" role="group" aria-label="{{ income_title }} anzeigen als"><button class="ranking-mode-button active" type="button" data-ranking-mode="income" aria-pressed="true">Einnahmen</button><button class="ranking-mode-button" type="button" data-ranking-mode="profit" aria-pressed="false">Gewinn</button></div></div><ol class="ranking-list" data-ranking-list>{% for item in items %}<li data-ranking-row data-income-cents="{{ item.income_cents }}" data-profit-cents="{{ item.profit_cents }}"{% if loop.index > 5 %} hidden{% endif %}><span><strong>{{ item.label }}</strong><small>{{ item.quantity }} Stück</small></span><b data-ranking-value>{{ item.income_cents|money }}</b></li>{% else %}<li class="muted">Noch keine bezahlten Verkäufe.</li>{% endfor %}</ol></article>
+{%- endmacro %}
 {% block content %}
 <div class="page-title-row"><div><p class="eyebrow">Bestand &amp; Finanzen</p><h1>Bilanzen</h1></div><a class="secondary-button" href="{{ url_for('export_all') }}">Alle Tabellen exportieren</a></div>
 <section class="metric-grid">
@@ -20,39 +35,24 @@
       {% for item in balances.analytics.top_selling_items %}<li><span><strong>{{ item.label }}</strong><small>{{ item.quantity }} Stück · {{ item.collected_cents|money }} bezahlt</small></span><b>{{ item.quantity }}×</b></li>{% else %}<li class="muted">Noch keine aktiven Verkäufe.</li>{% endfor %}
     </ol>
   </article>
-  <article class="table-section insight-card">
-    <div class="section-heading"><div><h2>Höchste Einnahmen je Artikel</h2><p>Bezahlte Verkaufspreise inklusive Spenden.</p></div></div>
-    <ol class="ranking-list">
-      {% for item in balances.analytics.top_revenue_items %}<li><span><strong>{{ item.label }}</strong><small>{{ item.quantity }} Stück</small></span><b>{{ item.income_cents|money }}</b></li>{% else %}<li class="muted">Noch keine bezahlten Verkäufe.</li>{% endfor %}
-    </ol>
-  </article>
-  <article class="table-section insight-card">
-    <div class="section-heading"><div><h2>Stärkste Veranstaltungen</h2><p>Nach bezahlten Einnahmen.</p></div></div>
-    <ol class="ranking-list">
-      {% for item in balances.analytics.top_events %}<li><span><strong>{{ item.label }}</strong><small>{{ item.quantity }} Stück</small></span><b>{{ item.income_cents|money }}</b></li>{% else %}<li class="muted">Noch keine aktiven Verkäufe.</li>{% endfor %}
-    </ol>
-  </article>
-  <article class="table-section insight-card">
-    <div class="section-heading"><div><h2>Sales-Ranking</h2><p>Nach bezahlten Einnahmen.</p></div></div>
-    <ol class="ranking-list">
-      {% for item in balances.analytics.top_sellers %}<li><span><strong>{{ item.label }}</strong><small>{{ item.quantity }} Stück</small></span><b>{{ item.income_cents|money }}</b></li>{% else %}<li class="muted">Noch keine aktiven Verkäufe.</li>{% endfor %}
-    </ol>
-  </article>
+  {{ ranking_card('article-revenue', 'Höchste Einnahmen je Artikel', 'Höchster Gewinn je Artikel', 'Bezahlte Verkaufspreise inklusive Spenden.', 'Gewinn nach dem gewichteten Einkaufspreis der verkauften Varianten.', balances.analytics.top_revenue_items) }}
+  {{ ranking_card('events', 'Stärkste Veranstaltungen', 'Stärkste Veranstaltungen', 'Nach bezahlten Einnahmen.', 'Nach Gewinn aus bezahlten Verkäufen.', balances.analytics.top_events) }}
+  {{ ranking_card('sellers', 'Sales-Ranking', 'Sales-Ranking', 'Nach bezahlten Einnahmen.', 'Nach Gewinn aus bezahlten Verkäufen.', balances.analytics.top_sellers) }}
 </section>
 <section class="table-section income-chart-section">
   <div class="section-heading"><div><h2>Einnahmenverlauf</h2><p>Bezahlte Verkäufe und Spenden pro Verkaufsdatum.</p></div></div>
   <div id="income-chart" class="income-chart" role="img" aria-label="Einnahmenverlauf nach Verkaufsdatum"></div>
   <p id="income-chart-empty" class="muted" hidden>Noch keine bezahlten Verkäufe zum Plotten vorhanden.</p>
 </section>
-<section class="table-section">
-  <div class="section-heading ledger-heading"><div><h2>Artikelbilanz</h2><p>Bestand wird ausschließlich aus den Einkauf- und Verkaufstransaktionen berechnet.</p></div><div class="ledger-actions"><label class="table-filter">Artikel filtern
-    <input type="search" data-table-filter data-filter-targets="#balance-rows" placeholder="z. B. Cap oder Größe M" autocomplete="off">
-    <small data-filter-result-count aria-live="polite"></small>
-  </label><div class="button-group"><a class="secondary-button" href="{{ url_for('export_csv', kind='inventory') }}">Bestand CSV</a><a class="secondary-button" href="{{ url_for('export_csv', kind='articles') }}">Artikel CSV</a></div></div></div>
-  <div class="table-scroll"><table><thead><tr><th>Artikel</th><th>Gekauft</th><th>Verkauft</th><th>Aktueller Bestand</th><th>Mindestbestand</th><th>Warnung</th><th>Angeboten</th><th>Ausgaben</th><th>Umsatz</th><th>Spenden</th></tr></thead><tbody id="balance-rows">
-  {% for row in balances.rows %}<tr class="{{ 'low-stock-row' if row.minimum_stock_warning else '' }}" data-filter-row data-filter-text="{{ row.article_name }} {{ row.option_text }} {{ row.label }}"><td><strong>{{ row.article_name }}</strong>{% if row.option_text %}<small class="table-subline">{{ row.option_text }}</small>{% endif %}{% if not row.is_active %}<small class="table-subline muted">Variante nicht mehr erhältlich</small>{% endif %}</td><td>{{ row.purchased_quantity }}</td><td>{{ row.sold_quantity }}</td><td class="stock-cell {{ 'out-of-stock' if row.stock == 0 else '' }}">{{ row.stock }}</td><td>{{ row.minimum_stock if row.minimum_stock is not none else '—' }}</td><td>{% if row.minimum_stock_warning %}<span class="status warning">Grenzwert erreicht</span>{% else %}—{% endif %}</td><td>{% if row.is_available_for_sale %}<span class="status good">ja</span>{% else %}<span class="status warning">nein</span>{% endif %}</td><td>{{ row.purchase_cost_cents|money }}</td><td>{{ row.revenue_cents|money }}</td><td>{{ row.donation_cents|money }}</td></tr>{% else %}<tr><td colspan="10" class="empty-cell">Noch keine Artikelbewegungen vorhanden.</td></tr>{% endfor %}
-  </tbody></table></div>
+<section class="table-section balance-ledger-section" id="balance-ledger">
+  <div class="section-heading ledger-heading"><div><h2>Artikelbilanz</h2><p>Varianten, die weiterhin nachbestellt werden sollen. Bestand wird ausschließlich aus den Einkauf- und Verkaufstransaktionen berechnet.</p></div><div class="ledger-actions"><label class="table-filter">Artikel filtern
+    <input id="balance-filter" type="search" data-balance-filter placeholder="z. B. Cap oder Größe M" autocomplete="off">
+    <small id="balance-filter-result-count" aria-live="polite"></small>
+  </label><div class="balance-view-options"><label class="toggle-label"><input id="balance-only-purchased" type="checkbox" checked><span>Nur wirklich jemals bestellte Varianten</span></label><label class="toggle-label"><input id="balance-group-by-article" type="checkbox"><span>Artikel gruppieren</span></label></div><div class="button-group"><button class="secondary-button" type="button" data-balance-export="inventory">Bestand CSV</button><button class="secondary-button" type="button" data-balance-export="articles">Artikel CSV</button></div></div></div>
+  {{ balance_table('reorder', balances.reorder_rows, 'Noch keine Varianten zum Nachbestellen vorhanden.') }}
+  <section class="balance-table-section" aria-labelledby="obsolete-heading"><div class="section-heading"><div><h2 id="obsolete-heading">Obsolet</h2><p>Varianten, die nicht mehr nachbestellt werden sollen.</p></div></div>{{ balance_table('obsolete', balances.obsolete_rows, 'Noch keine obsoleten Varianten vorhanden.') }}</section>
 </section>
 <script id="balance-daily-income-data" type="application/json">{{ balances.analytics.daily_income|tojson }}</script>
+<script id="balance-table-data" type="application/json">{{ {'reorder': balances.reorder_rows, 'obsolete': balances.obsolete_rows}|tojson }}</script>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='table-filters.js') }}"></script><script src="{{ url_for('static', filename='balances.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='balances.js') }}"></script>{% endblock %}

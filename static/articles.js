@@ -134,6 +134,7 @@
       purchasePrice: centsToInput(variant.default_purchase_price_cents),
       minimumStock: minimumStockInputValue(variant.minimum_stock),
       isOffered: Number(variant.is_offered) !== 0,
+      noReorder: Number(variant.no_reorder) !== 0,
     });
   });
 
@@ -182,6 +183,7 @@
       purchasePrice: defaultMoneyInput(defaultPurchasePrice),
       minimumStock: applyMinimumStockValue.value,
       isOffered: true,
+      noReorder: false,
     };
     variantStateByKey.set(combination.key, fresh);
     return fresh;
@@ -194,10 +196,12 @@
       const sale = row.querySelector('[data-variant-field="sale-price"]');
       const purchase = row.querySelector('[data-variant-field="purchase-price"]');
       const minimum = row.querySelector('[data-variant-field="minimum-stock"]');
+      const noReorder = row.querySelector('[data-variant-field="no-reorder"]');
       const notOffered = row.querySelector('[data-variant-field="not-offered"]');
       if (sale) state.salePrice = sale.value;
       if (purchase) state.purchasePrice = purchase.value;
       if (minimum) state.minimumStock = minimum.value;
+      if (noReorder) state.noReorder = noReorder.checked;
       if (notOffered) state.isOffered = !notOffered.checked;
     });
   }
@@ -261,7 +265,7 @@
     if (!combinations.length) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
-      cell.colSpan = 7;
+      cell.colSpan = 8;
       cell.className = "empty-cell";
       cell.textContent = "Ergänze mindestens einen Wert je Option. Dann zeigt die Tabelle sofort die entstehenden Varianten.";
       row.append(cell);
@@ -325,6 +329,14 @@
         disabled: !savedVariant,
         checked: !state.isOffered,
       });
+      const noReorderInput = variantInput({
+        className: "",
+        type: "checkbox",
+        name: savedVariant ? `no_reorder_${state.id}` : "",
+        field: "no-reorder",
+        disabled: !savedVariant,
+        checked: state.noReorder,
+      });
 
       row.append(
         labelCell,
@@ -333,6 +345,7 @@
         cellWith(purchaseInput),
         cellWith(minimumInput),
         warningCell,
+        cellWith(noReorderInput),
         cellWith(notOfferedInput)
       );
       variantBody.append(row);

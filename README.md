@@ -42,11 +42,17 @@ Bestand, Bilanz und CSV-Export.
   verschwinden sofort aus dem Verkaufsfenster, bleiben aber für Einkäufe,
   Bilanzen und Exporte verfügbar.
 - **Bilanzen:** gekauft, verkauft und Bestand je Variante sowie Ausgaben,
-  Umsatz, Spenden, Saldo und Angebotsstatus. Pro Variante lassen sich optionale
+  Umsatz, Spenden, Saldo und Angebotsstatus. Varianten werden getrennt nach
+  „nachbestellen“ und „obsolet“ angezeigt; beide Tabellen lassen sich
+  alphanumerisch sortieren, filtern und bei Bedarf nach Artikel gruppieren.
+  Die sichtbare Sortierung, Filterung und Gruppierung wird in den Bestands- und
+  Artikel-CSV-Export übernommen. Pro Variante lassen sich optionale
   Mindestbestände hinterlegen; unterschrittene Grenzwerte werden in der Bilanz
   und vor einem direkten Verkauf hervorgehoben. Zusätzlich zeigen Ranglisten
   die meistverkauften und umsatzstärksten Artikel, Veranstaltungen und
-  Verkäufer; ein lokales Diagramm zeichnet den Einnahmenverlauf pro Datum.
+  Verkäufer; die drei Geld-Ranglisten lassen sich zwischen Einnahmen und
+  Gewinn umschalten. Ein lokales Diagramm zeichnet den Einnahmenverlauf pro
+  Datum.
 - **Schnelles Finden & Mobilansicht:** Historie, Einkäufe, offene Vorgänge,
   Bilanzen und Artikelliste lassen sich direkt nach Begriffen wie Artikel,
   Veranstaltung oder Verkäufer filtern. Auf Smartphones sind Pinch-Zoom und
@@ -90,7 +96,10 @@ Varianten erzeugt, etwa `Geometry Shirt — Farbe: schwarz · Größe: M`.
 
 Jede Variante kann einen abweichenden Verkaufspreis, Standard-Einkaufspreis
 und Mindestbestand haben. Das ist wichtig, weil beispielsweise Pullover oder
-Sondergrößen einen anderen Preis haben können. Ein Mindestbestand kann zuerst
+Sondergrößen einen anderen Preis haben können. Sie kann außerdem als
+**nicht nachbestellen** markiert werden; dann erscheint sie getrennt als
+obsolet, bleibt aber weiterhin vollständig in Bestand und Historie sichtbar.
+Ein Mindestbestand kann zuerst
 mit einem Klick auf alle Varianten eines Artikels übertragen und danach für
 einzelne Varianten überschrieben werden. Ein leeres Feld deaktiviert die
 Warnung; `0` bedeutet, dass erst bei ausverkauftem Bestand gewarnt wird.

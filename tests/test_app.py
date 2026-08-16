@@ -870,7 +870,7 @@ class MerchAppTestCase(unittest.TestCase):
             self.assertEqual(session["user_session_version"], user["session_version"])
 
     def test_balance_analytics_rank_active_paid_sales_and_render_filters(self) -> None:
-        """Insights ignore cancellations/open invoices and expose the local table search UI."""
+        """Insights expose income/profit values and the local balance controls."""
 
         shirt_variant = self.seed_variant("Analytics Shirt")
         hoodie_variant = self.seed_variant("Analytics Hoodie")
@@ -915,8 +915,11 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(analytics["top_selling_items"][0]["label"], "Analytics Shirt")
         self.assertEqual(analytics["top_selling_items"][0]["quantity"], 3)
         self.assertEqual(analytics["top_revenue_items"][0]["label"], "Analytics Shirt")
+        self.assertEqual(analytics["top_revenue_items"][0]["profit_cents"], 3200)
         self.assertEqual(analytics["top_events"][0]["label"], "Langeln")
+        self.assertEqual(analytics["top_events"][0]["profit_cents"], 3200)
         self.assertEqual(analytics["top_sellers"][0]["label"], "Tim")
+        self.assertEqual(analytics["top_sellers"][0]["profit_cents"], 3200)
         self.assertEqual(analytics["daily_income"], [{"date": "2026-08-14", "income_cents": 6500}, {"date": "2026-08-15", "income_cents": 0}])
 
         balances_html = self.client.get("/bilanzen").get_data(as_text=True)
@@ -925,7 +928,10 @@ class MerchAppTestCase(unittest.TestCase):
         operations_html = self.client.get("/vorgaenge").get_data(as_text=True)
         articles_html = self.client.get("/artikelverwaltung").get_data(as_text=True)
         self.assertIn("Einnahmenverlauf", balances_html)
-        self.assertIn('data-table-filter', balances_html)
+        self.assertIn('data-balance-filter', balances_html)
+        self.assertIn('data-balance-sort-key', balances_html)
+        self.assertIn('data-balance-export="inventory"', balances_html)
+        self.assertIn('data-ranking-mode="profit"', balances_html)
         self.assertIn('data-table-filter', history_html)
         self.assertIn('data-table-filter', purchases_html)
         self.assertIn('data-table-filter', operations_html)
@@ -1967,6 +1973,7 @@ class MerchAppTestCase(unittest.TestCase):
             "default_sale_price": "20,00",
             "default_purchase_price": "11,00",
             "options_json": json.dumps(option_payload),
+            f"no_reorder_{variant_id}": "on",
             f"not_offered_{variant_id}": "on",
         }
         response = self.client.post(
@@ -1979,10 +1986,18 @@ class MerchAppTestCase(unittest.TestCase):
         with self.app.app_context():
             connection = get_db()
             self.assertFalse(connection.execute("SELECT is_offered FROM variants WHERE id = ?", (variant_id,)).fetchone()[0])
+            self.assertTrue(connection.execute("SELECT no_reorder FROM variants WHERE id = ?", (variant_id,)).fetchone()[0])
             _, article_headers, article_rows = csv_rows(connection, "articles")
+            _, inventory_headers, inventory_rows = csv_rows(connection, "inventory")
             balances = balance_payload(connection)
         balance_row = next(row for row in balances["rows"] if row["variant_id"] == variant_id)
         self.assertFalse(balance_row["is_available_for_sale"])
+        self.assertTrue(balance_row["no_reorder"])
+        self.assertEqual([variant_id], [row["variant_id"] for row in balances["obsolete_rows"]])
+        self.assertEqual([], balances["reorder_rows"])
+        self.assertIn("Nachbestellen", article_headers)
+        self.assertIn("Nachbestellen", inventory_headers)
+        self.assertEqual("nein", next(row for row in inventory_rows if row[0] == "Test Shirt")[inventory_headers.index("Nachbestellen")])
         self.assertEqual(
             next(row for row in article_rows if row[2] == variant_id)[article_headers.index("Angeboten")], "nein"
         )

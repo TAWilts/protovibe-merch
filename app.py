@@ -2580,7 +2580,7 @@ def variant_label_map(
     params: list[Any] = []
     sql = """
         SELECT v.id, v.article_id, v.option_value_ids_json, v.sale_price_cents,
-               v.default_purchase_price_cents, v.minimum_stock, v.is_offered, v.is_active,
+               v.default_purchase_price_cents, v.minimum_stock, v.is_offered, v.no_reorder, v.is_active,
                a.name AS article_name, a.is_offered AS article_is_offered,
                a.is_active AS article_is_active
         FROM variants v
@@ -3334,6 +3334,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
                         "ja" if variant["minimum_stock_warning"] else "nein",
                         variant["sale_price_cents"] / 100,
                         variant["default_purchase_price_cents"] / 100,
+                        "nein" if variant["no_reorder"] else "ja",
                         "ja" if article["is_offered"] and variant["is_offered"] else "nein",
                         "aktiv" if variant["is_active"] else "inaktiv",
                     ]
@@ -3342,7 +3343,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
             "artikel",
             [
                 "Artikel-ID", "Artikel", "Varianten-ID", "Optionen", "Bestand", "Mindestbestand",
-                "Mindestbestandswarnung", "Verkaufspreis", "Standard-Einkaufspreis", "Angeboten", "Status",
+                "Mindestbestandswarnung", "Verkaufspreis", "Standard-Einkaufspreis", "Nachbestellen", "Angeboten", "Status",
             ],
             rows,
         )
@@ -3404,6 +3405,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
                     label["article_name"], label["option_text"], purchased, sold, current_stock,
                     "" if minimum_stock is None else minimum_stock,
                     "ja" if is_at_or_below_minimum_stock(current_stock, minimum_stock) else "nein",
+                    "nein" if label["no_reorder"] else "ja",
                     "ja" if label["article_is_offered"] and label["is_offered"] else "nein",
                 ]
             )
@@ -3411,7 +3413,7 @@ def csv_rows(connection: sqlite3.Connection, kind: str) -> tuple[str, list[str],
             "bestand",
             [
                 "Artikel", "Optionen", "Gekauft", "Verkauft", "Aktueller Bestand", "Mindestbestand",
-                "Mindestbestandswarnung", "Angeboten",
+                "Mindestbestandswarnung", "Nachbestellen", "Angeboten",
             ],
             rows,
         )
@@ -4510,6 +4512,9 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
                 "revenue_cents": int(sale_row["revenue"]),
                 "collected_cents": int(sale_row["collected"]),
                 "donation_cents": int(sale_row["donation"]),
+                "sale_price_cents": int(label["sale_price_cents"]),
+                "default_purchase_price_cents": int(label["default_purchase_price_cents"]),
+                "no_reorder": bool(label["no_reorder"]),
                 "is_offered": bool(label["is_offered"]),
                 "article_is_offered": bool(label["article_is_offered"]),
                 "is_available_for_sale": bool(
@@ -4522,6 +4527,8 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
             }
         )
     rows.sort(key=lambda item: (item["article_name"].casefold(), item["option_text"].casefold()))
+    reorder_rows = [row for row in rows if not row["no_reorder"]]
+    obsolete_rows = [row for row in rows if row["no_reorder"]]
 
     total_purchase_cost = sum(row["purchase_cost_cents"] for row in rows)
     total_revenue = sum(row["revenue_cents"] for row in rows)
@@ -4538,6 +4545,12 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
     # disappear from this overview just as it already does from stock and
     # financial totals. Money rankings use cash marked as received; open
     # invoices remain visible in the dedicated headline metric above.
+    #
+    # Profit uses the weighted average of the purchase ledger for a variant.
+    # If a variant has never been bought, its maintained standard purchase
+    # price is the best available cost estimate.  This keeps rankings useful
+    # for pre-orders without pretending that the current stock is consumed in
+    # strict FIFO order.
     top_selling_items = [
         dict(row)
         for row in connection.execute(
@@ -4556,56 +4569,85 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
             """
         ).fetchall()
     ]
+    cost_basis_cte = """
+        WITH cost_basis AS (
+            SELECT v.id AS variant_id,
+                   CASE WHEN COALESCE(SUM(p.quantity), 0) > 0
+                        THEN CAST(ROUND(
+                            CAST(SUM(p.quantity * p.unit_cost_cents) AS REAL) / SUM(p.quantity)
+                        ) AS INTEGER)
+                        ELSE v.default_purchase_price_cents
+                   END AS unit_cost_cents
+            FROM variants v
+            LEFT JOIN purchases p ON p.variant_id = v.id
+            GROUP BY v.id, v.default_purchase_price_cents
+        )
+    """
     top_revenue_items = [
         dict(row)
         for row in connection.execute(
-            """
+            cost_basis_cte
+            + """
             SELECT a.name AS label,
                    COALESCE(SUM(s.quantity), 0) AS quantity,
                    COALESCE(SUM(CASE WHEN s.is_paid = 1
                                      THEN s.amount_due_cents + s.donation_cents
-                                     ELSE 0 END), 0) AS income_cents
+                                     ELSE 0 END), 0) AS income_cents,
+                   COALESCE(SUM(CASE WHEN s.is_paid = 1
+                                     THEN s.amount_due_cents + s.donation_cents
+                                          - s.quantity * cost_basis.unit_cost_cents
+                                     ELSE 0 END), 0) AS profit_cents
             FROM sales s
             JOIN variants v ON v.id = s.variant_id
             JOIN articles a ON a.id = v.article_id
+            JOIN cost_basis ON cost_basis.variant_id = s.variant_id
             WHERE s.is_cancelled = 0
             GROUP BY a.id, a.name
-            ORDER BY income_cents DESC, quantity DESC, a.name COLLATE NOCASE
-            LIMIT 5
+            ORDER BY income_cents DESC, profit_cents DESC, quantity DESC, a.name COLLATE NOCASE
             """
         ).fetchall()
     ]
     top_events = [
         dict(row)
         for row in connection.execute(
-            """
+            cost_basis_cte
+            + """
             SELECT COALESCE(NULLIF(TRIM(s.event_name), ''), 'Ohne Veranstaltung') AS label,
                    COALESCE(SUM(s.quantity), 0) AS quantity,
                    COALESCE(SUM(CASE WHEN s.is_paid = 1
                                      THEN s.amount_due_cents + s.donation_cents
-                                     ELSE 0 END), 0) AS income_cents
+                                     ELSE 0 END), 0) AS income_cents,
+                   COALESCE(SUM(CASE WHEN s.is_paid = 1
+                                     THEN s.amount_due_cents + s.donation_cents
+                                          - s.quantity * cost_basis.unit_cost_cents
+                                     ELSE 0 END), 0) AS profit_cents
             FROM sales s
+            JOIN cost_basis ON cost_basis.variant_id = s.variant_id
             WHERE s.is_cancelled = 0
             GROUP BY COALESCE(NULLIF(TRIM(s.event_name), ''), 'Ohne Veranstaltung')
-            ORDER BY income_cents DESC, quantity DESC, label COLLATE NOCASE
-            LIMIT 5
+            ORDER BY income_cents DESC, profit_cents DESC, quantity DESC, label COLLATE NOCASE
             """
         ).fetchall()
     ]
     top_sellers = [
         dict(row)
         for row in connection.execute(
-            """
+            cost_basis_cte
+            + """
             SELECT COALESCE(NULLIF(TRIM(s.sold_by), ''), 'Nicht angegeben') AS label,
                    COALESCE(SUM(s.quantity), 0) AS quantity,
                    COALESCE(SUM(CASE WHEN s.is_paid = 1
                                      THEN s.amount_due_cents + s.donation_cents
-                                     ELSE 0 END), 0) AS income_cents
+                                     ELSE 0 END), 0) AS income_cents,
+                   COALESCE(SUM(CASE WHEN s.is_paid = 1
+                                     THEN s.amount_due_cents + s.donation_cents
+                                          - s.quantity * cost_basis.unit_cost_cents
+                                     ELSE 0 END), 0) AS profit_cents
             FROM sales s
+            JOIN cost_basis ON cost_basis.variant_id = s.variant_id
             WHERE s.is_cancelled = 0
             GROUP BY COALESCE(NULLIF(TRIM(s.sold_by), ''), 'Nicht angegeben')
-            ORDER BY income_cents DESC, quantity DESC, label COLLATE NOCASE
-            LIMIT 5
+            ORDER BY income_cents DESC, profit_cents DESC, quantity DESC, label COLLATE NOCASE
             """
         ).fetchall()
     ]
@@ -4626,6 +4668,8 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
     ]
     return {
         "rows": rows,
+        "reorder_rows": reorder_rows,
+        "obsolete_rows": obsolete_rows,
         "summary": {
             "purchase_cost_cents": total_purchase_cost,
             "revenue_cents": total_revenue,
@@ -6911,6 +6955,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 "UPDATE variants SET is_offered = 1, updated_at = ? WHERE article_id = ? AND is_active = 1",
                 (utc_now(), article_id),
             )
+            # Reordering is an independent lifecycle decision: an obsolete
+            # variant may remain offered until its remaining stock is sold.
+            # Reset all active rows first because unchecked HTML checkboxes are
+            # omitted from the submitted form.
+            connection.execute(
+                "UPDATE variants SET no_reorder = 0, updated_at = ? WHERE article_id = ? AND is_active = 1",
+                (utc_now(), article_id),
+            )
             # Variant price overrides arrive as regular form fields, so prices
             # still survive if JavaScript is unavailable during a save.
             for key, value in request.form.items():
@@ -6929,6 +6981,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                         connection.execute(
                             "UPDATE variants SET is_offered = 0, updated_at = ? WHERE id = ? AND article_id = ?",
                             (utc_now(), int(not_offered_match.group(1)), article_id),
+                        )
+                    no_reorder_match = re.fullmatch(r"no_reorder_(\d+)", key)
+                    if no_reorder_match:
+                        connection.execute(
+                            "UPDATE variants SET no_reorder = 1, updated_at = ? WHERE id = ? AND article_id = ?",
+                            (utc_now(), int(no_reorder_match.group(1)), article_id),
                         )
                     continue
                 field, variant_id = match.groups()
