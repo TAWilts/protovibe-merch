@@ -16,6 +16,7 @@ import json
 import os
 import sqlite3
 import sys
+from getpass import getpass
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -36,12 +37,16 @@ from app import (
     apply_option_configuration,
     csv_bytes,
     csv_rows,
+    database_encryption_enabled,
     db_connect,
+    load_database_encryption_metadata,
     money_to_cents,
+    _unwrap_database_key,
     sorted_combination_key,
     sync_variants,
     utc_now,
 )
+from flask import Flask
 
 
 TABLE_NS = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
@@ -174,19 +179,22 @@ def ensure_empty_database(connection: sqlite3.Connection) -> None:
         raise RuntimeError(f"Der Import braucht eine leere Datenbank ({details}).")
 
 
-def create_initial_backup(connection: sqlite3.Connection, database: Path) -> None:
+def create_initial_backup(connection: sqlite3.Connection, database: Path, *, app: Flask | None = None) -> None:
     """Snapshot the freshly imported state before any later manual changes."""
 
     backup_dir = database.parent / "backups" / f"initial-import-{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
     backup_dir.mkdir(parents=True)
-    destination = sqlite3.connect(backup_dir / "merch.sqlite3")
+    destination = db_connect(backup_dir / "merch.sqlite3", app=app)
     try:
         connection.backup(destination)
     finally:
         destination.close()
-    for kind in ("articles", "sales", "purchases", "inventory"):
-        filename, headers, rows = csv_rows(connection, kind)
-        (backup_dir / f"{filename}.csv").write_bytes(csv_bytes(headers, rows))
+    # CSV files would be unencrypted. Keep them as deliberate browser exports
+    # instead of silently putting them next to an encrypted backup.
+    if not database_encryption_enabled(app):
+        for kind in ("articles", "sales", "purchases", "inventory"):
+            filename, headers, rows = csv_rows(connection, kind)
+            (backup_dir / f"{filename}.csv").write_bytes(csv_bytes(headers, rows))
 
 
 def has_header(rows: list[list[dict[str, str | None]]], header: str) -> bool:
@@ -196,7 +204,7 @@ def has_header(rows: list[list[dict[str, str | None]]], header: str) -> bool:
 
 
 def import_normalised_sheets(
-    sheets: dict[str, list[list[dict[str, str | None]]]], database: Path
+    sheets: dict[str, list[list[dict[str, str | None]]]], database: Path, *, app: Flask | None = None
 ) -> None:
     """Import the cleaned ODS with explicit variant IDs and dynamic options.
 
@@ -248,7 +256,7 @@ def import_normalised_sheets(
             }
         )
 
-    connection = db_connect(database)
+    connection = db_connect(database, app=app)
     try:
         ensure_empty_database(connection)
         connection.execute("BEGIN IMMEDIATE")
@@ -424,7 +432,7 @@ def import_normalised_sheets(
             imported_sales += 1
 
         connection.commit()
-        create_initial_backup(connection, database)
+        create_initial_backup(connection, database, app=app)
         print(
             f"Import abgeschlossen: {len(entries_by_article)} Artikel, "
             f"{imported_purchases} Einkaufspositionen in {len(purchase_receipts_by_date)} Warenkörben, "
@@ -437,15 +445,15 @@ def import_normalised_sheets(
         connection.close()
 
 
-def import_file(path: Path, database: Path) -> None:
+def import_file(path: Path, database: Path, *, app: Flask | None = None) -> None:
     sheets = read_ods(path)
     if has_header(sheets.get("Artikel", []), "Varianten-ID"):
-        import_normalised_sheets(sheets, database)
+        import_normalised_sheets(sheets, database, app=app)
         return
     article_headers, article_rows = find_records(sheets["Artikel"], "Name")
     purchase_headers, purchase_rows = find_records(sheets["Einkäufe"], "Artikel")
     sale_headers, sale_rows = find_records(sheets["Verkäufe"], "Artikel")
-    connection = db_connect(database)
+    connection = db_connect(database, app=app)
     try:
         ensure_empty_database(connection)
         connection.execute("BEGIN IMMEDIATE")
@@ -583,7 +591,7 @@ def import_file(path: Path, database: Path) -> None:
             imported_sales += 1
 
         connection.commit()
-        create_initial_backup(connection, database)
+        create_initial_backup(connection, database, app=app)
         print(
             f"Import abgeschlossen: {len(entries_by_article)} Artikel, "
             f"{imported_purchases} Einkaufspositionen in {len(purchase_receipts_by_date)} Warenkörben, "
@@ -596,18 +604,49 @@ def import_file(path: Path, database: Path) -> None:
         connection.close()
 
 
+def encrypted_import_context(database: Path) -> Flask:
+    """Build the minimal in-memory context needed for a one-off ODS import.
+
+    The unlock passphrase is read interactively, never from the command line
+    or .env.  The normal web application is deliberately not started here.
+    """
+
+    context = Flask("protovibe-ods-import")
+    data_dir = database.parent
+    context.config.from_mapping(
+        DATABASE=str(database),
+        USERS_DATABASE=str(data_dir / "users.sqlite3"),
+        DATABASE_ENCRYPTION_ENABLED=True,
+        DATABASE_ENCRYPTION_METADATA=str(data_dir / "encryption.json"),
+        BACKUP_DIR=str(data_dir / "backups"),
+    )
+    metadata = load_database_encryption_metadata(context)
+    if metadata is None or not metadata.get("databases_ready"):
+        raise SystemExit(
+            "Die Verschlüsselung ist noch nicht vollständig eingerichtet. Öffne zuerst die Weboberfläche."
+        )
+    passphrase = getpass("Datenbank-Passphrase: ")
+    try:
+        context.extensions["database_encryption_key"] = _unwrap_database_key(metadata["passphrase"], passphrase)
+    except (ValueError, KeyError):
+        raise SystemExit("Die Datenbank-Passphrase ist nicht korrekt.")
+    return context
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Aufruf: python scripts/import_ods.py /import/deine-merch-tabelle.ods")
     source = Path(sys.argv[1])
     if not source.is_file():
         raise SystemExit(f"Nicht gefunden: {source}")
-    data_dir = Path(os.environ.get("DATA_DIR", ".\\data"))
-    print(f"Importiere {source} in {data_dir}\\merch.sqlite3 ...")
+    # Docker provides DATA_DIR=/data. Direct local invocations use app.py's
+    # repository-local data/ directory without extra environment variables.
+    data_dir = Path(os.environ.get("DATA_DIR", REPOSITORY_ROOT / "data"))
     database = data_dir / "merch.sqlite3"
     if not database.is_file():
         raise SystemExit("Die Anwendung muss einmal gestartet sein, bevor der Import ausgeführt wird.")
-    import_file(source, database)
+    context = encrypted_import_context(database) if (data_dir / "encryption.json").is_file() else None
+    import_file(source, database, app=context)
 
 
 if __name__ == "__main__":

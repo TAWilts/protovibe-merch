@@ -19,6 +19,7 @@ directly to the public internet.
 from __future__ import annotations
 
 import base64
+import binascii
 import csv
 import hashlib
 import io
@@ -51,6 +52,7 @@ from flask import (
     current_app,
     flash,
     g,
+    has_app_context,
     jsonify,
     redirect,
     render_template,
@@ -63,8 +65,14 @@ from flask import (
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.exceptions import RequestEntityTooLarge
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 import pyotp
 import qrcode
+
+try:  # The legacy ODS helper can still give a useful install error without it.
+    from sqlcipher3 import dbapi2 as sqlcipher
+except ImportError:  # pragma: no cover - deployment configuration, not business rules.
+    sqlcipher = None
 
 
 USERS_SCHEMA_SQL = """
@@ -310,6 +318,14 @@ SYNC_EVENT_METADATA_FIELDS = frozenset(
 class SyncEventConflict(Exception):
     """A reused offline event ID describes a different transaction."""
 
+
+class DatabaseEncryptionError(RuntimeError):
+    """The on-disk encryption configuration is invalid or unavailable."""
+
+
+class DatabaseLockedError(DatabaseEncryptionError):
+    """A database connection was requested before the encrypted store was unlocked."""
+
 # ``is_received`` remains a useful, compact accounting flag.  The additional
 # state is only needed when a sale must be sent later: a shipment can be open,
 # sent, and eventually received.  Keeping ``not_applicable`` separate prevents
@@ -337,6 +353,22 @@ MAX_LEGACY_IMPORT_INVOICE_BYTES = 256 * 1024 * 1024
 MAX_LEGACY_IMPORT_INVOICE_FILES = 500
 LEGACY_IMPORT_STAGING_TTL_SECONDS = 60 * 60
 LEGACY_IMPORT_TOKEN_PATTERN = re.compile(r"^[a-f0-9]{32}$")
+
+# SQLCipher encrypts the complete SQLite files (including WAL pages).  The
+# generated 256-bit database key is never written to disk in plaintext.  It is
+# wrapped once with the administrator's unlock passphrase and once with a
+# separately generated recovery key.  SECRET_KEY deliberately remains outside
+# this mechanism: it continues to sign browser sessions and encrypt TOTP
+# secrets, but is not a database key.
+DATABASE_ENCRYPTION_METADATA_VERSION = 1
+DATABASE_ENCRYPTION_KEY_BYTES = 32
+DATABASE_ENCRYPTION_SCRYPT_N = 2**15
+DATABASE_ENCRYPTION_SCRYPT_R = 8
+DATABASE_ENCRYPTION_SCRYPT_P = 1
+DATABASE_ENCRYPTION_SALT_BYTES = 16
+DATABASE_ENCRYPTION_RECOVERY_PREFIX = "PVM-RK1"
+DATABASE_ENCRYPTION_RECOVERY_TOKEN_BYTES = 30
+DATABASE_ENCRYPTION_PENDING_RECOVERY_TTL_SECONDS = 15 * 60
 
 # These values are intentionally only used when a *new* article is created.
 # Existing articles can have completely different option groups (for example a
@@ -959,15 +991,97 @@ def invoice_file_extension(uploaded_file: Any | None) -> str | None:
     return extension
 
 
-def invoice_storage_path(filename: str | None) -> Path | None:
-    """Resolve a stored invoice name without allowing path traversal."""
+def invoice_storage_path(
+    filename: str | None,
+    *,
+    directory: str | Path | None = None,
+    app: Flask | None = None,
+) -> Path | None:
+    """Resolve a managed invoice path without allowing traversal or plaintext leakage.
+
+    Database rows keep the original PDF/image filename.  In an encrypted
+    installation the physical file has an additional ``.enc`` suffix, so old
+    rows and legacy-import validation remain independent of the storage format.
+    """
 
     if not filename:
         return None
     safe_name = Path(str(filename)).name
     if safe_name != str(filename) or Path(safe_name).suffix.lower() not in ALLOWED_INVOICE_FILE_EXTENSIONS:
         return None
-    return Path(current_app.config["INVOICE_UPLOAD_DIR"]) / safe_name
+    configured_app = app
+    if configured_app is None and has_app_context():
+        configured_app = current_app._get_current_object()
+    if directory is None:
+        if configured_app is None:
+            raise RuntimeError("Für den Rechnungs-Speicher fehlt die Anwendungskonfiguration.")
+        directory = configured_app.config["INVOICE_UPLOAD_DIR"]
+    physical_name = f"{safe_name}.enc" if database_encryption_enabled(configured_app) else safe_name
+    return Path(directory) / physical_name
+
+
+def invoice_file_fernet(app: Flask | None = None) -> Fernet:
+    """Derive a separate attachment key from the in-memory database key."""
+
+    database_key = active_database_key(app)
+    attachment_key = base64.urlsafe_b64encode(
+        hashlib.sha256(b"protovibe-merch:invoice-files:" + database_key).digest()
+    )
+    return Fernet(attachment_key)
+
+
+def store_invoice_bytes(
+    filename: str,
+    content: bytes,
+    *,
+    directory: str | Path | None = None,
+    app: Flask | None = None,
+) -> Path:
+    """Persist an invoice, encrypting it whenever the live database is encrypted."""
+
+    target = invoice_storage_path(filename, directory=directory, app=app)
+    if target is None:
+        raise ValueError("Rechnungsdatei konnte nicht gespeichert werden.")
+    configured_app = app
+    if configured_app is None and has_app_context():
+        configured_app = current_app._get_current_object()
+    payload = invoice_file_fernet(configured_app).encrypt(content) if database_encryption_enabled(configured_app) else content
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with target.open("xb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    return target
+
+
+def read_invoice_bytes(filename: str, *, app: Flask | None = None) -> bytes | None:
+    """Return a validated managed invoice in memory for an authorised response."""
+
+    target = invoice_storage_path(filename, app=app)
+    if target is None or not target.is_file():
+        return None
+    try:
+        content = target.read_bytes()
+        configured_app = app
+        if configured_app is None and has_app_context():
+            configured_app = current_app._get_current_object()
+        return invoice_file_fernet(configured_app).decrypt(content) if database_encryption_enabled(configured_app) else content
+    except (OSError, InvalidToken) as exc:
+        current_app.logger.error("Could not read encrypted invoice attachment: %s", filename)
+        raise ValueError("Die gespeicherte Rechnung kann nicht entschlüsselt werden.") from exc
+
+
+def invoice_mimetype(filename: str) -> str:
+    return {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }.get(Path(filename).suffix.lower(), "application/octet-stream")
 
 
 def save_invoice_file(uploaded_file: Any | None, receipt_id: str) -> str | None:
@@ -977,15 +1091,8 @@ def save_invoice_file(uploaded_file: Any | None, receipt_id: str) -> str | None:
     if extension is None:
         return None
     filename = f"{receipt_id}-{secrets.token_hex(12)}{extension}"
-    target = invoice_storage_path(filename)
-    if target is None:  # Defensive guard; generated names always pass above.
-        raise ValueError("Rechnungsdatei konnte nicht gespeichert werden.")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        uploaded_file.save(target)
-    except Exception:
-        target.unlink(missing_ok=True)
-        raise
+    uploaded_file.stream.seek(0)
+    store_invoice_bytes(filename, uploaded_file.stream.read())
     return filename
 
 
@@ -1077,8 +1184,222 @@ def purchase_items_from_payload(
     return purchased_on, items, cart_invoice_files
 
 
-def db_connect(path: str | Path) -> sqlite3.Connection:
-    """Open a SQLite connection with the consistency settings used by the app."""
+def database_encryption_enabled(app: Flask | None = None) -> bool:
+    """Return whether this app instance must use SQLCipher for live data."""
+
+    configured_app = app
+    if configured_app is None and has_app_context():
+        configured_app = current_app._get_current_object()
+    return bool(configured_app and configured_app.config.get("DATABASE_ENCRYPTION_ENABLED", False))
+
+
+def database_encryption_metadata_path(app: Flask) -> Path:
+    """Return the small non-secret envelope beside the encrypted databases."""
+
+    return Path(app.config["DATABASE_ENCRYPTION_METADATA"])
+
+
+def _decode_encryption_base64(value: Any, *, field: str) -> bytes:
+    try:
+        decoded = base64.urlsafe_b64decode(str(value).encode("ascii"))
+    except (ValueError, UnicodeEncodeError, binascii.Error) as exc:
+        raise DatabaseEncryptionError(f"Die Verschlüsselungs-Konfiguration enthält ein ungültiges Feld: {field}.") from exc
+    if not decoded:
+        raise DatabaseEncryptionError(f"Die Verschlüsselungs-Konfiguration enthält ein leeres Feld: {field}.")
+    return decoded
+
+
+def _encryption_kdf_parameters(envelope: dict[str, Any]) -> tuple[bytes, int, int, int]:
+    """Validate bounded Scrypt parameters before spending memory on an unlock attempt."""
+
+    try:
+        salt = _decode_encryption_base64(envelope["salt"], field="salt")
+        n = int(envelope["n"])
+        r = int(envelope["r"])
+        p = int(envelope["p"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration ist unvollständig.") from exc
+    if len(salt) != DATABASE_ENCRYPTION_SALT_BYTES:
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration enthält einen ungültigen Salt.")
+    # Protect the unlock route from a tampered metadata file requesting an
+    # unreasonable amount of memory or CPU time.
+    if n < 2**14 or n > 2**20 or n & (n - 1) or r < 1 or r > 32 or p < 1 or p > 8:
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration enthält ungültige KDF-Parameter.")
+    return salt, n, r, p
+
+
+def _derive_wrapping_key(secret: str, envelope: dict[str, Any]) -> bytes:
+    salt, n, r, p = _encryption_kdf_parameters(envelope)
+    try:
+        return base64.urlsafe_b64encode(
+            Scrypt(salt=salt, length=32, n=n, r=r, p=p).derive(secret.encode("utf-8"))
+        )
+    except (TypeError, ValueError) as exc:
+        raise DatabaseEncryptionError("Der Datenbankschlüssel konnte nicht abgeleitet werden.") from exc
+
+
+def _wrap_database_key(database_key: bytes, secret: str) -> dict[str, Any]:
+    salt = secrets.token_bytes(DATABASE_ENCRYPTION_SALT_BYTES)
+    envelope: dict[str, Any] = {
+        "kdf": "scrypt",
+        "n": DATABASE_ENCRYPTION_SCRYPT_N,
+        "r": DATABASE_ENCRYPTION_SCRYPT_R,
+        "p": DATABASE_ENCRYPTION_SCRYPT_P,
+        "salt": base64.urlsafe_b64encode(salt).decode("ascii"),
+    }
+    envelope["wrapped_key"] = Fernet(_derive_wrapping_key(secret, envelope)).encrypt(database_key).decode("ascii")
+    return envelope
+
+
+def _unwrap_database_key(envelope: dict[str, Any], secret: str) -> bytes:
+    try:
+        wrapped_key = str(envelope["wrapped_key"]).encode("ascii")
+        database_key = Fernet(_derive_wrapping_key(secret, envelope)).decrypt(wrapped_key)
+    except (KeyError, InvalidToken, UnicodeEncodeError, DatabaseEncryptionError) as exc:
+        raise ValueError("Der Entsperrcode ist nicht korrekt.") from exc
+    if len(database_key) != DATABASE_ENCRYPTION_KEY_BYTES:
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration enthält keinen gültigen Datenbankschlüssel.")
+    return database_key
+
+
+def validate_database_passphrase(value: Any) -> str:
+    """Accept a strong, deliberately separate local database passphrase."""
+
+    passphrase = str(value or "")
+    if passphrase != passphrase.strip():
+        raise ValueError("Die Datenbank-Passphrase darf nicht mit Leerzeichen beginnen oder enden.")
+    if len(passphrase) < 12:
+        raise ValueError("Die Datenbank-Passphrase muss mindestens 12 Zeichen lang sein.")
+    return passphrase
+
+
+def _normalised_recovery_key(value: Any) -> str:
+    compact = re.sub(r"[\s-]+", "", str(value or "").upper())
+    prefix = re.sub(r"-", "", DATABASE_ENCRYPTION_RECOVERY_PREFIX)
+    if not compact.startswith(prefix):
+        raise ValueError("Der Wiederherstellungsschlüssel hat kein gültiges Format.")
+    token = compact[len(prefix):]
+    if not token:
+        raise ValueError("Der Wiederherstellungsschlüssel hat kein gültiges Format.")
+    try:
+        decoded = base64.b32decode(token + "=" * (-len(token) % 8), casefold=True)
+    except (ValueError, UnicodeEncodeError, binascii.Error) as exc:
+        raise ValueError("Der Wiederherstellungsschlüssel hat kein gültiges Format.") from exc
+    if len(decoded) != DATABASE_ENCRYPTION_RECOVERY_TOKEN_BYTES:
+        raise ValueError("Der Wiederherstellungsschlüssel hat kein gültiges Format.")
+    return prefix + token
+
+
+def generate_database_recovery_key() -> str:
+    """Create a printable high-entropy recovery key; never persist it in plaintext."""
+
+    token = base64.b32encode(secrets.token_bytes(DATABASE_ENCRYPTION_RECOVERY_TOKEN_BYTES)).decode("ascii").rstrip("=")
+    groups = "-".join(token[index:index + 5] for index in range(0, len(token), 5))
+    return f"{DATABASE_ENCRYPTION_RECOVERY_PREFIX}-{groups}"
+
+
+def new_database_encryption_metadata(passphrase: str, recovery_key: str, database_key: bytes) -> dict[str, Any]:
+    """Create the only persistent key metadata; it contains no usable clear-text key."""
+
+    return {
+        "version": DATABASE_ENCRYPTION_METADATA_VERSION,
+        "cipher": "sqlcipher-4",
+        "created_at": utc_now(),
+        "databases_ready": False,
+        "passphrase": _wrap_database_key(database_key, passphrase),
+        "recovery": _wrap_database_key(database_key, _normalised_recovery_key(recovery_key)),
+    }
+
+
+def load_database_encryption_metadata(app: Flask) -> dict[str, Any] | None:
+    """Read and sanity-check the non-secret encryption envelope."""
+
+    metadata_path = database_encryption_metadata_path(app)
+    if not metadata_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration kann nicht gelesen werden.") from exc
+    if not isinstance(metadata, dict) or metadata.get("version") != DATABASE_ENCRYPTION_METADATA_VERSION:
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration hat eine nicht unterstützte Version.")
+    if metadata.get("cipher") != "sqlcipher-4":
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration verwendet kein unterstütztes Datenbankformat.")
+    for name in ("passphrase", "recovery"):
+        envelope = metadata.get(name)
+        if not isinstance(envelope, dict):
+            raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration ist unvollständig.")
+        _encryption_kdf_parameters(envelope)
+        if not isinstance(envelope.get("wrapped_key"), str):
+            raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration ist unvollständig.")
+    if not isinstance(metadata.get("databases_ready"), bool):
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration ist unvollständig.")
+    return metadata
+
+
+def write_database_encryption_metadata(app: Flask, metadata: dict[str, Any]) -> None:
+    """Atomically persist the wrapped key envelope with owner-only permissions."""
+
+    path = database_encryption_metadata_path(app)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    encoded = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(encoded)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            # Windows and some NAS filesystems do not expose POSIX modes. The
+            # atomic write still prevents a partially written configuration.
+            pass
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def database_encryption_state(app: Flask) -> str:
+    """Return setup, legacy, locked or unlocked without opening user data."""
+
+    if not database_encryption_enabled(app):
+        return "disabled"
+    metadata = load_database_encryption_metadata(app)
+    if metadata is None:
+        data_paths = (Path(app.config["DATABASE"]), Path(app.config["USERS_DATABASE"]))
+        return "legacy" if any(path.exists() for path in data_paths) else "setup"
+    if not metadata["databases_ready"]:
+        return "setup_pending"
+    return "unlocked" if isinstance(app.extensions.get("database_encryption_key"), bytes) else "locked"
+
+
+def active_database_key(app: Flask | None = None) -> bytes:
+    """Return the process-memory key, never a key from configuration or disk."""
+
+    configured_app = app
+    if configured_app is None and has_app_context():
+        configured_app = current_app._get_current_object()
+    if configured_app is None or not database_encryption_enabled(configured_app):
+        raise DatabaseLockedError("Für diese Verbindung ist keine verschlüsselte Datenbank konfiguriert.")
+    database_key = configured_app.extensions.get("database_encryption_key")
+    if not isinstance(database_key, bytes) or len(database_key) != DATABASE_ENCRYPTION_KEY_BYTES:
+        raise DatabaseLockedError("Die Datenbank ist gesperrt.")
+    return database_key
+
+
+def _sqlcipher_dbapi():
+    if sqlcipher is None:
+        raise DatabaseEncryptionError(
+            "SQLCipher ist nicht installiert. Installiere die Abhängigkeiten erneut, bevor die verschlüsselte "
+            "Datenbank gestartet wird."
+        )
+    return sqlcipher
+
+
+def plaintext_db_connect(path: str | Path) -> sqlite3.Connection:
+    """Open an explicitly unencrypted temporary or legacy SQLite database."""
 
     connection = sqlite3.connect(path, detect_types=sqlite3.PARSE_DECLTYPES)
     connection.row_factory = sqlite3.Row
@@ -1086,6 +1407,58 @@ def db_connect(path: str | Path) -> sqlite3.Connection:
     connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA busy_timeout = 5000")
     return connection
+
+
+def db_connect(
+    path: str | Path,
+    *,
+    app: Flask | None = None,
+    encrypted: bool | None = None,
+    database_key: bytes | None = None,
+) -> sqlite3.Connection:
+    """Open a live SQLCipher or explicit plain SQLite connection consistently."""
+
+    configured_app = app
+    if configured_app is None and has_app_context():
+        configured_app = current_app._get_current_object()
+    if encrypted is None:
+        encrypted = database_key is not None or database_encryption_enabled(configured_app)
+    if not encrypted:
+        return plaintext_db_connect(path)
+
+    key = database_key or active_database_key(configured_app)
+    api = _sqlcipher_dbapi()
+    connection = api.connect(path, detect_types=sqlite3.PARSE_DECLTYPES)
+    # Pin the on-disk format deliberately. A future SQLCipher major release
+    # must not silently choose different defaults for existing installations.
+    connection.execute("PRAGMA cipher_compatibility = 4")
+    # The key consists solely of lowercase hexadecimal characters generated by
+    # this process, so interpolation cannot turn the PRAGMA into SQL input.
+    connection.execute(f"PRAGMA key = \"x'{key.hex()}'\"")
+    connection.execute("PRAGMA cipher_memory_security = ON")
+    connection.row_factory = getattr(api, "Row", sqlite3.Row)
+    # Force SQLCipher to validate the key before callers make schema changes.
+    connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA temp_store = MEMORY")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA busy_timeout = 5000")
+    return connection
+
+
+def copy_live_database_snapshot(app: Flask, source_path: Path, target_path: Path) -> None:
+    """Copy an encrypted live database into another encrypted SQLCipher file."""
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    for file_path in (target_path, Path(f"{target_path}-wal"), Path(f"{target_path}-shm")):
+        file_path.unlink(missing_ok=True)
+    source = db_connect(source_path, app=app)
+    target = db_connect(target_path, app=app)
+    try:
+        source.backup(target)
+    finally:
+        target.close()
+        source.close()
 
 
 def get_db() -> sqlite3.Connection:
@@ -1290,7 +1663,7 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
 
     database_path = Path(app.config["DATABASE"])
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = db_connect(database_path)
+    connection = db_connect(database_path, app=app)
     try:
         connection.executescript(LEGACY_COMBINED_SCHEMA_SQL)
         article_columns = {row["name"] for row in connection.execute("PRAGMA table_info(articles)").fetchall()}
@@ -1809,13 +2182,13 @@ def migrate_combined_database(app: Flask) -> None:
     users_path = Path(app.config["USERS_DATABASE"])
     archive_path = create_user_split_archive(app)
     upgrade_legacy_combined_database(app)
-    source = db_connect(database_path)
+    source = db_connect(database_path, app=app)
     temporary_path = database_path.with_name(f".{database_path.name}.user-split-{uuid.uuid4().hex}.tmp")
     target: sqlite3.Connection | None = None
     users_connection: sqlite3.Connection | None = None
     try:
         users_path.parent.mkdir(parents=True, exist_ok=True)
-        users_connection = db_connect(users_path)
+        users_connection = db_connect(users_path, app=app)
         copy_users_to_separate_database(source, users_connection, app)
         users_connection.commit()
         usernames = {
@@ -1823,7 +2196,7 @@ def migrate_combined_database(app: Flask) -> None:
             for row in source.execute("SELECT id, username FROM users").fetchall()
         }
 
-        target = db_connect(temporary_path)
+        target = db_connect(temporary_path, app=app)
         upgrade_operations_schema(target)
         copy_operational_tables(source, target, usernames)
         target.commit()
@@ -1861,7 +2234,7 @@ def migrate_combined_database(app: Flask) -> None:
 def initialise_operations_database(app: Flask) -> None:
     database_path = Path(app.config["DATABASE"])
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = db_connect(database_path)
+    connection = db_connect(database_path, app=app)
     try:
         upgrade_operations_schema(connection)
         connection.commit()
@@ -1872,7 +2245,7 @@ def initialise_operations_database(app: Flask) -> None:
 def initialise_users_database(app: Flask) -> None:
     users_path = Path(app.config["USERS_DATABASE"])
     users_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = db_connect(users_path)
+    connection = db_connect(users_path, app=app)
     try:
         upgrade_users_schema(connection, app)
         connection.commit()
@@ -1887,10 +2260,167 @@ def initialise_database(app: Flask) -> None:
     users_path = Path(app.config["USERS_DATABASE"])
     if database_path.resolve() == users_path.resolve():
         raise RuntimeError("DATABASE und USERS_DATABASE müssen unterschiedliche Dateien sein.")
-    if database_contains_table(database_path, "users"):
+    # An encrypted installation is always split from its first setup.  Looking
+    # at it with the standard sqlite3 module would both fail and be wrong; old
+    # one-file data is intentionally handled by the explicit legacy importer.
+    if not database_encryption_enabled(app) and database_contains_table(database_path, "users"):
         migrate_combined_database(app)
     initialise_operations_database(app)
     initialise_users_database(app)
+
+
+def configured_bootstrap_admin(app: Flask) -> tuple[str, str]:
+    """Return the existing first-start credentials without treating them as a DB key."""
+
+    username = str(app.config.get("ADMIN_USERNAME", "")).strip()
+    password = str(app.config.get("ADMIN_PASSWORD", ""))
+    if not username or not password or password.startswith("replace-this"):
+        raise DatabaseEncryptionError(
+            "Setze vor der ersten Einrichtung ADMIN_USERNAME und ADMIN_PASSWORD in der .env."
+        )
+    return username, password
+
+
+def _remember_pending_database_recovery_key(app: Flask, recovery_key: str) -> str:
+    """Keep a one-time display value only in process memory, never in a cookie or file."""
+
+    token = secrets.token_urlsafe(32)
+    pending = app.extensions.setdefault("pending_database_recovery_keys", {})
+    now = time.time()
+    for existing_token, entry in list(pending.items()):
+        if float(entry.get("expires_at", 0)) < now:
+            pending.pop(existing_token, None)
+    pending[token] = {
+        "recovery_key": recovery_key,
+        "expires_at": now + DATABASE_ENCRYPTION_PENDING_RECOVERY_TTL_SECONDS,
+    }
+    return token
+
+
+def pending_database_recovery_key(app: Flask, token: Any) -> str | None:
+    pending = app.extensions.get("pending_database_recovery_keys", {})
+    entry = pending.get(str(token or "")) if isinstance(pending, dict) else None
+    if not isinstance(entry, dict) or float(entry.get("expires_at", 0)) < time.time():
+        if isinstance(pending, dict):
+            pending.pop(str(token or ""), None)
+        return None
+    recovery_key = entry.get("recovery_key")
+    return str(recovery_key) if recovery_key else None
+
+
+def discard_pending_database_recovery_key(app: Flask, token: Any) -> None:
+    pending = app.extensions.get("pending_database_recovery_keys", {})
+    if isinstance(pending, dict):
+        pending.pop(str(token or ""), None)
+
+
+def setup_encrypted_databases(
+    app: Flask, *, bootstrap_password: Any, database_passphrase: Any, confirmation: Any
+) -> tuple[str, str]:
+    """Create a fresh encrypted installation and return its one-time recovery key.
+
+    The caller must already be in the dedicated setup state.  Existing plain
+    databases are deliberately not overwritten; they need the explicit legacy
+    import workflow after a fresh encrypted store has been created.
+    """
+
+    if database_encryption_state(app) != "setup":
+        raise DatabaseEncryptionError("Die Datenbankverschlüsselung wurde bereits eingerichtet.")
+    _, expected_bootstrap_password = configured_bootstrap_admin(app)
+    if not secrets.compare_digest(expected_bootstrap_password, str(bootstrap_password or "")):
+        raise ValueError("Das Einrichtungs-Admin-Passwort ist nicht korrekt.")
+    passphrase = validate_database_passphrase(database_passphrase)
+    if passphrase != str(confirmation or ""):
+        raise ValueError("Die beiden Datenbank-Passphrasen stimmen nicht überein.")
+
+    database_key = secrets.token_bytes(DATABASE_ENCRYPTION_KEY_BYTES)
+    recovery_key = generate_database_recovery_key()
+    metadata = new_database_encryption_metadata(passphrase, recovery_key, database_key)
+    # Persist the wrapped key first.  If a power loss interrupts initialization,
+    # the passphrase can still resume it; the raw database key never needs to be
+    # reconstructed or placed into .env.
+    write_database_encryption_metadata(app, metadata)
+    app.extensions["database_encryption_key"] = database_key
+    try:
+        initialise_database(app)
+        metadata["databases_ready"] = True
+        write_database_encryption_metadata(app, metadata)
+    except Exception:
+        app.extensions.pop("database_encryption_key", None)
+        raise
+    return _remember_pending_database_recovery_key(app, recovery_key), recovery_key
+
+
+def unlock_encrypted_databases(
+    app: Flask, *, database_passphrase: Any = None, recovery_key: Any = None
+) -> str:
+    """Unwrap the in-memory SQLCipher key using exactly one supported secret."""
+
+    state = database_encryption_state(app)
+    if state not in {"locked", "setup_pending"}:
+        raise DatabaseEncryptionError("Die Datenbank kann in ihrem aktuellen Zustand nicht entsperrt werden.")
+    provided_passphrase = str(database_passphrase or "")
+    provided_recovery_key = str(recovery_key or "")
+    if bool(provided_passphrase) == bool(provided_recovery_key):
+        raise ValueError("Bitte gib entweder die Datenbank-Passphrase oder den Wiederherstellungsschlüssel ein.")
+    metadata = load_database_encryption_metadata(app)
+    if metadata is None:  # Defensive guard for the state check above.
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration fehlt.")
+    method = "passphrase"
+    if provided_recovery_key:
+        method = "recovery"
+        secret = _normalised_recovery_key(provided_recovery_key)
+    else:
+        secret = provided_passphrase
+    database_key = _unwrap_database_key(metadata[method], secret)
+
+    app.extensions["database_encryption_key"] = database_key
+    try:
+        database_paths = (Path(app.config["DATABASE"]), Path(app.config["USERS_DATABASE"]))
+        if not metadata["databases_ready"]:
+            if any(path.exists() for path in database_paths):
+                raise DatabaseEncryptionError(
+                    "Die erste Verschlüsselungs-Einrichtung wurde unterbrochen. Bitte die Daten nicht manuell "
+                    "ändern; stelle sie aus einer Sicherung wieder her oder richte einen leeren Datenordner ein."
+                )
+            initialise_database(app)
+            metadata["databases_ready"] = True
+            write_database_encryption_metadata(app, metadata)
+        else:
+            # Running the normal schema upgrade after every successful unlock
+            # keeps a future release migration encrypted as well.
+            initialise_database(app)
+    except Exception:
+        app.extensions.pop("database_encryption_key", None)
+        raise
+    return method
+
+
+def change_database_passphrase(app: Flask, *, passphrase: Any, confirmation: Any) -> None:
+    """Re-wrap the in-memory database key with a newly chosen unlock passphrase."""
+
+    new_passphrase = validate_database_passphrase(passphrase)
+    if new_passphrase != str(confirmation or ""):
+        raise ValueError("Die beiden Datenbank-Passphrasen stimmen nicht überein.")
+    metadata = load_database_encryption_metadata(app)
+    if metadata is None:
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration fehlt.")
+    metadata["passphrase"] = _wrap_database_key(active_database_key(app), new_passphrase)
+    metadata["updated_at"] = utc_now()
+    write_database_encryption_metadata(app, metadata)
+
+
+def regenerate_database_recovery_key(app: Flask) -> tuple[str, str]:
+    """Invalidate the former recovery key and return a new one-time display value."""
+
+    metadata = load_database_encryption_metadata(app)
+    if metadata is None:
+        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration fehlt.")
+    recovery_key = generate_database_recovery_key()
+    metadata["recovery"] = _wrap_database_key(active_database_key(app), _normalised_recovery_key(recovery_key))
+    metadata["updated_at"] = utc_now()
+    write_database_encryption_metadata(app, metadata)
+    return _remember_pending_database_recovery_key(app, recovery_key), recovery_key
 
 
 def login_required(view):
@@ -2899,11 +3429,11 @@ def csv_bytes(headers: list[str], rows: Iterable[Iterable[Any]]) -> bytes:
 
 
 def create_backup(app: Flask, *, force: bool = False) -> Path | None:
-    """Create a restorable SQLite snapshot, CSV exports and invoice files.
+    """Create a restorable encrypted SQLite snapshot and invoice files.
 
     It runs after every successful write.  The application database itself stays
-    authoritative; the SQLite snapshot is the recovery copy, while CSV makes
-    ad-hoc inspection and migration straightforward.
+    authoritative. CSV files remain deliberate browser exports; encrypted
+    installations never create them automatically next to a backup.
     """
 
     if not force and not app.config.get("AUTO_BACKUP", True):
@@ -2918,14 +3448,17 @@ def create_backup(app: Flask, *, force: bool = False) -> Path | None:
         target = backup_root / f"{timestamp}_{suffix}"
     target.mkdir()
 
-    source = db_connect(app.config["DATABASE"])
-    destination = sqlite3.connect(target / "merch.sqlite3")
+    source = db_connect(app.config["DATABASE"], app=app)
+    destination = db_connect(target / "merch.sqlite3", app=app)
     try:
         source.backup(destination)
         destination.close()
-        for kind in ("articles", "sales", "purchases", "inventory"):
-            filename, headers, rows = csv_rows(source, kind)
-            (target / f"{filename}.csv").write_bytes(csv_bytes(headers, rows))
+        # A CSV is intentionally an explicit browser export, never an
+        # unencrypted sidecar of an automatic encrypted backup.
+        if not database_encryption_enabled(app):
+            for kind in ("articles", "sales", "purchases", "inventory"):
+                filename, headers, rows = csv_rows(source, kind)
+                (target / f"{filename}.csv").write_bytes(csv_bytes(headers, rows))
         # Attachments belong to the same recovery point as their database
         # rows.  Hard links avoid multiplying disk use on normal local
         # filesystems; fall back to copying if a platform does not support it.
@@ -2940,11 +3473,17 @@ def create_backup(app: Flask, *, force: bool = False) -> Path | None:
                     os.link(invoice, invoice_target / invoice.name)
                 except OSError:
                     shutil.copy2(invoice, invoice_target / invoice.name)
+        if database_encryption_enabled(app):
+            metadata_path = database_encryption_metadata_path(app)
+            if metadata_path.is_file():
+                # It contains only wrapped keys, but is required together with
+                # an offline recovery key to open a copied SQLCipher database.
+                shutil.copy2(metadata_path, target / "encryption.json")
     finally:
         source.close()
         try:
             destination.close()
-        except sqlite3.ProgrammingError:
+        except Exception:
             pass
 
     retention_days = int(app.config["BACKUP_RETENTION_DAYS"])
@@ -3000,17 +3539,17 @@ def selected_operational_backup(app: Flask, backup_name: Any) -> Path:
     return candidate
 
 
-def validate_operational_snapshot(snapshot_path: Path) -> None:
+def validate_operational_snapshot(app: Flask, snapshot_path: Path) -> None:
     """Reject malformed or old combined-file backups before any replacement."""
 
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(snapshot_path.resolve().as_uri() + "?mode=ro", uri=True)
+        connection = db_connect(snapshot_path, app=app)
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
-    except sqlite3.DatabaseError as exc:
+    except Exception as exc:
         raise ValueError("Die Sicherungsdatei ist keine lesbare SQLite-Datenbank.") from exc
     finally:
         if connection is not None:
@@ -3035,7 +3574,7 @@ def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path
 
     source_directory = selected_operational_backup(app, backup_name)
     source_database = source_directory / "merch.sqlite3"
-    validate_operational_snapshot(source_database)
+    validate_operational_snapshot(app, source_database)
     safety_backup = create_backup(app, force=True)
     if safety_backup is None:  # Defensive: force=True always creates one.
         raise RuntimeError("Vor der Wiederherstellung konnte keine Sicherheitskopie angelegt werden.")
@@ -3049,16 +3588,16 @@ def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path
     previous_invoices = staging_dir / "previous-invoices"
     staging_dir.mkdir(parents=True, exist_ok=False)
     try:
-        source = sqlite3.connect(source_database)
+        source = db_connect(source_database, app=app)
         try:
-            destination = sqlite3.connect(staged_database)
+            destination = db_connect(staged_database, app=app)
             try:
                 source.backup(destination)
             finally:
                 destination.close()
         finally:
             source.close()
-        validate_operational_snapshot(staged_database)
+        validate_operational_snapshot(app, staged_database)
         staged_invoices.mkdir()
         source_invoices = source_directory / "invoices"
         if source_invoices.is_dir():
@@ -3125,7 +3664,7 @@ def create_reset_archive(app: Flask, source_connection: sqlite3.Connection) -> P
     snapshot_path = Path(snapshot_file.name)
     snapshot_file.close()
     try:
-        snapshot_connection = sqlite3.connect(snapshot_path)
+        snapshot_connection = db_connect(snapshot_path, app=app)
         try:
             source_connection.backup(snapshot_connection)
         finally:
@@ -3488,14 +4027,15 @@ def prepare_legacy_import_files(
             staging_app = Flask("protovibe-legacy-import")
             staging_app.config.from_mapping(app.config)
             staging_app.config["DATABASE"] = str(working_merchandise)
+            staging_app.config["DATABASE_ENCRYPTION_ENABLED"] = False
             upgrade_legacy_combined_database(staging_app)
-            source_operations = db_connect(working_merchandise)
+            source_operations = plaintext_db_connect(working_merchandise)
             source_users = source_operations
         else:
-            source_operations = db_connect(working_merchandise)
+            source_operations = plaintext_db_connect(working_merchandise)
             upgrade_operations_schema(source_operations)
             source_operations.commit()
-            source_users = db_connect(working_users)
+            source_users = plaintext_db_connect(working_users)
             upgrade_users_schema(source_users, app, bootstrap_administrator=False)
             source_users.commit()
 
@@ -3510,7 +4050,7 @@ def prepare_legacy_import_files(
         if source_admin_count != 1 or source_active_admin_count != 1:
             raise ValueError("Die Altdaten müssen genau ein aktives Admin-Konto enthalten.")
 
-        target_users = db_connect(prepared_users)
+        target_users = plaintext_db_connect(prepared_users)
         copy_users_to_separate_database(
             source_users,
             target_users,
@@ -3523,7 +4063,7 @@ def prepare_legacy_import_files(
             int(row["id"]): str(row["username"])
             for row in source_users.execute("SELECT id, username FROM users").fetchall()
         }
-        target_operations = db_connect(prepared_operations)
+        target_operations = plaintext_db_connect(prepared_operations)
         upgrade_operations_schema(target_operations)
         copy_operational_tables(source_operations, target_operations, usernames)
         target_operations.commit()
@@ -3650,11 +4190,14 @@ def create_legacy_import_safety_archive(app: Flask) -> Path:
     operation_snapshot = temporary_root / "merch.sqlite3"
     users_snapshot = temporary_root / "users.sqlite3"
     try:
-        copy_legacy_sqlite_snapshot(Path(app.config["DATABASE"]), operation_snapshot)
-        copy_legacy_sqlite_snapshot(Path(app.config["USERS_DATABASE"]), users_snapshot)
+        copy_live_database_snapshot(app, Path(app.config["DATABASE"]), operation_snapshot)
+        copy_live_database_snapshot(app, Path(app.config["USERS_DATABASE"]), users_snapshot)
         with ZipFile(archive_path, "w", ZIP_DEFLATED) as archive:
             archive.write(operation_snapshot, "data/merch.sqlite3")
             archive.write(users_snapshot, "data/users.sqlite3")
+            metadata_path = database_encryption_metadata_path(app)
+            if metadata_path.is_file():
+                archive.write(metadata_path, "data/encryption.json")
             invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
             if invoice_dir.is_dir():
                 for item in invoice_dir.rglob("*"):
@@ -3675,7 +4218,7 @@ def reencrypt_imported_mfa_secrets(
 
     if mfa_mode not in {"preserve", "reset"}:
         raise ValueError("Ungültige Auswahl für die Zwei-Faktor-Authentifizierung.")
-    connection = db_connect(users_path)
+    connection = db_connect(users_path, app=app)
     try:
         rows = connection.execute(
             "SELECT id, username, mfa_enabled, mfa_secret_encrypted FROM users ORDER BY id"
@@ -3746,6 +4289,63 @@ def append_legacy_import_audit(
     )
 
 
+def copy_prepared_legacy_databases_to_live_store(
+    app: Flask,
+    *,
+    prepared_operations: Path,
+    prepared_users: Path,
+    target_operations: Path,
+    target_users: Path,
+) -> None:
+    """Copy validated plaintext staging files into the encrypted live format.
+
+    ``sqlite3.Connection.backup`` cannot safely be assumed to accept a
+    connection supplied by a different DB-API module.  Copying the known tables
+    also prevents legacy staging from carrying arbitrary views/triggers into
+    the live SQLCipher databases.
+    """
+
+    source_operations = readonly_legacy_sqlite_connection(prepared_operations)
+    source_users = readonly_legacy_sqlite_connection(prepared_users)
+    operations_connection: sqlite3.Connection | None = None
+    users_connection: sqlite3.Connection | None = None
+    try:
+        users_connection = db_connect(target_users, app=app)
+        copy_users_to_separate_database(source_users, users_connection, app, copy_audit_log=True)
+        users_connection.commit()
+        usernames = {
+            int(row["id"]): str(row["username"])
+            for row in source_users.execute("SELECT id, username FROM users").fetchall()
+        }
+        operations_connection = db_connect(target_operations, app=app)
+        upgrade_operations_schema(operations_connection)
+        copy_operational_tables(source_operations, operations_connection, usernames)
+        operations_connection.commit()
+    finally:
+        if operations_connection is not None:
+            operations_connection.close()
+        if users_connection is not None:
+            users_connection.close()
+        source_users.close()
+        source_operations.close()
+
+
+def copy_prepared_legacy_invoices_to_live_store(app: Flask, source_directory: Path, target_directory: Path) -> None:
+    """Encrypt each validated staged legacy invoice under its existing logical name."""
+
+    target_directory.mkdir(parents=True, exist_ok=False)
+    if not source_directory.is_dir():
+        return
+    for item in source_directory.iterdir():
+        if not item.is_file():
+            continue
+        filename = legacy_import_invoice_name(item.name)
+        content = item.read_bytes()
+        if filename is None or not valid_invoice_bytes(filename, content):
+            raise ValueError("Die vorbereiteten Rechnungsdateien sind ungültig.")
+        store_invoice_bytes(filename, content, directory=target_directory, app=app)
+
+
 def install_prepared_legacy_import(
     app: Flask,
     stage_directory: Path,
@@ -3779,19 +4379,19 @@ def install_prepared_legacy_import(
     moved_old_operations = moved_old_users = moved_old_invoices = False
     placed_operations = placed_users = placed_invoices = False
     try:
-        copy_legacy_sqlite_snapshot(stage_directory / "prepared-merch.sqlite3", staged_operations)
-        copy_legacy_sqlite_snapshot(stage_directory / "prepared-users.sqlite3", staged_users)
+        copy_prepared_legacy_databases_to_live_store(
+            app,
+            prepared_operations=stage_directory / "prepared-merch.sqlite3",
+            prepared_users=stage_directory / "prepared-users.sqlite3",
+            target_operations=staged_operations,
+            target_users=staged_users,
+        )
         reencrypt_imported_mfa_secrets(
             staged_users, app, mfa_mode=mfa_mode, former_secret_key=former_secret_key
         )
-        staged_invoices.mkdir()
-        source_invoices = stage_directory / "prepared-invoices"
-        if source_invoices.is_dir():
-            for item in source_invoices.iterdir():
-                if item.is_file():
-                    shutil.copy2(item, staged_invoices / item.name)
-        operations_connection = db_connect(staged_operations)
-        users_connection = db_connect(staged_users)
+        copy_prepared_legacy_invoices_to_live_store(app, stage_directory / "prepared-invoices", staged_invoices)
+        operations_connection = db_connect(staged_operations, app=app)
+        users_connection = db_connect(staged_users, app=app)
         try:
             append_legacy_import_audit(
                 operations_connection,
@@ -4056,6 +4656,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         SECRET_KEY=os.environ.get("SECRET_KEY", "development-only-change-me"),
         DATABASE=str(data_dir / "merch.sqlite3"),
         USERS_DATABASE=os.environ.get("USERS_DATABASE", str(data_dir / "users.sqlite3")),
+        DATABASE_ENCRYPTION_ENABLED=True,
+        DATABASE_ENCRYPTION_METADATA=str(data_dir / "encryption.json"),
         BACKUP_DIR=str(data_dir / "backups"),
         RESET_ARCHIVE_DIR=str(data_dir / "reset-archives"),
         MIGRATION_ARCHIVE_DIR=str(data_dir / "migration-archives"),
@@ -4088,12 +4690,21 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
+    # Existing regression tests deliberately exercise old, plaintext schemas.
+    # A production app never receives TESTING=True and therefore always uses
+    # SQLCipher unless a test explicitly chooses otherwise.
+    if app.config.get("TESTING") and (not test_config or "DATABASE_ENCRYPTION_ENABLED" not in test_config):
+        app.config["DATABASE_ENCRYPTION_ENABLED"] = False
     # Test instances and manual local installations often override only the
     # old DATABASE setting.  Keep the account file next to it unless the
     # caller deliberately configured a different USERS_DATABASE path.
     if not test_config or "USERS_DATABASE" not in test_config:
         database_parent = Path(app.config["DATABASE"]).parent
         app.config["USERS_DATABASE"] = str(database_parent / "users.sqlite3")
+    if not test_config or "DATABASE_ENCRYPTION_METADATA" not in test_config:
+        app.config["DATABASE_ENCRYPTION_METADATA"] = str(
+            Path(app.config["DATABASE"]).parent / "encryption.json"
+        )
     if not test_config or "MIGRATION_ARCHIVE_DIR" not in test_config:
         app.config["MIGRATION_ARCHIVE_DIR"] = str(Path(app.config["DATABASE"]).parent / "migration-archives")
     if not test_config or "LEGACY_IMPORT_STAGING_DIR" not in test_config:
@@ -4111,6 +4722,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
     Path(app.config["USERS_DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
+    database_encryption_metadata_path(app).parent.mkdir(parents=True, exist_ok=True)
     Path(app.config["BACKUP_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["RESET_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["MIGRATION_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
@@ -4118,7 +4730,14 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     Path(app.config["LEGACY_IMPORT_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["INVOICE_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
     app.extensions["legacy_import_lock"] = Lock()
-    initialise_database(app)
+    app.extensions["database_encryption_lock"] = Lock()
+    app.extensions["pending_database_recovery_keys"] = {}
+    if database_encryption_enabled(app):
+        # Fail closed. A production deployment may never silently fall back to
+        # ordinary SQLite just because a native SQLCipher dependency is absent.
+        _sqlcipher_dbapi()
+    else:
+        initialise_database(app)
     app.teardown_appcontext(close_db)
 
     @app.template_filter("money")
@@ -4137,10 +4756,43 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         }
 
     @app.before_request
+    def enforce_database_encryption_state():
+        """Keep every data endpoint closed until the encrypted store is unlocked."""
+
+        if not database_encryption_enabled(app):
+            return None
+        allowed_endpoints = {
+            "static",
+            "service_worker",
+            "encryption_setup",
+            "encryption_unlock",
+            "encryption_recovery",
+            "encryption_legacy_data",
+        }
+        if request.endpoint in allowed_endpoints:
+            return None
+        try:
+            state = database_encryption_state(app)
+        except DatabaseEncryptionError as exc:
+            return render_template("error.html", title="Verschlüsselungsfehler", message=str(exc)), 503
+        if state == "unlocked":
+            return None
+        session.clear()
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "Die Datenbank ist derzeit gesperrt."}), 423
+        if state == "legacy":
+            return redirect(url_for("encryption_legacy_data"))
+        if state == "setup":
+            return redirect(url_for("encryption_setup"))
+        return redirect(url_for("encryption_unlock"))
+
+    @app.before_request
     def load_request_context() -> None:
         require_csrf()
         user_id = session.get("user_id")
         g.user = None
+        if database_encryption_enabled(app) and database_encryption_state(app) != "unlocked":
+            return
         if user_id:
             user = row_to_dict(get_user_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
             expected_session_version = session.get("user_session_version")
@@ -4171,6 +4823,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "regenerate_recovery_codes",
             "profile_reauth",
             "profile_page",
+            "encryption_setup",
+            "encryption_unlock",
+            "encryption_recovery",
         }:
             response.headers["Cache-Control"] = "no-store, max-age=0"
             response.headers["Pragma"] = "no-cache"
@@ -4179,6 +4834,192 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.get("/")
     def index():
         return redirect(url_for("sales_page"))
+
+    @app.route("/system/verschluesselung/einrichten", methods=["GET", "POST"])
+    def encryption_setup():
+        """Create the first encrypted datastore without placing its key in .env."""
+
+        if not database_encryption_enabled(app):
+            return redirect(url_for("login"))
+        state = database_encryption_state(app)
+        if state == "legacy":
+            return redirect(url_for("encryption_legacy_data"))
+        if state == "unlocked":
+            return redirect(url_for("login"))
+        if state == "setup_pending":
+            return redirect(url_for("encryption_unlock"))
+        try:
+            username, _ = configured_bootstrap_admin(app)
+        except DatabaseEncryptionError as exc:
+            return render_template("error.html", title="Einrichtung nicht möglich", message=str(exc)), 503
+        if request.method == "POST":
+            try:
+                with app.extensions["database_encryption_lock"]:
+                    token, _ = setup_encrypted_databases(
+                        app,
+                        bootstrap_password=request.form.get("bootstrap_password"),
+                        database_passphrase=request.form.get("database_passphrase"),
+                        confirmation=request.form.get("database_passphrase_confirmation"),
+                    )
+                session.clear()
+                session["pending_database_recovery_token"] = token
+                return redirect(url_for("encryption_recovery"))
+            except (ValueError, DatabaseEncryptionError) as exc:
+                flash(str(exc), "error")
+            except Exception:
+                current_app.logger.exception("Could not initialise encrypted databases")
+                flash("Die verschlüsselte Datenbank konnte nicht eingerichtet werden. Es wurden keine Daten überschrieben.", "error")
+        return render_template(
+            "encryption_setup.html",
+            title="Verschlüsselung einrichten",
+            bootstrap_username=username,
+        )
+
+    @app.route("/system/verschluesselung/recovery", methods=["GET", "POST"])
+    def encryption_recovery():
+        """Show the initial recovery key exactly while it remains in process memory."""
+
+        token = session.get("pending_database_recovery_token")
+        recovery_key = pending_database_recovery_key(app, token)
+        if recovery_key is None:
+            flash(
+                "Der einmalige Wiederherstellungsschlüssel wird nicht mehr angezeigt. Bewahre mindestens die "
+                "Datenbank-Passphrase sicher auf.",
+                "error",
+            )
+            return redirect(url_for("login" if database_encryption_state(app) == "unlocked" else "encryption_unlock"))
+        if request.method == "POST":
+            discard_pending_database_recovery_key(app, token)
+            session.pop("pending_database_recovery_token", None)
+            if g.get("user") is not None:
+                flash("Der neue Wiederherstellungsschlüssel wurde aktiviert. Der bisherige Schlüssel ist ungültig.", "success")
+                return redirect(url_for("administration_page"))
+            flash("Verschlüsselung eingerichtet. Melde dich nun mit dem Admin-Konto an und richte dessen 2FA ein.", "success")
+            return redirect(url_for("login"))
+        return render_template(
+            "encryption_recovery.html",
+            title="Wiederherstellungsschlüssel sichern",
+            recovery_key=recovery_key,
+            return_to_administration=bool(g.get("user")),
+        )
+
+    @app.route("/system/verschluesselung/entsperren", methods=["GET", "POST"])
+    def encryption_unlock():
+        """Unlock SQLCipher only in memory after each container/application restart."""
+
+        if not database_encryption_enabled(app):
+            return redirect(url_for("login"))
+        state = database_encryption_state(app)
+        if state == "legacy":
+            return redirect(url_for("encryption_legacy_data"))
+        if state == "setup":
+            return redirect(url_for("encryption_setup"))
+        if state == "unlocked":
+            return redirect(url_for("login"))
+        if request.method == "POST":
+            try:
+                with app.extensions["database_encryption_lock"]:
+                    method = unlock_encrypted_databases(
+                        app,
+                        database_passphrase=request.form.get("database_passphrase"),
+                        recovery_key=request.form.get("recovery_key"),
+                    )
+                session.clear()
+                flash(
+                    "Die Datenbank wurde mit {} entsperrt. Bitte melde dich an.".format(
+                        "dem Wiederherstellungsschlüssel" if method == "recovery" else "der Datenbank-Passphrase"
+                    ),
+                    "success",
+                )
+                return redirect(url_for("login"))
+            except (ValueError, DatabaseEncryptionError) as exc:
+                flash(str(exc), "error")
+            except Exception:
+                current_app.logger.exception("Could not unlock encrypted databases")
+                flash("Die Datenbank konnte nicht entsperrt werden.", "error")
+        return render_template("encryption_unlock.html", title="Datenbank entsperren")
+
+    @app.get("/system/verschluesselung/altdaten")
+    def encryption_legacy_data():
+        """Fail safely when a deployment still points at unencrypted files."""
+
+        if not database_encryption_enabled(app):
+            return redirect(url_for("login"))
+        state = database_encryption_state(app)
+        if state == "setup":
+            return redirect(url_for("encryption_setup"))
+        if state in {"locked", "setup_pending"}:
+            return redirect(url_for("encryption_unlock"))
+        if state == "unlocked":
+            return redirect(url_for("login"))
+        return render_template("encryption_legacy.html", title="Ungesicherte Altdaten gefunden")
+
+    @app.post("/verwaltung/verschluesselung/passphrase")
+    @login_required
+    @admin_required
+    def update_database_passphrase():
+        """Let the authenticated Admin recover from a forgotten unlock passphrase."""
+
+        if request.form.get("confirmation", "").strip() != "DATENBANK-PASSPHRASE ÄNDERN":
+            flash("Bitte die Bestätigung exakt als „DATENBANK-PASSPHRASE ÄNDERN“ eingeben.", "error")
+            return redirect(url_for("administration_page"))
+        connection = get_user_db()
+        try:
+            admin = verify_admin_sensitive_action(
+                connection,
+                password=request.form.get("password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="change_database_passphrase",
+            )
+            with app.extensions["database_encryption_lock"]:
+                change_database_passphrase(
+                    app,
+                    passphrase=request.form.get("database_passphrase"),
+                    confirmation=request.form.get("database_passphrase_confirmation"),
+                )
+            audit(connection, "change_database_passphrase", "system", None, {}, user_id=admin["id"])
+            connection.commit()
+            flash("Die Datenbank-Passphrase wurde geändert. Der bisherige Wiederherstellungsschlüssel bleibt gültig.", "success")
+        except (ValueError, DatabaseEncryptionError) as exc:
+            connection.rollback()
+            flash(str(exc), "error")
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not change database passphrase")
+            flash("Die Datenbank-Passphrase konnte nicht geändert werden.", "error")
+        return redirect(url_for("administration_page"))
+
+    @app.post("/verwaltung/verschluesselung/wiederherstellungsschluessel")
+    @login_required
+    @admin_required
+    def renew_database_recovery_key():
+        """Replace a possibly lost recovery key after password and MFA confirmation."""
+
+        if request.form.get("confirmation", "").strip() != "WIEDERHERSTELLUNGSSCHLÜSSEL ERNEUERN":
+            flash("Bitte die Bestätigung exakt als „WIEDERHERSTELLUNGSSCHLÜSSEL ERNEUERN“ eingeben.", "error")
+            return redirect(url_for("administration_page"))
+        connection = get_user_db()
+        try:
+            admin = verify_admin_sensitive_action(
+                connection,
+                password=request.form.get("password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="renew_database_recovery_key",
+            )
+            with app.extensions["database_encryption_lock"]:
+                token, _ = regenerate_database_recovery_key(app)
+            audit(connection, "renew_database_recovery_key", "system", None, {}, user_id=admin["id"])
+            connection.commit()
+            session["pending_database_recovery_token"] = token
+            return redirect(url_for("encryption_recovery"))
+        except (ValueError, DatabaseEncryptionError) as exc:
+            connection.rollback()
+            flash(str(exc), "error")
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not renew database recovery key")
+            flash("Der Wiederherstellungsschlüssel konnte nicht erneuert werden.", "error")
+        return redirect(url_for("administration_page"))
 
     @app.get("/service-worker.js")
     def service_worker():
@@ -4637,6 +5478,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             reset_archive_name=reset_archive_name,
             legacy_import_preview=legacy_import_preview,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
+            database_encryption_active=database_encryption_enabled(app),
         )
 
     @app.get("/verwaltung")
@@ -4985,7 +5827,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return redirect(url_for("administration_page"))
         try:
             preview_backup = selected_operational_backup(app, request.form.get("backup_name"))
-            validate_operational_snapshot(preview_backup / "merch.sqlite3")
+            validate_operational_snapshot(app, preview_backup / "merch.sqlite3")
         except ValueError as exc:
             flash(str(exc), "error")
             return redirect(url_for("administration_page"))
@@ -5601,10 +6443,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         purchase = get_db().execute(
             "SELECT invoice_file_path FROM purchases WHERE id = ?", (purchase_id,)
         ).fetchone()
-        target = invoice_storage_path(purchase["invoice_file_path"] if purchase else None)
-        if target is None or not target.is_file():
+        filename = str(purchase["invoice_file_path"]) if purchase and purchase["invoice_file_path"] else None
+        content = read_invoice_bytes(filename) if filename else None
+        if content is None:
             abort(404)
-        return send_file(target, as_attachment=False, download_name=target.name)
+        return send_file(
+            io.BytesIO(content),
+            mimetype=invoice_mimetype(filename),
+            as_attachment=False,
+            download_name=filename,
+        )
 
     @app.post("/api/purchase-receipts/<receipt_id>/attachments")
     @login_required
@@ -5674,10 +6522,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "SELECT file_path FROM purchase_receipt_attachments WHERE id = ? AND receipt_id = ?",
             (attachment_id, receipt_id),
         ).fetchone()
-        target = invoice_storage_path(attachment["file_path"] if attachment else None)
-        if target is None or not target.is_file():
+        filename = str(attachment["file_path"]) if attachment and attachment["file_path"] else None
+        content = read_invoice_bytes(filename) if filename else None
+        if content is None:
             abort(404)
-        return send_file(target, as_attachment=False, download_name=target.name)
+        return send_file(
+            io.BytesIO(content),
+            mimetype=invoice_mimetype(filename),
+            as_attachment=False,
+            download_name=filename,
+        )
 
     @app.get("/historie")
     @login_required

@@ -3,3 +3,6 @@ gunicorn==23.0.0
 cryptography>=45,<47
 PyOTP>=2.9,<3
 qrcode[pil]>=8,<9
+# SQLCipher is required in production. It encrypts both SQLite databases at
+# rest; app.py deliberately refuses to fall back to normal sqlite3.
+sqlcipher3>=0.6.2,<0.7

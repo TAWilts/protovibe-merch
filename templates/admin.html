@@ -36,6 +36,38 @@
   </article>
 </section>
 
+{% if database_encryption_active %}
+<section class="table-section database-security-area">
+  <div class="section-heading"><div><p class="eyebrow">Verschlüsselung</p><h2>Datenbank-Sicherheit</h2><p>Die Datenbanken und Rechnungsanhänge sind verschlüsselt. Die Anwendung benötigt nach jedem Neustart die separate Datenbank-Passphrase oder den Wiederherstellungsschlüssel.</p></div></div>
+  <div class="database-security-actions">
+    <details class="admin-danger-confirmation">
+      <summary>Datenbank-Passphrase ändern</summary>
+      <form action="{{ url_for('update_database_passphrase') }}" method="post" class="admin-sensitive-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <p>Die aktuelle Passphrase ist danach sofort ungültig. Der bestehende Wiederherstellungsschlüssel bleibt gültig.</p>
+        <label>Neue Datenbank-Passphrase<input name="database_passphrase" type="password" autocomplete="new-password" minlength="12" required></label>
+        <label>Neue Passphrase wiederholen<input name="database_passphrase_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
+        <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+        <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+        <label>Zur Bestätigung <code>DATENBANK-PASSPHRASE ÄNDERN</code><input name="confirmation" autocomplete="off" required></label>
+        <button class="danger-button compact-button" type="submit">Passphrase ändern</button>
+      </form>
+    </details>
+    <details class="admin-danger-confirmation">
+      <summary>Wiederherstellungsschlüssel erneuern</summary>
+      <form action="{{ url_for('renew_database_recovery_key') }}" method="post" class="admin-sensitive-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <p>Der bisherige Wiederherstellungsschlüssel wird sofort ungültig. Der neue Schlüssel wird einmalig auf der nächsten Seite angezeigt.</p>
+        <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+        <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+        <label>Zur Bestätigung <code>WIEDERHERSTELLUNGSSCHLÜSSEL ERNEUERN</code><input name="confirmation" autocomplete="off" required></label>
+        <button class="danger-button compact-button" type="submit">Neuen Schlüssel erzeugen</button>
+      </form>
+    </details>
+  </div>
+</section>
+{% endif %}
+
 <section class="table-section legacy-import-area">
   <div class="section-heading"><div><p class="eyebrow">Kompatibilität</p><h2>Ungesicherte Altdaten importieren</h2><p>Übernimm eine frühere Protovibe-Installation in einem kontrollierten Schritt. Die Vorschau ändert noch nichts. Beim bestätigten Import werden Artikel, Buchungen, Benutzerkonten und Rechnungen vollständig ersetzt; zuvor legt die App ein ZIP des aktuellen vollständigen Stands an.</p></div></div>
   <div class="legacy-import-layout">

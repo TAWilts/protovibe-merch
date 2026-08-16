@@ -61,16 +61,16 @@ Bestand, Bilanz und CSV-Export.
   Historie mit einer dreisekündigen Sicherheitsbestätigung storniert werden.
   Sie bleiben nachvollziehbar, werden aber aus Bestand, Bilanzen und offenen
   Vorgängen herausgerechnet.
-- **Export & Sicherung:** Download als CSV/ZIP sowie automatische Sicherung
-  nach jeder erfolgreichen Änderung, einschließlich Versand- und
-  Zahlungsstatus. Hochgeladene Rechnungen gehören zum jeweiligen
-  Sicherungspunkt dazu.
+- **Export & Sicherung:** Download als CSV/ZIP auf ausdrückliche Anforderung
+  sowie automatische, verschlüsselte Sicherung nach jeder erfolgreichen
+  Änderung, einschließlich Versand- und Zahlungsstatus. Hochgeladene
+  Rechnungen gehören zum jeweiligen Sicherungspunkt dazu.
 - **Konten, Rollen & Schutz:** Der einzelne Admin kann Seller und Manager mit
   zeitlich begrenztem Einrichtungscode anlegen und zurücksetzen. Seller können
   verkaufen und Einkaufsdaten lesen, Manager verwalten zusätzlich Artikel und
   Einkaufswarenkörbe, nur der Admin verwaltet Konten oder setzt Betriebsdaten
   zurück. Konten, Passwörter und 2FA liegen unabhängig von Artikeln und
-  Buchungen in einer eigenen SQLite-Datei. Nicht-Admin-Konten lassen sich
+  Buchungen in einer eigenen, verschlüsselten SQLite-Datei. Nicht-Admin-Konten lassen sich
   nach erneuter Passwort- und 2FA-Bestätigung löschen, ohne ihre historischen
   Buchungen zu entfernen.
   Jede Person kann ihren eigenen Benutzernamen nach einer frischen
@@ -172,20 +172,25 @@ Die folgenden Schritte sind bewusst ohne SSH-Zwang beschrieben.
 4. Öffne DSM → **Container Manager** → **Projekt** → **Erstellen**.
 5. Wähle als Projektpfad den entpackten Projektordner und als Quelle die dort
    liegende `docker-compose.yml`.  Starte anschließend den Build.
-6. Öffne im Heimnetz `http://<IP-der-Synology>:8088` und melde dich mit den
-   Werten aus `.env` an.
+6. Öffne im Heimnetz `http://<IP-der-Synology>:8088`. Beim allerersten Start
+   erscheint die Einrichtung der Datenbankverschlüsselung. Bestätige dort
+   einmalig das `ADMIN_PASSWORD` aus der `.env`, wähle eine **separate
+   Datenbank-Passphrase** und speichere den angezeigten
+   Wiederherstellungsschlüssel offline.
+7. Melde dich danach mit `ADMIN_USERNAME` und `ADMIN_PASSWORD` an und richte
+   die verpflichtende Admin-2FA ein.
 
-Beim ersten Start erzeugt die App automatisch die beiden SQLite-Dateien und
-den Administrator. Alle dauerhaften Daten liegen ausschließlich in `data/`:
+Alle dauerhaften Daten liegen ausschließlich in `data/`:
 
 - `merch.sqlite3` enthält ausschließlich Artikel, Varianten, Verkäufe,
-  Einkäufe, Rechnungsbezüge und die betriebliche Historie;
-- `users.sqlite3` enthält Benutzerkonten, Rollen, Passwörter und 2FA.
+  Einkäufe, Rechnungsbezüge und die betriebliche Historie – vollständig mit
+  SQLCipher verschlüsselt;
+- `users.sqlite3` enthält Benutzerkonten, Rollen, Passwort-Hashes und 2FA –
+  ebenfalls vollständig verschlüsselt;
+- `encryption.json` enthält nur die verschlüsselten Umschläge des zufällig
+  erzeugten Datenbankschlüssels, niemals die Passphrase oder den Klartext-Key.
 
-Bei einem Update von einer älteren Ein-Datei-Installation erkennt die App die
-alte `merch.sqlite3` automatisch. Vor der Aufteilung wird ein unverändertes
-ZIP unter `data/migration-archives/` angelegt, anschließend werden die
-Benutzer mit ihren IDs und MFA-Daten nach `users.sqlite3` kopiert. Bereits
+Rechnungen liegen als verschlüsselte Dateien unter `data/invoices/`. Bereits
 gebuchte Verkäufe und Einkäufe behalten zusätzlich den damaligen
 Benutzernamen als Historien-Schnappschuss, sodass das Löschen eines Kontos
 keine Buchung unlesbar macht.
@@ -215,10 +220,12 @@ PROFILE_REAUTH_SECONDS=600      # Dauer einer Profil-Sicherheitsbestätigung
 MFA_ISSUER=Protovibe Merch Manager
 ```
 
-`SECRET_KEY` muss dauerhaft unverändert bleiben. Er schützt bereits die
-Sitzungen und verschlüsselt nun auch die lokal gespeicherten TOTP-Geheimnisse;
-ein Wechsel würde eingerichtete 2FA-Geräte ungültig machen. Die Uhr der
-Synology sollte über die DSM-Zeitsynchronisation korrekt laufen, weil
+`SECRET_KEY` muss dauerhaft unverändert bleiben. Er schützt Sitzungen und
+verschlüsselt die lokal gespeicherten TOTP-Geheimnisse; er ist **nicht** der
+Schlüssel für die SQLite-Dateien. Ein Wechsel würde eingerichtete 2FA-Geräte
+ungültig machen. Die Datenbank-Passphrase wird ausschließlich in der
+Einrichtungs-/Entsperrseite eingegeben und liegt bewusst nicht in `.env`. Die
+Uhr der Synology sollte über die DSM-Zeitsynchronisation korrekt laufen, weil
 Authenticator-Codes zeitbasiert sind.
 
 Der Datenreset im Admin-Reiter fordert das aktuelle Passwort, einen 2FA- oder
@@ -226,6 +233,59 @@ Wiederherstellungscode und die exakte Bestätigungsphrase. Vorher schreibt die
 App ein ZIP unter `data/reset-archives/`. Danach werden nur Artikel,
 Buchungen und Rechnungen frisch angelegt; sämtliche Benutzerkonten, Rollen,
 Passwörter und 2FA-Einstellungen bleiben erhalten.
+
+### Datenbankverschlüsselung und Wiederherstellung
+
+Die App erzeugt bei der ersten Einrichtung einen zufälligen 256-Bit-
+Datenbankschlüssel. Dieser Schlüssel existiert nur im Arbeitsspeicher des
+laufenden Prozesses. In `data/encryption.json` wird er ausschließlich in zwei
+verschlüsselten Umschlägen gespeichert:
+
+- einer wird mit der von dir gewählten Datenbank-Passphrase geöffnet;
+- der andere mit dem einmalig angezeigten Wiederherstellungsschlüssel.
+
+Nach einem Container-, NAS- oder App-Neustart zeigt die App daher zuerst
+**Datenbank entsperren**. Erst danach ist die normale Anmeldung mit Benutzer-
+Passwort und 2FA möglich. Weder die Datenbank-Passphrase noch der
+Wiederherstellungsschlüssel gehören in `.env`, ein Git-Repository oder einen
+Shell-Befehl.
+
+Wenn sowohl Datenbank-Passphrase als auch Wiederherstellungsschlüssel verloren
+gehen, sind die Daten kryptografisch nicht wiederherstellbar. Das ist keine
+absichtliche Schikane, sondern die Konsequenz daraus, dass auf dem NAS kein
+automatisch lesbarer Hauptschlüssel liegt. Bewahre beide getrennt und offline
+auf.
+
+Solange die Datenbank entsperrt ist, kann der Admin unter **Verwaltung →
+Datenbank-Sicherheit** nach erneuter Passwort- und 2FA-Bestätigung eine neue
+Datenbank-Passphrase setzen oder einen neuen Wiederherstellungsschlüssel
+erzeugen. Beim Erneuern wird der vorherige Wiederherstellungsschlüssel sofort
+ungültig.
+
+Die Verschlüsselung schützt Daten bei einem kopierten Datenträger oder einer
+kopierten `data/`-Freigabe. Sie ersetzt keine Zugangssicherung eines bereits
+laufenden, entsperrten NAS: Ein Angreifer mit Administratorzugriff auf Server
+und laufenden Container kann Daten weiterhin auslesen. HTTPS über den Reverse
+Proxy, ein starkes Synology-Admin-Passwort und restriktive Dateirechte bleiben
+deshalb wichtig.
+
+### Umstieg von einem bisherigen unverschlüsselten Datenordner
+
+Ein vorhandener `data/`-Ordner wird absichtlich **nicht automatisch**
+verschlüsselt oder überschrieben. Findet die neue Version dort alte
+`merch.sqlite3`-/`users.sqlite3`-Dateien ohne `encryption.json`, zeigt sie nur
+eine Anleitung an.
+
+1. Die alte App beenden und den gesamten bisherigen `data/`-Ordner sicher als
+   `data-legacy` ablegen.
+2. Einen neuen, leeren `data/`-Ordner anlegen und die neue App starten.
+3. Verschlüsselung einrichten, Wiederherstellungsschlüssel sichern und als
+   neuer Admin anmelden.
+4. Die alten Daten anschließend über **Verwaltung → Ungesicherte Altdaten
+   importieren** übernehmen.
+
+Erst wenn Import und neue Sicherung geprüft sind, darfst du die alten
+unverschlüsselten Daten einschließlich alter CSV- und Backup-Ordner löschen.
 
 ### Sichere Erreichbarkeit bei Konzerten
 
@@ -276,37 +336,42 @@ nicht weiter synchronisiert werden.
 Nach jedem erfolgreichen Verkauf, Einkauf oder Artikel-Update legt die App in
 `data/backups/<Zeitstempel>/` an:
 
-- `merch.sqlite3` – vollständige, wiederherstellbare Kopie der Betriebsdaten;
-- `artikel.csv`, `verkaeufe.csv`, `einkaeufe.csv`, `bestand.csv` – lesbare
-  Tabellenexporte.
+- `merch.sqlite3` – vollständige, wiederherstellbare und weiterhin
+  verschlüsselte Kopie der Betriebsdaten;
+- `encryption.json` – die dazugehörigen, weiterhin verschlüsselten
+  Schlüsselumschläge (ohne Klartext-Passphrase oder Klartext-Key);
 - `invoices/` – die zum Sicherungszeitpunkt vorhandenen hochgeladenen
-  Rechnungen. Die App verwendet dafür platzsparende Hardlinks, sofern das
-  Dateisystem sie unterstützt.
+  Rechnungen in ihrer verschlüsselten Speicherform. Die App verwendet dafür
+  platzsparende Hardlinks, sofern das Dateisystem sie unterstützt.
 
-Rechnungen selbst liegen im laufenden System unter `data/invoices/`. Beim
-Ersetzen oder Löschen eines Einkaufs wird der zugehörige Anhang ebenfalls
-entfernt; die Änderung wird im Audit-Protokoll festgehalten.
+Rechnungen selbst liegen im laufenden System verschlüsselt unter
+`data/invoices/`. Beim Ersetzen oder Löschen eines Einkaufs wird der
+zugehörige Anhang ebenfalls entfernt; die Änderung wird im Audit-Protokoll
+festgehalten.
 
 Alte Sicherungsordner werden nach der in `.env` gesetzten Anzahl von Tagen
 gelöscht.  Ergänzend ist ein Synology-Snapshot oder Hyper Backup des gesamten
 Projektordners empfehlenswert.
 
-Die Sicherungen enthalten bewusst keine Benutzerdatei. Die normalen
-CSV-Dateien sind zum Nachsehen/Weitergeben gedacht; die SQLite-Datei ist die
-vollständige Wiederherstellung der Betriebsdaten. Im Admin-Reiter kann ein
-bestimmter Sicherungspunkt ausgewählt und nach aktuellem Passwort plus 2FA
-wiederhergestellt werden. Vorher legt die App immer zusätzlich einen neuen
-Sicherungspunkt des aktuellen Zustands an. Dabei werden ausschließlich
-`merch.sqlite3` und Rechnungsanhänge ersetzt; `users.sqlite3` mit Konten,
-Rollen und MFA bleibt unverändert. Alte Ein-Datei-Sicherungen, die noch eine
-`users`-Tabelle enthalten, werden absichtlich nicht automatisch geladen.
+Die Sicherungen enthalten bewusst keine Benutzerdatei. CSV-/ZIP-Exporte sind
+weiterhin möglich, werden aber nur auf ausdrücklichen Download im Browser
+unverschlüsselt erzeugt; behandle sie anschließend wie sensible Dateien. Im
+Admin-Reiter kann ein bestimmter Sicherungspunkt ausgewählt und nach aktuellem
+Passwort plus 2FA wiederhergestellt werden. Vorher legt die App immer
+zusätzlich einen neuen Sicherungspunkt des aktuellen Zustands an. Dabei werden
+ausschließlich `merch.sqlite3` und Rechnungsanhänge ersetzt; `users.sqlite3`
+mit Konten, Rollen und MFA bleibt unverändert. Alte Ein-Datei-Sicherungen, die
+noch eine `users`-Tabelle enthalten, werden absichtlich nicht automatisch
+geladen.
 
 ### Vollständigen Altdaten-Stand importieren
 
 Unter **Verwaltung → Ungesicherte Altdaten importieren** kann ein bisheriger,
-nicht verschlüsselter Protovibe-Stand vollständig übernommen werden. Das ist
-für einen späteren Wechsel auf eine neue Installation gedacht, nicht für das
-Zusammenführen zweier parallel genutzter Datenbestände.
+nicht verschlüsselter Protovibe-Stand vollständig übernommen werden. Die
+bekannten Tabellen werden dabei in die verschlüsselten Zieldatenbanken kopiert;
+die hochgeladenen Rechnungen werden vor dem Aktivieren ebenfalls verschlüsselt.
+Das ist für einen späteren Wechsel auf eine neue Installation gedacht, nicht
+für das Zusammenführen zweier parallel genutzter Datenbestände.
 
 Die Funktion akzeptiert:
 
@@ -337,8 +402,8 @@ einer erneuten Bestätigung mit aktuellem Passwort, 2FA und der Phrase
 
 1. Die App prüft SQLite-Integrität, erwartete Tabellen und Referenzen.
 2. Sie erzeugt ein vollständiges Rückfall-ZIP unter
-   `data/legacy-import-archives/` – einschließlich beider aktuellen
-   Datenbanken und Rechnungen.
+   `data/legacy-import-archives/` – einschließlich beider weiterhin
+   verschlüsselten aktuellen Datenbanken und Rechnungen.
 3. Sie ersetzt Warenwirtschaft, Benutzerkonten und Rechnungen gemeinsam.
    Danach meldest du dich mit einem **importierten** Benutzerkonto wieder an.
 
@@ -358,6 +423,12 @@ gespeichert. Ist er nicht mehr vorhanden, wählst du **2FA für alle
 importierten Konten zurücksetzen**. Besonders das importierte Admin-Konto muss
 anschließend beim ersten Login seine 2FA neu einrichten.
 
+Die hochgeladenen Altdaten werden während der Prüfung nur kurzzeitig im
+privaten Staging-Ordner gehalten und nach Import oder spätestens einer Stunde
+entfernt. Die ursprünglichen alten Datenordner und deren Backups bleiben jedoch
+deine Verantwortung und sind weiterhin unverschlüsselt, bis du sie sicher
+löschst.
+
 ## Import der bisherigen ODS
 
 > Wichtig: Der Import ist nur für eine noch leere Artikel-, Verkaufs- und
@@ -372,16 +443,29 @@ Verkaufsbelege.
 
 1. Kopiere die ODS in den Ordner `imports`, etwa als
    `imports/protovibe-merch-bereinigt.ods`.
-2. Öffne im Container Manager die Konsole des laufenden Containers oder nutze
-   SSH auf der Synology.
-3. Führe aus:
+2. Stelle sicher, dass während des Imports niemand in der App arbeitet. Öffne
+   im Container Manager die Konsole des laufenden Containers oder nutze SSH auf
+   der Synology.
+3. Führe aus und gib die **Datenbank-Passphrase erst an der verdeckten
+   Terminal-Abfrage** ein:
 
    ```bash
    docker exec -it protovibe-merch python scripts/import_ods.py /import/protovibe-merch-bereinigt.ods
    ```
 
+   Die Passphrase gehört nicht hinter den Befehl und wird nicht in der Shell-
+   History gespeichert.
 4. Lade die App neu und kontrolliere zuerst Artikelbilanz, Einkaufswarenkörbe
    und ein paar alte Verkäufe.
+
+Lokal aus VS Code funktioniert derselbe Ablauf mit:
+
+```powershell
+python -m scripts.import_ods .\imports\protovibe-merch-bereinigt.ods
+```
+
+Ohne Docker verwendet das Skript automatisch den projektlokalen Ordner
+`data/` und fragt ebenfalls interaktiv nach der Datenbank-Passphrase.
 
 Das Skript erkennt weiterhin auch die ursprüngliche ODS mit den Spalten
 `Name`, `Art` und `Größe`. Die bereinigte Fassung ist jedoch vorzuziehen: Der
@@ -508,7 +592,7 @@ Versionspflege: Es wählt nur bewusst aus, welches bereits veröffentlichte Imag
 auf der Synology laufen soll. Die App-Version selbst ist bereits im gewählten
 Image hinterlegt. Ein Rücksprung auf die vorige Code-Version ist genauso
 möglich, indem du wieder den vorherigen Tag einträgst. Vor jeder Aktualisierung
-erzeugt die App bereits reguläre SQLite-/CSV-Sicherungen nach jeder Buchung;
+liegen bereits verschlüsselte Datenbank-Sicherungen nach jeder Buchung vor;
 zusätzlich ist ein Synology Snapshot oder Hyper Backup des Projektordners
 sinnvoll.
 

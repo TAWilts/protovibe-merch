@@ -19,14 +19,21 @@ from app import (
     LEGACY_COMBINED_SCHEMA_SQL,
     apply_option_configuration,
     balance_payload,
+    change_database_passphrase,
     create_backup,
     csv_rows,
     create_app,
+    database_encryption_state,
     decrypt_mfa_secret,
     encrypt_mfa_secret,
     get_db,
     get_user_db,
+    read_invoice_bytes,
+    regenerate_database_recovery_key,
+    setup_encrypted_databases,
+    store_invoice_bytes,
     sync_variants,
+    unlock_encrypted_databases,
     variant_label_map,
 )
 
@@ -77,6 +84,219 @@ class MerchAppTestCase(unittest.TestCase):
             )
 
         self.assertEqual(local_app.config["APP_VERSION"], "0.0.0")
+
+    def test_encrypted_database_requires_setup_then_unlocks_without_plaintext_files(self) -> None:
+        """SQLCipher data stays unreadable to sqlite3 and needs a separate unlock after restart."""
+
+        root = Path(self.tempdir.name) / "encrypted-installation"
+        config = {
+            "TESTING": True,
+            "SECRET_KEY": "test-secret",
+            "DATABASE": str(root / "merch.sqlite3"),
+            "USERS_DATABASE": str(root / "users.sqlite3"),
+            "BACKUP_DIR": str(root / "backups"),
+            "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+            "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+            "DATABASE_ENCRYPTION_ENABLED": True,
+            "ADMIN_USERNAME": "encrypted-admin",
+            "ADMIN_PASSWORD": "bootstrap-admin-password",
+            "APP_VERSION": "v0.3.0",
+            "AUTO_BACKUP": False,
+        }
+        encrypted_app = create_app(config)
+        encrypted_client = encrypted_app.test_client()
+        first = encrypted_client.get("/verkauf")
+        self.assertTrue(first.location.endswith("/system/verschluesselung/einrichten"))
+
+        setup_page = encrypted_client.get("/system/verschluesselung/einrichten")
+        self.assertEqual(setup_page.status_code, 200)
+        with encrypted_client.session_transaction() as session:
+            setup_csrf = session["csrf_token"]
+        setup = encrypted_client.post(
+            "/system/verschluesselung/einrichten",
+            data={
+                "csrf_token": setup_csrf,
+                "bootstrap_password": "bootstrap-admin-password",
+                "database_passphrase": "a local database passphrase",
+                "database_passphrase_confirmation": "a local database passphrase",
+            },
+        )
+        self.assertTrue(setup.location.endswith("/system/verschluesselung/recovery"))
+        recovery_page = encrypted_client.get("/system/verschluesselung/recovery")
+        recovery_match = re.search(r"PVM-RK1-[A-Z0-9-]+", recovery_page.get_data(as_text=True))
+        self.assertIsNotNone(recovery_match)
+        recovery_key = recovery_match.group(0)
+        with encrypted_client.session_transaction() as session:
+            recovery_csrf = session["csrf_token"]
+        complete = encrypted_client.post(
+            "/system/verschluesselung/recovery",
+            data={"csrf_token": recovery_csrf},
+        )
+        self.assertTrue(complete.location.endswith("/login"))
+        self.assertEqual(database_encryption_state(encrypted_app), "unlocked")
+
+        with encrypted_app.app_context():
+            encrypted_invoice = store_invoice_bytes("private.pdf", b"%PDF-private invoice")
+            self.assertTrue(encrypted_invoice.name.endswith(".pdf.enc"))
+            self.assertNotIn(b"private invoice", encrypted_invoice.read_bytes())
+            self.assertEqual(read_invoice_bytes("private.pdf"), b"%PDF-private invoice")
+            encrypted_backup = create_backup(encrypted_app, force=True)
+        self.assertIsNotNone(encrypted_backup)
+        self.assertFalse((encrypted_backup / "verkaeufe.csv").exists())
+        self.assertTrue((encrypted_backup / "invoices" / "private.pdf.enc").is_file())
+        self.assertTrue((encrypted_backup / "encryption.json").is_file())
+
+        plaintext_attempt = sqlite3.connect(root / "merch.sqlite3")
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                plaintext_attempt.execute("SELECT name FROM sqlite_master").fetchall()
+        finally:
+            plaintext_attempt.close()
+        self.assertNotIn(b"encrypted-admin", (root / "users.sqlite3").read_bytes())
+
+        restarted_app = create_app(config)
+        restarted_client = restarted_app.test_client()
+        self.assertEqual(database_encryption_state(restarted_app), "locked")
+        locked = restarted_client.get("/verkauf")
+        self.assertTrue(locked.location.endswith("/system/verschluesselung/entsperren"))
+        unlock_page = restarted_client.get("/system/verschluesselung/entsperren")
+        with restarted_client.session_transaction() as session:
+            unlock_csrf = session["csrf_token"]
+        unlocked = restarted_client.post(
+            "/system/verschluesselung/entsperren",
+            data={"csrf_token": unlock_csrf, "recovery_key": recovery_key},
+        )
+        self.assertTrue(unlocked.location.endswith("/login"))
+        self.assertEqual(database_encryption_state(restarted_app), "unlocked")
+        with restarted_app.app_context():
+            self.assertEqual(get_user_db().execute("SELECT username FROM users").fetchone()[0], "encrypted-admin")
+
+    def test_encrypted_target_imports_plaintext_legacy_databases_without_downgrading_storage(self) -> None:
+        """The compatibility importer converts known legacy rows into SQLCipher files."""
+
+        self.seed_variant("Legacy Import Shirt")
+        source_database = Path(self.app.config["DATABASE"])
+        source_users = Path(self.app.config["USERS_DATABASE"])
+        target_root = Path(self.tempdir.name) / "encrypted-import-target"
+        target_config = {
+            "TESTING": True,
+            "SECRET_KEY": "target-secret",
+            "DATABASE": str(target_root / "merch.sqlite3"),
+            "USERS_DATABASE": str(target_root / "users.sqlite3"),
+            "BACKUP_DIR": str(target_root / "backups"),
+            "RESET_ARCHIVE_DIR": str(target_root / "reset-archives"),
+            "INVOICE_UPLOAD_DIR": str(target_root / "invoices"),
+            "DATABASE_ENCRYPTION_ENABLED": True,
+            "ADMIN_USERNAME": "target-admin",
+            "ADMIN_PASSWORD": "target-bootstrap-password",
+            "APP_VERSION": "v0.3.0",
+            "AUTO_BACKUP": False,
+        }
+        target_app = create_app(target_config)
+        target_mfa_secret = pyotp.random_base32()
+        with target_app.app_context():
+            setup_encrypted_databases(
+                target_app,
+                bootstrap_password="target-bootstrap-password",
+                database_passphrase="target database passphrase",
+                confirmation="target database passphrase",
+            )
+            accounts = get_user_db()
+            accounts.execute(
+                "UPDATE users SET mfa_enabled = 1, mfa_secret_encrypted = ? WHERE id = 1",
+                (encrypt_mfa_secret(target_mfa_secret, target_app),),
+            )
+            accounts.commit()
+
+        target_client = target_app.test_client()
+        with target_client.session_transaction() as session:
+            session["user_id"] = 1
+            session["user_session_version"] = 0
+            session["csrf_token"] = "encrypted-import-csrf"
+        preview = target_client.post(
+            "/verwaltung/altdaten/vorschau",
+            data={
+                "csrf_token": "encrypted-import-csrf",
+                "merchandise_database": (io.BytesIO(source_database.read_bytes()), "merch.sqlite3"),
+                "users_database": (io.BytesIO(source_users.read_bytes()), "users.sqlite3"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(preview.status_code, 200)
+        token_match = re.search(r'name="import_token" value="([a-f0-9]{32})"', preview.get_data(as_text=True))
+        self.assertIsNotNone(token_match)
+        imported = target_client.post(
+            "/verwaltung/altdaten/importieren",
+            data={
+                "csrf_token": "encrypted-import-csrf",
+                "import_token": token_match.group(1),
+                "mfa_mode": "preserve",
+                "password": "target-bootstrap-password",
+                "mfa_code": pyotp.TOTP(target_mfa_secret).now(),
+                "confirmation": "ALTDATEN IMPORTIEREN",
+            },
+        )
+        self.assertTrue(imported.location.endswith("/login"))
+        with target_app.app_context():
+            self.assertEqual(get_db().execute("SELECT name FROM articles").fetchone()[0], "Legacy Import Shirt")
+            self.assertEqual(get_user_db().execute("SELECT username FROM users").fetchone()[0], "tester")
+        raw_target = sqlite3.connect(target_root / "merch.sqlite3")
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                raw_target.execute("SELECT name FROM sqlite_master").fetchall()
+        finally:
+            raw_target.close()
+
+    def test_database_passphrase_and_recovery_key_can_be_rotated_after_unlock(self) -> None:
+        """A recovery unlock can be made durable again by replacing the normal passphrase."""
+
+        root = Path(self.tempdir.name) / "encrypted-key-rotation"
+        config = {
+            "TESTING": True,
+            "SECRET_KEY": "test-secret",
+            "DATABASE": str(root / "merch.sqlite3"),
+            "USERS_DATABASE": str(root / "users.sqlite3"),
+            "BACKUP_DIR": str(root / "backups"),
+            "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+            "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+            "DATABASE_ENCRYPTION_ENABLED": True,
+            "ADMIN_USERNAME": "rotation-admin",
+            "ADMIN_PASSWORD": "rotation-bootstrap-password",
+            "APP_VERSION": "v0.3.0",
+            "AUTO_BACKUP": False,
+        }
+        configured_app = create_app(config)
+        with configured_app.app_context():
+            _, old_recovery_key = setup_encrypted_databases(
+                configured_app,
+                bootstrap_password="rotation-bootstrap-password",
+                database_passphrase="first database passphrase",
+                confirmation="first database passphrase",
+            )
+            change_database_passphrase(
+                configured_app,
+                passphrase="second database passphrase",
+                confirmation="second database passphrase",
+            )
+            _, new_recovery_key = regenerate_database_recovery_key(configured_app)
+
+        restarted = create_app(config)
+        with restarted.app_context():
+            with self.assertRaises(ValueError):
+                unlock_encrypted_databases(restarted, database_passphrase="first database passphrase")
+            self.assertEqual(
+                unlock_encrypted_databases(restarted, database_passphrase="second database passphrase"),
+                "passphrase",
+            )
+
+        restarted_again = create_app(config)
+        with restarted_again.app_context():
+            with self.assertRaises(ValueError):
+                unlock_encrypted_databases(restarted_again, recovery_key=old_recovery_key)
+            self.assertEqual(
+                unlock_encrypted_databases(restarted_again, recovery_key=new_recovery_key),
+                "recovery",
+            )
 
     def test_existing_database_gets_minimum_stock_and_offered_columns(self) -> None:
         """An update must not require manually recreating the merch database."""
