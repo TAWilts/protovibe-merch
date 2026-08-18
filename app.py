@@ -34,6 +34,7 @@ import string
 import tempfile
 import time
 import uuid
+import warnings
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -68,6 +69,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 import pyotp
 import qrcode
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 try:  # The legacy ODS helper can still give a useful install error without it.
     from sqlcipher3 import dbapi2 as sqlcipher
@@ -99,6 +101,12 @@ CREATE TABLE IF NOT EXISTS users (
     mfa_enrolled_at TEXT,
     session_version INTEGER NOT NULL DEFAULT 0,
     last_login_at TEXT,
+    -- These preferences deliberately belong to the account database: every
+    -- person can choose their own presentation without changing the shared
+    -- catalogue or another user's sales view.
+    ui_theme TEXT NOT NULL DEFAULT 'aurora',
+    ui_language TEXT NOT NULL DEFAULT 'de',
+    show_variant_photos INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -173,6 +181,20 @@ CREATE TABLE IF NOT EXISTS variants (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(article_id, combination_key)
+);
+
+-- Product pictures stay on the filesystem.  SQLite only keeps the opaque
+-- managed filename and the relation to the variant, so backups remain small
+-- and no image bytes are embedded in database pages.
+CREATE TABLE IF NOT EXISTS variant_photos (
+    id INTEGER PRIMARY KEY,
+    variant_id INTEGER NOT NULL REFERENCES variants(id),
+    file_path TEXT NOT NULL UNIQUE,
+    original_filename TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    created_by INTEGER,
+    created_by_username TEXT
 );
 
 CREATE TABLE IF NOT EXISTS purchases (
@@ -275,6 +297,7 @@ CREATE TABLE IF NOT EXISTS sync_events (
 CREATE INDEX IF NOT EXISTS idx_option_groups_article ON option_groups(article_id, position);
 CREATE INDEX IF NOT EXISTS idx_option_values_group ON option_values(option_group_id, position);
 CREATE INDEX IF NOT EXISTS idx_variants_article ON variants(article_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_variant_photos_variant_position ON variant_photos(variant_id, position, id);
 CREATE INDEX IF NOT EXISTS idx_purchases_variant ON purchases(variant_id, purchased_on);
 CREATE INDEX IF NOT EXISTS idx_purchases_receipt_id ON purchases(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_receipt_attachments_receipt ON purchase_receipt_attachments(receipt_id);
@@ -293,6 +316,7 @@ OPERATION_TABLES = (
     "option_groups",
     "option_values",
     "variants",
+    "variant_photos",
     "purchases",
     "purchase_receipt_attachments",
     "sales",
@@ -343,6 +367,200 @@ DELIVERY_WORKFLOW_STATUSES = ("pending", "shipped", "received")
 # experience, but the server is the authoritative check.
 ALLOWED_INVOICE_FILE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 MAX_INVOICE_FILE_BYTES = 10 * 1024 * 1024
+
+# Variant pictures are deliberately normalised on upload.  This avoids huge
+# phone originals slowing down a sales device and gives every stored picture a
+# predictable JPEG format regardless of the source camera/app.
+ALLOWED_VARIANT_PHOTO_FILE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_VARIANT_PHOTO_FILE_BYTES = 10 * 1024 * 1024
+MAX_VARIANT_PHOTO_PIXELS = 30_000_000
+MAX_VARIANT_PHOTO_DIMENSION = 1600
+VARIANT_PHOTO_JPEG_QUALITY = 84
+
+DEFAULT_UI_THEME = "aurora"
+DEFAULT_UI_LANGUAGE = "de"
+USER_THEMES: dict[str, dict[str, str]] = {
+    "aurora": {
+        "label": "Aurora",
+        "description": "Violett, Pink und ein weicher Nachtverlauf.",
+        "theme_color": "#16131d",
+    },
+    "ocean": {
+        "label": "Lagune",
+        "description": "Tiefes Blau mit leuchtendem Türkis.",
+        "theme_color": "#0d1d27",
+    },
+    "sunset": {
+        "label": "Sonnenuntergang",
+        "description": "Koralle, Orange und warme Magenta-Akzente.",
+        "theme_color": "#251019",
+    },
+    "forest": {
+        "label": "Waldlicht",
+        "description": "Dunkles Grün mit frischem Mint.",
+        "theme_color": "#102019",
+    },
+    "midnight": {
+        "label": "Mitternacht",
+        "description": "Kühles Marineblau mit Indigo-Licht.",
+        "theme_color": "#10172a",
+    },
+}
+USER_LANGUAGES: dict[str, dict[str, str]] = {
+    "de": {"label": "Deutsch", "locale": "de-DE"},
+    "en": {"label": "English", "locale": "en-GB"},
+}
+
+# The application has grown from a German-first local tool.  These common
+# strings cover the global chrome, profile and the newly added photo flow;
+# keeping them in one place makes the remaining specialist screens easy to
+# translate incrementally without changing stored business data.
+UI_TRANSLATIONS: dict[str, dict[str, str]] = {
+    "de": {
+        "nav.label": "Hauptnavigation",
+        "nav.sales": "Verkauf",
+        "nav.history": "Historie",
+        "nav.operations": "Offene Vorgänge",
+        "nav.purchases": "Einkäufe",
+        "nav.balances": "Bilanzen",
+        "nav.articles": "Artikelverwaltung",
+        "nav.administration": "Verwaltung",
+        "profile.link_title": "Profil und Sicherheitseinstellungen öffnen",
+        "logout": "Abmelden",
+        "profile.eyebrow": "Konto",
+        "profile.title": "Mein Profil",
+        "profile.intro": "Persönliche Zugangsdaten, Darstellung und zusätzlicher Kontoschutz.",
+        "profile.mfa_active": "2FA aktiv",
+        "profile.mfa_inactive": "2FA nicht aktiv",
+        "profile.account": "Konto",
+        "profile.username": "Benutzername",
+        "profile.role": "Rolle",
+        "profile.last_login": "Letzte Anmeldung",
+        "profile.never": "Noch nie",
+        "profile.mfa": "2FA",
+        "profile.enabled": "Aktiviert",
+        "profile.disabled": "Nicht aktiviert",
+        "profile.mfa_title": "Zwei-Faktor-Authentifizierung",
+        "profile.mfa_enabled_text": "Dein Konto ist mit einer Authenticator-App geschützt. Noch verfügbare Wiederherstellungscodes:",
+        "profile.mfa_reconfigure": "Authenticator-App neu einrichten",
+        "profile.mfa_new_recovery": "Neue Wiederherstellungscodes",
+        "profile.mfa_disable": "2FA deaktivieren",
+        "profile.mfa_intro": "Mit 2FA benötigst du zusätzlich zum Passwort einen zeitbasierten Code aus einer kostenlosen Authenticator-App.",
+        "profile.mfa_setup": "2FA einrichten",
+        "profile.mfa_admin_notice": "Für den Admin ist 2FA verpflichtend und kann hier nicht deaktiviert werden.",
+        "profile.username_title": "Benutzername ändern",
+        "profile.username_intro": "Der neue Name wird beim nächsten Anmelden verwendet und erscheint künftig automatisch bei „Verkauft von“.",
+        "profile.new_username": "Neuer Benutzername",
+        "profile.save_username": "Benutzername speichern",
+        "profile.password_title": "Passwort ändern",
+        "profile.password_intro": "Die aktuelle Sicherheitsbestätigung gilt nur kurz. Nach dem Ändern werden andere Sitzungen dieses Kontos abgemeldet.",
+        "profile.current_password": "Aktuelles Passwort",
+        "profile.new_password": "Neues Passwort",
+        "profile.repeat_password": "Passwort wiederholen",
+        "profile.save_password": "Passwort ändern",
+        "profile.personalization": "Darstellung & Verkauf",
+        "profile.personalization_intro": "Diese Einstellungen gelten nur für dein Benutzerkonto und können jederzeit geändert werden.",
+        "profile.language": "Sprache",
+        "profile.theme": "Farbthema",
+        "profile.show_variant_photos": "Produktfotos im Verkauf unter den Variantenoptionen anzeigen",
+        "profile.show_variant_photos_hint": "Fehlt ein Foto der gewählten Variante, wird das ähnlichste Foto desselben Artikels verwendet.",
+        "profile.save_personalization": "Darstellung speichern",
+        "profile.personalization_saved": "Deine Darstellung und Verkaufsansicht wurden gespeichert.",
+        "theme.aurora.label": "Aurora",
+        "theme.aurora.description": "Violett, Pink und ein weicher Nachtverlauf.",
+        "theme.ocean.label": "Lagune",
+        "theme.ocean.description": "Tiefes Blau mit leuchtendem Türkis.",
+        "theme.sunset.label": "Sonnenuntergang",
+        "theme.sunset.description": "Koralle, Orange und warme Magenta-Akzente.",
+        "theme.forest.label": "Waldlicht",
+        "theme.forest.description": "Dunkles Grün mit frischem Mint.",
+        "theme.midnight.label": "Mitternacht",
+        "theme.midnight.description": "Kühles Marineblau mit Indigo-Licht.",
+        "photos.heading": "Produktfotos",
+        "photos.caption": "Produktfoto dieser Variante",
+        "photos.fallback": "Foto einer ähnlichen Variante: {label}",
+        "photos.upload": "Fotos hinzufügen",
+        "photos.uploading": "Fotos werden optimiert …",
+        "photos.delete": "Foto löschen",
+        "photos.delete_confirm": "Dieses Produktfoto wirklich löschen?",
+        "photos.empty": "Noch keine Fotos",
+        "photos.save_first": "Nach dem ersten Speichern verfügbar",
+        "photos.upload_failed": "Die Fotos konnten nicht hochgeladen werden.",
+        "photos.delete_failed": "Das Foto konnte nicht gelöscht werden.",
+    },
+    "en": {
+        "nav.label": "Main navigation",
+        "nav.sales": "Sales",
+        "nav.history": "History",
+        "nav.operations": "Open tasks",
+        "nav.purchases": "Purchases",
+        "nav.balances": "Balances",
+        "nav.articles": "Catalogue",
+        "nav.administration": "Administration",
+        "profile.link_title": "Open profile and security settings",
+        "logout": "Sign out",
+        "profile.eyebrow": "Account",
+        "profile.title": "My profile",
+        "profile.intro": "Personal sign-in details, appearance and additional account protection.",
+        "profile.mfa_active": "2FA active",
+        "profile.mfa_inactive": "2FA inactive",
+        "profile.account": "Account",
+        "profile.username": "Username",
+        "profile.role": "Role",
+        "profile.last_login": "Last sign-in",
+        "profile.never": "Never",
+        "profile.mfa": "2FA",
+        "profile.enabled": "Enabled",
+        "profile.disabled": "Not enabled",
+        "profile.mfa_title": "Two-factor authentication",
+        "profile.mfa_enabled_text": "Your account is protected by an authenticator app. Remaining recovery codes:",
+        "profile.mfa_reconfigure": "Set up authenticator app again",
+        "profile.mfa_new_recovery": "New recovery codes",
+        "profile.mfa_disable": "Disable 2FA",
+        "profile.mfa_intro": "With 2FA, you need a time-based code from a free authenticator app in addition to your password.",
+        "profile.mfa_setup": "Set up 2FA",
+        "profile.mfa_admin_notice": "2FA is mandatory for the administrator and cannot be disabled here.",
+        "profile.username_title": "Change username",
+        "profile.username_intro": "The new name will be used at your next sign-in and will automatically appear under “Sold by”.",
+        "profile.new_username": "New username",
+        "profile.save_username": "Save username",
+        "profile.password_title": "Change password",
+        "profile.password_intro": "The current security confirmation is valid only briefly. Changing it signs out other sessions for this account.",
+        "profile.current_password": "Current password",
+        "profile.new_password": "New password",
+        "profile.repeat_password": "Repeat password",
+        "profile.save_password": "Save password",
+        "profile.personalization": "Appearance & sales",
+        "profile.personalization_intro": "These settings apply only to your account and can be changed at any time.",
+        "profile.language": "Language",
+        "profile.theme": "Colour theme",
+        "profile.show_variant_photos": "Show product photos below variant choices in Sales",
+        "profile.show_variant_photos_hint": "If the chosen variant has no photo, the closest matching photo from the same product is used.",
+        "profile.save_personalization": "Save appearance",
+        "profile.personalization_saved": "Your appearance and sales view have been saved.",
+        "theme.aurora.label": "Aurora",
+        "theme.aurora.description": "Violet, pink and a soft night gradient.",
+        "theme.ocean.label": "Lagoon",
+        "theme.ocean.description": "Deep blue with luminous turquoise.",
+        "theme.sunset.label": "Sunset",
+        "theme.sunset.description": "Coral, orange and warm magenta accents.",
+        "theme.forest.label": "Forest glow",
+        "theme.forest.description": "Deep green with fresh mint.",
+        "theme.midnight.label": "Midnight",
+        "theme.midnight.description": "Cool navy blue with indigo light.",
+        "photos.heading": "Product photos",
+        "photos.caption": "Photo for this variant",
+        "photos.fallback": "Photo from a similar variant: {label}",
+        "photos.upload": "Add photos",
+        "photos.uploading": "Optimising photos …",
+        "photos.delete": "Delete photo",
+        "photos.delete_confirm": "Delete this product photo?",
+        "photos.empty": "No photos yet",
+        "photos.save_first": "Available after first save",
+        "photos.upload_failed": "The photos could not be uploaded.",
+        "photos.delete_failed": "The photo could not be deleted.",
+    },
+}
 
 # A legacy import is deliberately an exceptional, administrator-only workflow.
 # The limits below keep an accidentally selected NAS backup or a ZIP bomb from
@@ -605,6 +823,48 @@ def effective_mfa_enabled(user: dict[str, Any] | sqlite3.Row | None, app: Flask 
     return not bool(configured_app and configured_app.config.get("LOCAL_DEV_MODE"))
 
 
+def valid_ui_theme(value: Any) -> str:
+    """Validate a persisted theme key instead of trusting a submitted value."""
+
+    theme = str(value or "").strip().lower()
+    if theme not in USER_THEMES:
+        raise ValueError("Das ausgewählte Farbthema ist nicht verfügbar.")
+    return theme
+
+
+def valid_ui_language(value: Any) -> str:
+    """Validate a persisted UI-language key."""
+
+    language = str(value or "").strip().lower()
+    if language not in USER_LANGUAGES:
+        raise ValueError("Die ausgewählte Sprache ist nicht verfügbar.")
+    return language
+
+
+def user_ui_theme(user: dict[str, Any] | sqlite3.Row | None) -> str:
+    """Return a safe theme for current and pre-preference user rows."""
+
+    if user is None or "ui_theme" not in user.keys():
+        return DEFAULT_UI_THEME
+    value = str(user["ui_theme"] or "").strip().lower()
+    return value if value in USER_THEMES else DEFAULT_UI_THEME
+
+
+def user_ui_language(user: dict[str, Any] | sqlite3.Row | None) -> str:
+    """Return a safe language for current and pre-preference user rows."""
+
+    if user is None or "ui_language" not in user.keys():
+        return DEFAULT_UI_LANGUAGE
+    value = str(user["ui_language"] or "").strip().lower()
+    return value if value in USER_LANGUAGES else DEFAULT_UI_LANGUAGE
+
+
+def user_shows_variant_photos(user: dict[str, Any] | sqlite3.Row | None) -> bool:
+    """Return whether this account opted into product photos in Sales."""
+
+    return bool(user and "show_variant_photos" in user.keys() and user["show_variant_photos"])
+
+
 def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
     """Add only display conveniences; routes still enforce the same rights."""
 
@@ -617,6 +877,9 @@ def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
     user["can_manage_purchases"] = has_role(user, "manager")
     user["can_manage_articles"] = has_role(user, "manager")
     user["mfa_enabled"] = int(effective_mfa_enabled(user))
+    user["ui_theme"] = user_ui_theme(user)
+    user["ui_language"] = user_ui_language(user)
+    user["show_variant_photos"] = int(user_shows_variant_photos(user))
     return user
 
 
@@ -927,13 +1190,15 @@ def money_to_cents(value: Any, *, field_name: str = "Betrag") -> int:
     return int((decimal_value * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def cents_to_money(cents: int | None) -> str:
+def cents_to_money(cents: int | None, *, language: str = DEFAULT_UI_LANGUAGE) -> str:
     """Format cents for the German UI without using the process locale."""
 
     cents = cents or 0
     sign = "-" if cents < 0 else ""
     cents = abs(cents)
     euros, remainder = divmod(cents, 100)
+    if language == "en":
+        return f"{sign}€{euros:,}.{remainder:02d}"
     grouped = f"{euros:,}".replace(",", ".")
     return f"{sign}{grouped},{remainder:02d} €"
 
@@ -1125,6 +1390,217 @@ def delete_invoice_file(filename: str | None) -> None:
     target = invoice_storage_path(filename)
     if target is not None:
         target.unlink(missing_ok=True)
+
+
+def variant_photo_storage_path(
+    filename: str | None,
+    *,
+    directory: str | Path | None = None,
+    app: Flask | None = None,
+) -> Path | None:
+    """Resolve one server-managed JPEG photo without allowing traversal."""
+
+    if not filename:
+        return None
+    safe_name = Path(str(filename)).name
+    if safe_name != str(filename) or Path(safe_name).suffix.lower() != ".jpg":
+        return None
+    configured_app = app
+    if configured_app is None and has_app_context():
+        configured_app = current_app._get_current_object()
+    if directory is None:
+        if configured_app is None:
+            raise RuntimeError("Für den Produktfoto-Speicher fehlt die Anwendungskonfiguration.")
+        directory = configured_app.config["VARIANT_PHOTO_UPLOAD_DIR"]
+    physical_name = f"{safe_name}.enc" if database_encryption_enabled(configured_app) else safe_name
+    return Path(directory) / physical_name
+
+
+def variant_photo_file_fernet(app: Flask | None = None) -> Fernet:
+    """Derive a separate key for filesystem product-photo attachments."""
+
+    database_key = active_database_key(app)
+    attachment_key = base64.urlsafe_b64encode(
+        hashlib.sha256(b"protovibe-merch:variant-photo-files:" + database_key).digest()
+    )
+    return Fernet(attachment_key)
+
+
+def store_variant_photo_bytes(
+    filename: str,
+    content: bytes,
+    *,
+    directory: str | Path | None = None,
+    app: Flask | None = None,
+) -> Path:
+    """Persist an optimised photo beside, never inside, the SQLite files."""
+
+    target = variant_photo_storage_path(filename, directory=directory, app=app)
+    if target is None:
+        raise ValueError("Produktfoto konnte nicht gespeichert werden.")
+    configured_app = app
+    if configured_app is None and has_app_context():
+        configured_app = current_app._get_current_object()
+    payload = (
+        variant_photo_file_fernet(configured_app).encrypt(content)
+        if database_encryption_enabled(configured_app)
+        else content
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with target.open("xb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    return target
+
+
+def read_variant_photo_bytes(filename: str, *, app: Flask | None = None) -> bytes | None:
+    """Read a managed JPEG after the serving route has checked authorisation."""
+
+    target = variant_photo_storage_path(filename, app=app)
+    if target is None or not target.is_file():
+        return None
+    try:
+        content = target.read_bytes()
+        configured_app = app
+        if configured_app is None and has_app_context():
+            configured_app = current_app._get_current_object()
+        return (
+            variant_photo_file_fernet(configured_app).decrypt(content)
+            if database_encryption_enabled(configured_app)
+            else content
+        )
+    except (OSError, InvalidToken) as exc:
+        current_app.logger.error("Could not read product photo attachment: %s", filename)
+        raise ValueError("Das gespeicherte Produktfoto kann nicht entschlüsselt werden.") from exc
+
+
+def delete_variant_photo_file(filename: str | None, *, app: Flask | None = None) -> None:
+    """Remove a managed product-photo file if it still exists."""
+
+    target = variant_photo_storage_path(filename, app=app)
+    if target is not None:
+        target.unlink(missing_ok=True)
+
+
+def normalized_variant_photo_upload(uploaded_file: Any) -> tuple[str, bytes]:
+    """Validate, resize and convert one submitted product photo to JPEG."""
+
+    supplied_name = str(getattr(uploaded_file, "filename", "") or "")
+    original_filename = Path(supplied_name).name.replace("\x00", "").strip()[:255]
+    if not original_filename:
+        raise ValueError("Bitte mindestens ein Produktfoto auswählen.")
+    extension = Path(original_filename).suffix.lower()
+    if extension not in ALLOWED_VARIANT_PHOTO_FILE_EXTENSIONS:
+        raise ValueError("Bitte nur JPG-, PNG- oder WebP-Bilder als Produktfoto hochladen.")
+
+    stream = uploaded_file.stream
+    try:
+        stream.seek(0)
+    except (AttributeError, OSError):
+        pass
+    raw_bytes = stream.read(int(current_app.config["MAX_VARIANT_PHOTO_FILE_BYTES"]) + 1)
+    if not raw_bytes:
+        raise ValueError("Das Produktfoto ist leer.")
+    if len(raw_bytes) > int(current_app.config["MAX_VARIANT_PHOTO_FILE_BYTES"]):
+        raise ValueError("Ein Produktfoto darf höchstens 10 MB groß sein.")
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(raw_bytes)) as verifier:
+                verifier.verify()
+            with Image.open(io.BytesIO(raw_bytes)) as source_image:
+                if source_image.width * source_image.height > int(current_app.config["MAX_VARIANT_PHOTO_PIXELS"]):
+                    raise ValueError("Das Produktfoto hat zu viele Bildpunkte.")
+                prepared_image = ImageOps.exif_transpose(source_image).convert("RGB")
+                maximum = int(current_app.config["MAX_VARIANT_PHOTO_DIMENSION"])
+                prepared_image.thumbnail((maximum, maximum), Image.Resampling.LANCZOS)
+                output = io.BytesIO()
+                quality = max(50, min(95, int(current_app.config["VARIANT_PHOTO_JPEG_QUALITY"])))
+                prepared_image.save(output, format="JPEG", quality=quality, optimize=True, progressive=True)
+    except (
+        UnidentifiedImageError,
+        OSError,
+        ValueError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ) as exc:
+        if isinstance(exc, ValueError) and str(exc) == "Das Produktfoto hat zu viele Bildpunkte.":
+            raise
+        raise ValueError("Die Datei ist kein unterstütztes, lesbares Bild.") from exc
+    return original_filename, output.getvalue()
+
+
+def variant_photos_by_variant(
+    connection: sqlite3.Connection, variant_ids: Iterable[int]
+) -> dict[int, list[dict[str, Any]]]:
+    """Return safe public metadata for the requested variants' photos."""
+
+    identifiers = sorted({int(variant_id) for variant_id in variant_ids})
+    if not identifiers:
+        return {}
+    placeholders = ",".join("?" for _ in identifiers)
+    rows = connection.execute(
+        f"""
+        SELECT id, variant_id, original_filename, position, created_at
+        FROM variant_photos
+        WHERE variant_id IN ({placeholders})
+        ORDER BY variant_id, position, id
+        """,
+        identifiers,
+    ).fetchall()
+    photos: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        photo = dict(row)
+        photo["url"] = f"/api/variantenfotos/{photo['id']}"
+        photos[int(photo["variant_id"])].append(photo)
+    return dict(photos)
+
+
+def add_variant_photo_fallbacks(
+    variants: list[dict[str, Any]],
+    photos_by_variant: dict[int, list[dict[str, Any]]],
+    *,
+    fallback_candidates: list[dict[str, Any]] | None = None,
+) -> None:
+    """Attach own photos or the closest same-product variant's photos.
+
+    Matching option values are a useful, deterministic definition of
+    "closest": e.g. a black shirt in another size wins over an unrelated
+    colour/size combination.  Offered variants then win ties, followed by the
+    stable variant ID.
+    """
+
+    candidates = [
+        variant
+        for variant in (fallback_candidates if fallback_candidates is not None else variants)
+        if photos_by_variant.get(int(variant["id"]))
+    ]
+    for variant in variants:
+        variant_id = int(variant["id"])
+        own_photos = photos_by_variant.get(variant_id, [])
+        source = variant if own_photos else None
+        if source is None and candidates:
+            target_options = {int(option_id) for option_id in variant.get("option_value_ids", [])}
+
+            def candidate_score(candidate: dict[str, Any]) -> tuple[int, int, int]:
+                matching_options = len(target_options.intersection(candidate.get("option_value_ids", [])))
+                return (matching_options, int(bool(candidate.get("is_offered"))), -int(candidate["id"]))
+
+            source = max(candidates, key=candidate_score)
+        if source is None:
+            variant["display_photos"] = []
+            continue
+        source_id = int(source["id"])
+        variant["display_photos"] = photos_by_variant.get(source_id, [])
+        variant["photo_source_variant_id"] = source_id
+        variant["photo_source_label"] = str(source["label"])
+        variant["photo_is_fallback"] = source_id != variant_id
 
 
 def purchase_values_from_payload(
@@ -1826,6 +2302,9 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
             ("mfa_enrolled_at", "TEXT"),
             ("session_version", "INTEGER NOT NULL DEFAULT 0"),
             ("last_login_at", "TEXT"),
+            ("ui_theme", "TEXT NOT NULL DEFAULT 'aurora'"),
+            ("ui_language", "TEXT NOT NULL DEFAULT 'de'"),
+            ("show_variant_photos", "INTEGER NOT NULL DEFAULT 0"),
         )
         added_role_column = "role" not in user_columns
         for column_name, column_definition in user_column_migrations:
@@ -1995,6 +2474,9 @@ def upgrade_users_schema(
         ("mfa_enrolled_at", "TEXT"),
         ("session_version", "INTEGER NOT NULL DEFAULT 0"),
         ("last_login_at", "TEXT"),
+        ("ui_theme", "TEXT NOT NULL DEFAULT 'aurora'"),
+        ("ui_language", "TEXT NOT NULL DEFAULT 'de'"),
+        ("show_variant_photos", "INTEGER NOT NULL DEFAULT 0"),
     )
     added_role_column = "role" not in user_columns
     for column_name, column_definition in user_column_migrations:
@@ -2085,6 +2567,11 @@ def create_user_split_archive(app: Flask) -> Path:
                 for item in invoice_dir.rglob("*"):
                     if item.is_file():
                         archive.write(item, Path("data/invoices") / item.relative_to(invoice_dir))
+            photo_dir = Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"])
+            if photo_dir.is_dir():
+                for item in photo_dir.rglob("*"):
+                    if item.is_file():
+                        archive.write(item, Path("data/variant-photos") / item.relative_to(photo_dir))
     except Exception:
         archive_path.unlink(missing_ok=True)
         raise
@@ -2164,6 +2651,7 @@ def copy_operational_tables(
     """Copy operational rows, adding immutable actor-name snapshots."""
 
     snapshot_columns = {
+        "variant_photos": ("created_by", "created_by_username"),
         "purchases": ("created_by", "created_by_username"),
         "purchase_receipt_attachments": ("created_by", "created_by_username"),
         "sales": ("created_by", "created_by_username"),
@@ -2909,7 +3397,7 @@ def receipt_history_payload(
 
 
 def article_payload(
-    connection: sqlite3.Connection, *, offered_only: bool = False
+    connection: sqlite3.Connection, *, offered_only: bool = False, include_variant_photos: bool = False
 ) -> list[dict[str, Any]]:
     """Return active article data, optionally limited to the sales assortment.
 
@@ -2970,6 +3458,18 @@ def article_payload(
                 variant["stock"], variant["minimum_stock"]
             )
             variants.append(variant)
+        if include_variant_photos:
+            fallback_variant_rows = connection.execute(
+                "SELECT id FROM variants WHERE article_id = ? AND is_active = 1 ORDER BY id",
+                (article["id"],),
+            ).fetchall()
+            fallback_labels = variant_label_map(connection, [row["id"] for row in fallback_variant_rows])
+            fallback_candidates = [fallback_labels[row["id"]] for row in fallback_variant_rows]
+            add_variant_photo_fallbacks(
+                variants,
+                variant_photos_by_variant(connection, [row["id"] for row in fallback_variant_rows]),
+                fallback_candidates=fallback_candidates,
+            )
 
         # An article with no option groups is valid (patch, cap, ...).  An
         # article where an option group has no values is intentionally disabled
@@ -3035,6 +3535,9 @@ def get_article_management_data(connection: sqlite3.Connection, article_id: int)
             variant["stock"], variant["minimum_stock"]
         )
         variants.append(variant)
+    photos = variant_photos_by_variant(connection, [variant["id"] for variant in variants])
+    for variant in variants:
+        variant["photos"] = photos.get(int(variant["id"]), [])
     article["option_groups"] = groups
     article["variants"] = variants
     return article
@@ -3498,6 +4001,17 @@ def create_backup(app: Flask, *, force: bool = False) -> Path | None:
                     os.link(invoice, invoice_target / invoice.name)
                 except OSError:
                     shutil.copy2(invoice, invoice_target / invoice.name)
+        photo_source = Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"])
+        if photo_source.is_dir():
+            photo_target = target / "variant-photos"
+            photo_target.mkdir()
+            for photo in photo_source.iterdir():
+                if not photo.is_file():
+                    continue
+                try:
+                    os.link(photo, photo_target / photo.name)
+                except OSError:
+                    shutil.copy2(photo, photo_target / photo.name)
         if database_encryption_enabled(app):
             metadata_path = database_encryption_metadata_path(app)
             if metadata_path.is_file():
@@ -3540,12 +4054,14 @@ def operational_backup_points(app: Flask) -> list[dict[str, Any]]:
         if not directory.is_dir() or not snapshot.is_file():
             continue
         invoices = directory / "invoices"
+        photos = directory / "variant-photos"
         points.append(
             {
                 "name": directory.name,
                 "modified_at": datetime.fromtimestamp(directory.stat().st_mtime).strftime("%d.%m.%Y %H:%M:%S"),
                 "database_bytes": snapshot.stat().st_size,
                 "invoice_count": sum(1 for item in invoices.rglob("*") if item.is_file()) if invoices.is_dir() else 0,
+                "photo_count": sum(1 for item in photos.rglob("*") if item.is_file()) if photos.is_dir() else 0,
             }
         )
     return sorted(points, key=lambda point: point["name"], reverse=True)
@@ -3592,7 +4108,7 @@ def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path
     """Restore one operational backup while keeping ``users.sqlite3`` intact.
 
     A fresh backup is forced first, even when automatic backups are disabled.
-    Database and invoice directory are staged beside the live files and then
+    Database, invoices and product photos are staged beside the live files and then
     swapped with rollback protection, so an invalid/incomplete backup cannot
     leave the running installation half-restored.
     """
@@ -3606,11 +4122,14 @@ def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path
 
     database_path = Path(app.config["DATABASE"])
     invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
+    photo_dir = Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"])
     staging_dir = database_path.parent / f".restore-{uuid.uuid4().hex}"
     staged_database = staging_dir / "merch.sqlite3"
     staged_invoices = staging_dir / "invoices"
+    staged_photos = staging_dir / "variant-photos"
     previous_database = staging_dir / "previous-merch.sqlite3"
     previous_invoices = staging_dir / "previous-invoices"
+    previous_photos = staging_dir / "previous-variant-photos"
     staging_dir.mkdir(parents=True, exist_ok=False)
     try:
         source = db_connect(source_database, app=app)
@@ -3624,6 +4143,7 @@ def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path
             source.close()
         validate_operational_snapshot(app, staged_database)
         staged_invoices.mkdir()
+        staged_photos.mkdir()
         source_invoices = source_directory / "invoices"
         if source_invoices.is_dir():
             for item in source_invoices.rglob("*"):
@@ -3631,12 +4151,21 @@ def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path
                     target = staged_invoices / item.relative_to(source_invoices)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(item, target)
+        source_photos = source_directory / "variant-photos"
+        if source_photos.is_dir():
+            for item in source_photos.rglob("*"):
+                if item.is_file():
+                    target = staged_photos / item.relative_to(source_photos)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(item, target)
 
         close_operational_db()
         moved_old_database = False
         moved_old_invoices = False
+        moved_old_photos = False
         placed_new_database = False
         placed_new_invoices = False
+        placed_new_photos = False
         try:
             if database_path.exists():
                 os.replace(database_path, previous_database)
@@ -3646,10 +4175,15 @@ def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path
             if invoice_dir.exists():
                 os.replace(invoice_dir, previous_invoices)
                 moved_old_invoices = True
+            if photo_dir.exists():
+                os.replace(photo_dir, previous_photos)
+                moved_old_photos = True
             os.replace(staged_database, database_path)
             placed_new_database = True
             os.replace(staged_invoices, invoice_dir)
             placed_new_invoices = True
+            os.replace(staged_photos, photo_dir)
+            placed_new_photos = True
             initialise_operations_database(app)
         except Exception:
             if placed_new_database:
@@ -3662,6 +4196,10 @@ def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path
                 shutil.rmtree(invoice_dir, ignore_errors=True)
             if moved_old_invoices and previous_invoices.exists():
                 os.replace(previous_invoices, invoice_dir)
+            if placed_new_photos:
+                shutil.rmtree(photo_dir, ignore_errors=True)
+            if moved_old_photos and previous_photos.exists():
+                os.replace(previous_photos, photo_dir)
             raise
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -3669,7 +4207,7 @@ def restore_operational_backup(app: Flask, backup_name: Any) -> tuple[Path, Path
 
 
 def create_reset_archive(app: Flask, source_connection: sqlite3.Connection) -> Path:
-    """Archive only the operational database and its invoices before a reset.
+    """Archive only the operational database and its attachments before a reset.
 
     ``users.sqlite3`` is deliberately never included here: accounts, password
     hashes, MFA settings and their security audit are independent from the
@@ -3701,6 +4239,11 @@ def create_reset_archive(app: Flask, source_connection: sqlite3.Connection) -> P
                 for item in invoice_dir.rglob("*"):
                     if item.is_file():
                         archive.write(item, Path("data/invoices") / item.relative_to(invoice_dir))
+            photo_dir = Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"])
+            if photo_dir.is_dir():
+                for item in photo_dir.rglob("*"):
+                    if item.is_file():
+                        archive.write(item, Path("data/variant-photos") / item.relative_to(photo_dir))
     except Exception:
         archive_path.unlink(missing_ok=True)
         raise
@@ -3710,15 +4253,18 @@ def create_reset_archive(app: Flask, source_connection: sqlite3.Connection) -> P
 
 
 def reset_data_store(app: Flask) -> None:
-    """Replace only catalogue, ledger and invoice data with a fresh database."""
+    """Replace only catalogue, ledger and attachment data with a fresh database."""
 
     database_path = Path(app.config["DATABASE"])
     invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
+    photo_dir = Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"])
     for path in (database_path, Path(f"{database_path}-wal"), Path(f"{database_path}-shm")):
         path.unlink(missing_ok=True)
     shutil.rmtree(invoice_dir, ignore_errors=True)
+    shutil.rmtree(photo_dir, ignore_errors=True)
     database_path.parent.mkdir(parents=True, exist_ok=True)
     invoice_dir.mkdir(parents=True, exist_ok=True)
+    photo_dir.mkdir(parents=True, exist_ok=True)
     initialise_operations_database(app)
 
 
@@ -4208,7 +4754,7 @@ def next_legacy_import_archive_path(app: Flask) -> Path:
 
 
 def create_legacy_import_safety_archive(app: Flask) -> Path:
-    """Archive both live databases and invoices before a full account import."""
+    """Archive both live databases and their managed attachments before an import."""
 
     archive_path = next_legacy_import_archive_path(app)
     temporary_root = Path(tempfile.mkdtemp(prefix="merch-import-safety-"))
@@ -4228,6 +4774,11 @@ def create_legacy_import_safety_archive(app: Flask) -> Path:
                 for item in invoice_dir.rglob("*"):
                     if item.is_file():
                         archive.write(item, Path("data/invoices") / item.relative_to(invoice_dir))
+            photo_dir = Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"])
+            if photo_dir.is_dir():
+                for item in photo_dir.rglob("*"):
+                    if item.is_file():
+                        archive.write(item, Path("data/variant-photos") / item.relative_to(photo_dir))
     except Exception:
         archive_path.unlink(missing_ok=True)
         raise
@@ -4380,7 +4931,7 @@ def install_prepared_legacy_import(
     performed_by: str,
     summary: dict[str, Any],
 ) -> Path:
-    """Atomically replace both live databases and the invoice directory.
+    """Atomically replace both live databases and their attachment directories.
 
     A full import is intentionally all-or-nothing: retaining a freshly created
     account file next to an imported operational ledger would break historic
@@ -4395,14 +4946,17 @@ def install_prepared_legacy_import(
     staged_operations = transition / "merch.sqlite3"
     staged_users = transition / "users.sqlite3"
     staged_invoices = transition / "invoices"
+    staged_photos = transition / "variant-photos"
     database_path = Path(app.config["DATABASE"])
     users_path = Path(app.config["USERS_DATABASE"])
     invoice_dir = Path(app.config["INVOICE_UPLOAD_DIR"])
+    photo_dir = Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"])
     previous_operations = transition / "previous-merch.sqlite3"
     previous_users = transition / "previous-users.sqlite3"
     previous_invoices = transition / "previous-invoices"
-    moved_old_operations = moved_old_users = moved_old_invoices = False
-    placed_operations = placed_users = placed_invoices = False
+    previous_photos = transition / "previous-variant-photos"
+    moved_old_operations = moved_old_users = moved_old_invoices = moved_old_photos = False
+    placed_operations = placed_users = placed_invoices = placed_photos = False
     try:
         copy_prepared_legacy_databases_to_live_store(
             app,
@@ -4415,6 +4969,10 @@ def install_prepared_legacy_import(
             staged_users, app, mfa_mode=mfa_mode, former_secret_key=former_secret_key
         )
         copy_prepared_legacy_invoices_to_live_store(app, stage_directory / "prepared-invoices", staged_invoices)
+        # Legacy imports predate product-photo uploads.  Use a fresh directory
+        # with the imported catalogue rather than leaving unrelated images
+        # from the replaced installation accessible under recycled IDs.
+        staged_photos.mkdir(parents=True, exist_ok=False)
         operations_connection = db_connect(staged_operations, app=app)
         users_connection = db_connect(staged_users, app=app)
         try:
@@ -4454,12 +5012,17 @@ def install_prepared_legacy_import(
         if invoice_dir.exists():
             os.replace(invoice_dir, previous_invoices)
             moved_old_invoices = True
+        if photo_dir.exists():
+            os.replace(photo_dir, previous_photos)
+            moved_old_photos = True
         os.replace(staged_operations, database_path)
         placed_operations = True
         os.replace(staged_users, users_path)
         placed_users = True
         os.replace(staged_invoices, invoice_dir)
         placed_invoices = True
+        os.replace(staged_photos, photo_dir)
+        placed_photos = True
         initialise_operations_database(app)
         initialise_users_database(app)
     except Exception:
@@ -4472,6 +5035,8 @@ def install_prepared_legacy_import(
             users_path.unlink(missing_ok=True)
         if placed_invoices:
             shutil.rmtree(invoice_dir, ignore_errors=True)
+        if placed_photos:
+            shutil.rmtree(photo_dir, ignore_errors=True)
         for sidecar in (
             Path(f"{database_path}-wal"), Path(f"{database_path}-shm"),
             Path(f"{users_path}-wal"), Path(f"{users_path}-shm"),
@@ -4483,6 +5048,8 @@ def install_prepared_legacy_import(
             os.replace(previous_users, users_path)
         if moved_old_invoices and previous_invoices.exists():
             os.replace(previous_invoices, invoice_dir)
+        if moved_old_photos and previous_photos.exists():
+            os.replace(previous_photos, photo_dir)
         raise
     finally:
         shutil.rmtree(transition, ignore_errors=True)
@@ -4734,7 +5301,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         LEGACY_IMPORT_STAGING_DIR=str(data_dir / "legacy-import-staging"),
         LEGACY_IMPORT_ARCHIVE_DIR=str(data_dir / "legacy-import-archives"),
         INVOICE_UPLOAD_DIR=str(data_dir / "invoices"),
+        VARIANT_PHOTO_UPLOAD_DIR=str(data_dir / "variant-photos"),
         MAX_INVOICE_FILE_BYTES=MAX_INVOICE_FILE_BYTES,
+        MAX_VARIANT_PHOTO_FILE_BYTES=MAX_VARIANT_PHOTO_FILE_BYTES,
+        MAX_VARIANT_PHOTO_PIXELS=MAX_VARIANT_PHOTO_PIXELS,
+        MAX_VARIANT_PHOTO_DIMENSION=MAX_VARIANT_PHOTO_DIMENSION,
+        VARIANT_PHOTO_JPEG_QUALITY=VARIANT_PHOTO_JPEG_QUALITY,
         # A legacy import may contain two SQLite files plus an invoice archive.
         # Regular invoice uploads remain independently capped at 10 MB.
         MAX_CONTENT_LENGTH=MAX_LEGACY_IMPORT_BYTES + 1024 * 1024,
@@ -4777,6 +5349,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         app.config["DATABASE_ENCRYPTION_METADATA"] = str(
             Path(app.config["DATABASE"]).parent / "encryption.json"
         )
+    if not test_config or "VARIANT_PHOTO_UPLOAD_DIR" not in test_config:
+        app.config["VARIANT_PHOTO_UPLOAD_DIR"] = str(Path(app.config["DATABASE"]).parent / "variant-photos")
     if not test_config or "MIGRATION_ARCHIVE_DIR" not in test_config:
         app.config["MIGRATION_ARCHIVE_DIR"] = str(Path(app.config["DATABASE"]).parent / "migration-archives")
     if not test_config or "LEGACY_IMPORT_STAGING_DIR" not in test_config:
@@ -4805,6 +5379,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     Path(app.config["LEGACY_IMPORT_STAGING_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["LEGACY_IMPORT_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["INVOICE_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
     if app.config.get("LOCAL_DEV_MODE"):
         # Fail with a useful message instead of letting sqlite3 report a
         # mysterious "file is not a database" error when somebody points the
@@ -4833,10 +5408,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.template_filter("money")
     def money_filter(value: int | None) -> str:
-        return cents_to_money(value)
+        return cents_to_money(value, language=user_ui_language(g.get("user")))
 
     @app.context_processor
     def inject_template_values() -> dict[str, Any]:
+        language = user_ui_language(g.get("user"))
+        theme = user_ui_theme(g.get("user"))
         return {
             "csrf_token": csrf_token,
             "current_user": g.get("user"),
@@ -4845,6 +5422,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "app_version": app.config["APP_VERSION"],
             "app_version_label": display_version(app.config["APP_VERSION"]),
             "local_dev_mode": bool(app.config.get("LOCAL_DEV_MODE")),
+            "ui_theme": theme,
+            "ui_theme_color": USER_THEMES[theme]["theme_color"],
+            "ui_language": language,
+            "ui_locale": USER_LANGUAGES[language]["locale"],
+            "ui_text": UI_TRANSLATIONS[language],
         }
 
     @app.before_request
@@ -5418,12 +6000,52 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @profile_reauth_required
     def profile_page():
         user = get_user_db().execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+        profile_user = user_capabilities(dict(user))
         return render_template(
             "profile.html",
-            title="Mein Profil",
-            profile_user=user_capabilities(dict(user)),
+            title=UI_TRANSLATIONS[user_ui_language(profile_user)]["profile.title"],
+            profile_user=profile_user,
             recovery_code_count=len(recovery_code_hashes(user)),
+            ui_themes=USER_THEMES,
+            ui_languages=USER_LANGUAGES,
         )
+
+    @app.post("/profil/personalisierung")
+    @login_required
+    @profile_reauth_required
+    def update_own_personalization():
+        """Persist display preferences without changing any shared catalogue data."""
+
+        connection = get_user_db()
+        try:
+            theme = valid_ui_theme(request.form.get("ui_theme"))
+            language = valid_ui_language(request.form.get("ui_language"))
+            show_variant_photos = 1 if request.form.get("show_variant_photos") else 0
+            connection.execute(
+                """
+                UPDATE users
+                SET ui_theme = ?, ui_language = ?, show_variant_photos = ?
+                WHERE id = ?
+                """,
+                (theme, language, show_variant_photos, g.user["id"]),
+            )
+            audit(
+                connection,
+                "update_personalization",
+                "user",
+                g.user["id"],
+                {
+                    "ui_theme": theme,
+                    "ui_language": language,
+                    "show_variant_photos": bool(show_variant_photos),
+                },
+            )
+            connection.commit()
+            flash(UI_TRANSLATIONS[language]["profile.personalization_saved"], "success")
+        except ValueError as exc:
+            connection.rollback()
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page"))
 
     @app.post("/profil/passwort")
     @login_required
@@ -5993,8 +6615,15 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.get("/verkauf")
     @login_required
     def sales_page():
+        show_variant_photos = user_shows_variant_photos(g.user)
         return render_template(
-            "sales.html", title="Verkauf", articles=article_payload(get_db(), offered_only=True), today=today_iso()
+            "sales.html",
+            title="Verkauf",
+            articles=article_payload(
+                get_db(), offered_only=True, include_variant_photos=show_variant_photos
+            ),
+            show_variant_photos=show_variant_photos,
+            today=today_iso(),
         )
 
     @app.get("/api/receipt-preview")
@@ -6961,6 +7590,160 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             backup_after_commit()
             return redirect(url_for("article_management_page", article=article_id))
 
+    @app.post("/api/varianten/<int:variant_id>/fotos")
+    @login_required
+    @manager_required
+    def upload_variant_photos(variant_id: int):
+        """Attach one or more optimised JPEG files to an active variant."""
+
+        connection = get_db()
+        variant = connection.execute(
+            """
+            SELECT v.id
+            FROM variants v
+            JOIN articles a ON a.id = v.article_id
+            WHERE v.id = ? AND v.is_active = 1 AND a.is_active = 1
+            """,
+            (variant_id,),
+        ).fetchone()
+        if variant is None:
+            abort(404)
+        uploaded_files = [
+            uploaded_file
+            for uploaded_file in request.files.getlist("photos")
+            if uploaded_file is not None and getattr(uploaded_file, "filename", "")
+        ]
+        if not uploaded_files:
+            return jsonify({"ok": False, "error": "Bitte mindestens ein Produktfoto auswählen."}), 400
+        stored_filenames: list[str] = []
+        try:
+            prepared_photos = [normalized_variant_photo_upload(uploaded_file) for uploaded_file in uploaded_files]
+            connection.execute("BEGIN IMMEDIATE")
+            next_position = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(position), -1) + 1 FROM variant_photos WHERE variant_id = ?",
+                    (variant_id,),
+                ).fetchone()[0]
+            )
+            for offset, (original_filename, jpeg_bytes) in enumerate(prepared_photos):
+                filename = f"variant-{variant_id}-{uuid.uuid4().hex}.jpg"
+                store_variant_photo_bytes(filename, jpeg_bytes)
+                stored_filenames.append(filename)
+                connection.execute(
+                    """
+                    INSERT INTO variant_photos (
+                        variant_id, file_path, original_filename, position, created_at, created_by, created_by_username
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        variant_id,
+                        filename,
+                        original_filename,
+                        next_position + offset,
+                        utc_now(),
+                        g.user["id"],
+                        g.user["username"],
+                    ),
+                )
+            audit(
+                connection,
+                "upload_photos",
+                "variant",
+                variant_id,
+                {"count": len(prepared_photos)},
+            )
+            connection.commit()
+        except ValueError as exc:
+            connection.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception:
+            connection.rollback()
+            for filename in stored_filenames:
+                try:
+                    delete_variant_photo_file(filename)
+                except OSError:
+                    current_app.logger.exception("Could not remove incomplete product photo upload")
+            current_app.logger.exception("Could not store product photos")
+            return jsonify({"ok": False, "error": "Die Produktfotos konnten nicht gespeichert werden."}), 500
+        backup_after_commit()
+        return jsonify(
+            {
+                "ok": True,
+                "photos": variant_photos_by_variant(connection, [variant_id]).get(variant_id, []),
+            }
+        )
+
+    @app.delete("/api/variantenfotos/<int:photo_id>")
+    @login_required
+    @manager_required
+    def delete_variant_photo(photo_id: int):
+        """Remove one metadata row and its managed local JPEG file."""
+
+        connection = get_db()
+        photo = connection.execute(
+            """
+            SELECT vp.id, vp.variant_id, vp.file_path
+            FROM variant_photos vp
+            JOIN variants v ON v.id = vp.variant_id
+            JOIN articles a ON a.id = v.article_id
+            WHERE vp.id = ? AND a.is_active = 1
+            """,
+            (photo_id,),
+        ).fetchone()
+        if photo is None:
+            abort(404)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM variant_photos WHERE id = ?", (photo_id,))
+            audit(
+                connection,
+                "delete_photo",
+                "variant",
+                int(photo["variant_id"]),
+                {"photo_id": photo_id},
+            )
+            connection.commit()
+        except sqlite3.DatabaseError:
+            connection.rollback()
+            current_app.logger.exception("Could not delete product photo metadata")
+            return jsonify({"ok": False, "error": "Das Produktfoto konnte nicht gelöscht werden."}), 500
+        try:
+            delete_variant_photo_file(str(photo["file_path"]))
+        except OSError:
+            # The metadata is already gone, so the file cannot be reached by
+            # the application any more.  Keep the deletion durable and leave
+            # a diagnostic for a future administrator cleanup.
+            current_app.logger.exception("Could not remove product photo file: %s", photo["file_path"])
+        backup_after_commit()
+        return jsonify({"ok": True, "photo_id": photo_id})
+
+    @app.get("/api/variantenfotos/<int:photo_id>")
+    @login_required
+    def variant_photo_file(photo_id: int):
+        """Serve an authorised product JPEG without exposing its filesystem path."""
+
+        photo = get_db().execute(
+            """
+            SELECT vp.file_path
+            FROM variant_photos vp
+            JOIN variants v ON v.id = vp.variant_id
+            JOIN articles a ON a.id = v.article_id
+            WHERE vp.id = ? AND a.is_active = 1
+            """,
+            (photo_id,),
+        ).fetchone()
+        if photo is None:
+            abort(404)
+        try:
+            content = read_variant_photo_bytes(str(photo["file_path"]))
+        except ValueError:
+            abort(404)
+        if content is None:
+            abort(404)
+        response = send_file(io.BytesIO(content), mimetype="image/jpeg", max_age=0, conditional=False)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     @app.post("/artikelverwaltung/<int:article_id>/speichern")
     @login_required
     @manager_required
@@ -7093,6 +7876,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.errorhandler(RequestEntityTooLarge)
     def invoice_request_too_large(_: RequestEntityTooLarge):
         message = "Die Rechnungsdatei darf höchstens 10 MB groß sein."
+        if request.path.startswith("/api/varianten/") and request.path.endswith("/fotos"):
+            message = "Ein Produktfoto darf höchstens 10 MB groß sein."
         if request.path == "/verwaltung/altdaten/vorschau":
             message = "Die Altdaten-Dateien dürfen zusammen höchstens 128 MB groß sein."
         if request.path.startswith("/api/"):

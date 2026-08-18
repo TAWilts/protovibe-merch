@@ -13,11 +13,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pyotp
+from PIL import Image
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app import (
     LEGACY_COMBINED_SCHEMA_SQL,
     apply_option_configuration,
+    article_payload,
     balance_payload,
     change_database_passphrase,
     create_backup,
@@ -50,6 +52,7 @@ class MerchAppTestCase(unittest.TestCase):
                 "BACKUP_DIR": str(root / "backups"),
                 "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
                 "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+                "VARIANT_PHOTO_UPLOAD_DIR": str(root / "variant-photos"),
                 "ADMIN_USERNAME": "tester",
                 "ADMIN_PASSWORD": "test-password",
                 "APP_VERSION": "v0.3.0",
@@ -432,11 +435,17 @@ class MerchAppTestCase(unittest.TestCase):
                 "mfa_secret_encrypted",
                 "mfa_enabled",
                 "session_version",
+                "ui_theme",
+                "ui_language",
+                "show_variant_photos",
             }.issubset(columns)
         )
         self.assertEqual(user["role"], "admin")
         self.assertTrue(user["is_admin"])
         self.assertTrue(user["is_active"])
+        self.assertEqual(user["ui_theme"], "aurora")
+        self.assertEqual(user["ui_language"], "de")
+        self.assertFalse(user["show_variant_photos"])
         self.assertIn("sync_events", tables)
         self.assertNotIn("users", tables)
         self.assertTrue(list(Path(legacy_app.config["MIGRATION_ARCHIVE_DIR"]).glob("*.zip")))
@@ -869,6 +878,38 @@ class MerchAppTestCase(unittest.TestCase):
         with self.client.session_transaction() as session:
             self.assertEqual(session["user_session_version"], user["session_version"])
 
+    def test_profile_personalization_is_saved_per_user_and_applied_to_sales(self) -> None:
+        confirmation = self.client.post(
+            "/profil/zugriff?next=/profil",
+            data={"csrf_token": "test-csrf", "password": "test-password"},
+        )
+        self.assertEqual(confirmation.status_code, 302)
+        changed = self.client.post(
+            "/profil/personalisierung",
+            data={
+                "csrf_token": "test-csrf",
+                "ui_theme": "ocean",
+                "ui_language": "en",
+                "show_variant_photos": "on",
+            },
+        )
+        self.assertEqual(changed.status_code, 302)
+        with self.app.app_context():
+            user = get_user_db().execute(
+                "SELECT ui_theme, ui_language, show_variant_photos FROM users WHERE id = 1"
+            ).fetchone()
+        self.assertEqual(dict(user), {"ui_theme": "ocean", "ui_language": "en", "show_variant_photos": 1})
+
+        sales_html = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertIn('data-theme="ocean"', sales_html)
+        self.assertIn('lang="en"', sales_html)
+        self.assertIn('id="variant-photo-preview"', sales_html)
+        profile_html = self.client.get("/profil").get_data(as_text=True)
+        self.assertIn("Appearance &amp; sales", profile_html)
+        self.assertIn("Lagoon", profile_html)
+        self.assertIn("Two-factor authentication", profile_html)
+        self.assertIn("Change password", profile_html)
+
     def test_balance_analytics_rank_active_paid_sales_and_render_filters(self) -> None:
         """Insights expose income/profit values and the local balance controls."""
 
@@ -1086,10 +1127,23 @@ class MerchAppTestCase(unittest.TestCase):
     def test_admin_restores_selected_operational_backup_without_changing_accounts(self) -> None:
         """Restore replaces ledger/invoices and makes a safety backup, never users."""
 
-        self.seed_variant("Backup Shirt")
+        backup_variant_id = self.seed_variant("Backup Shirt")
         invoice_dir = Path(self.app.config["INVOICE_UPLOAD_DIR"])
+        photo_dir = Path(self.app.config["VARIANT_PHOTO_UPLOAD_DIR"])
         invoice_dir.mkdir(parents=True, exist_ok=True)
+        photo_dir.mkdir(parents=True, exist_ok=True)
         (invoice_dir / "at-backup.pdf").write_bytes(b"%PDF-backup")
+        (photo_dir / "at-backup.jpg").write_bytes(b"\xff\xd8backup-photo")
+        with self.app.app_context():
+            connection = get_db()
+            connection.execute(
+                """
+                INSERT INTO variant_photos (variant_id, file_path, original_filename, position, created_at)
+                VALUES (?, 'at-backup.jpg', 'at-backup.jpg', 0, '2026-08-14T00:00:00+00:00')
+                """,
+                (backup_variant_id,),
+            )
+            connection.commit()
         restore_point = create_backup(self.app, force=True)
         self.assertIsNotNone(restore_point)
         admin_html = self.client.get("/verwaltung").get_data(as_text=True)
@@ -1097,6 +1151,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn(restore_point.name, admin_html)
         self.seed_variant("Later Shirt")
         (invoice_dir / "after-backup.pdf").write_bytes(b"%PDF-later")
+        (photo_dir / "after-backup.jpg").write_bytes(b"\xff\xd8later-photo")
         preserved_user_id = self.create_local_user("backup-manager", "manager")
         secret = pyotp.random_base32()
         with self.app.app_context():
@@ -1129,6 +1184,8 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(preserved_account["username"], "backup-manager")
         self.assertTrue((invoice_dir / "at-backup.pdf").is_file())
         self.assertFalse((invoice_dir / "after-backup.pdf").exists())
+        self.assertTrue((photo_dir / "at-backup.jpg").is_file())
+        self.assertFalse((photo_dir / "after-backup.jpg").exists())
         self.assertGreaterEqual(len(list(Path(self.app.config["BACKUP_DIR"]).iterdir())), 2)
 
     def test_admin_can_preview_and_import_separate_legacy_databases_with_mfa_and_invoices(self) -> None:
@@ -2071,6 +2128,79 @@ class MerchAppTestCase(unittest.TestCase):
             connection.commit()
             label = variant_label_map(connection, [variant_id])[variant_id]["label"]
         self.assertIn("Farbe: Schwarz", label)
+
+    def test_variant_photos_are_jpeg_files_and_fall_back_to_the_closest_variant(self) -> None:
+        first_variant_id = self.seed_variant("Photo Shirt")
+        with self.app.app_context():
+            connection = get_db()
+            article_id = connection.execute(
+                "SELECT article_id FROM variants WHERE id = ?", (first_variant_id,)
+            ).fetchone()[0]
+            size_group_id = connection.execute(
+                "SELECT id FROM option_groups WHERE article_id = ? AND name = 'Größe'", (article_id,)
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO option_values (option_group_id, value, position, is_active, created_at, updated_at)
+                VALUES (?, 'L', 1, 1, ?, ?)
+                """,
+                (size_group_id, "2026-08-14T00:00:00+00:00", "2026-08-14T00:00:00+00:00"),
+            )
+            sync_variants(connection, article_id)
+            second_variant_id = connection.execute(
+                "SELECT id FROM variants WHERE article_id = ? AND id != ? AND is_active = 1",
+                (article_id, first_variant_id),
+            ).fetchone()[0]
+            connection.commit()
+
+        source = io.BytesIO()
+        Image.new("RGB", (2200, 1200), (24, 82, 140)).save(source, format="PNG")
+        source.seek(0)
+        uploaded = self.client.post(
+            f"/api/varianten/{first_variant_id}/fotos",
+            data={"photos": (source, "shirt.png")},
+            headers={"X-CSRF-Token": "test-csrf"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(uploaded.status_code, 200)
+        photo = uploaded.json["photos"][0]
+        photo_id = photo["id"]
+
+        photo_dir = Path(self.app.config["VARIANT_PHOTO_UPLOAD_DIR"])
+        stored_files = list(photo_dir.iterdir())
+        self.assertEqual(len(stored_files), 1)
+        self.assertEqual(stored_files[0].suffix.lower(), ".jpg")
+        with Image.open(stored_files[0]) as stored_image:
+            self.assertEqual(stored_image.format, "JPEG")
+            self.assertLessEqual(max(stored_image.size), 1600)
+
+        with self.app.app_context():
+            photo_row = get_db().execute(
+                "SELECT file_path, original_filename FROM variant_photos WHERE id = ?", (photo_id,)
+            ).fetchone()
+            catalogue = article_payload(get_db(), offered_only=True, include_variant_photos=True)
+            backup = create_backup(self.app, force=True)
+        self.assertEqual(photo_row["file_path"], stored_files[0].name)
+        self.assertEqual(photo_row["original_filename"], "shirt.png")
+        self.assertTrue((backup / "variant-photos" / stored_files[0].name).is_file())
+        second_variant = next(
+            variant
+            for article in catalogue
+            for variant in article["variants"]
+            if variant["id"] == second_variant_id
+        )
+        self.assertTrue(second_variant["photo_is_fallback"])
+        self.assertEqual(second_variant["photo_source_variant_id"], first_variant_id)
+        self.assertEqual(second_variant["display_photos"][0]["id"], photo_id)
+
+        served = self.client.get(photo["url"])
+        self.assertEqual(served.status_code, 200)
+        self.assertEqual(served.mimetype, "image/jpeg")
+        deleted = self.client.delete(photo["url"], headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(deleted.status_code, 200)
+        self.assertFalse(stored_files[0].exists())
+        with self.app.app_context():
+            self.assertIsNone(get_db().execute("SELECT id FROM variant_photos WHERE id = ?", (photo_id,)).fetchone())
 
     def test_purchase_invoice_upload_edit_delete_and_backup(self) -> None:
         """Invoices are atomically attached, replaceable and recoverable."""

@@ -12,6 +12,16 @@
   if (!dataNode || !form) return;
 
   const source = JSON.parse(dataNode.textContent);
+  const photoStrings = window.MERCH_APP?.photoStrings || {
+    upload: "Fotos hinzufügen",
+    uploading: "Fotos werden optimiert …",
+    delete: "Foto löschen",
+    deleteConfirm: "Dieses Produktfoto wirklich löschen?",
+    empty: "Noch keine Fotos",
+    saveFirst: "Nach dem ersten Speichern verfügbar",
+    uploadFailed: "Die Fotos konnten nicht hochgeladen werden.",
+    deleteFailed: "Das Foto konnte nicht gelöscht werden.",
+  };
   const grid = document.getElementById("option-grid");
   const thead = grid.querySelector("thead");
   const tbody = grid.querySelector("tbody");
@@ -135,6 +145,9 @@
       minimumStock: minimumStockInputValue(variant.minimum_stock),
       isOffered: Number(variant.is_offered) !== 0,
       noReorder: Number(variant.no_reorder) !== 0,
+      photos: Array.isArray(variant.photos) ? variant.photos : [],
+      photoBusy: false,
+      photoError: "",
     });
   });
 
@@ -184,6 +197,9 @@
       minimumStock: applyMinimumStockValue.value,
       isOffered: true,
       noReorder: false,
+      photos: [],
+      photoBusy: false,
+      photoError: "",
     };
     variantStateByKey.set(combination.key, fresh);
     return fresh;
@@ -252,6 +268,75 @@
     return cell;
   }
 
+  function photoUrl(photo) {
+    return photo.url || `/api/variantenfotos/${photo.id}`;
+  }
+
+  function renderVariantPhotoCell(state, savedVariant) {
+    const cell = document.createElement("td");
+    const manager = document.createElement("div");
+    manager.className = "variant-photo-manager";
+
+    const gallery = document.createElement("div");
+    gallery.className = "variant-photo-thumbnail-list";
+    if (state.photos.length) {
+      state.photos.forEach((photo) => {
+        const thumb = document.createElement("div");
+        thumb.className = "variant-photo-thumbnail";
+        const image = document.createElement("img");
+        image.src = photoUrl(photo);
+        image.alt = photo.original_filename || "Produktfoto";
+        image.loading = "lazy";
+        const remove = button("×", "variant-photo-delete-button", photoStrings.delete);
+        remove.dataset.deleteVariantPhoto = String(photo.id);
+        remove.setAttribute("aria-label", photoStrings.delete);
+        remove.disabled = state.photoBusy;
+        thumb.append(image, remove);
+        gallery.append(thumb);
+      });
+    } else {
+      const empty = document.createElement("small");
+      empty.className = "muted";
+      empty.textContent = photoStrings.empty;
+      gallery.append(empty);
+    }
+    manager.append(gallery);
+
+    if (savedVariant) {
+      const upload = document.createElement("label");
+      upload.className = "secondary-button compact-button variant-photo-upload-button";
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.accept = ".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp";
+      fileInput.multiple = true;
+      fileInput.dataset.variantPhotoUpload = "";
+      fileInput.disabled = state.photoBusy;
+      const label = document.createElement("span");
+      label.textContent = photoStrings.upload;
+      upload.append(fileInput, label);
+      manager.append(upload);
+    } else {
+      const note = document.createElement("small");
+      note.className = "muted";
+      note.textContent = photoStrings.saveFirst;
+      manager.append(note);
+    }
+    if (state.photoBusy) {
+      const status = document.createElement("small");
+      status.className = "variant-photo-status";
+      status.textContent = photoStrings.uploading;
+      manager.append(status);
+    }
+    if (state.photoError) {
+      const error = document.createElement("small");
+      error.className = "variant-photo-status file-status-error";
+      error.textContent = state.photoError;
+      manager.append(error);
+    }
+    cell.append(manager);
+    return cell;
+  }
+
   function renderVariantTable({ syncFromInputs = true } = {}) {
     // The normal live-preview path must retain edits that are still only in
     // input fields. A bulk minimum-stock action has already updated the state
@@ -265,7 +350,7 @@
     if (!combinations.length) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
-      cell.colSpan = 8;
+      cell.colSpan = 9;
       cell.className = "empty-cell";
       cell.textContent = "Ergänze mindestens einen Wert je Option. Dann zeigt die Tabelle sofort die entstehenden Varianten.";
       row.append(cell);
@@ -346,7 +431,8 @@
         cellWith(minimumInput),
         warningCell,
         cellWith(noReorderInput),
-        cellWith(notOfferedInput)
+        cellWith(notOfferedInput),
+        renderVariantPhotoCell(state, savedVariant)
       );
       variantBody.append(row);
     });
@@ -445,6 +531,68 @@
     const row = input.closest("tr[data-variant-key]");
     const state = row && variantStateByKey.get(row.dataset.variantKey);
     if (state) state.isOffered = !input.checked;
+  });
+
+  async function responseBody(response, fallbackMessage) {
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || fallbackMessage);
+    return body;
+  }
+
+  variantBody.addEventListener("change", async (event) => {
+    const input = event.target;
+    if (!(input instanceof HTMLInputElement) || input.dataset.variantPhotoUpload === undefined) return;
+    const files = Array.from(input.files || []);
+    if (!files.length) return;
+    const row = input.closest("tr[data-variant-key]");
+    const state = row && variantStateByKey.get(row.dataset.variantKey);
+    if (!state || !state.id || state.photoBusy) return;
+    state.photoBusy = true;
+    state.photoError = "";
+    renderVariantTable();
+    try {
+      const formData = new FormData();
+      files.forEach((file) => formData.append("photos", file));
+      const response = await fetch(`/api/varianten/${state.id}/fotos`, {
+        method: "POST",
+        headers: { "X-CSRF-Token": window.MERCH_APP.csrfToken },
+        body: formData,
+      });
+      const body = await responseBody(response, photoStrings.uploadFailed);
+      state.photos = Array.isArray(body.photos) ? body.photos : state.photos;
+    } catch (error) {
+      state.photoError = error instanceof Error ? error.message : photoStrings.uploadFailed;
+    } finally {
+      state.photoBusy = false;
+      renderVariantTable();
+    }
+  });
+
+  variantBody.addEventListener("click", async (event) => {
+    if (!(event.target instanceof Element)) return;
+    const remove = event.target.closest("[data-delete-variant-photo]");
+    if (!(remove instanceof HTMLButtonElement)) return;
+    const row = remove.closest("tr[data-variant-key]");
+    const state = row && variantStateByKey.get(row.dataset.variantKey);
+    const photoId = Number(remove.dataset.deleteVariantPhoto);
+    if (!state || !state.id || !Number.isInteger(photoId) || state.photoBusy) return;
+    if (!window.confirm(photoStrings.deleteConfirm)) return;
+    state.photoBusy = true;
+    state.photoError = "";
+    renderVariantTable();
+    try {
+      const response = await fetch(`/api/variantenfotos/${photoId}`, {
+        method: "DELETE",
+        headers: { "X-CSRF-Token": window.MERCH_APP.csrfToken },
+      });
+      await responseBody(response, photoStrings.deleteFailed);
+      state.photos = state.photos.filter((photo) => Number(photo.id) !== photoId);
+    } catch (error) {
+      state.photoError = error instanceof Error ? error.message : photoStrings.deleteFailed;
+    } finally {
+      state.photoBusy = false;
+      renderVariantTable();
+    }
   });
 
   applyMinimumStockButton.addEventListener("click", () => {

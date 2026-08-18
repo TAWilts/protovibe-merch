@@ -165,20 +165,21 @@
 <section class="table-section restore-area">
   <div class="section-heading"><div><p class="eyebrow">Betriebsdaten</p><h2>Sicherung wiederherstellen</h2><p>Wähle einen automatischen Sicherungspunkt. Vor der Wiederherstellung wird immer zusätzlich eine neue Sicherheitskopie der aktuellen Betriebsdaten angelegt. Benutzerkonten und 2FA bleiben unangetastet.</p></div></div>
   {% if backups %}
-  <div class="table-scroll"><table class="backups-table"><thead><tr><th>Sicherungspunkt</th><th>Erstellt/aktualisiert</th><th>Datenbank</th><th>Rechnungen</th><th>Aktion</th></tr></thead><tbody>
+  <div class="table-scroll"><table class="backups-table"><thead><tr><th>Sicherungspunkt</th><th>Erstellt/aktualisiert</th><th>Datenbank</th><th>Rechnungen</th><th>Produktfotos</th><th>Aktion</th></tr></thead><tbody>
     {% for backup in backups %}
     <tr>
       <td><code>{{ backup.name }}</code></td>
       <td>{{ backup.modified_at }}</td>
       <td>{{ (backup.database_bytes / 1024)|round(1) }} KB</td>
       <td>{{ backup.invoice_count }}</td>
+      <td>{{ backup.photo_count }}</td>
       <td>
         <details class="admin-danger-confirmation restore-confirmation">
           <summary>Sicherung wiederherstellen</summary>
           <form action="{{ url_for('restore_application_backup') }}" method="post" class="admin-sensitive-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="backup_name" value="{{ backup.name }}">
-            <p>Artikel, Buchungen und Rechnungen werden durch diesen Stand ersetzt. Aktuelle Benutzerkonten bleiben unverändert.</p>
+            <p>Artikel, Buchungen, Rechnungen und Produktfotos werden durch diesen Stand ersetzt. Aktuelle Benutzerkonten bleiben unverändert.</p>
             <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
             {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
             <label>Zur Bestätigung <code>SICHERUNG WIEDERHERSTELLEN</code><input name="confirmation" autocomplete="off" required></label>

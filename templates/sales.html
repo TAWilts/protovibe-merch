@@ -44,6 +44,12 @@
       <strong id="selected-variant-label"></strong>
       <small id="selected-variant-stock"></small>
     </div>
+    {% if show_variant_photos %}
+    <section class="variant-photo-preview" id="variant-photo-preview" hidden aria-live="polite">
+      <div class="variant-photo-preview-heading"><strong>{{ ui_text.get('photos.heading') }}</strong><small id="variant-photo-caption"></small></div>
+      <div class="variant-photo-preview-list" id="variant-photo-preview-list"></div>
+    </section>
+    {% endif %}
   </section>
 
   <section class="selection-panel sale-details">

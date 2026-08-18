@@ -11,6 +11,10 @@
 
   const articles = JSON.parse(document.getElementById("articles-data").textContent);
   const $ = (id) => document.getElementById(id);
+  const photoStrings = window.MERCH_APP?.photoStrings || {
+    caption: "Produktfoto dieser Variante",
+    fallback: "Foto einer ähnlichen Variante: {label}",
+  };
   const ui = {
     receipt: $("receipt-preview"),
     optionGroups: $("option-groups"),
@@ -18,6 +22,9 @@
     selectedCard: $("selected-variant-card"),
     selectedLabel: $("selected-variant-label"),
     selectedStock: $("selected-variant-stock"),
+    photoPreview: $("variant-photo-preview"),
+    photoCaption: $("variant-photo-caption"),
+    photoList: $("variant-photo-preview-list"),
     paid: $("is-paid"),
     received: $("is-received"),
     soldBy: $("sold-by"),
@@ -49,6 +56,24 @@
   let currentVariant = null;
   const cartItems = [];
 
+  function renderVariantPhotos(variant) {
+    if (!ui.photoPreview || !ui.photoCaption || !ui.photoList) return;
+    const photos = Array.isArray(variant?.display_photos) ? variant.display_photos : [];
+    ui.photoPreview.hidden = !photos.length;
+    ui.photoList.replaceChildren();
+    if (!photos.length) return;
+    photos.forEach((photo) => {
+      const image = document.createElement("img");
+      image.src = photo.url || `/api/variantenfotos/${photo.id}`;
+      image.alt = `${variant.label}: ${photo.original_filename || photoStrings.caption}`;
+      image.loading = "eager";
+      ui.photoList.append(image);
+    });
+    ui.photoCaption.textContent = variant.photo_is_fallback
+      ? photoStrings.fallback.replace("{label}", variant.photo_source_label || "")
+      : photoStrings.caption;
+  }
+
   const selector = window.MerchTransaction.setupVariantSelector({
     articles,
     buttonContainer: ui.articleButtons,
@@ -66,6 +91,7 @@
         ui.unitPrice.value = "";
         ui.unitPrice.disabled = true;
       }
+      renderVariantPhotos(variant);
       updateSummary();
     },
   });

@@ -24,6 +24,13 @@ Bestand, Bilanz und CSV-Export.
   automatisch die gültigen Varianten. Die Varianten-/Preistabelle aktualisiert
   sich bereits beim Bearbeiten der Optionen. Neue Artikel starten mit `Schwarz`,
   `Weiß` sowie `S` bis `XXL`, die jederzeit editierbar sind.
+- **Variantenfotos:** Manager können pro Variante mehrere JPG-, PNG- oder
+  WebP-Bilder hinzufügen oder einzeln löschen. Uploads werden auf maximal
+  1600 Pixel verkleinert, als JPEG gespeichert und liegen nicht in SQLite,
+  sondern im geschützten lokalen Bildordner. Jede Person kann im Profil
+  entscheiden, ob diese Bilder im Verkauf unter den Variantenoptionen sichtbar
+  sind. Fehlt für eine Auswahl ein Foto, zeigt die App das ähnlichste Foto
+  einer anderen Variante desselben Artikels.
 - **Einkäufe:** der zuletzt für eine Variante bezahlte Preis wird übernommen,
   kann aber pro Einkauf geändert werden. Die vollständige Einkaufshistorie
   bleibt sichtbar; Einträge lassen sich nach einer dreisekündigen
@@ -70,7 +77,7 @@ Bestand, Bilanz und CSV-Export.
 - **Export & Sicherung:** Download als CSV/ZIP auf ausdrückliche Anforderung
   sowie automatische, verschlüsselte Sicherung nach jeder erfolgreichen
   Änderung, einschließlich Versand- und Zahlungsstatus. Hochgeladene
-  Rechnungen gehören zum jeweiligen Sicherungspunkt dazu.
+  Rechnungen und Produktfotos gehören zum jeweiligen Sicherungspunkt dazu.
 - **Konten, Rollen & Schutz:** Der einzelne Admin kann Seller und Manager mit
   zeitlich begrenztem Einrichtungscode anlegen und zurücksetzen. Seller können
   verkaufen und Einkaufsdaten lesen, Manager verwalten zusätzlich Artikel und
@@ -79,8 +86,9 @@ Bestand, Bilanz und CSV-Export.
   Buchungen in einer eigenen, verschlüsselten SQLite-Datei. Nicht-Admin-Konten lassen sich
   nach erneuter Passwort- und 2FA-Bestätigung löschen, ohne ihre historischen
   Buchungen zu entfernen.
-  Jede Person kann ihren eigenen Benutzernamen nach einer frischen
-  Sicherheitsbestätigung ändern. Der Admin benötigt eine kostenlose, lokale TOTP-2FA; die anderen Rollen
+  Jede Person kann ihren eigenen Benutzernamen, Sprache, Farbthema und die
+  Anzeige von Variantenfotos nach einer frischen Sicherheitsbestätigung ändern.
+  Der Admin benötigt eine kostenlose, lokale TOTP-2FA; die anderen Rollen
   können sie freiwillig aktivieren. Profilzugriff, Passwortwechsel und der
   Datenreset verlangen eine erneute Passwortbestätigung.
 - **Legacy-Import:** ein Skript importiert die vorhandene ODS als echte
@@ -199,8 +207,11 @@ Alle dauerhaften Daten liegen ausschließlich in `data/`:
 - `encryption.json` enthält nur die verschlüsselten Umschläge des zufällig
   erzeugten Datenbankschlüssels, niemals die Passphrase oder den Klartext-Key.
 
-Rechnungen liegen als verschlüsselte Dateien unter `data/invoices/`. Bereits
-gebuchte Verkäufe und Einkäufe behalten zusätzlich den damaligen
+Rechnungen liegen als verschlüsselte Dateien unter `data/invoices/`.
+Produktfotos liegen separat unter `data/variant-photos/`; in einer normalen
+verschlüsselten Installation werden auch diese Dateien verschlüsselt, im
+bewusst unverschlüsselten `LOCAL_DEV_MODE` als optimierte JPEGs abgelegt.
+Bereits gebuchte Verkäufe und Einkäufe behalten zusätzlich den damaligen
 Benutzernamen als Historien-Schnappschuss, sodass das Löschen eines Kontos
 keine Buchung unlesbar macht.
 
@@ -385,11 +396,13 @@ Nach jedem erfolgreichen Verkauf, Einkauf oder Artikel-Update legt die App in
 - `invoices/` – die zum Sicherungszeitpunkt vorhandenen hochgeladenen
   Rechnungen in ihrer verschlüsselten Speicherform. Die App verwendet dafür
   platzsparende Hardlinks, sofern das Dateisystem sie unterstützt.
+- `variant-photos/` – die optimierten Produktfotos in derselben geschützten
+  Speicherform.
 
 Rechnungen selbst liegen im laufenden System verschlüsselt unter
-`data/invoices/`. Beim Ersetzen oder Löschen eines Einkaufs wird der
-zugehörige Anhang ebenfalls entfernt; die Änderung wird im Audit-Protokoll
-festgehalten.
+`data/invoices/`; Produktfotos unter `data/variant-photos/`. Beim Ersetzen
+oder Löschen eines Einkaufs beziehungsweise eines Produktfotos wird der
+zugehörige Anhang entfernt; die Änderung wird im Audit-Protokoll festgehalten.
 
 Alte Sicherungsordner werden nach der in `.env` gesetzten Anzahl von Tagen
 gelöscht.  Ergänzend ist ein Synology-Snapshot oder Hyper Backup des gesamten
@@ -401,7 +414,7 @@ unverschlüsselt erzeugt; behandle sie anschließend wie sensible Dateien. Im
 Admin-Reiter kann ein bestimmter Sicherungspunkt ausgewählt und nach aktuellem
 Passwort plus 2FA wiederhergestellt werden. Vorher legt die App immer
 zusätzlich einen neuen Sicherungspunkt des aktuellen Zustands an. Dabei werden
-ausschließlich `merch.sqlite3` und Rechnungsanhänge ersetzt; `users.sqlite3`
+ausschließlich `merch.sqlite3`, Rechnungsanhänge und Produktfotos ersetzt; `users.sqlite3`
 mit Konten, Rollen und MFA bleibt unverändert. Alte Ein-Datei-Sicherungen, die
 noch eine `users`-Tabelle enthalten, werden absichtlich nicht automatisch
 geladen.

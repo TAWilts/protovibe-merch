@@ -1,55 +1,83 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-title-row">
-  <div><p class="eyebrow">Konto</p><h1>Mein Profil</h1><p class="page-intro">Persönliche Zugangsdaten und zusätzlicher Kontoschutz.</p></div>
-  <span class="status {{ 'good' if profile_user.mfa_enabled else 'warning' }}">{{ '2FA aktiv' if profile_user.mfa_enabled else '2FA nicht aktiv' }}</span>
+  <div><p class="eyebrow">{{ ui_text.get('profile.eyebrow') }}</p><h1>{{ ui_text.get('profile.title') }}</h1><p class="page-intro">{{ ui_text.get('profile.intro') }}</p></div>
+  <span class="status {{ 'good' if profile_user.mfa_enabled else 'warning' }}">{{ ui_text.get('profile.mfa_active') if profile_user.mfa_enabled else ui_text.get('profile.mfa_inactive') }}</span>
 </div>
 
 <section class="profile-grid">
   <article class="table-section profile-card">
-    <h2>Konto</h2>
+    <h2>{{ ui_text.get('profile.account') }}</h2>
     <dl class="profile-facts">
-      <div><dt>Benutzername</dt><dd>{{ profile_user.username }}</dd></div>
-      <div><dt>Rolle</dt><dd>{{ profile_user.role_label }}</dd></div>
-      <div><dt>Letzte Anmeldung</dt><dd>{{ profile_user.last_login_at or 'Noch nie' }}</dd></div>
-      <div><dt>2FA</dt><dd>{{ 'Aktiviert' if profile_user.mfa_enabled else 'Nicht aktiviert' }}</dd></div>
+      <div><dt>{{ ui_text.get('profile.username') }}</dt><dd>{{ profile_user.username }}</dd></div>
+      <div><dt>{{ ui_text.get('profile.role') }}</dt><dd>{{ profile_user.role_label }}</dd></div>
+      <div><dt>{{ ui_text.get('profile.last_login') }}</dt><dd>{{ profile_user.last_login_at or ui_text.get('profile.never') }}</dd></div>
+      <div><dt>{{ ui_text.get('profile.mfa') }}</dt><dd>{{ ui_text.get('profile.enabled') if profile_user.mfa_enabled else ui_text.get('profile.disabled') }}</dd></div>
     </dl>
   </article>
 
   <article class="table-section profile-card">
-    <h2>Zwei-Faktor-Authentifizierung</h2>
+    <h2>{{ ui_text.get('profile.mfa_title') }}</h2>
     {% if profile_user.mfa_enabled %}
-    <p class="muted">Dein Konto ist mit einer Authenticator-App geschützt. Noch verfügbare Wiederherstellungscodes: <strong>{{ recovery_code_count }}</strong>.</p>
+    <p class="muted">{{ ui_text.get('profile.mfa_enabled_text') }} <strong>{{ recovery_code_count }}</strong>.</p>
     <div class="button-group">
-      <a class="secondary-button" href="{{ url_for('mfa_enroll') }}">Authenticator-App neu einrichten</a>
-      <form action="{{ url_for('regenerate_recovery_codes') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button" type="submit">Neue Wiederherstellungscodes</button></form>
-      {% if not profile_user.is_admin %}<form action="{{ url_for('disable_own_mfa') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="danger-button" type="submit">2FA deaktivieren</button></form>{% endif %}
+      <a class="secondary-button" href="{{ url_for('mfa_enroll') }}">{{ ui_text.get('profile.mfa_reconfigure') }}</a>
+      <form action="{{ url_for('regenerate_recovery_codes') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button" type="submit">{{ ui_text.get('profile.mfa_new_recovery') }}</button></form>
+      {% if not profile_user.is_admin %}<form action="{{ url_for('disable_own_mfa') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="danger-button" type="submit">{{ ui_text.get('profile.mfa_disable') }}</button></form>{% endif %}
     </div>
     {% else %}
-    <p class="muted">Mit 2FA benötigst du zusätzlich zum Passwort einen zeitbasierten Code aus einer kostenlosen Authenticator-App.</p>
-    <a class="primary-button" href="{{ url_for('mfa_enroll') }}">2FA einrichten</a>
+    <p class="muted">{{ ui_text.get('profile.mfa_intro') }}</p>
+    <a class="primary-button" href="{{ url_for('mfa_enroll') }}">{{ ui_text.get('profile.mfa_setup') }}</a>
     {% endif %}
-    {% if profile_user.is_admin %}<p class="notice">Für den Admin ist 2FA verpflichtend und kann hier nicht deaktiviert werden.</p>{% endif %}
+    {% if profile_user.is_admin %}<p class="notice">{{ ui_text.get('profile.mfa_admin_notice') }}</p>{% endif %}
   </article>
 </section>
 
-<section class="table-section password-card">
-  <div class="section-heading"><div><h2>Benutzername ändern</h2><p>Der neue Name wird beim nächsten Anmelden verwendet und erscheint künftig automatisch bei „Verkauft von“.</p></div></div>
-  <form action="{{ url_for('update_own_username') }}" method="post" class="form-grid-inline username-form">
+<section class="table-section personalization-card">
+  <div class="section-heading"><div><h2>{{ ui_text.get('profile.personalization') }}</h2><p>{{ ui_text.get('profile.personalization_intro') }}</p></div></div>
+  <form action="{{ url_for('update_own_personalization') }}" method="post" class="personalization-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label>Neuer Benutzername<input name="username" value="{{ profile_user.username }}" minlength="3" maxlength="48" autocomplete="username" required></label>
-    <button class="secondary-button" type="submit">Benutzername speichern</button>
+    <label class="personalization-language">{{ ui_text.get('profile.language') }}
+      <select name="ui_language">
+        {% for code, language in ui_languages.items() %}<option value="{{ code }}" {% if profile_user.ui_language == code %}selected{% endif %}>{{ language.label }}</option>{% endfor %}
+      </select>
+    </label>
+    <fieldset class="theme-picker">
+      <legend>{{ ui_text.get('profile.theme') }}</legend>
+      <div class="theme-choice-grid">
+        {% for code, theme in ui_themes.items() %}
+        <label class="theme-choice">
+          <input type="radio" name="ui_theme" value="{{ code }}" {% if profile_user.ui_theme == code %}checked{% endif %}>
+          <span class="theme-choice-content">
+            <span class="theme-swatch theme-swatch-{{ code }}" aria-hidden="true"></span>
+            <span><strong>{{ ui_text.get('theme.' ~ code ~ '.label', theme.label) }}</strong><small>{{ ui_text.get('theme.' ~ code ~ '.description', theme.description) }}</small></span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    <label class="photo-preference-toggle toggle-label"><input type="checkbox" name="show_variant_photos" {% if profile_user.show_variant_photos %}checked{% endif %}><span>{{ ui_text.get('profile.show_variant_photos') }}<small>{{ ui_text.get('profile.show_variant_photos_hint') }}</small></span></label>
+    <div><button class="primary-button" type="submit">{{ ui_text.get('profile.save_personalization') }}</button></div>
   </form>
 </section>
 
 <section class="table-section password-card">
-  <div class="section-heading"><div><h2>Passwort ändern</h2><p>Die aktuelle Sicherheitsbestätigung gilt nur kurz. Nach dem Ändern werden andere Sitzungen dieses Kontos abgemeldet.</p></div></div>
+  <div class="section-heading"><div><h2>{{ ui_text.get('profile.username_title') }}</h2><p>{{ ui_text.get('profile.username_intro') }}</p></div></div>
+  <form action="{{ url_for('update_own_username') }}" method="post" class="form-grid-inline username-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>{{ ui_text.get('profile.new_username') }}<input name="username" value="{{ profile_user.username }}" minlength="3" maxlength="48" autocomplete="username" required></label>
+    <button class="secondary-button" type="submit">{{ ui_text.get('profile.save_username') }}</button>
+  </form>
+</section>
+
+<section class="table-section password-card">
+  <div class="section-heading"><div><h2>{{ ui_text.get('profile.password_title') }}</h2><p>{{ ui_text.get('profile.password_intro') }}</p></div></div>
   <form action="{{ url_for('update_own_password') }}" method="post" class="form-grid-inline">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label>Aktuelles Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
-    <label>Neues Passwort<input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
-    <label>Passwort wiederholen<input name="password_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
-    <button class="primary-button" type="submit">Passwort ändern</button>
+    <label>{{ ui_text.get('profile.current_password') }}<input name="current_password" type="password" autocomplete="current-password" required></label>
+    <label>{{ ui_text.get('profile.new_password') }}<input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+    <label>{{ ui_text.get('profile.repeat_password') }}<input name="password_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
+    <button class="primary-button" type="submit">{{ ui_text.get('profile.save_password') }}</button>
   </form>
 </section>
 {% endblock %}
