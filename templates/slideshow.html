@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block page_class %}slideshow-page{% endblock %}
+{% block content %}
+<div class="page-title-row">
+  <div><p class="eyebrow">Werbetafel</p><h1>Produktdiashow</h1><p class="page-intro">Wähle die Bilder aus, die am Stand gezeigt werden sollen. Die Auswahl gilt nur für deinen Benutzer und wird im Browser gemerkt.</p></div>
+  <button id="start-product-slideshow" class="primary-button large-button" type="button">Produktpalette zeigen</button>
+</div>
+
+<section class="table-section slideshow-upload-section">
+  <div class="section-heading"><div><h2>Weitere Produktfotos</h2><p>Die Fotos sind für alle Benutzer verfügbar. Optional kannst du sie einer Variante zuordnen; dann werden Name, Variante und Preis in der Diashow eingeblendet.</p></div></div>
+  <form id="product-photo-upload" class="product-photo-upload" enctype="multipart/form-data">
+    <label class="file-dropzone" for="product-photo-files"><strong>Bilder auswählen</strong><span>JPG, PNG, GIF oder WebP · mehrere Dateien möglich · maximal 12 MB pro Bild</span><input id="product-photo-files" name="photo" type="file" accept="image/gif,image/jpeg,image/png,image/webp" multiple required></label>
+    <label>Artikel (optional)
+      <select id="photo-article" name="article_id"><option value="">Allgemeines Bild</option>{% for article in articles %}<option value="{{ article.id }}">{{ article.name }}</option>{% endfor %}</select>
+    </label>
+    <label id="photo-variant-field" hidden>Variante (optional)
+      <select id="photo-variant" name="variant_id"><option value="">Keine konkrete Variante</option></select>
+    </label>
+    <button class="secondary-button" type="submit">Fotos hochladen</button>
+    <p id="product-photo-upload-status" class="file-status" role="status"></p>
+  </form>
+</section>
+
+<section class="table-section">
+  <div class="section-heading"><div><h2>Fotos <span id="photo-count" class="muted"></span></h2><p>Standardmäßig sind alle Bilder ausgewählt. Abgewählte Bilder bleiben gespeichert, erscheinen aber nicht in der Palette.</p></div></div>
+  <div id="product-photo-grid" class="product-photo-grid">
+    {% for photo in photos %}
+    <article class="product-photo-card" data-photo-card data-photo-id="{{ photo.id }}">
+      <label class="product-photo-check"><input type="checkbox" data-photo-toggle checked><span>In Palette anzeigen</span></label>
+      <img src="{{ photo.url }}" alt="{{ photo.original_filename }}" loading="lazy">
+      <div class="product-photo-meta"><strong>{{ photo.variant_label or photo.article_name or 'Allgemeines Bild' }}</strong>{% if photo.variant_id %}<span>{{ photo.price_cents|money }}</span>{% elif photo.article_name %}<span>{{ photo.article_name }}</span>{% endif %}<small>{{ photo.original_filename }}</small></div>
+      {% if current_user.is_admin or current_user.role == 'manager' %}<button class="danger-button compact-button" type="button" data-delete-photo="{{ photo.id }}">Foto löschen</button>{% endif %}
+    </article>
+    {% else %}<p class="empty-cell">Noch keine Produktfotos vorhanden. Lade oben das erste Bild hoch.</p>{% endfor %}
+  </div>
+</section>
+
+<div id="slideshow-overlay" class="slideshow-overlay" hidden aria-label="Produktpalette">
+  <div class="slideshow-stage" id="slideshow-stage">
+    <img id="slideshow-image" class="slideshow-image" alt="">
+    <div id="slideshow-copy" class="slideshow-copy"><strong id="slideshow-article"></strong><span id="slideshow-variant"></span><b id="slideshow-price"></b></div>
+    <p class="slideshow-hint">Klick oder beliebige Taste zum Beenden</p>
+  </div>
+</div>
+
+<script id="product-photos-data" type="application/json">{{ photos|tojson }}</script>
+<script id="product-articles-data" type="application/json">{{ articles|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='slideshow.js') }}"></script>{% endblock %}
