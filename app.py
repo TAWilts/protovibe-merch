@@ -407,6 +407,15 @@ def display_version(version: str) -> str:
     return cleaned if cleaned.startswith("v") else f"v{cleaned}"
 
 
+def environment_flag(name: str, default: bool = False) -> bool:
+    """Read a deliberately small boolean setting from the process environment."""
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def fetch_latest_github_release(repository: str, token: str | None, timeout_seconds: float) -> dict[str, Any]:
     """Fetch the newest published GitHub release without exposing credentials.
 
@@ -585,6 +594,17 @@ def has_role(user: dict[str, Any] | sqlite3.Row | None, required_role: str) -> b
     return ROLE_LEVELS.get(normalized_role(user), 0) >= ROLE_LEVELS[required_role]
 
 
+def effective_mfa_enabled(user: dict[str, Any] | sqlite3.Row | None, app: Flask | None = None) -> bool:
+    """Return whether MFA is active for this runtime, honoring local-dev mode."""
+
+    if user is None or not bool(user["mfa_enabled"]):
+        return False
+    configured_app = app
+    if configured_app is None and has_app_context():
+        configured_app = current_app._get_current_object()
+    return not bool(configured_app and configured_app.config.get("LOCAL_DEV_MODE"))
+
+
 def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
     """Add only display conveniences; routes still enforce the same rights."""
 
@@ -596,6 +616,7 @@ def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
     user["is_admin"] = role == "admin"
     user["can_manage_purchases"] = has_role(user, "manager")
     user["can_manage_articles"] = has_role(user, "manager")
+    user["mfa_enabled"] = int(effective_mfa_enabled(user))
     return user
 
 
@@ -782,8 +803,10 @@ def verify_mfa_code(
     it can make that unusually important event visible in the audit log.
     """
 
+    if has_app_context() and current_app.config.get("LOCAL_DEV_MODE"):
+        return "local_dev"
     code = str(submitted_code or "").strip().upper().replace(" ", "")
-    if not code or not bool(user["mfa_enabled"]):
+    if not code or not effective_mfa_enabled(user):
         return None
     secret = decrypt_mfa_secret(user["mfa_secret_encrypted"])
     if secret and pyotp.TOTP(secret).verify(code, valid_window=1):
@@ -843,7 +866,7 @@ def verify_admin_sensitive_action(
     admin = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
     if admin is None or not check_password_hash(admin["password_hash"], str(password or "")):
         raise ValueError("Das Passwort ist nicht korrekt. Es wurden keine Daten verändert.")
-    mfa_method = verify_mfa_code(connection, admin, mfa_code)
+    mfa_method = "local_dev" if current_app.config.get("LOCAL_DEV_MODE") else verify_mfa_code(connection, admin, mfa_code)
     if mfa_method is None:
         raise ValueError("Der Zwei-Faktor-Code ist nicht gültig. Es wurden keine Daten verändert.")
     if mfa_method == "recovery":
@@ -4700,7 +4723,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         SECRET_KEY=os.environ.get("SECRET_KEY", "development-only-change-me"),
         DATABASE=str(data_dir / "merch.sqlite3"),
         USERS_DATABASE=os.environ.get("USERS_DATABASE", str(data_dir / "users.sqlite3")),
-        DATABASE_ENCRYPTION_ENABLED=True,
+        # Local development may deliberately use ordinary SQLite.  It is
+        # opt-in and never changes the secure production default.
+        LOCAL_DEV_MODE=environment_flag("LOCAL_DEV_MODE"),
+        DATABASE_ENCRYPTION_ENABLED=not environment_flag("LOCAL_DEV_MODE"),
         DATABASE_ENCRYPTION_METADATA=str(data_dir / "encryption.json"),
         BACKUP_DIR=str(data_dir / "backups"),
         RESET_ARCHIVE_DIR=str(data_dir / "reset-archives"),
@@ -4734,6 +4760,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
+    if app.config.get("LOCAL_DEV_MODE") and (not test_config or "DATABASE_ENCRYPTION_ENABLED" not in test_config):
+        app.config["DATABASE_ENCRYPTION_ENABLED"] = False
     # Existing regression tests deliberately exercise old, plaintext schemas.
     # A production app never receives TESTING=True and therefore always uses
     # SQLCipher unless a test explicitly chooses otherwise.
@@ -4763,6 +4791,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         raise RuntimeError("APP_VERSION muss dem Format vX.Y.Z entsprechen, zum Beispiel v0.3.0.")
     if app.config["SECRET_KEY"] == "development-only-change-me" and not app.config.get("TESTING"):
         raise RuntimeError("Set SECRET_KEY in .env before starting the app.")
+    if app.config.get("LOCAL_DEV_MODE"):
+        app.logger.warning(
+            "LOCAL_DEV_MODE is active: database/files are unencrypted and MFA is not enforced."
+        )
 
     Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
     Path(app.config["USERS_DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
@@ -4773,6 +4805,21 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     Path(app.config["LEGACY_IMPORT_STAGING_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["LEGACY_IMPORT_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["INVOICE_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
+    if app.config.get("LOCAL_DEV_MODE"):
+        # Fail with a useful message instead of letting sqlite3 report a
+        # mysterious "file is not a database" error when somebody points the
+        # local mode at an encrypted production volume.
+        for database_file in (Path(app.config["DATABASE"]), Path(app.config["USERS_DATABASE"])):
+            if database_file.is_file():
+                with database_file.open("rb") as stream:
+                    is_plain_sqlite = stream.read(16) == b"SQLite format 3\x00"
+            else:
+                is_plain_sqlite = True
+            if not is_plain_sqlite:
+                raise DatabaseEncryptionError(
+                    "LOCAL_DEV_MODE benötigt einen separaten, leeren Datenordner. "
+                    f"Die Datei {database_file.name} ist verschlüsselt oder kein normales SQLite."
+                )
     app.extensions["legacy_import_lock"] = Lock()
     app.extensions["database_encryption_lock"] = Lock()
     app.extensions["pending_database_recovery_keys"] = {}
@@ -4797,6 +4844,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "payment_methods": PAYMENT_METHODS,
             "app_version": app.config["APP_VERSION"],
             "app_version_label": display_version(app.config["APP_VERSION"]),
+            "local_dev_mode": bool(app.config.get("LOCAL_DEV_MODE")),
         }
 
     @app.before_request
@@ -5100,10 +5148,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 # Admin access is deliberately impossible before its TOTP
                 # device has been enrolled.  Other roles can opt into it in
                 # their profile later.
-                if normalized_role(user) == "admin" and not bool(user["mfa_enabled"]):
+                if not current_app.config.get("LOCAL_DEV_MODE") and normalized_role(user) == "admin" and not effective_mfa_enabled(user):
                     begin_auth_challenge("mfa_enrollment", user, request.args.get("next"))
                     return redirect(url_for("mfa_enroll"))
-                if bool(user["mfa_enabled"]):
+                if effective_mfa_enabled(user):
                     begin_auth_challenge("mfa_login", user, request.args.get("next"))
                     return redirect(url_for("mfa_login"))
                 get_user_db().execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
@@ -5146,10 +5194,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 connection.commit()
                 refreshed_user = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
                 next_url = take_post_auth_next()
-                if normalized_role(refreshed_user) == "admin" and not bool(refreshed_user["mfa_enabled"]):
+                if not current_app.config.get("LOCAL_DEV_MODE") and normalized_role(refreshed_user) == "admin" and not effective_mfa_enabled(refreshed_user):
                     begin_auth_challenge("mfa_enrollment", refreshed_user, next_url)
                     return redirect(url_for("mfa_enroll"))
-                if bool(refreshed_user["mfa_enabled"]):
+                if effective_mfa_enabled(refreshed_user):
                     begin_auth_challenge("mfa_login", refreshed_user, next_url)
                     return redirect(url_for("mfa_login"))
                 connection.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
@@ -5164,13 +5212,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def mfa_login():
         """Finish a password login with a time-based code or recovery code."""
 
+        if current_app.config.get("LOCAL_DEV_MODE"):
+            session.clear()
+            return redirect(url_for("login"))
+
         user_id = session.get("mfa_login_user_id")
         user = (
             get_user_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             if user_id
             else None
         )
-        if user is None or not bool(user["is_active"]) or not bool(user["mfa_enabled"]):
+        if user is None or not bool(user["is_active"]) or not effective_mfa_enabled(user):
             session.clear()
             flash("Die Zwei-Faktor-Anmeldung ist nicht mehr gültig. Bitte erneut anmelden.", "error")
             return redirect(url_for("login"))
@@ -5219,6 +5271,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.route("/mfa/einrichten", methods=["GET", "POST"])
     def mfa_enroll():
         """Show a QR code and only enable TOTP after a live-code confirmation."""
+
+        if current_app.config.get("LOCAL_DEV_MODE"):
+            return redirect(url_for("profile_page" if g.get("user") is not None else "login"))
 
         user, is_pre_auth = mfa_enrollment_target()
         if user is None:
@@ -5328,7 +5383,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 flash("Das Passwort ist nicht korrekt.", "error")
             else:
                 method = "password"
-                if bool(user["mfa_enabled"]):
+                if effective_mfa_enabled(user):
                     method = verify_mfa_code(connection, user, request.form.get("mfa_code")) or ""
                     if not method:
                         flash("Der Sicherheitscode ist nicht gültig.", "error")
@@ -5355,7 +5410,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "profile_reauth.html",
             title="Zugriff bestätigen",
             target=target,
-            needs_mfa=bool(g.user["mfa_enabled"]),
+            needs_mfa=effective_mfa_enabled(g.user),
         )
 
     @app.get("/profil")
@@ -5467,7 +5522,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def regenerate_recovery_codes():
         connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
-        if not bool(user["mfa_enabled"]):
+        if not effective_mfa_enabled(user):
             flash("Aktiviere zuerst die Zwei-Faktor-Authentifizierung.", "error")
             return redirect(url_for("profile_page"))
         recovery_codes = generate_recovery_codes()

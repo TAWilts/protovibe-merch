@@ -48,7 +48,7 @@
         <label>Neue Datenbank-Passphrase<input name="database_passphrase" type="password" autocomplete="new-password" minlength="12" required></label>
         <label>Neue Passphrase wiederholen<input name="database_passphrase_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
         <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-        <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+        {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
         <label>Zur Bestätigung <code>DATENBANK-PASSPHRASE ÄNDERN</code><input name="confirmation" autocomplete="off" required></label>
         <button class="danger-button compact-button" type="submit">Passphrase ändern</button>
       </form>
@@ -59,7 +59,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <p>Der bisherige Wiederherstellungsschlüssel wird sofort ungültig. Der neue Schlüssel wird einmalig auf der nächsten Seite angezeigt.</p>
         <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-        <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+        {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
         <label>Zur Bestätigung <code>WIEDERHERSTELLUNGSSCHLÜSSEL ERNEUERN</code><input name="confirmation" autocomplete="off" required></label>
         <button class="danger-button compact-button" type="submit">Neuen Schlüssel erzeugen</button>
       </form>
@@ -110,7 +110,7 @@
           <input type="hidden" name="mfa_mode" value="preserve">
           {% endif %}
           <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-          <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+          {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
           <label>Zur Bestätigung <code>ALTDATEN IMPORTIEREN</code><input name="confirmation" autocomplete="off" required></label>
           <button class="danger-button" type="submit">Altdaten endgültig übernehmen</button>
         </form>
@@ -150,7 +150,7 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <p>Das Konto kann sich danach nicht mehr anmelden. Historische Buchungen von {{ user.username }} bleiben erhalten.</p>
             <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-            <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+            {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
             <label>Zur Bestätigung <code>BENUTZER LÖSCHEN</code><input name="confirmation" autocomplete="off" required></label>
             <button class="danger-button compact-button" type="submit">Konto löschen</button>
           </form>
@@ -180,7 +180,7 @@
             <input type="hidden" name="backup_name" value="{{ backup.name }}">
             <p>Artikel, Buchungen und Rechnungen werden durch diesen Stand ersetzt. Aktuelle Benutzerkonten bleiben unverändert.</p>
             <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-            <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+            {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
             <label>Zur Bestätigung <code>SICHERUNG WIEDERHERSTELLEN</code><input name="confirmation" autocomplete="off" required></label>
             <button class="danger-button compact-button" type="submit">Diesen Stand laden</button>
           </form>
@@ -199,7 +199,7 @@
   <form action="{{ url_for('reset_application_data') }}" method="post" class="reset-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-    <label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>
+    {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
     <label>Zur Bestätigung exakt <code>DATEN ZURÜCKSETZEN</code> eingeben<input name="confirmation" autocomplete="off" required></label>
     <button class="danger-button" type="submit">Archiv erstellen und Betriebsdaten zurücksetzen</button>
   </form>

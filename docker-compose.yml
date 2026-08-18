@@ -10,12 +10,15 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       DATA_DIR: /data
+      LOCAL_DEV_MODE: ${LOCAL_DEV_MODE:-false}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-90}
       ACCOUNT_SETUP_CODE_DAYS: ${ACCOUNT_SETUP_CODE_DAYS:-14}
       PROFILE_REAUTH_SECONDS: ${PROFILE_REAUTH_SECONDS:-600}
       MFA_ISSUER: ${MFA_ISSUER:-Protovibe Merch Manager}
     volumes:
       # Database and automatic backups persist when the container is updated.
-      - ./data:/data
+      # For local plaintext mode, use DATA_VOLUME=./local-data so the
+      # encrypted production data/ directory is never opened as SQLite.
+      - ${DATA_VOLUME:-./data}:/data
       # Put the existing ODS file here if you want to use the one-time importer.
       - ./imports:/import:ro

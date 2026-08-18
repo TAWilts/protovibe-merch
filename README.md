@@ -302,6 +302,39 @@ Die App sollte nicht per Router-Portfreigabe ins öffentliche Internet gestellt
 werden.  Im Heimnetz genügt die lokale IP.  Für unterwegs empfiehlt sich ein
 VPN-Zugang zur Synology; dann bleibt die App genauso privat wie im Heimnetz.
 
+### Lokaler Entwicklungsmodus ohne HTTPS und SQLCipher
+
+Die Anwendung läuft bereits über normales HTTP. Für eine lokale Testinstanz
+kann zusätzlich ein ausdrücklich unsicherer Entwicklungsmodus aktiviert werden.
+Er deaktiviert die SQLCipher-Datenbankverschlüsselung sowie die Verschlüsselung
+hochgeladener Dateien. Passwort-Hashes, Sitzungs-Signaturen und die übrigen
+Zugangskontrollen bleiben aktiv. Die 2FA wird im lokalen Modus weder beim
+Login noch bei sensiblen Admin-Aktionen verlangt.
+
+Wichtig: Verwende dafür immer einen separaten, leeren Datenordner. Die normale
+`data/`-Freigabe enthält bei einer produktiven Installation verschlüsselte
+SQLite-Dateien und darf nicht im Klartextmodus geöffnet werden.
+
+In der lokalen `.env`:
+
+```dotenv
+LOCAL_DEV_MODE=true
+DATA_VOLUME=./local-data
+HOST_PORT=8089
+```
+
+Danach:
+
+```powershell
+docker compose up --build
+```
+
+Die lokale Instanz ist anschließend unter `http://localhost:8089` erreichbar.
+Für `docker-compose.synology.yml` bleibt der Modus unabhängig davon
+deaktiviert; dort wird weiterhin die verschlüsselte Datenbank verwendet. Der
+lokale Modus ist nur für Entwicklung und Tests gedacht und darf nicht ins
+Internet oder ungeschützt ins Heimnetz veröffentlicht werden.
+
 ### Offline-Verkauf ohne mitgenommenen Server
 
 Für den Offline-Modus muss kein Server zum Konzert mit. Die Synology bleibt
