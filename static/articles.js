@@ -135,7 +135,6 @@
       minimumStock: minimumStockInputValue(variant.minimum_stock),
       isOffered: Number(variant.is_offered) !== 0,
       noReorder: Number(variant.no_reorder) !== 0,
-      photos: variant.photos || [],
     });
   });
 
@@ -266,7 +265,7 @@
     if (!combinations.length) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
-      cell.colSpan = 9;
+      cell.colSpan = 8;
       cell.className = "empty-cell";
       cell.textContent = "Ergänze mindestens einen Wert je Option. Dann zeigt die Tabelle sofort die entstehenden Varianten.";
       row.append(cell);
@@ -322,28 +321,6 @@
       const warningCell = document.createElement("td");
       warningCell.dataset.minimumWarning = "";
       renderWarningCell(warningCell, state);
-      const photoCell = document.createElement("td");
-      const photoList = document.createElement("div");
-      photoList.className = "variant-photo-list";
-      (state.photos || []).forEach((photo) => {
-        const link = document.createElement("a");
-        link.href = photo.url;
-        link.target = "_blank";
-        link.rel = "noopener";
-        const image = document.createElement("img");
-        image.src = photo.url;
-        image.alt = combination.label;
-        link.append(image);
-        photoList.append(link);
-      });
-      const photoInput = document.createElement("input");
-      photoInput.className = "variant-photo-input";
-      photoInput.type = "file";
-      photoInput.name = savedVariant ? `variant_photo_${state.id}` : "";
-      photoInput.accept = "image/gif,image/jpeg,image/png,image/webp";
-      photoInput.multiple = true;
-      photoInput.disabled = !savedVariant;
-      photoCell.append(photoList, photoInput);
       const notOfferedInput = variantInput({
         className: "",
         type: "checkbox",
@@ -368,7 +345,6 @@
         cellWith(purchaseInput),
         cellWith(minimumInput),
         warningCell,
-        photoCell,
         cellWith(noReorderInput),
         cellWith(notOfferedInput)
       );

@@ -175,21 +175,6 @@ CREATE TABLE IF NOT EXISTS variants (
     UNIQUE(article_id, combination_key)
 );
 
--- Product images are kept in the operational database so they remain shared
--- across users and are included in the normal database backups.  A NULL
--- variant_id marks a general product/display image.
-CREATE TABLE IF NOT EXISTS product_photos (
-    id INTEGER PRIMARY KEY,
-    article_id INTEGER REFERENCES articles(id) ON DELETE SET NULL,
-    variant_id INTEGER REFERENCES variants(id) ON DELETE SET NULL,
-    original_filename TEXT NOT NULL,
-    mime_type TEXT NOT NULL,
-    image_data BLOB NOT NULL,
-    created_at TEXT NOT NULL,
-    created_by INTEGER,
-    created_by_username TEXT
-);
-
 CREATE TABLE IF NOT EXISTS purchases (
     id INTEGER PRIMARY KEY,
     -- One purchase receipt can contain several independently editable ledger
@@ -290,8 +275,6 @@ CREATE TABLE IF NOT EXISTS sync_events (
 CREATE INDEX IF NOT EXISTS idx_option_groups_article ON option_groups(article_id, position);
 CREATE INDEX IF NOT EXISTS idx_option_values_group ON option_values(option_group_id, position);
 CREATE INDEX IF NOT EXISTS idx_variants_article ON variants(article_id, is_active);
-CREATE INDEX IF NOT EXISTS idx_product_photos_article ON product_photos(article_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_product_photos_variant ON product_photos(variant_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_purchases_variant ON purchases(variant_id, purchased_on);
 CREATE INDEX IF NOT EXISTS idx_purchases_receipt_id ON purchases(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_receipt_attachments_receipt ON purchase_receipt_attachments(receipt_id);
@@ -310,7 +293,6 @@ OPERATION_TABLES = (
     "option_groups",
     "option_values",
     "variants",
-    "product_photos",
     "purchases",
     "purchase_receipt_attachments",
     "sales",
@@ -361,13 +343,6 @@ DELIVERY_WORKFLOW_STATUSES = ("pending", "shipped", "received")
 # experience, but the server is the authoritative check.
 ALLOWED_INVOICE_FILE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 MAX_INVOICE_FILE_BYTES = 10 * 1024 * 1024
-
-# Product photos are intentionally a little larger than invoice uploads so a
-# display photo still looks good on a large shop screen.  The bytes live in
-# SQLite and are therefore covered by the existing encrypted database and
-# backup workflow.
-ALLOWED_PRODUCT_PHOTO_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
-MAX_PRODUCT_PHOTO_BYTES = 12 * 1024 * 1024
 
 # A legacy import is deliberately an exceptional, administrator-only workflow.
 # The limits below keep an accidentally selected NAS backup or a ZIP bomb from
@@ -1127,79 +1102,6 @@ def delete_invoice_file(filename: str | None) -> None:
     target = invoice_storage_path(filename)
     if target is not None:
         target.unlink(missing_ok=True)
-
-
-def product_photo_extension(uploaded_file: Any | None) -> tuple[str, str] | None:
-    """Validate an uploaded product image and return suffix plus MIME type."""
-
-    if uploaded_file is None or not getattr(uploaded_file, "filename", ""):
-        return None
-    extension = Path(str(uploaded_file.filename)).suffix.lower()
-    mime_types = {
-        ".gif": "image/gif",
-        ".jpeg": "image/jpeg",
-        ".jpg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-    }
-    if extension not in ALLOWED_PRODUCT_PHOTO_EXTENSIONS:
-        raise ValueError("Bitte nur GIF-, JPG-, PNG- oder WebP-Bilder hochladen.")
-
-    stream = uploaded_file.stream
-    stream.seek(0, os.SEEK_END)
-    size = stream.tell()
-    stream.seek(0)
-    if size <= 0:
-        raise ValueError("Das Produktfoto ist leer.")
-    if size > int(current_app.config["MAX_PRODUCT_PHOTO_BYTES"]):
-        raise ValueError("Ein Produktfoto darf höchstens 12 MB groß sein.")
-
-    signature = stream.read(16)
-    stream.seek(0)
-    valid = (
-        (extension == ".gif" and signature.startswith((b"GIF87a", b"GIF89a")))
-        or (extension == ".png" and signature.startswith(b"\x89PNG\r\n\x1a\n"))
-        or (extension in {".jpg", ".jpeg"} and signature.startswith(b"\xff\xd8\xff"))
-        or (extension == ".webp" and signature.startswith(b"RIFF") and signature[8:12] == b"WEBP")
-    )
-    if not valid:
-        raise ValueError("Die Datei passt nicht zum gewählten Bildformat.")
-    return extension, mime_types[extension]
-
-
-def product_photo_payload(
-    connection: sqlite3.Connection, *, article_id: int | None = None
-) -> list[dict[str, Any]]:
-    """Return shared product-photo metadata without exposing image bytes."""
-
-    params: list[Any] = []
-    sql = """
-        SELECT p.id, p.article_id, p.variant_id, p.original_filename, p.mime_type,
-               p.created_at, p.created_by_username, a.name AS article_name,
-               a.default_sale_price_cents AS article_sale_price_cents
-        FROM product_photos p
-        LEFT JOIN articles a ON a.id = p.article_id
-    """
-    if article_id is not None:
-        sql += " WHERE p.article_id = ?"
-        params.append(int(article_id))
-    sql += " ORDER BY p.created_at, p.id"
-    rows = connection.execute(sql, params).fetchall()
-    labels = variant_label_map(connection, [row["variant_id"] for row in rows if row["variant_id"] is not None])
-    result = []
-    for raw in rows:
-        photo = dict(raw)
-        variant = labels.get(photo["variant_id"]) if photo["variant_id"] is not None else None
-        if variant:
-            photo["article_name"] = variant["article_name"]
-            photo["variant_label"] = variant["option_text"] or variant["article_name"]
-            photo["price_cents"] = int(variant["sale_price_cents"])
-        else:
-            photo["variant_label"] = None
-            photo["price_cents"] = photo["article_sale_price_cents"]
-        photo["url"] = url_for("product_photo_file", photo_id=photo["id"])
-        result.append(photo)
-    return result
 
 
 def purchase_values_from_payload(
@@ -3004,11 +2906,6 @@ def article_payload(
 
     for raw_article in article_rows:
         article = dict(raw_article)
-        article_photos = product_photo_payload(connection, article_id=article["id"])
-        photos_by_variant: dict[int, list[dict[str, Any]]] = defaultdict(list)
-        for photo in article_photos:
-            if photo["variant_id"] is not None:
-                photos_by_variant[int(photo["variant_id"])].append(photo)
         groups = connection.execute(
             """
             SELECT * FROM option_groups
@@ -3049,7 +2946,6 @@ def article_payload(
             variant["minimum_stock_warning"] = is_at_or_below_minimum_stock(
                 variant["stock"], variant["minimum_stock"]
             )
-            variant["photos"] = photos_by_variant.get(int(variant["id"]), [])
             variants.append(variant)
 
         # An article with no option groups is valid (patch, cap, ...).  An
@@ -3109,16 +3005,12 @@ def get_article_management_data(connection: sqlite3.Connection, article_id: int)
     ).fetchall()
     labels = variant_label_map(connection, [row["id"] for row in variant_rows])
     variants = []
-    article["photos"] = product_photo_payload(connection, article_id=article_id)
     for raw_variant in variant_rows:
         variant = labels[raw_variant["id"]]
         variant["stock"] = stock.get(raw_variant["id"], 0)
         variant["minimum_stock_warning"] = is_at_or_below_minimum_stock(
             variant["stock"], variant["minimum_stock"]
         )
-        variant["photos"] = [
-            photo for photo in article["photos"] if photo["variant_id"] == variant["id"]
-        ]
         variants.append(variant)
     article["option_groups"] = groups
     article["variants"] = variants
@@ -4817,7 +4709,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         LEGACY_IMPORT_ARCHIVE_DIR=str(data_dir / "legacy-import-archives"),
         INVOICE_UPLOAD_DIR=str(data_dir / "invoices"),
         MAX_INVOICE_FILE_BYTES=MAX_INVOICE_FILE_BYTES,
-        MAX_PRODUCT_PHOTO_BYTES=MAX_PRODUCT_PHOTO_BYTES,
         # A legacy import may contain two SQLite files plus an invoice archive.
         # Regular invoice uploads remain independently capped at 10 MB.
         MAX_CONTENT_LENGTH=MAX_LEGACY_IMPORT_BYTES + 1024 * 1024,
@@ -6051,114 +5942,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "sales.html", title="Verkauf", articles=article_payload(get_db(), offered_only=True), today=today_iso()
         )
 
-    @app.get("/diashow")
-    @login_required
-    def product_slideshow_page():
-        return render_template(
-            "slideshow.html",
-            title="Produktdiashow",
-            photos=product_photo_payload(get_db()),
-            articles=article_payload(get_db(), offered_only=False),
-        )
-
-    @app.get("/api/product-photos")
-    @login_required
-    def product_photos_api():
-        return jsonify({"ok": True, "photos": product_photo_payload(get_db())})
-
-    @app.post("/api/product-photos")
-    @login_required
-    def upload_product_photos():
-        connection = get_db()
-        files = [file for file in request.files.getlist("photo") if getattr(file, "filename", "")]
-        if not files:
-            return jsonify({"ok": False, "error": "Bitte mindestens ein Produktfoto auswählen."}), 400
-        article_id = request.form.get("article_id", type=int)
-        variant_id = request.form.get("variant_id", type=int)
-        try:
-            if variant_id is not None:
-                variant = connection.execute(
-                    "SELECT article_id FROM variants WHERE id = ? AND is_active = 1", (variant_id,)
-                ).fetchone()
-                if variant is None:
-                    raise ValueError("Die gewählte Variante wurde nicht gefunden.")
-                if article_id is not None and int(variant["article_id"]) != article_id:
-                    raise ValueError("Variante und Artikel passen nicht zusammen.")
-                article_id = int(variant["article_id"])
-            elif article_id is not None:
-                article = connection.execute(
-                    "SELECT id FROM articles WHERE id = ? AND is_active = 1", (article_id,)
-                ).fetchone()
-                if article is None:
-                    raise ValueError("Der gewählte Artikel wurde nicht gefunden.")
-
-            connection.execute("BEGIN IMMEDIATE")
-            inserted = []
-            for uploaded_file in files:
-                extension_mime = product_photo_extension(uploaded_file)
-                if extension_mime is None:
-                    continue
-                _extension, mime_type = extension_mime
-                uploaded_file.stream.seek(0)
-                image_data = uploaded_file.stream.read()
-                cursor = connection.execute(
-                    """
-                    INSERT INTO product_photos (
-                        article_id, variant_id, original_filename, mime_type, image_data,
-                        created_at, created_by, created_by_username
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        article_id,
-                        variant_id,
-                        Path(str(uploaded_file.filename)).name,
-                        mime_type,
-                        image_data,
-                        utc_now(),
-                        g.user["id"],
-                        g.user["username"],
-                    ),
-                )
-                inserted.append(int(cursor.lastrowid))
-            if not inserted:
-                raise ValueError("Es konnte kein gültiges Produktfoto gespeichert werden.")
-            connection.commit()
-            backup_after_commit()
-            return jsonify({"ok": True, "photos": product_photo_payload(connection), "count": len(inserted)})
-        except (ValueError, sqlite3.Error) as exc:
-            connection.rollback()
-            return jsonify({"ok": False, "error": str(exc)}), 400
-
-    @app.get("/produktfoto/<int:photo_id>")
-    @login_required
-    def product_photo_file(photo_id: int):
-        photo = get_db().execute(
-            "SELECT image_data, mime_type, original_filename FROM product_photos WHERE id = ?",
-            (photo_id,),
-        ).fetchone()
-        if photo is None:
-            abort(404)
-        return send_file(
-            io.BytesIO(photo["image_data"]),
-            mimetype=photo["mime_type"],
-            download_name=photo["original_filename"],
-            max_age=3600,
-        )
-
-    @app.delete("/api/product-photos/<int:photo_id>")
-    @login_required
-    @manager_required
-    def delete_product_photo(photo_id: int):
-        connection = get_db()
-        photo = connection.execute("SELECT id FROM product_photos WHERE id = ?", (photo_id,)).fetchone()
-        if photo is None:
-            abort(404)
-        connection.execute("DELETE FROM product_photos WHERE id = ?", (photo_id,))
-        audit(connection, "delete", "product_photo", photo_id, {})
-        connection.commit()
-        backup_after_commit()
-        return jsonify({"ok": True, "photo_id": photo_id})
-
     @app.get("/api/receipt-preview")
     @login_required
     def receipt_preview():
@@ -7156,45 +6939,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             )
             apply_option_configuration(connection, article_id, option_groups)
             sync_variants(connection, article_id)
-            # Variant images are submitted together with the article editor.
-            # This keeps the upload atomic with the catalogue change and also
-            # supports several photos for one variant via ``multiple``.
-            for field_name in request.files:
-                match = re.fullmatch(r"variant_photo_(\d+)", field_name)
-                if not match:
-                    continue
-                variant_id = int(match.group(1))
-                variant = connection.execute(
-                    "SELECT id FROM variants WHERE id = ? AND article_id = ? AND is_active = 1",
-                    (variant_id, article_id),
-                ).fetchone()
-                if variant is None:
-                    raise ValueError("Das Variantenfoto gehört nicht zu diesem Artikel.")
-                for uploaded_file in request.files.getlist(field_name):
-                    if not getattr(uploaded_file, "filename", ""):
-                        continue
-                    _extension, mime_type = product_photo_extension(uploaded_file) or (None, None)
-                    if mime_type is None:
-                        continue
-                    uploaded_file.stream.seek(0)
-                    connection.execute(
-                        """
-                        INSERT INTO product_photos (
-                            article_id, variant_id, original_filename, mime_type, image_data,
-                            created_at, created_by, created_by_username
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            article_id,
-                            variant_id,
-                            Path(str(uploaded_file.filename)).name,
-                            mime_type,
-                            uploaded_file.stream.read(),
-                            utc_now(),
-                            g.user["id"],
-                            g.user["username"],
-                        ),
-                    )
             # The article-level control is intentionally an explicit one-shot
             # action.  It is useful for a new shirt design with many sizes,
             # but must not overwrite individual thresholds on every later

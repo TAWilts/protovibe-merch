@@ -18,8 +18,6 @@
     selectedCard: $("selected-variant-card"),
     selectedLabel: $("selected-variant-label"),
     selectedStock: $("selected-variant-stock"),
-    showVariantPhotos: $("show-variant-photos"),
-    variantPhotoPreview: $("variant-photo-preview"),
     paid: $("is-paid"),
     received: $("is-received"),
     soldBy: $("sold-by"),
@@ -49,48 +47,14 @@
     closeDialog: $("close-success"),
   };
   let currentVariant = null;
-  let currentArticle = null;
   const cartItems = [];
-
-  const photoPreferenceKey = `merch-variant-photos-${window.MERCH_APP.currentUser?.id || "guest"}`;
-
-  function renderVariantPhoto() {
-    ui.variantPhotoPreview.replaceChildren();
-    if (!currentVariant || !ui.showVariantPhotos.checked) {
-      ui.variantPhotoPreview.hidden = true;
-      return;
-    }
-    const ownPhotos = currentVariant.photos || [];
-    const fallbackVariant = ownPhotos.length
-      ? currentVariant
-      : (currentArticle?.variants || []).find((variant) => (variant.photos || []).length);
-    const photos = fallbackVariant?.photos || [];
-    if (!photos.length) {
-      ui.variantPhotoPreview.hidden = true;
-      return;
-    }
-    const heading = document.createElement("small");
-    heading.textContent = ownPhotos.length ? "Variantenfoto" : `Foto der nächsten Variante: ${fallbackVariant.label}`;
-    const gallery = document.createElement("div");
-    gallery.className = "variant-photo-gallery";
-    photos.forEach((photo) => {
-      const image = document.createElement("img");
-      image.src = photo.url;
-      image.alt = fallbackVariant.label;
-      image.loading = "lazy";
-      gallery.append(image);
-    });
-    ui.variantPhotoPreview.append(heading, gallery);
-    ui.variantPhotoPreview.hidden = false;
-  }
 
   const selector = window.MerchTransaction.setupVariantSelector({
     articles,
     buttonContainer: ui.articleButtons,
     optionContainer: ui.optionGroups,
-    onVariantChanged(variant, article) {
+    onVariantChanged(variant) {
       currentVariant = variant;
-      currentArticle = article;
       if (variant) {
         ui.selectedCard.hidden = false;
         ui.selectedLabel.textContent = variant.label;
@@ -102,7 +66,6 @@
         ui.unitPrice.value = "";
         ui.unitPrice.disabled = true;
       }
-      renderVariantPhoto();
       updateSummary();
     },
   });
@@ -471,12 +434,7 @@
   });
   ui.confirm.addEventListener("click", confirmSale);
   ui.closeDialog.addEventListener("click", () => ui.dialog.close());
-    ui.dialog.addEventListener("close", resetSaleForm);
-  ui.showVariantPhotos.checked = localStorage.getItem(photoPreferenceKey) === "1";
-  ui.showVariantPhotos.addEventListener("change", () => {
-    localStorage.setItem(photoPreferenceKey, ui.showVariantPhotos.checked ? "1" : "0");
-    renderVariantPhoto();
-  });
+  ui.dialog.addEventListener("close", resetSaleForm);
   window.addEventListener("merch-offline-sale-synced", (event) => {
     if (event.detail?.ok) applySaleStockUpdate(event.detail);
   });
