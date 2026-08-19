@@ -29,7 +29,9 @@ import os
 import re
 import secrets
 import shutil
+import smtplib
 import sqlite3
+import ssl
 import string
 import tempfile
 import time
@@ -38,6 +40,7 @@ import warnings
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from email.message import EmailMessage
 from functools import wraps
 from pathlib import Path, PurePosixPath
 from threading import Lock
@@ -775,6 +778,99 @@ def environment_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def smtp_notification_status(config: Any) -> dict[str, Any]:
+    """Return display-safe SMTP readiness without exposing credentials."""
+
+    enabled = bool(config.get("EMAIL_NOTIFICATIONS_ENABLED", False))
+    security = str(config.get("SMTP_SECURITY", "ssl") or "ssl").strip().lower()
+    required = {
+        "SMTP_HOST": str(config.get("SMTP_HOST", "") or "").strip(),
+        "SMTP_USERNAME": str(config.get("SMTP_USERNAME", "") or "").strip(),
+        "SMTP_PASSWORD": str(config.get("SMTP_PASSWORD", "") or "").strip(),
+        "SMTP_FROM": str(config.get("SMTP_FROM", "") or "").strip(),
+        "ADMIN_NOTIFICATION_EMAIL": str(config.get("ADMIN_NOTIFICATION_EMAIL", "") or "").strip(),
+    }
+    missing = [name for name, value in required.items() if not value]
+    errors: list[str] = []
+    if security not in {"ssl", "starttls"}:
+        errors.append("SMTP_SECURITY muss ssl oder starttls sein")
+    try:
+        port = int(config.get("SMTP_PORT", 465))
+        if not 1 <= port <= 65_535:
+            raise ValueError
+    except (TypeError, ValueError):
+        port = 0
+        errors.append("SMTP_PORT ist ungültig")
+    try:
+        timeout_seconds = float(config.get("SMTP_TIMEOUT_SECONDS", 8))
+        if timeout_seconds <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        timeout_seconds = 0
+        errors.append("SMTP_TIMEOUT_SECONDS ist ungültig")
+    return {
+        "enabled": enabled,
+        "ready": enabled and not missing and not errors,
+        "missing": missing,
+        "errors": errors,
+        "host": required["SMTP_HOST"],
+        "port": port,
+        "security": security,
+        "recipient": required["ADMIN_NOTIFICATION_EMAIL"],
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
+    """Send one plain-text admin notification through configured TLS SMTP."""
+
+    status = smtp_notification_status(config)
+    if not status["ready"]:
+        details = [*status["missing"], *status["errors"]]
+        raise ValueError("SMTP-Benachrichtigung ist nicht vollständig konfiguriert: " + ", ".join(details))
+    username = str(config["SMTP_USERNAME"]).strip()
+    password = str(config["SMTP_PASSWORD"])
+    message = EmailMessage()
+    message["From"] = str(config["SMTP_FROM"]).strip()
+    message["To"] = str(config["ADMIN_NOTIFICATION_EMAIL"]).strip()
+    message["Subject"] = " ".join(str(subject).splitlines()).strip()
+    message.set_content(str(body))
+
+    tls_context = ssl.create_default_context()
+    if status["security"] == "ssl":
+        with smtplib.SMTP_SSL(
+            status["host"], status["port"], timeout=status["timeout_seconds"], context=tls_context
+        ) as client:
+            client.login(username, password)
+            client.send_message(message)
+        return
+    with smtplib.SMTP(status["host"], status["port"], timeout=status["timeout_seconds"]) as client:
+        client.ehlo()
+        client.starttls(context=tls_context)
+        client.ehlo()
+        client.login(username, password)
+        client.send_message(message)
+
+
+def send_admin_message_email(config: Any, message: dict[str, Any]) -> None:
+    """Format a persisted internal message as a concise email notification."""
+
+    type_label = "Issue / Problem" if message["message_type"] == "issue" else "Frage"
+    send_smtp_notification(
+        config,
+        subject=f"[Merch Manager] {type_label}: {message['subject']}",
+        body=(
+            "Eine neue Nachricht wurde im Admin-Postfach gespeichert.\n\n"
+            f"Absender: {message['sender_username']}\n"
+            f"Kategorie: {type_label}\n"
+            f"Zeitpunkt: {message['created_at']}\n"
+            f"Betreff: {message['subject']}\n\n"
+            f"{message['body']}\n\n"
+            "Die Nachricht bleibt zusätzlich dauerhaft im Admin-Tab des Merch Managers erhalten."
+        ),
+    )
 
 
 def fetch_latest_github_release(repository: str, token: str | None, timeout_seconds: float) -> dict[str, Any]:
@@ -6165,6 +6261,15 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         ACCOUNT_SETUP_CODE_DAYS=int(os.environ.get("ACCOUNT_SETUP_CODE_DAYS", "14")),
         PROFILE_REAUTH_SECONDS=int(os.environ.get("PROFILE_REAUTH_SECONDS", "600")),
         MFA_ISSUER=os.environ.get("MFA_ISSUER", "Protovibe Merch Manager").strip(),
+        EMAIL_NOTIFICATIONS_ENABLED=environment_flag("EMAIL_NOTIFICATIONS_ENABLED"),
+        SMTP_HOST=os.environ.get("SMTP_HOST", "").strip(),
+        SMTP_PORT=os.environ.get("SMTP_PORT", "465").strip(),
+        SMTP_SECURITY=os.environ.get("SMTP_SECURITY", "ssl").strip().lower(),
+        SMTP_USERNAME=os.environ.get("SMTP_USERNAME", "").strip(),
+        SMTP_PASSWORD=os.environ.get("SMTP_PASSWORD", ""),
+        SMTP_FROM=(os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USERNAME", "")).strip(),
+        ADMIN_NOTIFICATION_EMAIL=os.environ.get("ADMIN_NOTIFICATION_EMAIL", "").strip(),
+        SMTP_TIMEOUT_SECONDS=os.environ.get("SMTP_TIMEOUT_SECONDS", "8").strip(),
         # A published image receives the GitHub release tag at Docker build
         # time.  The neutral fallback only applies to local development builds.
         APP_VERSION=os.environ.get("APP_VERSION", "0.0.0").strip(),
@@ -7037,6 +7142,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return redirect(destination)
 
         connection = get_user_db()
+        created_at = utc_now()
+        persisted_message: dict[str, Any] | None = None
         try:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
@@ -7051,9 +7158,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     message_type,
                     subject,
                     body,
-                    utc_now(),
+                    created_at,
                 ),
             )
+            persisted_message = {
+                "id": int(cursor.lastrowid),
+                "sender_username": str(g.user["username"]),
+                "message_type": message_type,
+                "subject": subject,
+                "body": body,
+                "created_at": created_at,
+            }
             audit(
                 connection,
                 "send_admin_message",
@@ -7062,11 +7177,21 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 {"message_type": message_type, "subject": subject},
             )
             connection.commit()
-            flash(strings["message.sent"], "success")
         except sqlite3.DatabaseError:
             connection.rollback()
             current_app.logger.exception("Could not store admin message")
             flash(strings["message.save_failed"], "error")
+            return redirect(destination)
+
+        flash(strings["message.sent"], "success")
+        if current_app.config.get("EMAIL_NOTIFICATIONS_ENABLED") and persisted_message is not None:
+            try:
+                send_admin_message_email(current_app.config, persisted_message)
+            except (ValueError, OSError, smtplib.SMTPException):
+                current_app.logger.exception(
+                    "Admin message %s was stored, but its email notification failed",
+                    persisted_message["id"],
+                )
         return redirect(destination)
 
     def administration_users() -> list[dict[str, Any]]:
@@ -7117,6 +7242,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             legacy_import_preview=legacy_import_preview,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
             database_encryption_active=database_encryption_enabled(app),
+            email_notification=smtp_notification_status(current_app.config),
         )
 
     @app.get("/verwaltung")
@@ -7124,6 +7250,41 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @admin_required
     def administration_page():
         return render_administration()
+
+    @app.post("/verwaltung/email/test")
+    @login_required
+    @admin_required
+    def test_admin_email_notification():
+        """Let the admin verify SMTP without exposing account credentials."""
+
+        status = smtp_notification_status(current_app.config)
+        if not status["ready"]:
+            details = [*status["missing"], *status["errors"]]
+            flash(
+                "Test-E-Mail nicht gesendet: "
+                + (", ".join(details) if details else "E-Mail-Benachrichtigungen sind deaktiviert."),
+                "error",
+            )
+            return redirect(url_for("administration_page"))
+        try:
+            send_smtp_notification(
+                current_app.config,
+                subject="[Merch Manager] SMTP-Test",
+                body=(
+                    "Die SMTP-Konfiguration des Protovibe Merch Managers funktioniert.\n\n"
+                    f"Ausgelöst von: {g.user['username']}\n"
+                    f"Zeitpunkt: {utc_now()}\n"
+                ),
+            )
+        except (ValueError, OSError, smtplib.SMTPException):
+            current_app.logger.exception("Could not send SMTP test notification")
+            flash(
+                "Die Test-E-Mail konnte nicht gesendet werden. Details stehen im Server-Log.",
+                "error",
+            )
+        else:
+            flash(f"Test-E-Mail an {status['recipient']} wurde gesendet.", "success")
+        return redirect(url_for("administration_page"))
 
     @app.post("/verwaltung/altdaten/vorschau")
     @login_required

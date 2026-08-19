@@ -397,7 +397,7 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .article-list-panel { align-self: start; position: sticky; top: 88px; }
 .article-list-filter { margin: 12px 0; }
 .article-editor { min-width: 0; }
-.transaction-import-panel { margin-bottom: 18px; }
+.transaction-import-panel { margin-top: 18px; }
 .transaction-import-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .transaction-import-form { display: grid; align-content: start; gap: 13px; padding: 15px; border: 1px solid rgba(105,183,255,.24); border-radius: 12px; background: rgba(22,32,48,.28); }
 .transaction-import-form h3 { margin: 0; font-size: .95rem; }
@@ -411,21 +411,23 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .csv-example-dialog textarea { min-height: 150px; white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .78rem; line-height: 1.5; }
 .article-offer-toggle { margin-top: 14px; color: #f7d09b; }
 .option-editor, .variant-price-section { margin-top: 25px; padding-top: 22px; border-top: 1px solid var(--border); }
-.option-table-scroll { max-height: 390px; }
-#option-grid { min-width: 540px; }
-#option-grid th { min-width: 215px; padding: 8px; vertical-align: top; }
-#option-grid th:first-child { min-width: 88px; width: 88px; }
-#option-grid td { padding: 7px; }
-.option-heading { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 5px; }
-.option-heading input { padding: 7px 8px; font-size: .82rem; }
-.option-heading-actions { display: flex; gap: 4px; }
-.icon-button.option-move-button:hover:not(:disabled) { color: var(--text); border-color: var(--accent); background: rgba(217,95,241,.14); }
-.option-move-button:disabled { opacity: .32; cursor: default; }
+.option-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.option-value-card { min-width: 0; overflow: hidden; padding: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 11px; background: rgba(17,14,22,.28); }
+.option-value-heading { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 8px; margin-bottom: 10px; }
+.option-value-heading input { padding: 7px 8px; font-size: .86rem; }
+.option-values-scroll { max-height: 330px; }
+.option-values-table { min-width: 330px; }
+.option-values-table th, .option-values-table td { padding: 7px; }
+.option-values-table th:first-child, .option-value-position { width: 46px; text-align: center; }
+.option-values-table th:last-child { width: 108px; }
+.option-values-table input { min-width: 110px; padding: 7px 8px; font-size: .86rem; }
+.option-value-actions { display: flex; gap: 4px; }
+.icon-button.option-value-move-button:hover:not(:disabled) { color: var(--text); border-color: var(--accent); background: rgba(217,95,241,.14); }
+.option-value-move-button:disabled { opacity: .32; cursor: default; }
+.option-add-value { margin-top: 10px; }
+.option-editor-empty { min-height: 90px; margin: 0 0 12px; }
 .icon-button { width: 29px; height: 29px; display: inline-grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--panel-muted); }
-.icon-button:hover { color: #ffd0d5; border-color: var(--danger); background: rgba(242,121,131,.14); }
-.value-cell { display: grid; grid-template-columns: minmax(0,1fr) 28px; gap: 5px; }
-.value-cell input { padding: 7px 8px; font-size: .86rem; }
-.add-row-button { margin-top: 10px; }
+.icon-button:hover:not(:disabled) { color: #ffd0d5; border-color: var(--danger); background: rgba(242,121,131,.14); }
 .inline-money { min-width: 105px; padding: 7px 8px; }
 .inline-number { width: 94px; padding: 7px 8px; }
 .apply-minimum-stock { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; }
@@ -609,6 +611,11 @@ body.product-slideshow-running { overflow: hidden; }
 .setup-code-card > p:not(.eyebrow):not(.notice) { max-width: 760px; margin: 0 0 15px; color: var(--muted); line-height: 1.45; }
 .setup-code-card .setup-code { margin-bottom: 14px; font-size: 1.13rem; }
 .admin-create-card .stack-form { margin-top: 17px; }
+.admin-email-settings { margin-bottom: 16px; }
+.admin-email-settings .section-heading { align-items: flex-start; }
+.admin-email-status-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.admin-email-status-row p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.admin-email-status-row form { flex: 0 0 auto; }
 .admin-message-inbox { margin-bottom: 16px; border-color: rgba(217,95,241,.38); }
 .admin-message-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 11px; }
 .admin-message-card { min-width: 0; padding: 14px; border: 1px solid rgba(255,255,255,.09); border-radius: 11px; background: rgba(17,14,22,.32); }
@@ -691,7 +698,7 @@ body.product-slideshow-running { overflow: hidden; }
   .page-shell { padding: 23px 14px 38px; }
   .page-title-row { align-items: start; flex-direction: column; margin-bottom: 16px; }
   .receipt-preview { text-align: left; }
-  .transaction-layout, .article-management-layout, .transaction-import-grid { grid-template-columns: 1fr; }
+  .transaction-layout, .article-management-layout, .transaction-import-grid, .option-card-grid { grid-template-columns: 1fr; }
   .product-panel { order: 1; }
   .option-panel { order: 2; }
   .sale-details { order: 3; }
@@ -727,6 +734,8 @@ body.product-slideshow-running { overflow: hidden; }
   .product-slideshow-copy.from-left, .product-slideshow-copy.from-right, .product-slideshow-copy.from-top, .product-slideshow-copy.from-bottom { right: 9px; bottom: 8px; left: auto; top: auto; }
   .product-slideshow-exit-hint { right: 12px; bottom: 9px; max-width: calc(100vw - 24px); }
   .legacy-import-summary { grid-template-columns: 1fr; }
+  .admin-email-status-row { align-items: stretch; flex-direction: column; }
+  .admin-email-status-row button { width: 100%; justify-content: center; }
   .mfa-enrolment { grid-template-columns: 1fr; }
   .mfa-qr { width: 170px; height: 170px; }
   .recovery-code-grid { grid-template-columns: 1fr; }

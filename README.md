@@ -227,8 +227,9 @@ keine Buchung unlesbar macht.
 
 ### Benutzerkonten, Rollen und 2FA
 
-Es ist kein externer Login-Dienst, kein E-Mail-Versand und kein kostenpflichtiger
-2FA-Anbieter nötig. Nach dem Update meldest du dich einmal als bisheriger
+Es ist kein externer Login-Dienst und kein kostenpflichtiger 2FA-Anbieter nötig.
+Der optionale E-Mail-Versand für Admin-Nachrichten kann über ein bestehendes
+Mailkonto erfolgen. Nach dem Update meldest du dich einmal als bisheriger
 Admin an und richtest die verpflichtende Zwei-Faktor-Authentifizierung per
 QR-Code in einer Authenticator-App ein. Anschließend speicherst du die zehn
 einmalig nutzbaren Wiederherstellungscodes an einem sicheren, vom Handy
@@ -249,6 +250,37 @@ ACCOUNT_SETUP_CODE_DAYS=14      # Gültigkeit neuer/erneuerter Einrichtungscodes
 PROFILE_REAUTH_SECONDS=600      # Dauer einer Profil-Sicherheitsbestätigung
 MFA_ISSUER=Protovibe Merch Manager
 ```
+
+### Optionale E-Mail-Benachrichtigung
+
+Neue Issues und Fragen bleiben immer im privaten Admin-Postfach gespeichert.
+Optional kann die App danach zusätzlich eine E-Mail über den SMTP-Server eines
+bestehenden Mailkontos senden. IMAP und POP3 dienen nur zum Abrufen von E-Mails
+und werden dafür nicht benötigt. Bei vielen Anbietern kostet SMTP mit einem
+vorhandenen Konto nichts zusätzlich; häufig ist statt des normalen Passworts
+ein separates App-Passwort erforderlich.
+
+Beispiel für implizites TLS auf Port 465:
+
+```dotenv
+EMAIL_NOTIFICATIONS_ENABLED=true
+SMTP_HOST=smtp.example.org
+SMTP_PORT=465
+SMTP_SECURITY=ssl
+SMTP_USERNAME=merch@example.org
+SMTP_PASSWORD=hier-das-app-passwort
+SMTP_FROM=merch@example.org
+ADMIN_NOTIFICATION_EMAIL=admin@example.org
+SMTP_TIMEOUT_SECONDS=8
+```
+
+Alternativ wird häufig Port `587` mit `SMTP_SECURITY=starttls` verwendet. Die
+genauen Serverdaten liefert der jeweilige Mailanbieter. Nach einem Neustart
+zeigt **Verwaltung → E-Mail bei neuen Nachrichten** nur den sicheren
+Konfigurationsstatus, niemals Benutzername oder Passwort, und bietet einen
+Button zum Senden einer Test-E-Mail. Schlägt SMTP fehl, bleibt die zuvor
+gespeicherte Nachricht trotzdem im Admin-Tab erhalten; technische Details
+stehen dann ausschließlich im Container-Log.
 
 `SECRET_KEY` muss dauerhaft unverändert bleiben. Er schützt Sitzungen und
 verschlüsselt die lokal gespeicherten TOTP-Geheimnisse; er ist **nicht** der

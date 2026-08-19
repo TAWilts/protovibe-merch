@@ -1,6 +1,6 @@
 /* Dynamic article option and variant editor.
  *
- * The option grid remains the source for the future Cartesian combinations.
+ * The option tables remain the source for the future Cartesian combinations.
  * The variant table is deliberately rebuilt from that same in-browser state
  * whenever an option changes, so it never lags one save behind the editor.
  */
@@ -23,11 +23,8 @@
     deleteFailed: "Das Foto konnte nicht gelöscht werden.",
   };
   const grid = document.getElementById("option-grid");
-  const thead = grid.querySelector("thead");
-  const tbody = grid.querySelector("tbody");
   const hiddenInput = document.getElementById("options-json");
   const addColumnButton = document.getElementById("add-option-column");
-  const addRowButton = document.getElementById("add-option-row");
   const variantBody = document.getElementById("variant-price-body");
   const newVariantHint = document.getElementById("new-variant-hint");
   const minimumStockForAll = document.getElementById("minimum-stock-for-all");
@@ -35,7 +32,7 @@
   const applyMinimumStockValue = document.getElementById("apply-minimum-stock-to-all-value");
   const defaultSalePrice = form.elements.namedItem("default_sale_price");
   const defaultPurchasePrice = form.elements.namedItem("default_purchase_price");
-  if (!variantBody || !minimumStockForAll || !applyMinimumStockButton || !applyMinimumStockValue) return;
+  if (!grid || !hiddenInput || !addColumnButton || !variantBody || !minimumStockForAll || !applyMinimumStockButton || !applyMinimumStockValue) return;
 
   let draftValueSequence = 0;
 
@@ -80,31 +77,23 @@
 
   const originalSignature = JSON.stringify(canonical(groups));
 
-  function maximumRows() {
-    return Math.max(1, ...groups.map((group) => group.values.length));
-  }
-
   function button(label, className, title) {
     const node = document.createElement("button");
     node.type = "button";
     node.className = className;
     node.textContent = label;
     node.title = title || label;
+    node.setAttribute("aria-label", title || label);
     return node;
   }
 
-  function moveOptionGroup(groupIndex, offset) {
-    const targetIndex = groupIndex + offset;
-    if (targetIndex < 0 || targetIndex >= groups.length) return;
+  function moveOptionValue(groupIndex, valueIndex, offset) {
+    const values = groups[groupIndex]?.values;
+    const targetIndex = valueIndex + offset;
+    if (!values || targetIndex < 0 || targetIndex >= values.length) return;
     syncVariantStateFromTable();
-    [groups[groupIndex], groups[targetIndex]] = [groups[targetIndex], groups[groupIndex]];
+    [values[valueIndex], values[targetIndex]] = [values[targetIndex], values[valueIndex]];
     render();
-  }
-
-  function ensureValue(groupIndex, valueIndex) {
-    const values = groups[groupIndex].values;
-    while (values.length <= valueIndex) values.push(newDraftValue());
-    return values[valueIndex];
   }
 
   function savedCombinationKey(ids) {
@@ -447,83 +436,110 @@
   }
 
   function render() {
-    thead.replaceChildren();
-    tbody.replaceChildren();
-    const headingRow = document.createElement("tr");
-    const indexHead = document.createElement("th");
-    indexHead.textContent = "Werte";
-    headingRow.append(indexHead);
+    grid.replaceChildren();
+
+    if (!groups.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty-selection option-editor-empty";
+      empty.textContent = "Dieser Artikel hat keine Optionen und verwendet eine Standardvariante.";
+      grid.append(empty);
+    }
 
     groups.forEach((group, groupIndex) => {
-      const header = document.createElement("th");
-      const wrapper = document.createElement("div");
-      wrapper.className = "option-heading";
-      const input = document.createElement("input");
-      input.value = group.name;
-      input.placeholder = "Option, z. B. Farbe";
-      input.addEventListener("input", () => {
-        groups[groupIndex].name = input.value;
+      const card = document.createElement("section");
+      card.className = "option-value-card";
+
+      const heading = document.createElement("div");
+      heading.className = "option-value-heading";
+      const nameLabel = document.createElement("label");
+      nameLabel.textContent = "Optionsname";
+      const nameInput = document.createElement("input");
+      nameInput.value = group.name;
+      nameInput.placeholder = "z. B. Größe";
+      nameInput.addEventListener("input", () => {
+        groups[groupIndex].name = nameInput.value;
         renderVariantTable();
       });
-      const actions = document.createElement("div");
-      actions.className = "option-heading-actions";
-      const moveLeft = button("←", "icon-button option-move-button", "Option nach links");
-      moveLeft.disabled = groupIndex === 0;
-      moveLeft.addEventListener("click", () => moveOptionGroup(groupIndex, -1));
-      const moveRight = button("→", "icon-button option-move-button", "Option nach rechts");
-      moveRight.disabled = groupIndex === groups.length - 1;
-      moveRight.addEventListener("click", () => moveOptionGroup(groupIndex, 1));
+      nameLabel.append(nameInput);
       const remove = button("×", "icon-button", "Option löschen");
       remove.addEventListener("click", () => {
         groups.splice(groupIndex, 1);
         render();
       });
-      actions.append(moveLeft, moveRight, remove);
-      wrapper.append(input, actions);
-      header.append(wrapper);
-      headingRow.append(header);
-    });
-    thead.append(headingRow);
+      heading.append(nameLabel, remove);
 
-    const rows = maximumRows();
-    for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
-      const row = document.createElement("tr");
-      const number = document.createElement("td");
-      number.textContent = String(rowIndex + 1);
-      row.append(number);
-      groups.forEach((group, groupIndex) => {
-        const cell = document.createElement("td");
-        const wrapper = document.createElement("div");
-        wrapper.className = "value-cell";
-        const value = ensureValue(groupIndex, rowIndex);
-        const input = document.createElement("input");
-        input.value = value.value;
-        input.placeholder = "Wert";
-        input.addEventListener("input", () => {
-          ensureValue(groupIndex, rowIndex).value = input.value;
+      const tableScroll = document.createElement("div");
+      tableScroll.className = "table-scroll option-values-scroll";
+      const table = document.createElement("table");
+      table.className = "option-values-table";
+      const tableHead = document.createElement("thead");
+      const headingRow = document.createElement("tr");
+      ["Pos.", "Wert", "Aktionen"].forEach((label) => {
+        const cell = document.createElement("th");
+        cell.textContent = label;
+        headingRow.append(cell);
+      });
+      tableHead.append(headingRow);
+      const tableBody = document.createElement("tbody");
+
+      group.values.forEach((value, valueIndex) => {
+        const row = document.createElement("tr");
+        const positionCell = document.createElement("td");
+        positionCell.className = "option-value-position";
+        positionCell.textContent = String(valueIndex + 1);
+        const valueCell = document.createElement("td");
+        const valueInput = document.createElement("input");
+        valueInput.value = value.value;
+        valueInput.placeholder = "z. B. M";
+        valueInput.addEventListener("input", () => {
+          value.value = valueInput.value;
           renderVariantTable();
         });
+        valueCell.append(valueInput);
+        const actionCell = document.createElement("td");
+        const actions = document.createElement("div");
+        actions.className = "option-value-actions";
+        const moveUp = button("↑", "icon-button option-value-move-button", "Wert nach oben");
+        moveUp.disabled = valueIndex === 0;
+        moveUp.addEventListener("click", () => moveOptionValue(groupIndex, valueIndex, -1));
+        const moveDown = button("↓", "icon-button option-value-move-button", "Wert nach unten");
+        moveDown.disabled = valueIndex === group.values.length - 1;
+        moveDown.addEventListener("click", () => moveOptionValue(groupIndex, valueIndex, 1));
         const remove = button("×", "icon-button", "Wert löschen");
         remove.addEventListener("click", () => {
-          if (rowIndex < groups[groupIndex].values.length) groups[groupIndex].values.splice(rowIndex, 1);
+          groups[groupIndex].values.splice(valueIndex, 1);
           render();
         });
-        wrapper.append(input, remove);
-        cell.append(wrapper);
-        row.append(cell);
+        actions.append(moveUp, moveDown, remove);
+        actionCell.append(actions);
+        row.append(positionCell, valueCell, actionCell);
+        tableBody.append(row);
       });
-      tbody.append(row);
-    }
+      if (!group.values.length) {
+        const row = document.createElement("tr");
+        const cell = document.createElement("td");
+        cell.colSpan = 3;
+        cell.className = "empty-cell";
+        cell.textContent = "Noch keine Werte angelegt.";
+        row.append(cell);
+        tableBody.append(row);
+      }
+      table.append(tableHead, tableBody);
+      tableScroll.append(table);
+
+      const addValue = button("Wert hinzufügen", "secondary-button compact-button option-add-value", "Wert hinzufügen");
+      addValue.addEventListener("click", () => {
+        groups[groupIndex].values.push(newDraftValue());
+        render();
+      });
+      card.append(heading, tableScroll, addValue);
+      grid.append(card);
+    });
     renderVariantTable();
   }
 
   addColumnButton.addEventListener("click", () => {
-    const rows = maximumRows();
-    groups.push({ id: null, name: "Neue Option", values: Array.from({ length: rows }, () => newDraftValue()) });
-    render();
-  });
-  addRowButton.addEventListener("click", () => {
-    groups.forEach((group) => group.values.push(newDraftValue()));
+    groups.push({ id: null, name: "Neue Option", values: [newDraftValue()] });
     render();
   });
 

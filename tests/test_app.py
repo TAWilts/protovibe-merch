@@ -33,6 +33,8 @@ from app import (
     read_invoice_bytes,
     regenerate_database_recovery_key,
     setup_encrypted_databases,
+    send_smtp_notification,
+    smtp_notification_status,
     store_invoice_bytes,
     sync_variants,
     unlock_encrypted_databases,
@@ -635,6 +637,7 @@ class MerchAppTestCase(unittest.TestCase):
                 "ADMIN_PASSWORD": "test-password",
                 "APP_VERSION": "v0.3.0",
                 "AUTO_BACKUP": False,
+                "EMAIL_NOTIFICATIONS_ENABLED": False,
             }
         )
         with migrated_app.app_context():
@@ -1156,6 +1159,126 @@ class MerchAppTestCase(unittest.TestCase):
         with self.app.app_context():
             count = get_user_db().execute("SELECT COUNT(*) FROM admin_messages").fetchone()[0]
         self.assertEqual(count, 0)
+
+    def test_smtp_notification_uses_tls_without_exposing_credentials_in_status(self) -> None:
+        config = {
+            "EMAIL_NOTIFICATIONS_ENABLED": True,
+            "SMTP_HOST": "smtp.example.test",
+            "SMTP_PORT": "465",
+            "SMTP_SECURITY": "ssl",
+            "SMTP_USERNAME": "notifier@example.test",
+            "SMTP_PASSWORD": "private-app-password",
+            "SMTP_FROM": "notifier@example.test",
+            "ADMIN_NOTIFICATION_EMAIL": "admin@example.test",
+            "SMTP_TIMEOUT_SECONDS": "4",
+        }
+        status = smtp_notification_status(config)
+        self.assertTrue(status["ready"])
+        self.assertNotIn("SMTP_PASSWORD", status)
+        self.assertNotIn("private-app-password", repr(status))
+
+        with (
+            patch("app.ssl.create_default_context") as create_context,
+            patch("app.smtplib.SMTP_SSL") as smtp_factory,
+        ):
+            smtp_client = smtp_factory.return_value.__enter__.return_value
+            send_smtp_notification(config, subject="Test\nHeader", body="Testinhalt")
+
+        smtp_factory.assert_called_once_with(
+            "smtp.example.test",
+            465,
+            timeout=4.0,
+            context=create_context.return_value,
+        )
+        smtp_client.login.assert_called_once_with("notifier@example.test", "private-app-password")
+        sent_message = smtp_client.send_message.call_args.args[0]
+        self.assertEqual(str(sent_message["Subject"]), "Test Header")
+        self.assertEqual(str(sent_message["To"]), "admin@example.test")
+
+        config.update(SMTP_PORT="587", SMTP_SECURITY="starttls")
+        with (
+            patch("app.ssl.create_default_context") as create_context,
+            patch("app.smtplib.SMTP") as smtp_factory,
+        ):
+            smtp_client = smtp_factory.return_value.__enter__.return_value
+            send_smtp_notification(config, subject="STARTTLS-Test", body="Testinhalt")
+
+        smtp_factory.assert_called_once_with("smtp.example.test", 587, timeout=4.0)
+        self.assertEqual(smtp_client.ehlo.call_count, 2)
+        smtp_client.starttls.assert_called_once_with(context=create_context.return_value)
+        smtp_client.login.assert_called_once_with("notifier@example.test", "private-app-password")
+        smtp_client.send_message.assert_called_once()
+
+    def test_admin_message_email_is_optional_and_smtp_failure_keeps_the_message(self) -> None:
+        self.app.config.update(
+            EMAIL_NOTIFICATIONS_ENABLED=True,
+            SMTP_HOST="smtp.example.test",
+            SMTP_PORT=465,
+            SMTP_SECURITY="ssl",
+            SMTP_USERNAME="notifier@example.test",
+            SMTP_PASSWORD="private-app-password",
+            SMTP_FROM="notifier@example.test",
+            ADMIN_NOTIFICATION_EMAIL="admin@example.test",
+            SMTP_TIMEOUT_SECONDS=4,
+        )
+        seller_id = self.create_local_user("email-seller", "seller")
+        self.become_user(seller_id)
+
+        with patch("app.send_smtp_notification") as send_email:
+            sent = self.client.post(
+                "/admin-nachricht",
+                data={
+                    "csrf_token": "test-csrf",
+                    "next": "/verkauf",
+                    "message_type": "question",
+                    "subject": "Erste Frage",
+                    "body": "Bitte per E-Mail benachrichtigen.",
+                },
+            )
+        self.assertEqual(sent.status_code, 302)
+        send_email.assert_called_once()
+        self.assertIn("email-seller", send_email.call_args.kwargs["body"])
+
+        with patch("app.send_smtp_notification", side_effect=OSError("SMTP offline")):
+            failed_email = self.client.post(
+                "/admin-nachricht",
+                data={
+                    "csrf_token": "test-csrf",
+                    "next": "/verkauf",
+                    "message_type": "issue",
+                    "subject": "Zweite Nachricht",
+                    "body": "Diese Nachricht muss trotz SMTP-Ausfall erhalten bleiben.",
+                },
+            )
+        self.assertEqual(failed_email.status_code, 302)
+        with self.app.app_context():
+            messages = get_user_db().execute(
+                "SELECT subject FROM admin_messages ORDER BY id"
+            ).fetchall()
+        self.assertEqual([row["subject"] for row in messages], ["Erste Frage", "Zweite Nachricht"])
+
+        self.become_user(1)
+        admin_page = self.client.get("/verwaltung").get_data(as_text=True)
+        self.assertIn("E-Mail bei neuen Nachrichten", admin_page)
+        self.assertIn("admin@example.test", admin_page)
+        self.assertIn("Test-E-Mail senden", admin_page)
+        self.assertNotIn("private-app-password", admin_page)
+        with patch("app.send_smtp_notification") as test_email:
+            test_response = self.client.post(
+                "/verwaltung/email/test",
+                data={"csrf_token": "test-csrf"},
+            )
+        self.assertEqual(test_response.status_code, 302)
+        test_email.assert_called_once()
+
+        self.become_user(seller_id)
+        self.assertEqual(
+            self.client.post(
+                "/verwaltung/email/test",
+                data={"csrf_token": "test-csrf"},
+            ).status_code,
+            403,
+        )
 
     def test_database_reset_archives_operations_and_preserves_all_accounts(self) -> None:
         """Reset is protected by password/TOTP but never touches user storage."""
@@ -2193,8 +2316,8 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn('sort.direction === "default"', balance_script)
         self.assertIn('state.sort[view] = { key: null, direction: "default" }', balance_script)
 
-    def test_article_option_groups_can_be_reordered(self) -> None:
-        """The editor order is persisted as the canonical option-group order."""
+    def test_article_option_values_can_be_reordered(self) -> None:
+        """Each option keeps its own persisted value order, for example S through XL."""
 
         variant_id = self.seed_variant("Ordered Options Shirt")
         with self.app.app_context():
@@ -2202,19 +2325,58 @@ class MerchAppTestCase(unittest.TestCase):
             article_id = connection.execute(
                 "SELECT article_id FROM variants WHERE id = ?", (variant_id,)
             ).fetchone()[0]
+            group_rows = connection.execute(
+                "SELECT id, name FROM option_groups WHERE article_id = ? ORDER BY position, id",
+                (article_id,),
+            ).fetchall()
+            color_group, size_group = group_rows
+            color_value = connection.execute(
+                "SELECT id, value FROM option_values WHERE option_group_id = ?", (color_group["id"],)
+            ).fetchone()
+            medium_value = connection.execute(
+                "SELECT id, value FROM option_values WHERE option_group_id = ?", (size_group["id"],)
+            ).fetchone()
+            apply_option_configuration(
+                connection,
+                article_id,
+                [
+                    {
+                        "id": color_group["id"],
+                        "name": color_group["name"],
+                        "position": 0,
+                        "values": [{"id": color_value["id"], "value": color_value["value"], "position": 0}],
+                    },
+                    {
+                        "id": size_group["id"],
+                        "name": size_group["name"],
+                        "position": 1,
+                        "values": [
+                            {"id": medium_value["id"], "value": "M", "position": 0},
+                            {"id": None, "value": "S", "position": 1},
+                            {"id": None, "value": "L", "position": 2},
+                            {"id": None, "value": "XL", "position": 3},
+                        ],
+                    },
+                ],
+            )
+            sync_variants(connection, article_id)
+            connection.commit()
+
             groups = []
             for group in connection.execute(
-                "SELECT id, name FROM option_groups WHERE article_id = ? ORDER BY position, id",
+                "SELECT id, name FROM option_groups WHERE article_id = ? AND is_active = 1 ORDER BY position, id",
                 (article_id,),
             ).fetchall():
                 values = [
                     {"id": value["id"], "value": value["value"]}
                     for value in connection.execute(
-                        "SELECT id, value FROM option_values WHERE option_group_id = ? ORDER BY position, id",
+                        "SELECT id, value FROM option_values WHERE option_group_id = ? AND is_active = 1 ORDER BY position, id",
                         (group["id"],),
                     ).fetchall()
                 ]
                 groups.append({"id": group["id"], "name": group["name"], "values": values})
+            size_values_by_name = {value["value"]: value for value in groups[1]["values"]}
+            groups[1]["values"] = [size_values_by_name[name] for name in ("S", "M", "L", "XL")]
 
         response = self.client.post(
             f"/artikelverwaltung/{article_id}/speichern",
@@ -2223,23 +2385,38 @@ class MerchAppTestCase(unittest.TestCase):
                 "name": "Ordered Options Shirt",
                 "default_sale_price": "20,00",
                 "default_purchase_price": "11,00",
-                "options_json": json.dumps(list(reversed(groups))),
+                "options_json": json.dumps(groups),
             },
         )
         self.assertEqual(response.status_code, 302)
 
         with self.app.app_context():
-            reordered = get_db().execute(
+            connection = get_db()
+            persisted_groups = connection.execute(
                 "SELECT name, position FROM option_groups WHERE article_id = ? AND is_active = 1 ORDER BY position, id",
                 (article_id,),
             ).fetchall()
-        self.assertEqual([row["name"] for row in reordered], ["Größe", "Farbe"])
-        self.assertEqual([row["position"] for row in reordered], [0, 1])
+            persisted_sizes = connection.execute(
+                """
+                SELECT ov.value, ov.position
+                FROM option_values ov
+                JOIN option_groups og ON og.id = ov.option_group_id
+                WHERE og.article_id = ? AND og.name = 'Größe' AND ov.is_active = 1
+                ORDER BY ov.position, ov.id
+                """,
+                (article_id,),
+            ).fetchall()
+        self.assertEqual([row["name"] for row in persisted_groups], ["Farbe", "Größe"])
+        self.assertEqual(
+            [(row["value"], row["position"]) for row in persisted_sizes],
+            [("S", 0), ("M", 1), ("L", 2), ("XL", 3)],
+        )
 
         article_script = (Path(__file__).parents[1] / "static" / "articles.js").read_text(encoding="utf-8")
-        self.assertIn("moveOptionGroup", article_script)
-        self.assertIn("Option nach links", article_script)
-        self.assertIn("Option nach rechts", article_script)
+        self.assertIn("moveOptionValue", article_script)
+        self.assertIn("Wert nach oben", article_script)
+        self.assertIn("Wert nach unten", article_script)
+        self.assertNotIn("moveOptionGroup", article_script)
 
     def test_sales_csv_import_creates_catalogue_and_withdraws_unlisted_combinations(self) -> None:
         """A manager can atomically build a catalogue and sales ledger from CSV."""
@@ -2301,6 +2478,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("Verkäufe importieren", page)
         self.assertIn("Anzahl;Artikel;Optionen;Verkaufspreis;Verkauft an", page)
         self.assertIn("static/csv-import.js", page)
+        self.assertLess(page.index("Artikel bearbeiten"), page.index("<h2>CSV-Import</h2>"))
 
     def test_purchase_csv_import_uses_following_exact_price_and_keeps_existing_values(self) -> None:
         """A blank price may inherit from a following row of the same variant."""
