@@ -39,11 +39,9 @@
     uploading: "Fotos werden hochgeladen und optimiert …",
     uploadFailed: "Die Produktfotos konnten nicht hochgeladen werden.",
     updateFailed: "Die Dia-Auswahl konnte nicht gespeichert werden.",
-    assignment: "Zuordnung ändern",
-    assignmentFailed: "Die Fotozuordnung konnte nicht gespeichert werden.",
-    delete: "Bild löschen",
-    deleteConfirm: "Dieses Bild wirklich löschen? Es wird aus dem Artikel und der Diashow entfernt.",
-    deleteFailed: "Das Bild konnte nicht gelöscht werden.",
+    deleteOther: "Bild entfernen",
+    deleteOtherConfirm: "Dieses eigenständige Dia wirklich entfernen?",
+    deleteFailed: "Das Dia konnte nicht entfernt werden.",
     changeRateValue: "alle {seconds} s",
     animationSpeedValue: "{speed}×",
     ...(window.MERCH_APP?.slideshowStrings || {}),
@@ -86,7 +84,6 @@
       key: String(photo.key || `${kind}:${photo.id}`),
       is_product_photo: productPhoto,
       include_in_slideshow: Boolean(photo.include_in_slideshow),
-      assignmentBusy: Boolean(photo.assignmentBusy),
     };
   }
 
@@ -224,46 +221,6 @@
       || Number(left.id) - Number(right.id);
   }
 
-  function assignmentControl(photo) {
-    const label = document.createElement("label");
-    label.className = "slideshow-photo-assignment";
-    const text = document.createElement("span");
-    text.textContent = strings.assignment;
-    const select = document.createElement("select");
-    select.dataset.photoAssignment = photoKey(photo);
-    select.disabled = Boolean(photo.assignmentBusy);
-
-    const other = document.createElement("option");
-    other.value = "other";
-    other.textContent = strings.other;
-    select.append(other);
-
-    const variantsByArticle = new Map();
-    [...variants].sort((left, right) =>
-      String(left.article_name).localeCompare(String(right.article_name), window.MERCH_APP.language)
-      || String(left.option_text).localeCompare(String(right.option_text), window.MERCH_APP.language)
-      || Number(left.id) - Number(right.id)
-    ).forEach((variant) => {
-      const articleName = String(variant.article_name || "");
-      if (!variantsByArticle.has(articleName)) variantsByArticle.set(articleName, []);
-      variantsByArticle.get(articleName).push(variant);
-    });
-    variantsByArticle.forEach((articleVariants, articleName) => {
-      const group = document.createElement("optgroup");
-      group.label = articleName;
-      articleVariants.forEach((variant) => {
-        const option = document.createElement("option");
-        option.value = String(variant.id);
-        option.textContent = variant.option_text || strings.defaultVariant;
-        group.append(option);
-      });
-      select.append(group);
-    });
-    select.value = isProductPhoto(photo) ? String(photo.variant_id) : "other";
-    label.append(text, select);
-    return label;
-  }
-
   function renderGallery() {
     gallery.replaceChildren();
     const sortedPhotos = [...photos].sort(gallerySort);
@@ -311,15 +268,13 @@
         const hint = document.createElement("small");
         hint.textContent = strings.otherHint;
         copy.append(hint);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary-button product-photo-delete-button";
+        remove.dataset.deleteOtherPhoto = photoKey(photo);
+        remove.textContent = strings.deleteOther;
+        copy.append(remove);
       }
-      copy.append(assignmentControl(photo));
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "secondary-button product-photo-delete-button";
-      remove.dataset.deleteSlideshowPhoto = photoKey(photo);
-      remove.disabled = Boolean(photo.assignmentBusy);
-      remove.textContent = strings.delete;
-      copy.append(remove);
       card.append(copy);
 
       const include = document.createElement("label");
@@ -422,32 +377,6 @@
   });
 
   gallery.addEventListener("change", async (event) => {
-    const assignment = event.target;
-    if (assignment instanceof HTMLSelectElement && assignment.dataset.photoAssignment !== undefined) {
-      const photo = photos.find((item) => photoKey(item) === assignment.dataset.photoAssignment);
-      if (!photo || photo.assignmentBusy) return;
-      const previousPhoto = { ...photo };
-      photo.assignmentBusy = true;
-      renderGallery();
-      try {
-        const response = await fetch(`/api/diashow/fotos/${photo.kind}/${photo.id}/zuordnung`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
-          body: JSON.stringify({ target: assignment.value }),
-        });
-        const body = await responseBody(response, strings.assignmentFailed);
-        const previousIndex = photos.findIndex((item) => photoKey(item) === body.previous_key);
-        if (previousIndex !== -1) photos.splice(previousIndex, 1, normalizePhoto(body.photo));
-        else upsertPhoto(body.photo);
-        showUploadStatus();
-      } catch (error) {
-        const previousIndex = photos.findIndex((item) => photoKey(item) === photoKey(previousPhoto));
-        if (previousIndex !== -1) photos[previousIndex] = previousPhoto;
-        showUploadStatus(error instanceof Error ? error.message : strings.assignmentFailed, true);
-      }
-      renderGallery();
-      return;
-    }
     const checkbox = event.target;
     if (!(checkbox instanceof HTMLInputElement) || checkbox.dataset.photoInclusion === undefined) return;
     const photo = photos.find((item) => photoKey(item) === checkbox.dataset.photoInclusion);
@@ -477,16 +406,13 @@
 
   gallery.addEventListener("click", async (event) => {
     if (!(event.target instanceof Element)) return;
-    const button = event.target.closest("[data-delete-slideshow-photo]");
+    const button = event.target.closest("[data-delete-other-photo]");
     if (!(button instanceof HTMLButtonElement)) return;
-    const photo = photos.find((item) => photoKey(item) === button.dataset.deleteSlideshowPhoto);
-    if (!photo || photo.assignmentBusy || !window.confirm(strings.deleteConfirm)) return;
+    const photo = photos.find((item) => photoKey(item) === button.dataset.deleteOtherPhoto);
+    if (!photo || isProductPhoto(photo) || !window.confirm(strings.deleteOtherConfirm)) return;
     button.disabled = true;
     try {
-      const endpoint = isProductPhoto(photo)
-        ? `/api/variantenfotos/${photo.id}`
-        : `/api/diashow/fotos/${photo.id}`;
-      const response = await fetch(endpoint, {
+      const response = await fetch(`/api/diashow/fotos/${photo.id}`, {
         method: "DELETE",
         headers: { "X-CSRF-Token": window.MERCH_APP.csrfToken },
       });

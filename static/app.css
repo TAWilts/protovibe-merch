@@ -485,8 +485,6 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .product-photo-card-copy .product-photo-card-price { color: var(--accent-bright); font-size: .94rem; font-weight: 800; }
 .product-photo-card-copy .status { width: fit-content; margin-top: 4px; font-size: .66rem; }
 .product-photo-card-copy small { color: var(--muted); font-size: .69rem; line-height: 1.25; }
-.slideshow-photo-assignment { display: grid; gap: 4px; margin-top: 7px; color: var(--muted); font-size: .7rem; font-weight: 750; }
-.slideshow-photo-assignment select { width: 100%; min-width: 0; padding: 6px 7px; font-size: .75rem; }
 .product-photo-delete-button { justify-self: start; min-height: 32px; margin-top: 4px; padding: 5px 8px; font-size: .7rem; }
 .slideshow-include-toggle { min-height: 44px; margin: 0 10px 10px; padding-top: 9px; border-top: 1px solid rgba(255,255,255,.08); color: var(--text); font-size: .75rem; }
 .slideshow-include-toggle input { width: 17px; height: 17px; }
@@ -617,30 +615,15 @@ body.product-slideshow-running { overflow: hidden; }
 .admin-email-settings .section-heading { align-items: flex-start; }
 .admin-email-status-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .admin-email-status-row p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
-.admin-email-status-row .button-group { display: flex; flex-wrap: wrap; gap: 8px; flex: 0 0 auto; }
 .admin-email-status-row form { flex: 0 0 auto; }
-.admin-email-settings-dialog { width: min(650px, calc(100vw - 28px)); }
-.admin-email-settings-form { max-height: min(820px, calc(100dvh - 54px)); overflow-y: auto; padding-right: 4px; }
-.admin-email-settings-form > div:first-child > p:last-child { margin-bottom: 0; color: var(--muted); line-height: 1.4; }
-.admin-email-settings-form label small { display: block; margin-top: 4px; color: var(--muted); font-size: .72rem; font-weight: 500; line-height: 1.3; }
 .admin-message-inbox { margin-bottom: 16px; border-color: rgba(217,95,241,.38); }
-.admin-message-summary { cursor: pointer; list-style: none; }
-.admin-message-summary::-webkit-details-marker { display: none; }
-.admin-message-summary::after { content: "▾"; margin-left: auto; color: var(--muted); font-size: 1.1rem; }
-.admin-message-inbox:not([open]) .admin-message-summary::after { content: "▸"; }
-.admin-message-list { display: grid; grid-template-columns: 1fr; max-height: 540px; overflow-y: auto; gap: 11px; padding-right: 4px; }
+.admin-message-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 11px; }
 .admin-message-card { min-width: 0; padding: 14px; border: 1px solid rgba(255,255,255,.09); border-radius: 11px; background: rgba(17,14,22,.32); }
-.admin-message-card.is-resolved { border-color: rgba(102, 190, 135, .35); background: rgba(28, 73, 49, .24); }
 .admin-message-card header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .admin-message-card time { color: var(--muted); font-size: .72rem; white-space: nowrap; }
 .admin-message-card h3 { margin: 12px 0 4px; overflow-wrap: anywhere; font-size: .96rem; }
 .admin-message-sender { margin: 0 0 11px; color: var(--muted); font-size: .77rem; }
-.admin-message-email { margin: -7px 0 11px; font-size: .76rem; overflow-wrap: anywhere; }
-.admin-message-email a { color: var(--accent-bright); }
 .admin-message-body { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: .86rem; line-height: 1.48; }
-.admin-message-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.08); }
-.admin-message-footer small { color: var(--muted); font-size: .71rem; }
-.status.resolved { border-color: rgba(102, 190, 135, .52); color: #b9efca; background: rgba(46, 115, 73, .42); }
 .database-security-area { border-color: rgba(105, 183, 255, .44); }
 .database-security-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .database-security-actions .admin-danger-confirmation > summary { border-color: rgba(105, 183, 255, .6); color: #d7edff; background: rgba(35, 77, 113, .32); }
@@ -753,12 +736,6 @@ body.product-slideshow-running { overflow: hidden; }
   .legacy-import-summary { grid-template-columns: 1fr; }
   .admin-email-status-row { align-items: stretch; flex-direction: column; }
   .admin-email-status-row button { width: 100%; justify-content: center; }
-  .admin-email-status-row .button-group { width: 100%; }
-  .admin-email-status-row .button-group > * { flex: 1 1 100%; }
-  .admin-message-summary { gap: 8px; }
-  .admin-message-list { max-height: 460px; }
-  .admin-message-footer { align-items: stretch; flex-direction: column; }
-  .admin-message-footer form, .admin-message-footer button { width: 100%; }
   .mfa-enrolment { grid-template-columns: 1fr; }
   .mfa-qr { width: 170px; height: 170px; }
   .recovery-code-grid { grid-template-columns: 1fr; }

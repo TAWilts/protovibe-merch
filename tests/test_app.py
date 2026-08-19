@@ -27,7 +27,6 @@ from app import (
     create_app,
     database_encryption_state,
     decrypt_mfa_secret,
-    decrypt_smtp_password,
     encrypt_mfa_secret,
     get_db,
     get_user_db,
@@ -36,7 +35,6 @@ from app import (
     setup_encrypted_databases,
     send_smtp_notification,
     smtp_notification_status,
-    smtp_notification_config,
     store_invoice_bytes,
     sync_variants,
     unlock_encrypted_databases,
@@ -1117,7 +1115,6 @@ class MerchAppTestCase(unittest.TestCase):
                 "csrf_token": "test-csrf",
                 "next": "/verkauf",
                 "message_type": "issue",
-                "sender_email": "seller@example.test",
                 "subject": "Scanner <script>alert(1)</script>",
                 "body": "Der Scanner verliert die Verbindung.\nBitte prüfen.",
             },
@@ -1134,7 +1131,6 @@ class MerchAppTestCase(unittest.TestCase):
             ).fetchone()
         self.assertEqual(message["sender_user_id"], seller_id)
         self.assertEqual(message["sender_username"], "message-seller")
-        self.assertEqual(message["sender_email"], "seller@example.test")
         self.assertEqual(message["message_type"], "issue")
         self.assertEqual(message["body"], "Der Scanner verliert die Verbindung.\nBitte prüfen.")
         self.assertEqual(audit_row["entity_id"], message["id"])
@@ -1143,7 +1139,6 @@ class MerchAppTestCase(unittest.TestCase):
         admin_page = self.client.get("/verwaltung").get_data(as_text=True)
         self.assertIn("Nachrichten an den Admin", admin_page)
         self.assertIn("message-seller", admin_page)
-        self.assertIn("seller@example.test", admin_page)
         self.assertIn("Scanner &lt;script&gt;alert(1)&lt;/script&gt;", admin_page)
         self.assertNotIn("Scanner <script>alert(1)</script>", admin_page)
         self.assertIn("Der Scanner verliert die Verbindung.", admin_page)
@@ -1236,7 +1231,6 @@ class MerchAppTestCase(unittest.TestCase):
                     "csrf_token": "test-csrf",
                     "next": "/verkauf",
                     "message_type": "question",
-                    "sender_email": "email-seller@example.test",
                     "subject": "Erste Frage",
                     "body": "Bitte per E-Mail benachrichtigen.",
                 },
@@ -1244,7 +1238,6 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(sent.status_code, 302)
         send_email.assert_called_once()
         self.assertIn("email-seller", send_email.call_args.kwargs["body"])
-        self.assertIn("email-seller@example.test", send_email.call_args.kwargs["body"])
 
         with patch("app.send_smtp_notification", side_effect=OSError("SMTP offline")):
             failed_email = self.client.post(
@@ -1253,7 +1246,6 @@ class MerchAppTestCase(unittest.TestCase):
                     "csrf_token": "test-csrf",
                     "next": "/verkauf",
                     "message_type": "issue",
-                    "sender_email": "email-seller@example.test",
                     "subject": "Zweite Nachricht",
                     "body": "Diese Nachricht muss trotz SMTP-Ausfall erhalten bleiben.",
                 },
@@ -1287,88 +1279,6 @@ class MerchAppTestCase(unittest.TestCase):
             ).status_code,
             403,
         )
-
-    def test_admin_inbox_can_be_resolved_and_smtp_credentials_are_encrypted(self) -> None:
-        seller_id = self.create_local_user("inbox-seller", "seller")
-        self.become_user(seller_id)
-        sent = self.client.post(
-            "/admin-nachricht",
-            data={
-                "csrf_token": "test-csrf",
-                "next": "/verkauf",
-                "message_type": "question",
-                "sender_email": "inbox-seller@example.test",
-                "subject": "Rückfrage",
-                "body": "Bitte im Postfach als erledigt markieren.",
-            },
-        )
-        self.assertEqual(sent.status_code, 302)
-        with self.app.app_context():
-            message_id = get_user_db().execute("SELECT id FROM admin_messages").fetchone()[0]
-
-        self.app.config["LOCAL_DEV_MODE"] = True
-        self.become_user(1)
-        admin_page = self.client.get("/verwaltung").get_data(as_text=True)
-        self.assertIn('id="email-settings-dialog"', admin_page)
-        self.assertIn("inbox-seller@example.test", admin_page)
-        self.assertIn("Als erledigt markieren", admin_page)
-        self.assertIn("admin-email-settings.js", admin_page)
-
-        saved = self.client.post(
-            "/verwaltung/email/einstellungen",
-            data={
-                "csrf_token": "test-csrf",
-                "enabled": "on",
-                "host": "smtp.example.test",
-                "port": "465",
-                "security": "ssl",
-                "username": "notifier@example.test",
-                "password": "database-only-app-password",
-                "sender_address": "notifier@example.test",
-                "recipient_address": "admin@example.test",
-                "timeout_seconds": "4",
-                "current_password": "test-password",
-            },
-        )
-        self.assertEqual(saved.status_code, 302)
-        with self.app.app_context():
-            connection = get_user_db()
-            settings = connection.execute("SELECT * FROM smtp_notification_settings WHERE id = 1").fetchone()
-            active_config = smtp_notification_config(connection, self.app)
-        self.assertIsNotNone(settings)
-        self.assertNotEqual(settings["password_encrypted"], "database-only-app-password")
-        self.assertEqual(decrypt_smtp_password(settings["password_encrypted"], self.app), "database-only-app-password")
-        self.assertTrue(smtp_notification_status(active_config)["ready"])
-        self.assertEqual(active_config["SMTP_PASSWORD"], "database-only-app-password")
-
-        configured_page = self.client.get("/verwaltung").get_data(as_text=True)
-        self.assertIn("smtp.example.test:465", configured_page)
-        self.assertNotIn("database-only-app-password", configured_page)
-        with patch("app.send_smtp_notification") as send_test:
-            test_email = self.client.post(
-                "/verwaltung/email/test",
-                data={"csrf_token": "test-csrf"},
-            )
-        self.assertEqual(test_email.status_code, 302)
-        send_test.assert_called_once()
-
-        resolved = self.client.post(
-            f"/verwaltung/nachrichten/{message_id}/erledigt",
-            data={"csrf_token": "test-csrf", "is_resolved": "1"},
-        )
-        self.assertEqual(resolved.status_code, 302)
-        with self.app.app_context():
-            message = get_user_db().execute(
-                "SELECT is_resolved, resolved_by_username, resolved_at FROM admin_messages WHERE id = ?",
-                (message_id,),
-            ).fetchone()
-        self.assertTrue(message["is_resolved"])
-        self.assertEqual(message["resolved_by_username"], "tester")
-        self.assertTrue(message["resolved_at"])
-
-        resolved_page = self.client.get("/verwaltung").get_data(as_text=True)
-        self.assertIn("Erledigt", resolved_page)
-        self.assertIn("Wieder öffnen", resolved_page)
 
     def test_database_reset_archives_operations_and_preserves_all_accounts(self) -> None:
         """Reset is protected by password/TOTP but never touches user storage."""
@@ -2864,9 +2774,6 @@ class MerchAppTestCase(unittest.TestCase):
         slideshow_response.close()
         self.assertIn("function beginSlideExit()", slideshow_script)
         self.assertIn('frame.classList.add("is-leaving"', slideshow_script)
-        self.assertIn("function assignmentControl(photo)", slideshow_script)
-        self.assertIn("data-delete-slideshow-photo", slideshow_script)
-        self.assertIn("/zuordnung", slideshow_script)
         match = re.search(
             r'<script id="product-slideshow-data" type="application/json">(.*?)</script>', html, flags=re.DOTALL
         )
@@ -2958,52 +2865,6 @@ class MerchAppTestCase(unittest.TestCase):
             self.assertIsNone(
                 get_db().execute("SELECT id FROM slideshow_extra_photos WHERE id = ?", (other_photo["id"],)).fetchone()
             )
-
-        target_variant_id = self.seed_variant("Reassigned Campaign Shirt")
-        moved_to_other = self.client.patch(
-            f"/api/diashow/fotos/variant/{photo_id}/zuordnung",
-            json={"target": "other"},
-            headers={"X-CSRF-Token": "test-csrf"},
-        )
-        self.assertEqual(moved_to_other.status_code, 200)
-        moved_other_photo = moved_to_other.json["photo"]
-        self.assertEqual(moved_to_other.json["previous_key"], f"variant:{photo_id}")
-        self.assertEqual(moved_other_photo["kind"], "other")
-        with self.app.app_context():
-            moved_other_row = get_db().execute(
-                "SELECT file_path FROM slideshow_extra_photos WHERE id = ?", (moved_other_photo["id"],)
-            ).fetchone()
-            self.assertIsNone(get_db().execute("SELECT id FROM variant_photos WHERE id = ?", (photo_id,)).fetchone())
-        reassigned_file = Path(self.app.config["VARIANT_PHOTO_UPLOAD_DIR"]) / moved_other_row["file_path"]
-        self.assertTrue(reassigned_file.is_file())
-
-        moved_to_variant = self.client.patch(
-            f"/api/diashow/fotos/other/{moved_other_photo['id']}/zuordnung",
-            json={"target": target_variant_id},
-            headers={"X-CSRF-Token": "test-csrf"},
-        )
-        self.assertEqual(moved_to_variant.status_code, 200)
-        moved_variant_photo = moved_to_variant.json["photo"]
-        self.assertEqual(moved_variant_photo["kind"], "variant")
-        self.assertEqual(moved_variant_photo["variant_id"], target_variant_id)
-        with self.app.app_context():
-            moved_variant_row = get_db().execute(
-                "SELECT variant_id, file_path FROM variant_photos WHERE id = ?", (moved_variant_photo["id"],)
-            ).fetchone()
-            self.assertIsNone(
-                get_db().execute(
-                    "SELECT id FROM slideshow_extra_photos WHERE id = ?", (moved_other_photo["id"],)
-                ).fetchone()
-            )
-        self.assertEqual(moved_variant_row["variant_id"], target_variant_id)
-        self.assertEqual(moved_variant_row["file_path"], reassigned_file.name)
-
-        deleted_reassigned = self.client.delete(
-            f"/api/variantenfotos/{moved_variant_photo['id']}",
-            headers={"X-CSRF-Token": "test-csrf"},
-        )
-        self.assertEqual(deleted_reassigned.status_code, 200)
-        self.assertFalse(reassigned_file.exists())
 
     def test_purchase_invoice_upload_edit_delete_and_backup(self) -> None:
         """Invoices are atomically attached, replaceable and recoverable."""

@@ -134,41 +134,13 @@ CREATE TABLE IF NOT EXISTS admin_messages (
     id INTEGER PRIMARY KEY,
     sender_user_id INTEGER,
     sender_username TEXT NOT NULL,
-    -- The contact address is a message snapshot, not an account field: it
-    -- remains useful even if a user later changes or loses their account.
-    sender_email TEXT,
     message_type TEXT NOT NULL CHECK(message_type IN ('issue', 'question')),
     subject TEXT NOT NULL,
     body TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    is_resolved INTEGER NOT NULL DEFAULT 0,
-    resolved_at TEXT,
-    resolved_by_user_id INTEGER,
-    resolved_by_username TEXT
+    created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_messages_created ON admin_messages(created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_admin_messages_resolution ON admin_messages(is_resolved, created_at DESC, id DESC);
-
--- SMTP details belong to the account database because they configure a single
--- administrator inbox. The password is additionally protected with Fernet
--- before it reaches this table; SQLCipher encrypts the complete database in
--- normal production mode as a second layer.
-CREATE TABLE IF NOT EXISTS smtp_notification_settings (
-    id INTEGER PRIMARY KEY CHECK(id = 1),
-    enabled INTEGER NOT NULL DEFAULT 0,
-    host TEXT NOT NULL DEFAULT '',
-    port INTEGER NOT NULL DEFAULT 465,
-    security TEXT NOT NULL DEFAULT 'ssl',
-    username TEXT NOT NULL DEFAULT '',
-    password_encrypted TEXT,
-    sender_address TEXT NOT NULL DEFAULT '',
-    recipient_address TEXT NOT NULL DEFAULT '',
-    timeout_seconds REAL NOT NULL DEFAULT 8,
-    updated_at TEXT,
-    updated_by_user_id INTEGER,
-    updated_by_username TEXT
-);
 
 """
 
@@ -508,7 +480,6 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "message.type": "Art der Nachricht",
         "message.issue": "Issue / Problem",
         "message.question": "Frage",
-        "message.email": "E-Mail für Rückfragen",
         "message.subject": "Betreff",
         "message.body": "Nachricht",
         "message.send": "Nachricht senden",
@@ -605,11 +576,9 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "slideshow.exit_hint": "Beliebige Taste oder Klick beendet die Produktpalette",
         "slideshow.update_failed": "Die Auswahl für die Produktpalette konnte nicht gespeichert werden.",
         "slideshow.upload_failed": "Die Produktfotos konnten nicht hochgeladen werden.",
-        "slideshow.assignment": "Zuordnung ändern",
-        "slideshow.assignment_failed": "Die Fotozuordnung konnte nicht gespeichert werden.",
-        "slideshow.delete": "Bild löschen",
-        "slideshow.delete_confirm": "Dieses Bild wirklich löschen? Es wird aus dem Artikel und der Diashow entfernt.",
-        "slideshow.delete_failed": "Das Bild konnte nicht gelöscht werden.",
+        "slideshow.delete_other": "Bild entfernen",
+        "slideshow.delete_other_confirm": "Dieses eigenständige Dia wirklich entfernen?",
+        "slideshow.delete_failed": "Das Dia konnte nicht entfernt werden.",
         "slideshow.change_rate": "Bildwechselrate",
         "slideshow.change_rate_value": "alle {seconds} s",
         "slideshow.animation_speed": "Animationsgeschwindigkeit",
@@ -633,7 +602,6 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "message.type": "Message type",
         "message.issue": "Issue / problem",
         "message.question": "Question",
-        "message.email": "Email for follow-up questions",
         "message.subject": "Subject",
         "message.body": "Message",
         "message.send": "Send message",
@@ -730,11 +698,9 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "slideshow.exit_hint": "Any key or click ends the product display",
         "slideshow.update_failed": "The product-display selection could not be saved.",
         "slideshow.upload_failed": "The product photos could not be uploaded.",
-        "slideshow.assignment": "Change assignment",
-        "slideshow.assignment_failed": "The photo assignment could not be saved.",
-        "slideshow.delete": "Delete picture",
-        "slideshow.delete_confirm": "Delete this picture? It will be removed from the product and slideshow.",
-        "slideshow.delete_failed": "The picture could not be deleted.",
+        "slideshow.delete_other": "Remove picture",
+        "slideshow.delete_other_confirm": "Remove this standalone slide?",
+        "slideshow.delete_failed": "The slide could not be removed.",
         "slideshow.change_rate": "Image change rate",
         "slideshow.change_rate_value": "every {seconds} s",
         "slideshow.animation_speed": "Animation speed",
@@ -782,7 +748,6 @@ DEFAULT_NEW_ARTICLE_OPTIONS = (
 # once at build time through the APP_VERSION environment variable.
 GITHUB_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 RELEASE_VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
-EMAIL_ADDRESS_PATTERN = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,253}$")
 
 
 def version_tuple(version: str) -> tuple[int, int, int] | None:
@@ -815,15 +780,6 @@ def environment_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def valid_email_address(value: Any, *, field_name: str = "E-Mail-Adresse") -> str:
-    """Validate an address used for contact details or SMTP headers."""
-
-    address = str(value or "").strip()
-    if len(address) > 254 or not EMAIL_ADDRESS_PATTERN.fullmatch(address):
-        raise ValueError(f"Bitte eine gültige {field_name} angeben.")
-    return address
-
-
 def smtp_notification_status(config: Any) -> dict[str, Any]:
     """Return display-safe SMTP readiness without exposing credentials."""
 
@@ -840,12 +796,6 @@ def smtp_notification_status(config: Any) -> dict[str, Any]:
     errors: list[str] = []
     if security not in {"ssl", "starttls"}:
         errors.append("SMTP_SECURITY muss ssl oder starttls sein")
-    for setting_name in ("SMTP_FROM", "ADMIN_NOTIFICATION_EMAIL"):
-        if required[setting_name]:
-            try:
-                valid_email_address(required[setting_name], field_name=setting_name)
-            except ValueError:
-                errors.append(f"{setting_name} ist ungültig")
     try:
         port = int(config.get("SMTP_PORT", 465))
         if not 1 <= port <= 65_535:
@@ -860,8 +810,6 @@ def smtp_notification_status(config: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         timeout_seconds = 0
         errors.append("SMTP_TIMEOUT_SECONDS ist ungültig")
-    if config.get("_smtp_password_decryption_failed"):
-        errors.append("Das gespeicherte SMTP-Passwort kann nicht entschlüsselt werden")
     return {
         "enabled": enabled,
         "ready": enabled and not missing and not errors,
@@ -872,8 +820,6 @@ def smtp_notification_status(config: Any) -> dict[str, Any]:
         "security": security,
         "recipient": required["ADMIN_NOTIFICATION_EMAIL"],
         "timeout_seconds": timeout_seconds,
-        "source": str(config.get("_smtp_source", "environment")),
-        "password_configured": bool(config.get("_smtp_password_configured", required["SMTP_PASSWORD"])),
     }
 
 
@@ -918,7 +864,6 @@ def send_admin_message_email(config: Any, message: dict[str, Any]) -> None:
         body=(
             "Eine neue Nachricht wurde im Admin-Postfach gespeichert.\n\n"
             f"Absender: {message['sender_username']}\n"
-            f"E-Mail: {message.get('sender_email') or 'Nicht angegeben'}\n"
             f"Kategorie: {type_label}\n"
             f"Zeitpunkt: {message['created_at']}\n"
             f"Betreff: {message['subject']}\n\n"
@@ -1303,17 +1248,6 @@ def is_setup_code_current(user: sqlite3.Row | dict[str, Any]) -> bool:
     return expiry > datetime.now(timezone.utc)
 
 
-def fernet_for_secret_purpose(secret_key: str, purpose: str) -> Fernet:
-    """Derive a separate stable Fernet key for one protected data purpose."""
-
-    material = str(secret_key).encode("utf-8")
-    purpose_bytes = str(purpose).encode("ascii")
-    key = base64.urlsafe_b64encode(
-        hashlib.sha256(b"protovibe-merch:" + purpose_bytes + b":" + material).digest()
-    )
-    return Fernet(key)
-
-
 def mfa_fernet_for_secret(secret_key: str) -> Fernet:
     """Return the Fernet instance historically used for one ``SECRET_KEY``.
 
@@ -1323,7 +1257,9 @@ def mfa_fernet_for_secret(secret_key: str) -> Fernet:
     for the receiving installation without ever persisting that former key.
     """
 
-    return fernet_for_secret_purpose(secret_key, "mfa")
+    material = str(secret_key).encode("utf-8")
+    key = base64.urlsafe_b64encode(hashlib.sha256(b"protovibe-merch:mfa:" + material).digest())
+    return Fernet(key)
 
 
 def mfa_fernet(app: Flask | None = None) -> Fernet:
@@ -1344,93 +1280,6 @@ def decrypt_mfa_secret(value: str | None, app: Flask | None = None) -> str | Non
         return mfa_fernet(app).decrypt(str(value).encode("ascii")).decode("ascii")
     except (InvalidToken, UnicodeError, ValueError):
         return None
-
-
-def smtp_fernet(app: Flask | None = None) -> Fernet:
-    """Return the independent Fernet key used for stored SMTP passwords."""
-
-    configured_app = app or current_app._get_current_object()
-    return fernet_for_secret_purpose(str(configured_app.config["SECRET_KEY"]), "smtp")
-
-
-def encrypt_smtp_password(password: str, app: Flask | None = None) -> str:
-    return smtp_fernet(app).encrypt(str(password).encode("utf-8")).decode("ascii")
-
-
-def decrypt_smtp_password(value: str | None, app: Flask | None = None) -> str | None:
-    if not value:
-        return None
-    try:
-        return smtp_fernet(app).decrypt(str(value).encode("ascii")).decode("utf-8")
-    except (InvalidToken, UnicodeError, ValueError):
-        return None
-
-
-def smtp_notification_config(connection: sqlite3.Connection, app: Flask | None = None) -> dict[str, Any]:
-    """Return the active SMTP configuration with an encrypted DB override.
-
-    Environment variables remain a backwards-compatible fallback. Once the
-    administrator saves the dedicated settings dialog, that one database row
-    becomes authoritative and its password is only decrypted in memory while
-    a message is being sent.
-    """
-
-    configured_app = app or current_app._get_current_object()
-    config = {
-        "EMAIL_NOTIFICATIONS_ENABLED": bool(configured_app.config.get("EMAIL_NOTIFICATIONS_ENABLED", False)),
-        "SMTP_HOST": str(configured_app.config.get("SMTP_HOST", "") or "").strip(),
-        "SMTP_PORT": configured_app.config.get("SMTP_PORT", "465"),
-        "SMTP_SECURITY": str(configured_app.config.get("SMTP_SECURITY", "ssl") or "ssl").strip().lower(),
-        "SMTP_USERNAME": str(configured_app.config.get("SMTP_USERNAME", "") or "").strip(),
-        "SMTP_PASSWORD": str(configured_app.config.get("SMTP_PASSWORD", "") or ""),
-        "SMTP_FROM": str(configured_app.config.get("SMTP_FROM", "") or "").strip(),
-        "ADMIN_NOTIFICATION_EMAIL": str(configured_app.config.get("ADMIN_NOTIFICATION_EMAIL", "") or "").strip(),
-        "SMTP_TIMEOUT_SECONDS": configured_app.config.get("SMTP_TIMEOUT_SECONDS", "8"),
-        "_smtp_source": "environment",
-        "_smtp_password_configured": bool(configured_app.config.get("SMTP_PASSWORD")),
-    }
-    if not table_exists(connection, "smtp_notification_settings"):
-        return config
-    row = connection.execute("SELECT * FROM smtp_notification_settings WHERE id = 1").fetchone()
-    if row is None:
-        return config
-    decrypted_password = decrypt_smtp_password(row["password_encrypted"], configured_app)
-    password_unreadable = bool(row["password_encrypted"]) and decrypted_password is None
-    config.update(
-        {
-            "EMAIL_NOTIFICATIONS_ENABLED": bool(row["enabled"]),
-            "SMTP_HOST": str(row["host"] or "").strip(),
-            "SMTP_PORT": row["port"],
-            "SMTP_SECURITY": str(row["security"] or "ssl").strip().lower(),
-            "SMTP_USERNAME": str(row["username"] or "").strip(),
-            "SMTP_PASSWORD": decrypted_password or "",
-            "SMTP_FROM": str(row["sender_address"] or "").strip(),
-            "ADMIN_NOTIFICATION_EMAIL": str(row["recipient_address"] or "").strip(),
-            "SMTP_TIMEOUT_SECONDS": row["timeout_seconds"],
-            "_smtp_source": "stored",
-            "_smtp_password_configured": bool(row["password_encrypted"]),
-            "_smtp_password_decryption_failed": password_unreadable,
-        }
-    )
-    return config
-
-
-def smtp_notification_settings_public(config: dict[str, Any]) -> dict[str, Any]:
-    """Return SMTP form values without ever placing the password in a page."""
-
-    status = smtp_notification_status(config)
-    return {
-        "enabled": bool(config.get("EMAIL_NOTIFICATIONS_ENABLED")),
-        "host": str(config.get("SMTP_HOST", "") or "").strip(),
-        "port": status["port"] or 465,
-        "security": status["security"],
-        "username": str(config.get("SMTP_USERNAME", "") or "").strip(),
-        "sender_address": str(config.get("SMTP_FROM", "") or "").strip(),
-        "recipient_address": str(config.get("ADMIN_NOTIFICATION_EMAIL", "") or "").strip(),
-        "timeout_seconds": status["timeout_seconds"] or 8,
-        "password_configured": status["password_configured"],
-        "source": status["source"],
-    }
 
 
 def recovery_code_hashes(user: sqlite3.Row | dict[str, Any]) -> list[str]:
@@ -2048,18 +1897,6 @@ def product_slideshow_catalogue(connection: sqlite3.Connection) -> dict[str, lis
             )
     photos.extend(slideshow_extra_photo_metadata(connection))
     return {"variants": variants, "photos": photos}
-
-
-def product_slideshow_photo(
-    connection: sqlite3.Connection, *, kind: str, photo_id: int
-) -> dict[str, Any] | None:
-    """Return one current gallery item after moving it between assignments."""
-
-    key = f"{kind}:{photo_id}"
-    return next(
-        (photo for photo in product_slideshow_catalogue(connection)["photos"] if photo["key"] == key),
-        None,
-    )
 
 
 def add_variant_photo_fallbacks(
@@ -2847,7 +2684,6 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
                 connection.execute("UPDATE users SET role = 'admin' WHERE id = ?", (legacy_admin["id"],))
         connection.execute("UPDATE users SET is_admin = CASE WHEN role = 'admin' THEN 1 ELSE 0 END")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role, is_active)")
-        upgrade_admin_messages_schema(connection)
 
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if user_count == 0:
@@ -2887,26 +2723,6 @@ def table_columns(connection: sqlite3.Connection, table_name: str) -> list[str]:
     """Return table columns in SQLite's stable declaration order."""
 
     return [row["name"] for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()]
-
-
-def upgrade_admin_messages_schema(connection: sqlite3.Connection) -> None:
-    """Keep the durable admin inbox compatible with older account databases."""
-
-    columns = set(table_columns(connection, "admin_messages"))
-    migrations = (
-        ("sender_email", "TEXT"),
-        ("is_resolved", "INTEGER NOT NULL DEFAULT 0"),
-        ("resolved_at", "TEXT"),
-        ("resolved_by_user_id", "INTEGER"),
-        ("resolved_by_username", "TEXT"),
-    )
-    for column_name, column_definition in migrations:
-        if column_name not in columns:
-            connection.execute(f"ALTER TABLE admin_messages ADD COLUMN {column_name} {column_definition}")
-    connection.execute(
-        "CREATE INDEX IF NOT EXISTS idx_admin_messages_resolution "
-        "ON admin_messages(is_resolved, created_at DESC, id DESC)"
-    )
 
 
 def upgrade_operations_schema(connection: sqlite3.Connection) -> None:
@@ -3042,7 +2858,6 @@ def upgrade_users_schema(
             connection.execute("UPDATE users SET role = 'admin' WHERE id = ?", (legacy_admin["id"],))
     connection.execute("UPDATE users SET is_admin = CASE WHEN role = 'admin' THEN 1 ELSE 0 END")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role, is_active)")
-    upgrade_admin_messages_schema(connection)
 
     user_count = int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
     if user_count == 0 and bootstrap_administrator:
@@ -7325,13 +7140,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if not body or len(body) > 4_000:
             flash(strings["message.body_required"], "error")
             return redirect(destination)
-        try:
-            sender_email = valid_email_address(
-                request.form.get("sender_email"), field_name=strings["message.email"]
-            )
-        except ValueError as exc:
-            flash(str(exc), "error")
-            return redirect(destination)
 
         connection = get_user_db()
         created_at = utc_now()
@@ -7341,13 +7149,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             cursor = connection.execute(
                 """
                 INSERT INTO admin_messages (
-                    sender_user_id, sender_username, sender_email, message_type, subject, body, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    sender_user_id, sender_username, message_type, subject, body, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     g.user["id"],
                     g.user["username"],
-                    sender_email,
                     message_type,
                     subject,
                     body,
@@ -7357,7 +7164,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             persisted_message = {
                 "id": int(cursor.lastrowid),
                 "sender_username": str(g.user["username"]),
-                "sender_email": sender_email,
                 "message_type": message_type,
                 "subject": subject,
                 "body": body,
@@ -7378,10 +7184,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return redirect(destination)
 
         flash(strings["message.sent"], "success")
-        notification_config = smtp_notification_config(connection, current_app)
-        if notification_config.get("EMAIL_NOTIFICATIONS_ENABLED") and persisted_message is not None:
+        if current_app.config.get("EMAIL_NOTIFICATIONS_ENABLED") and persisted_message is not None:
             try:
-                send_admin_message_email(notification_config, persisted_message)
+                send_admin_message_email(current_app.config, persisted_message)
             except (ValueError, OSError, smtplib.SMTPException):
                 current_app.logger.exception(
                     "Admin message %s was stored, but its email notification failed",
@@ -7413,10 +7218,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             dict(row)
             for row in get_user_db().execute(
                 """
-                SELECT id, sender_user_id, sender_username, sender_email, message_type, subject, body,
-                       created_at, is_resolved, resolved_at, resolved_by_user_id, resolved_by_username
+                SELECT id, sender_user_id, sender_username, message_type, subject, body, created_at
                 FROM admin_messages
-                ORDER BY is_resolved ASC, created_at DESC, id DESC
+                ORDER BY created_at DESC, id DESC
                 """
             ).fetchall()
         ]
@@ -7427,22 +7231,18 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         reset_archive_name: str | None = None,
         legacy_import_preview: dict[str, Any] | None = None,
     ):
-        notification_config = smtp_notification_config(get_user_db(), app)
-        messages = administration_messages()
         return render_template(
             "admin.html",
             title="Verwaltung",
             users=administration_users(),
-            admin_messages=messages,
-            admin_message_open_count=sum(1 for message in messages if not message["is_resolved"]),
+            admin_messages=administration_messages(),
             backups=operational_backup_points(app),
             setup_credential=setup_credential,
             reset_archive_name=reset_archive_name,
             legacy_import_preview=legacy_import_preview,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
             database_encryption_active=database_encryption_enabled(app),
-            email_notification=smtp_notification_status(notification_config),
-            email_settings=smtp_notification_settings_public(notification_config),
+            email_notification=smtp_notification_status(current_app.config),
         )
 
     @app.get("/verwaltung")
@@ -7451,172 +7251,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def administration_page():
         return render_administration()
 
-    @app.post("/verwaltung/nachrichten/<int:message_id>/erledigt")
-    @login_required
-    @admin_required
-    def update_admin_message_resolution(message_id: int):
-        """Mark a private inbox item done or put it back into the open list."""
-
-        is_resolved = request.form.get("is_resolved") == "1"
-        connection = get_user_db()
-        message = connection.execute("SELECT id FROM admin_messages WHERE id = ?", (message_id,)).fetchone()
-        if message is None:
-            abort(404)
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            if is_resolved:
-                connection.execute(
-                    """
-                    UPDATE admin_messages
-                    SET is_resolved = 1, resolved_at = ?, resolved_by_user_id = ?, resolved_by_username = ?
-                    WHERE id = ?
-                    """,
-                    (utc_now(), g.user["id"], g.user["username"], message_id),
-                )
-            else:
-                connection.execute(
-                    """
-                    UPDATE admin_messages
-                    SET is_resolved = 0, resolved_at = NULL, resolved_by_user_id = NULL, resolved_by_username = NULL
-                    WHERE id = ?
-                    """,
-                    (message_id,),
-                )
-            audit(
-                connection,
-                "resolve_admin_message" if is_resolved else "reopen_admin_message",
-                "admin_message",
-                message_id,
-                {"is_resolved": is_resolved},
-            )
-            connection.commit()
-        except sqlite3.DatabaseError:
-            connection.rollback()
-            current_app.logger.exception("Could not update admin message resolution")
-            flash("Der Nachrichtenstatus konnte nicht gespeichert werden.", "error")
-        else:
-            flash("Nachricht als erledigt markiert." if is_resolved else "Nachricht wieder geöffnet.", "success")
-        return redirect(url_for("administration_page"))
-
-    @app.post("/verwaltung/email/einstellungen")
-    @login_required
-    @admin_required
-    def save_admin_email_notification_settings():
-        """Persist encrypted SMTP credentials after a fresh admin confirmation."""
-
-        connection = get_user_db()
-        try:
-            enabled = 1 if request.form.get("enabled") else 0
-            host = str(request.form.get("host", "")).strip()
-            username = str(request.form.get("username", "")).strip()
-            sender_address = str(request.form.get("sender_address", "")).strip()
-            recipient_address = str(request.form.get("recipient_address", "")).strip()
-            security = str(request.form.get("security", "ssl")).strip().lower()
-            if len(host) > 255 or len(username) > 254:
-                raise ValueError("SMTP-Server und Benutzername dürfen höchstens 254 Zeichen lang sein.")
-            if security not in {"ssl", "starttls"}:
-                raise ValueError("Bitte SSL oder STARTTLS auswählen.")
-            try:
-                port = int(request.form.get("port", ""))
-                timeout_seconds = float(request.form.get("timeout_seconds", ""))
-            except (TypeError, ValueError) as exc:
-                raise ValueError("SMTP-Port und Zeitlimit müssen Zahlen sein.") from exc
-            if not 1 <= port <= 65_535 or not 0 < timeout_seconds <= 60:
-                raise ValueError("SMTP-Port oder Zeitlimit liegt außerhalb des erlaubten Bereichs.")
-            if sender_address:
-                sender_address = valid_email_address(sender_address, field_name="Absenderadresse")
-            if recipient_address:
-                recipient_address = valid_email_address(recipient_address, field_name="Empfängeradresse")
-            new_password = str(request.form.get("password", ""))
-            if len(new_password) > 2_000:
-                raise ValueError("Das SMTP-Passwort ist zu lang.")
-
-            existing = connection.execute(
-                "SELECT password_encrypted FROM smtp_notification_settings WHERE id = 1"
-            ).fetchone()
-            password_encrypted = existing["password_encrypted"] if existing is not None else None
-            if new_password:
-                password_encrypted = encrypt_smtp_password(new_password, app)
-            if request.form.get("clear_password"):
-                password_encrypted = None
-
-            connection.execute("BEGIN IMMEDIATE")
-            verify_admin_sensitive_action(
-                connection,
-                password=request.form.get("current_password"),
-                mfa_code=request.form.get("mfa_code"),
-                context="save_smtp_notification_settings",
-            )
-            connection.execute(
-                """
-                INSERT INTO smtp_notification_settings (
-                    id, enabled, host, port, security, username, password_encrypted, sender_address,
-                    recipient_address, timeout_seconds, updated_at, updated_by_user_id, updated_by_username
-                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    enabled = excluded.enabled,
-                    host = excluded.host,
-                    port = excluded.port,
-                    security = excluded.security,
-                    username = excluded.username,
-                    password_encrypted = excluded.password_encrypted,
-                    sender_address = excluded.sender_address,
-                    recipient_address = excluded.recipient_address,
-                    timeout_seconds = excluded.timeout_seconds,
-                    updated_at = excluded.updated_at,
-                    updated_by_user_id = excluded.updated_by_user_id,
-                    updated_by_username = excluded.updated_by_username
-                """,
-                (
-                    enabled,
-                    host,
-                    port,
-                    security,
-                    username,
-                    password_encrypted,
-                    sender_address,
-                    recipient_address,
-                    timeout_seconds,
-                    utc_now(),
-                    g.user["id"],
-                    g.user["username"],
-                ),
-            )
-            audit(
-                connection,
-                "save_smtp_notification_settings",
-                "smtp_notification_settings",
-                1,
-                {
-                    "enabled": bool(enabled),
-                    "host": host,
-                    "port": port,
-                    "security": security,
-                    "username_configured": bool(username),
-                    "password_configured": bool(password_encrypted),
-                    "recipient_configured": bool(recipient_address),
-                },
-            )
-            connection.commit()
-        except ValueError as exc:
-            connection.rollback()
-            flash(str(exc), "error")
-        except sqlite3.DatabaseError:
-            connection.rollback()
-            current_app.logger.exception("Could not save SMTP notification settings")
-            flash("Die E-Mail-Einstellungen konnten nicht gespeichert werden.", "error")
-        else:
-            flash("Die verschlüsselten E-Mail-Einstellungen wurden gespeichert.", "success")
-        return redirect(url_for("administration_page"))
-
     @app.post("/verwaltung/email/test")
     @login_required
     @admin_required
     def test_admin_email_notification():
         """Let the admin verify SMTP without exposing account credentials."""
 
-        notification_config = smtp_notification_config(get_user_db(), app)
-        status = smtp_notification_status(notification_config)
+        status = smtp_notification_status(current_app.config)
         if not status["ready"]:
             details = [*status["missing"], *status["errors"]]
             flash(
@@ -7627,7 +7268,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return redirect(url_for("administration_page"))
         try:
             send_smtp_notification(
-                notification_config,
+                current_app.config,
                 subject="[Merch Manager] SMTP-Test",
                 body=(
                     "Die SMTP-Konfiguration des Protovibe Merch Managers funktioniert.\n\n"
@@ -9291,140 +8932,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return jsonify({"ok": False, "error": "Die Dia-Auswahl konnte nicht gespeichert werden."}), 500
         backup_after_commit()
         return jsonify({"ok": True, "photo_id": photo_id, "include_in_slideshow": include_in_slideshow})
-
-    @app.patch("/api/diashow/fotos/<string:photo_kind>/<int:photo_id>/zuordnung")
-    @login_required
-    @manager_required
-    def reassign_slideshow_photo(photo_kind: str, photo_id: int):
-        """Move a gallery image to another variant or into the standalone pool."""
-
-        if photo_kind not in {"variant", "other"}:
-            abort(404)
-        payload = request.get_json(silent=True)
-        target = payload.get("target") if isinstance(payload, dict) else None
-        target_variant_id: int | None
-        if target == "other":
-            target_variant_id = None
-        else:
-            try:
-                target_variant_id = int(target)
-            except (TypeError, ValueError):
-                return jsonify({"ok": False, "error": "Bitte eine Variante oder Anderes auswählen."}), 400
-            target_variant = get_db().execute(
-                """
-                SELECT v.id
-                FROM variants v
-                JOIN articles a ON a.id = v.article_id
-                WHERE v.id = ? AND v.is_active = 1 AND a.is_active = 1
-                """,
-                (target_variant_id,),
-            ).fetchone()
-            if target_variant is None:
-                return jsonify({"ok": False, "error": "Die gewählte Artikelvariante ist nicht verfügbar."}), 400
-
-        connection = get_db()
-        if photo_kind == "variant":
-            source = connection.execute(
-                """
-                SELECT vp.*
-                FROM variant_photos vp
-                JOIN variants v ON v.id = vp.variant_id
-                JOIN articles a ON a.id = v.article_id
-                WHERE vp.id = ? AND v.is_active = 1 AND a.is_active = 1
-                """,
-                (photo_id,),
-            ).fetchone()
-        else:
-            source = connection.execute(
-                "SELECT * FROM slideshow_extra_photos WHERE id = ?", (photo_id,)
-            ).fetchone()
-        if source is None:
-            abort(404)
-
-        previous_key = f"{photo_kind}:{photo_id}"
-        new_kind = photo_kind
-        new_photo_id = photo_id
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            if target_variant_id is None and photo_kind == "variant":
-                position = int(
-                    connection.execute(
-                        "SELECT COALESCE(MAX(position), -1) + 1 FROM slideshow_extra_photos"
-                    ).fetchone()[0]
-                )
-                cursor = connection.execute(
-                    """
-                    INSERT INTO slideshow_extra_photos (
-                        file_path, original_filename, position, include_in_slideshow, created_at,
-                        created_by, created_by_username
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        source["file_path"],
-                        source["original_filename"],
-                        position,
-                        source["include_in_slideshow"],
-                        source["created_at"],
-                        source["created_by"],
-                        source["created_by_username"],
-                    ),
-                )
-                new_kind, new_photo_id = "other", int(cursor.lastrowid)
-                connection.execute("DELETE FROM variant_photos WHERE id = ?", (photo_id,))
-            elif target_variant_id is not None and photo_kind == "other":
-                position = int(
-                    connection.execute(
-                        "SELECT COALESCE(MAX(position), -1) + 1 FROM variant_photos WHERE variant_id = ?",
-                        (target_variant_id,),
-                    ).fetchone()[0]
-                )
-                cursor = connection.execute(
-                    """
-                    INSERT INTO variant_photos (
-                        variant_id, file_path, original_filename, position, include_in_slideshow, created_at,
-                        created_by, created_by_username
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        target_variant_id,
-                        source["file_path"],
-                        source["original_filename"],
-                        position,
-                        source["include_in_slideshow"],
-                        source["created_at"],
-                        source["created_by"],
-                        source["created_by_username"],
-                    ),
-                )
-                new_kind, new_photo_id = "variant", int(cursor.lastrowid)
-                connection.execute("DELETE FROM slideshow_extra_photos WHERE id = ?", (photo_id,))
-            elif target_variant_id is not None and int(source["variant_id"]) != target_variant_id:
-                connection.execute(
-                    "UPDATE variant_photos SET variant_id = ? WHERE id = ?",
-                    (target_variant_id, photo_id),
-                )
-            audit(
-                connection,
-                "reassign_slideshow_photo",
-                "variant_photo" if new_kind == "variant" else "slideshow_extra_photo",
-                new_photo_id,
-                {
-                    "previous_key": previous_key,
-                    "target": f"variant:{target_variant_id}" if target_variant_id is not None else "other",
-                },
-            )
-            connection.commit()
-        except sqlite3.DatabaseError:
-            connection.rollback()
-            current_app.logger.exception("Could not reassign slideshow photo")
-            return jsonify({"ok": False, "error": "Die Fotozuordnung konnte nicht gespeichert werden."}), 500
-
-        photo = product_slideshow_photo(connection, kind=new_kind, photo_id=new_photo_id)
-        if photo is None:
-            current_app.logger.error("Reassigned slideshow photo %s:%s is not visible in the gallery", new_kind, new_photo_id)
-            return jsonify({"ok": False, "error": "Die Fotozuordnung konnte nicht geladen werden."}), 500
-        backup_after_commit()
-        return jsonify({"ok": True, "previous_key": previous_key, "photo": photo})
 
     @app.get("/api/diashow/fotos/<int:photo_id>")
     @login_required

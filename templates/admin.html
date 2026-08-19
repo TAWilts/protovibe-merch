@@ -32,74 +32,38 @@
   {% if email_notification.ready %}
   <div class="admin-email-status-row">
     <p>Versand über <strong>{{ email_notification.host }}:{{ email_notification.port }}</strong> ({{ email_notification.security }}) an <strong>{{ email_notification.recipient }}</strong>.</p>
-    <div class="button-group">
-      <button class="secondary-button compact-button" type="button" data-email-settings-open>E-Mail-Einstellungen</button>
-      <form action="{{ url_for('test_admin_email_notification') }}" method="post">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button class="secondary-button compact-button" type="submit">Test-E-Mail senden</button>
-      </form>
-    </div>
+    <form action="{{ url_for('test_admin_email_notification') }}" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="secondary-button compact-button" type="submit">Test-E-Mail senden</button>
+    </form>
   </div>
   {% elif email_notification.enabled %}
   <p class="notice warning-notice">Die Benachrichtigung ist aktiviert, aber noch nicht einsatzbereit.
     {% if email_notification.missing %} Fehlend: <code>{{ email_notification.missing|join(', ') }}</code>.{% endif %}
     {% if email_notification.errors %} {{ email_notification.errors|join('. ') }}.{% endif %}
   </p>
-  <button class="secondary-button compact-button" type="button" data-email-settings-open>E-Mail-Einstellungen öffnen</button>
   {% else %}
-  <p class="muted">E-Mail-Benachrichtigungen sind deaktiviert. Hinterlege die SMTP-Daten im geschützten Einstellungsfenster. IMAP oder POP3 werden dafür nicht benötigt.</p>
-  <button class="secondary-button compact-button" type="button" data-email-settings-open>E-Mail-Einstellungen öffnen</button>
+  <p class="muted">Setze <code>EMAIL_NOTIFICATIONS_ENABLED=true</code> und die SMTP-Werte in <code>.env</code>, um E-Mails einzuschalten. IMAP oder POP3 werden dafür nicht benötigt.</p>
   {% endif %}
 </section>
 
-<dialog id="email-settings-dialog" class="confirmation-dialog admin-email-settings-dialog">
-  <form action="{{ url_for('save_admin_email_notification_settings') }}" method="post" class="stack-form admin-email-settings-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <div><p class="eyebrow">Geschützte Konfiguration</p><h2>E-Mail-Einstellungen</h2><p>Das SMTP-Passwort wird vor dem Speichern zusätzlich verschlüsselt und niemals wieder angezeigt. Die normale Datenbankverschlüsselung schützt es zusätzlich.</p></div>
-    <label class="toggle-label"><input name="enabled" type="checkbox" {% if email_settings.enabled %}checked{% endif %}><span>E-Mail-Benachrichtigungen aktivieren</span></label>
-    <div class="two-columns">
-      <label>SMTP-Server<input name="host" value="{{ email_settings.host }}" maxlength="255" autocomplete="off"></label>
-      <label>Port<input name="port" type="number" min="1" max="65535" value="{{ email_settings.port }}" required></label>
-    </div>
-    <label>Transportverschlüsselung<select name="security"><option value="ssl" {{ 'selected' if email_settings.security == 'ssl' else '' }}>SSL / TLS (meist Port 465)</option><option value="starttls" {{ 'selected' if email_settings.security == 'starttls' else '' }}>STARTTLS (meist Port 587)</option></select></label>
-    <label>SMTP-Benutzername<input name="username" value="{{ email_settings.username }}" maxlength="254" autocomplete="username"></label>
-    <label>SMTP-Passwort<input name="password" type="password" autocomplete="new-password"><small>{% if email_settings.password_configured %}Bereits gespeichert; leer lassen, um es unverändert zu behalten.{% else %}Beim ersten Speichern hier das App-Passwort des Mailanbieters eintragen.{% endif %}</small></label>
-    <label class="toggle-label"><input name="clear_password" type="checkbox"><span>Gespeichertes SMTP-Passwort löschen</span></label>
-    <div class="two-columns">
-      <label>Absenderadresse<input name="sender_address" type="email" value="{{ email_settings.sender_address }}" maxlength="254" autocomplete="email"></label>
-      <label>Empfängeradresse<input name="recipient_address" type="email" value="{{ email_settings.recipient_address }}" maxlength="254" autocomplete="email"></label>
-    </div>
-    <label>Zeitlimit in Sekunden<input name="timeout_seconds" type="number" min="0.1" max="60" step="0.1" value="{{ email_settings.timeout_seconds }}" required></label>
-    <hr class="form-divider">
-    <p class="notice">Zum Ändern der Zugangsdaten bestätigst du dein aktuelles Admin-Passwort{% if not local_dev_mode %} und 2FA{% endif %}.</p>
-    <label>Dein aktuelles Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
-    {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
-    <div class="dialog-actions"><button class="secondary-button" type="button" data-email-settings-close>Abbrechen</button><button class="primary-button" type="submit">Verschlüsselt speichern</button></div>
-  </form>
-</dialog>
-
-<details class="table-section admin-message-inbox" open>
-  <summary class="section-heading admin-message-summary"><div><p class="eyebrow">Privates Postfach</p><h2>Nachrichten an den Admin</h2><p>{{ admin_message_open_count }} offen · {{ admin_messages|length }} insgesamt · nur in diesem Admin-Tab sichtbar.</p></div><span class="status {{ 'warning' if admin_message_open_count else 'good' }}">{{ admin_message_open_count }} offen</span></summary>
+<section class="table-section admin-message-inbox">
+  <div class="section-heading"><div><p class="eyebrow">Privates Postfach</p><h2>Nachrichten an den Admin</h2><p>{{ admin_messages|length }} Nachricht(en), nur in diesem Admin-Tab sichtbar.</p></div></div>
   {% if admin_messages %}
   <div class="admin-message-list">
     {% for message in admin_messages %}
-    <article class="admin-message-card {{ 'is-resolved' if message.is_resolved else '' }}">
-      <header><span class="status {{ 'resolved' if message.is_resolved else ('warning' if message.message_type == 'issue' else 'good') }}">{{ 'Erledigt' if message.is_resolved else ('Issue / Problem' if message.message_type == 'issue' else 'Frage') }}</span><time datetime="{{ message.created_at }}">{{ message.created_at }}</time></header>
+    <article class="admin-message-card">
+      <header><span class="status {{ 'warning' if message.message_type == 'issue' else 'good' }}">{{ 'Issue / Problem' if message.message_type == 'issue' else 'Frage' }}</span><time datetime="{{ message.created_at }}">{{ message.created_at }}</time></header>
       <h3>{{ message.subject }}</h3>
       <p class="admin-message-sender">Von <strong>{{ message.sender_username }}</strong></p>
-      {% if message.sender_email %}<p class="admin-message-email"><a href="mailto:{{ message.sender_email }}">{{ message.sender_email }}</a></p>{% else %}<p class="admin-message-email muted">Keine E-Mail-Adresse angegeben</p>{% endif %}
       <div class="admin-message-body">{{ message.body }}</div>
-      <footer class="admin-message-footer">
-        {% if message.is_resolved %}<small>Erledigt von {{ message.resolved_by_username or 'Admin' }} am {{ message.resolved_at or '—' }}</small>{% endif %}
-        <form action="{{ url_for('update_admin_message_resolution', message_id=message.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="is_resolved" value="{{ 0 if message.is_resolved else 1 }}"><button class="{{ 'secondary-button' if message.is_resolved else 'primary-button' }} compact-button" type="submit">{{ 'Wieder öffnen' if message.is_resolved else 'Als erledigt markieren' }}</button></form>
-      </footer>
     </article>
     {% endfor %}
   </div>
   {% else %}
   <p class="muted">Noch keine Issues oder Fragen eingegangen.</p>
   {% endif %}
-</details>
+</section>
 
 <section class="admin-grid">
   <article class="table-section admin-create-card">
@@ -293,4 +257,3 @@
   </form>
 </section>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='admin-email-settings.js') }}"></script>{% endblock %}
