@@ -57,6 +57,7 @@
       <input type="hidden" name="next" value="{{ request.full_path }}">
       <div><p class="eyebrow">{{ ui_text.get('message.button') }}</p><h2>{{ ui_text.get('message.title') }}</h2><p>{{ ui_text.get('message.intro') }}</p></div>
       <label>{{ ui_text.get('message.type') }}<select name="message_type" required><option value="issue">{{ ui_text.get('message.issue') }}</option><option value="question">{{ ui_text.get('message.question') }}</option></select></label>
+      <label>{{ ui_text.get('message.email') }}<input name="sender_email" type="email" autocomplete="email" maxlength="254" required></label>
       <label>{{ ui_text.get('message.subject') }}<input name="subject" maxlength="120" required></label>
       <label>{{ ui_text.get('message.body') }}<textarea name="body" rows="7" maxlength="4000" required></textarea></label>
       <div class="dialog-actions"><button class="secondary-button" type="button" data-admin-message-close>{{ ui_text.get('message.cancel') }}</button><button class="primary-button" type="submit">{{ ui_text.get('message.send') }}</button></div>
@@ -107,8 +108,10 @@
         'uploading': ui_text.get('slideshow.uploading'),
         'uploadFailed': ui_text.get('slideshow.upload_failed'),
         'updateFailed': ui_text.get('slideshow.update_failed'),
-        'deleteOther': ui_text.get('slideshow.delete_other'),
-        'deleteOtherConfirm': ui_text.get('slideshow.delete_other_confirm'),
+        'assignment': ui_text.get('slideshow.assignment'),
+        'assignmentFailed': ui_text.get('slideshow.assignment_failed'),
+        'delete': ui_text.get('slideshow.delete'),
+        'deleteConfirm': ui_text.get('slideshow.delete_confirm'),
         'deleteFailed': ui_text.get('slideshow.delete_failed'),
         'changeRateValue': ui_text.get('slideshow.change_rate_value'),
         'animationSpeedValue': ui_text.get('slideshow.animation_speed_value')

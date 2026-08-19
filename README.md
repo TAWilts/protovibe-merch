@@ -254,13 +254,24 @@ MFA_ISSUER=Protovibe Merch Manager
 ### Optionale E-Mail-Benachrichtigung
 
 Neue Issues und Fragen bleiben immer im privaten Admin-Postfach gespeichert.
-Optional kann die App danach zusätzlich eine E-Mail über den SMTP-Server eines
-bestehenden Mailkontos senden. IMAP und POP3 dienen nur zum Abrufen von E-Mails
-und werden dafür nicht benötigt. Bei vielen Anbietern kostet SMTP mit einem
-vorhandenen Konto nichts zusätzlich; häufig ist statt des normalen Passworts
-ein separates App-Passwort erforderlich.
+Die Absender geben dabei eine E-Mail-Adresse für Rückfragen an. Optional kann
+die App danach zusätzlich eine E-Mail über den SMTP-Server eines bestehenden
+Mailkontos senden. IMAP und POP3 dienen nur zum Abrufen von E-Mails und werden
+dafür nicht benötigt. Bei vielen Anbietern kostet SMTP mit einem vorhandenen
+Konto nichts zusätzlich; häufig ist statt des normalen Passworts ein separates
+App-Passwort erforderlich.
 
-Beispiel für implizites TLS auf Port 465:
+Der Admin hinterlegt die Daten unter **Verwaltung → E-Mail-Einstellungen**.
+Das Passwort wird dort mit einem separaten, aus `SECRET_KEY` abgeleiteten
+Fernet-Schlüssel verschlüsselt gespeichert und in einer normalen Installation
+zusätzlich von der SQLCipher-Datenbankverschlüsselung geschützt. Es wird nie
+wieder angezeigt. Das Speichern fordert das aktuelle Admin-Passwort und – außer
+im lokalen Entwicklungsmodus – 2FA.
+
+Als Übergang für bestehende Docker-Installationen bleiben die folgenden
+`.env`-Variablen ein optionaler Fallback. Sobald Einstellungen im Admin-Dialog
+gespeichert wurden, haben diese Vorrang. Nach einer erfolgreichen Test-E-Mail
+können die SMTP-Werte bei Bedarf aus `.env` entfernt werden:
 
 ```dotenv
 EMAIL_NOTIFICATIONS_ENABLED=true
