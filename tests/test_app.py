@@ -681,6 +681,16 @@ class MerchAppTestCase(unittest.TestCase):
             headers={"X-CSRF-Token": "test-csrf"},
         )
 
+    def post_csv_import(self, import_kind: str, content: str, filename: str = "import.csv"):
+        return self.client.post(
+            f"/artikelverwaltung/import/{import_kind}",
+            data={
+                "csrf_token": "test-csrf",
+                "csv_file": (io.BytesIO(content.encode("utf-8")), filename),
+            },
+            content_type="multipart/form-data",
+        )
+
     def csrf_token(self) -> str:
         with self.client.session_transaction() as session:
             return session["csrf_token"]
@@ -1045,6 +1055,13 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("Nur Lesezugriff", purchase_page.get_data(as_text=True))
         self.assertEqual(self.client.get("/artikelverwaltung").status_code, 403)
         self.assertEqual(self.client.get("/verwaltung").status_code, 403)
+        self.assertEqual(
+            self.post_csv_import(
+                "verkaeufe",
+                "Anzahl;Artikel;Optionen;Verkaufspreis;Verkauft an\n1;Direktimport;;1,00;Testkunde",
+            ).status_code,
+            403,
+        )
         self.assertEqual(
             self.api_post(
                 "/api/purchases",
@@ -2161,6 +2178,128 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("moveOptionGroup", article_script)
         self.assertIn("Option nach links", article_script)
         self.assertIn("Option nach rechts", article_script)
+
+    def test_sales_csv_import_creates_catalogue_and_withdraws_unlisted_combinations(self) -> None:
+        """A manager can atomically build a catalogue and sales ledger from CSV."""
+
+        csv_content = "\n".join(
+            [
+                "Anzahl;Artikel;Optionen;Verkaufspreis;Verkauft an",
+                '2;CSV Shirt;"Größe=S;Farbe=Schwarz";20,00;Kundin A',
+                '3;CSV Shirt;"Größe=M;Farbe=Schwarz";;Kunde B',
+                '1;CSV Shirt;"Größe=S;Farbe=Weiß";22,00;Kundin C',
+            ]
+        )
+        response = self.post_csv_import("verkaeufe", csv_content)
+        self.assertEqual(response.status_code, 302)
+
+        with self.app.app_context():
+            connection = get_db()
+            article = connection.execute("SELECT * FROM articles WHERE name = 'CSV Shirt'").fetchone()
+            groups = connection.execute(
+                "SELECT name, position FROM option_groups WHERE article_id = ? AND is_active = 1 ORDER BY position",
+                (article["id"],),
+            ).fetchall()
+            variants = connection.execute(
+                "SELECT id, sale_price_cents, is_offered FROM variants WHERE article_id = ? AND is_active = 1",
+                (article["id"],),
+            ).fetchall()
+            labels = variant_label_map(connection, [variant["id"] for variant in variants])
+            sales = connection.execute(
+                "SELECT quantity, unit_price_cents, customer_name, comment FROM sales ORDER BY id"
+            ).fetchall()
+            audit_row = connection.execute(
+                "SELECT details_json FROM audit_log WHERE action = 'import_csv' AND entity_type = 'sales'"
+            ).fetchone()
+
+        self.assertEqual([(row["name"], row["position"]) for row in groups], [("Größe", 0), ("Farbe", 1)])
+        self.assertEqual(len(variants), 4)
+        offered_labels = {
+            labels[variant["id"]]["option_text"]
+            for variant in variants
+            if variant["is_offered"]
+        }
+        self.assertEqual(
+            offered_labels,
+            {
+                "Größe: S · Farbe: Schwarz",
+                "Größe: M · Farbe: Schwarz",
+                "Größe: S · Farbe: Weiß",
+            },
+        )
+        self.assertEqual(
+            [(row["quantity"], row["unit_price_cents"], row["customer_name"]) for row in sales],
+            [(2, 2000, "Kundin A"), (3, 2000, "Kunde B"), (1, 2200, "Kundin C")],
+        )
+        self.assertTrue(all(row["comment"] == "CSV-Import" for row in sales))
+        self.assertEqual(json.loads(audit_row["details_json"])["fallback_price_count"], 1)
+
+        page = self.client.get("/artikelverwaltung").get_data(as_text=True)
+        self.assertIn("Einkäufe importieren", page)
+        self.assertIn("Verkäufe importieren", page)
+        self.assertIn("Anzahl;Artikel;Optionen;Verkaufspreis;Verkauft an", page)
+        self.assertIn("static/csv-import.js", page)
+
+    def test_purchase_csv_import_uses_following_exact_price_and_keeps_existing_values(self) -> None:
+        """A blank price may inherit from a following row of the same variant."""
+
+        variant_id = self.seed_variant("CSV Purchase Shirt")
+        csv_content = "\n".join(
+            [
+                "Anzahl;Artikel;Optionen;Einkaufspreis;Gekauft von",
+                '4;CSV Purchase Shirt;"Farbe=schwarz;Größe=M";;Druckerei A',
+                '5;CSV Purchase Shirt;"Farbe=schwarz;Größe=M";9,50;Druckerei B',
+                '2;CSV Purchase Shirt;"Farbe=schwarz;Größe=L";12,00;Druckerei C',
+            ]
+        )
+        response = self.post_csv_import("einkaeufe", csv_content)
+        self.assertEqual(response.status_code, 302)
+
+        with self.app.app_context():
+            connection = get_db()
+            article_id = connection.execute(
+                "SELECT article_id FROM variants WHERE id = ?", (variant_id,)
+            ).fetchone()[0]
+            purchases = connection.execute(
+                "SELECT quantity, unit_cost_cents, supplier FROM purchases ORDER BY id"
+            ).fetchall()
+            active_variants = connection.execute(
+                "SELECT id, default_purchase_price_cents, is_offered FROM variants WHERE article_id = ? AND is_active = 1",
+                (article_id,),
+            ).fetchall()
+            labels = variant_label_map(connection, [variant["id"] for variant in active_variants])
+
+        self.assertEqual(
+            [(row["quantity"], row["unit_cost_cents"], row["supplier"]) for row in purchases],
+            [(4, 950, "Druckerei A"), (5, 950, "Druckerei B"), (2, 1200, "Druckerei C")],
+        )
+        self.assertEqual(
+            {labels[row["id"]]["option_text"] for row in active_variants},
+            {"Farbe: schwarz · Größe: M", "Farbe: schwarz · Größe: L"},
+        )
+        self.assertTrue(all(row["is_offered"] for row in active_variants))
+
+    def test_invalid_csv_aborts_without_partial_catalogue_or_ledger_changes(self) -> None:
+        """A malformed later row rolls back the whole file, including new articles."""
+
+        csv_content = "\n".join(
+            [
+                "Anzahl;Artikel;Optionen;Verkaufspreis;Verkauft an",
+                '2;Must Not Exist;"Größe=M";20,00;Kundin A',
+                'keine-zahl;Must Not Exist;"Größe=L";21,00;Kunde B',
+            ]
+        )
+        response = self.post_csv_import("verkaeufe", csv_content, "invalid.csv")
+        self.assertEqual(response.status_code, 302)
+        with self.app.app_context():
+            connection = get_db()
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM sales").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0], 0)
+
+        page = self.client.get("/artikelverwaltung").get_data(as_text=True)
+        self.assertIn("CSV-Import abgebrochen", page)
+        self.assertIn("Zeile 3", page)
 
     def test_article_and_variant_can_be_withdrawn_from_sales_assortment(self) -> None:
         """Withdrawing an item hides it from sale, not from inventory history."""

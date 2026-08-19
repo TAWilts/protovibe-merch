@@ -346,6 +346,14 @@ OPERATION_TABLES = (
 
 PAYMENT_METHODS = ["Bar", "PayPal", "Überweisung", "Karte", "Sonstiges"]
 
+TRANSACTION_CSV_HEADERS = {
+    "purchases": ["Anzahl", "Artikel", "Optionen", "Einkaufspreis", "Gekauft von"],
+    "sales": ["Anzahl", "Artikel", "Optionen", "Verkaufspreis", "Verkauft an"],
+}
+MAX_TRANSACTION_CSV_BYTES = 2 * 1024 * 1024
+MAX_TRANSACTION_CSV_ROWS = 5_000
+MAX_IMPORTED_VARIANTS_PER_ARTICLE = 10_000
+
 # Roles are cumulative: every authenticated user is a seller, managers also
 # manage stock/purchases/articles, and exactly one configured account holds the
 # administrator role.  Keeping the hierarchy as a tiny mapping makes every
@@ -4163,6 +4171,579 @@ def csv_bytes(headers: list[str], rows: Iterable[Iterable[Any]]) -> bytes:
     return ("\ufeff" + buffer.getvalue()).encode("utf-8")
 
 
+def _normalised_csv_header(value: Any) -> str:
+    return re.sub(r"[\s_-]+", "", str(value or "").strip().casefold())
+
+
+def _transaction_csv_options(raw_value: Any, *, line_number: int) -> list[dict[str, str]]:
+    """Parse ``Optionsname=Wert`` pairs separated inside the third CSV field."""
+
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return []
+    options: list[dict[str, str]] = []
+    seen_groups: set[str] = set()
+    for token in raw.split(";"):
+        token = token.strip()
+        if not token or "=" not in token:
+            raise ValueError(
+                f"Zeile {line_number}: Optionen müssen als Optionsname=Wert angegeben werden."
+            )
+        group_name, value = (part.strip() for part in token.split("=", 1))
+        if not group_name or not value:
+            raise ValueError(
+                f"Zeile {line_number}: Optionsname und Optionswert dürfen nicht leer sein."
+            )
+        if len(group_name) > 120 or len(value) > 120:
+            raise ValueError(f"Zeile {line_number}: Eine Option oder ihr Wert ist zu lang.")
+        group_key = group_name.casefold()
+        if group_key in seen_groups:
+            raise ValueError(f"Zeile {line_number}: Die Option „{group_name}“ kommt doppelt vor.")
+        seen_groups.add(group_key)
+        options.append(
+            {
+                "group_name": group_name,
+                "group_key": group_key,
+                "value": value,
+                "value_key": value.casefold(),
+            }
+        )
+    return options
+
+
+def transaction_csv_rows(uploaded_file: Any, kind: str) -> list[dict[str, Any]]:
+    """Validate a five-column transaction CSV without changing database state."""
+
+    if kind not in TRANSACTION_CSV_HEADERS:
+        raise ValueError("Unbekannte Importart.")
+    filename = str(getattr(uploaded_file, "filename", "") or "").strip()
+    if not filename:
+        raise ValueError("Bitte eine CSV-Datei auswählen.")
+    if Path(filename).suffix.casefold() != ".csv":
+        raise ValueError("Die Importdatei muss die Endung .csv haben.")
+    content = uploaded_file.read(MAX_TRANSACTION_CSV_BYTES + 1)
+    if len(content) > MAX_TRANSACTION_CSV_BYTES:
+        raise ValueError("Die CSV-Datei darf höchstens 2 MB groß sein.")
+    if not content:
+        raise ValueError("Die CSV-Datei ist leer.")
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = content.decode("cp1252")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Die CSV-Datei muss als UTF-8 oder Windows-1252 gespeichert sein.") from exc
+    if "\x00" in text:
+        raise ValueError("Die CSV-Datei enthält ungültige Nullzeichen.")
+
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=";", strict=True)
+    try:
+        header = next(reader)
+    except StopIteration as exc:
+        raise ValueError("Die CSV-Datei ist leer.") from exc
+    except csv.Error as exc:
+        raise ValueError(f"Die Kopfzeile ist keine gültige CSV-Zeile: {exc}") from exc
+    expected_header = TRANSACTION_CSV_HEADERS[kind]
+    if [_normalised_csv_header(value) for value in header] != [
+        _normalised_csv_header(value) for value in expected_header
+    ]:
+        raise ValueError(
+            "Die Kopfzeile muss exakt diese fünf Spalten enthalten: " + ";".join(expected_header)
+        )
+
+    rows: list[dict[str, Any]] = []
+    group_keys_by_article: dict[str, frozenset[str]] = {}
+    try:
+        for values in reader:
+            line_number = reader.line_num
+            if not any(str(value).strip() for value in values):
+                continue
+            if len(values) != 5:
+                raise ValueError(
+                    f"Zeile {line_number}: Erwartet werden fünf Spalten, gefunden wurden {len(values)}."
+                )
+            quantity_raw, article_raw, options_raw, price_raw, party_raw = values
+            try:
+                quantity = parse_positive_int(quantity_raw, field_name="Anzahl")
+            except ValueError as exc:
+                raise ValueError(f"Zeile {line_number}: {exc}") from exc
+            article_name = str(article_raw).strip()
+            if not article_name:
+                raise ValueError(f"Zeile {line_number}: Der Artikelname darf nicht leer sein.")
+            if len(article_name) > 200:
+                raise ValueError(f"Zeile {line_number}: Der Artikelname ist zu lang.")
+            options = _transaction_csv_options(options_raw, line_number=line_number)
+            party = str(party_raw).strip()
+            if not party:
+                party_label = "Lieferant" if kind == "purchases" else "Kunde"
+                raise ValueError(f"Zeile {line_number}: {party_label} darf nicht leer sein.")
+            if len(party) > 300:
+                raise ValueError(f"Zeile {line_number}: Der Name in der fünften Spalte ist zu lang.")
+            price_cents: int | None = None
+            if str(price_raw).strip():
+                try:
+                    price_cents = money_to_cents(price_raw, field_name=expected_header[3])
+                except ValueError as exc:
+                    raise ValueError(f"Zeile {line_number}: {exc}") from exc
+
+            article_key = article_name.casefold()
+            option_key = tuple(sorted((option["group_key"], option["value_key"]) for option in options))
+            group_keys = frozenset(option["group_key"] for option in options)
+            previous_group_keys = group_keys_by_article.setdefault(article_key, group_keys)
+            if previous_group_keys != group_keys:
+                raise ValueError(
+                    f"Zeile {line_number}: Für „{article_name}“ müssen in jeder Zeile dieselben Optionsgruppen stehen."
+                )
+            rows.append(
+                {
+                    "index": len(rows),
+                    "line_number": line_number,
+                    "quantity": quantity,
+                    "article_name": article_name,
+                    "article_key": article_key,
+                    "options": options,
+                    "option_key": option_key,
+                    "group_keys": group_keys,
+                    "price_cents": price_cents,
+                    "price_source": "explicit" if price_cents is not None else None,
+                    "party": party,
+                }
+            )
+            if len(rows) > MAX_TRANSACTION_CSV_ROWS:
+                raise ValueError(f"Die CSV-Datei darf höchstens {MAX_TRANSACTION_CSV_ROWS} Datenzeilen enthalten.")
+    except csv.Error as exc:
+        raise ValueError(f"Zeile {reader.line_num}: Ungültige CSV-Formatierung: {exc}") from exc
+    if not rows:
+        raise ValueError("Die CSV-Datei enthält unterhalb der Kopfzeile keine Daten.")
+    return rows
+
+
+def _transaction_rows_by_article(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(row["article_key"], []).append(row)
+    return grouped
+
+
+def _catalog_article_for_import(connection: sqlite3.Connection, article_name: str) -> sqlite3.Row | None:
+    for article in connection.execute(
+        "SELECT * FROM articles ORDER BY is_active DESC, id"
+    ).fetchall():
+        if str(article["name"]).casefold() == article_name.casefold():
+            return article
+    return None
+
+
+def preflight_transaction_import(connection: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    """Reject ambiguous existing catalogues and excessive Cartesian products."""
+
+    for article_rows in _transaction_rows_by_article(rows).values():
+        article_name = article_rows[0]["article_name"]
+        article = _catalog_article_for_import(connection, article_name)
+        active_groups: dict[str, sqlite3.Row] = {}
+        if article is not None:
+            for group in connection.execute(
+                """
+                SELECT * FROM option_groups
+                WHERE article_id = ? AND is_active = 1
+                ORDER BY position, id
+                """,
+                (article["id"],),
+            ).fetchall():
+                key = str(group["name"]).casefold()
+                if key in active_groups:
+                    raise ValueError(
+                        f"„{article_name}“ enthält doppelte aktive Optionsgruppen und kann nicht sicher importiert werden."
+                    )
+                active_groups[key] = group
+        file_group_keys = set(article_rows[0]["group_keys"])
+        missing_groups = set(active_groups) - file_group_keys
+        if missing_groups:
+            names = ", ".join(str(active_groups[key]["name"]) for key in sorted(missing_groups))
+            raise ValueError(
+                f"Bei „{article_name}“ fehlen bestehende Optionsgruppen in der CSV: {names}."
+            )
+
+        variant_count = 1
+        for group_key in file_group_keys:
+            imported_values = {
+                option["value_key"]
+                for row in article_rows
+                for option in row["options"]
+                if option["group_key"] == group_key
+            }
+            existing_values: set[str] = set()
+            group = active_groups.get(group_key)
+            if group is not None:
+                existing_values = {
+                    str(value["value"]).casefold()
+                    for value in connection.execute(
+                        "SELECT value FROM option_values WHERE option_group_id = ? AND is_active = 1",
+                        (group["id"],),
+                    ).fetchall()
+                }
+            variant_count *= len(existing_values | imported_values)
+            if variant_count > MAX_IMPORTED_VARIANTS_PER_ARTICLE:
+                raise ValueError(
+                    f"„{article_name}“ würde mehr als {MAX_IMPORTED_VARIANTS_PER_ARTICLE} Varianten erzeugen."
+                )
+
+
+def _catalog_price_for_import(
+    connection: sqlite3.Connection, row: dict[str, Any], kind: str
+) -> int | None:
+    article = _catalog_article_for_import(connection, row["article_name"])
+    if article is None:
+        return None
+    price_column = "default_purchase_price_cents" if kind == "purchases" else "sale_price_cents"
+    variants = connection.execute(
+        f"SELECT id, {price_column}, is_active FROM variants WHERE article_id = ? ORDER BY is_active DESC, id",
+        (article["id"],),
+    ).fetchall()
+    if not variants:
+        article_column = "default_purchase_price_cents" if kind == "purchases" else "default_sale_price_cents"
+        return int(article[article_column])
+    labels = variant_label_map(connection, [variant["id"] for variant in variants])
+    desired_pairs = set(row["option_key"])
+    ranked: list[tuple[int, int, int, int]] = []
+    for variant in variants:
+        label = labels[int(variant["id"])]
+        candidate_pairs = {
+            (str(option["group_name"]).casefold(), str(option["value"]).casefold())
+            for option in label.get("options", [])
+        }
+        matching_pairs = len(desired_pairs & candidate_pairs)
+        ranked.append(
+            (-matching_pairs, 0 if variant["is_active"] else 1, int(variant["id"]), int(variant[price_column]))
+        )
+    ranked.sort()
+    return ranked[0][3]
+
+
+def resolve_transaction_import_prices(
+    connection: sqlite3.Connection, rows: list[dict[str, Any]], kind: str
+) -> None:
+    """Fill blanks from the nearest exact option, then the closest article option."""
+
+    for article_rows in _transaction_rows_by_article(rows).values():
+        explicitly_priced = [row for row in article_rows if row["price_cents"] is not None]
+        for row in article_rows:
+            if row["price_cents"] is not None:
+                continue
+            exact_candidates = [
+                candidate for candidate in explicitly_priced if candidate["option_key"] == row["option_key"]
+            ]
+            candidates = exact_candidates or explicitly_priced
+            if candidates:
+                desired_pairs = set(row["option_key"])
+
+                def candidate_rank(candidate: dict[str, Any]) -> tuple[int, int, int, int]:
+                    matching_pairs = len(desired_pairs & set(candidate["option_key"]))
+                    return (
+                        -matching_pairs if not exact_candidates else 0,
+                        abs(int(candidate["index"]) - int(row["index"])),
+                        0 if int(candidate["index"]) < int(row["index"]) else 1,
+                        int(candidate["index"]),
+                    )
+
+                selected = min(candidates, key=candidate_rank)
+                row["price_cents"] = int(selected["price_cents"])
+                row["price_source"] = "exact_option" if exact_candidates else "closest_option"
+                continue
+            catalog_price = _catalog_price_for_import(connection, row, kind)
+            if catalog_price is None:
+                raise ValueError(
+                    f"Für den neuen Artikel „{row['article_name']}“ ist in keiner Zeile ein Preis eingetragen."
+                )
+            row["price_cents"] = catalog_price
+            row["price_source"] = "catalog"
+
+
+def _imported_values_for_group(
+    article_rows: list[dict[str, Any]], group_key: str
+) -> list[dict[str, str]]:
+    values: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in article_rows:
+        for option in row["options"]:
+            if option["group_key"] != group_key or option["value_key"] in seen:
+                continue
+            seen.add(option["value_key"])
+            values.append(option)
+    return values
+
+
+def _upsert_transaction_import_article(
+    connection: sqlite3.Connection,
+    article_rows: list[dict[str, Any]],
+    kind: str,
+) -> bool:
+    """Merge CSV options into one article and attach every row to its variant."""
+
+    article_name = article_rows[0]["article_name"]
+    article = _catalog_article_for_import(connection, article_name)
+    now = utc_now()
+    created_article = article is None
+    first_price = int(article_rows[0]["price_cents"])
+    if article is None:
+        default_sale_price = first_price if kind == "sales" else 0
+        default_purchase_price = first_price if kind == "purchases" else 0
+        cursor = connection.execute(
+            """
+            INSERT INTO articles (
+                name, default_sale_price_cents, default_purchase_price_cents,
+                is_offered, is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, 1, 1, ?, ?)
+            """,
+            (article_name, default_sale_price, default_purchase_price, now, now),
+        )
+        article_id = int(cursor.lastrowid)
+    else:
+        article_id = int(article["id"])
+        connection.execute(
+            "UPDATE articles SET is_active = 1, is_offered = 1, updated_at = ? WHERE id = ?",
+            (now, article_id),
+        )
+
+    all_groups = connection.execute(
+        """
+        SELECT * FROM option_groups
+        WHERE article_id = ?
+        ORDER BY is_active DESC, position, id
+        """,
+        (article_id,),
+    ).fetchall()
+    active_groups = [group for group in all_groups if group["is_active"]]
+    active_by_key = {str(group["name"]).casefold(): group for group in active_groups}
+    all_by_key: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for group in all_groups:
+        all_by_key[str(group["name"]).casefold()].append(group)
+
+    first_row_group_order = [option["group_key"] for option in article_rows[0]["options"]]
+    selected_groups: list[tuple[str, sqlite3.Row | None]] = [
+        (str(group["name"]).casefold(), group) for group in active_groups
+    ]
+    for group_key in first_row_group_order:
+        if group_key in active_by_key:
+            continue
+        reusable = next((group for group in all_by_key.get(group_key, []) if not group["is_active"]), None)
+        selected_groups.append((group_key, reusable))
+
+    raw_configuration: list[dict[str, Any]] = []
+    for position, (group_key, group) in enumerate(selected_groups):
+        imported_values = _imported_values_for_group(article_rows, group_key)
+        group_name = str(group["name"]) if group is not None and group["is_active"] else imported_values[0]["group_name"]
+        all_values = (
+            connection.execute(
+                """
+                SELECT * FROM option_values
+                WHERE option_group_id = ?
+                ORDER BY is_active DESC, position, id
+                """,
+                (group["id"],),
+            ).fetchall()
+            if group is not None
+            else []
+        )
+        values_by_key: dict[str, sqlite3.Row] = {}
+        for value in all_values:
+            values_by_key.setdefault(str(value["value"]).casefold(), value)
+        values: list[dict[str, Any]] = []
+        included_value_keys: set[str] = set()
+        if group is not None and group["is_active"]:
+            for value in all_values:
+                value_key = str(value["value"]).casefold()
+                if not value["is_active"] or value_key in included_value_keys:
+                    continue
+                included_value_keys.add(value_key)
+                values.append({"id": int(value["id"]), "value": str(value["value"])})
+        for imported_value in imported_values:
+            value_key = imported_value["value_key"]
+            if value_key in included_value_keys:
+                continue
+            included_value_keys.add(value_key)
+            existing_value = values_by_key.get(value_key)
+            values.append(
+                {
+                    "id": int(existing_value["id"]) if existing_value is not None else None,
+                    "value": (
+                        str(existing_value["value"])
+                        if existing_value is not None and existing_value["is_active"]
+                        else imported_value["value"]
+                    ),
+                }
+            )
+        raw_configuration.append(
+            {
+                "id": int(group["id"]) if group is not None else None,
+                "name": group_name,
+                "position": position,
+                "values": values,
+            }
+        )
+
+    configuration = validate_option_configuration(raw_configuration)
+    apply_option_configuration(connection, article_id, configuration)
+    sync_variants(connection, article_id)
+
+    group_map: dict[str, sqlite3.Row] = {}
+    value_maps: dict[str, dict[str, sqlite3.Row]] = {}
+    for group in connection.execute(
+        """
+        SELECT * FROM option_groups
+        WHERE article_id = ? AND is_active = 1
+        ORDER BY position, id
+        """,
+        (article_id,),
+    ).fetchall():
+        group_key = str(group["name"]).casefold()
+        group_map[group_key] = group
+        value_maps[group_key] = {
+            str(value["value"]).casefold(): value
+            for value in connection.execute(
+                """
+                SELECT * FROM option_values
+                WHERE option_group_id = ? AND is_active = 1
+                ORDER BY position, id
+                """,
+                (group["id"],),
+            ).fetchall()
+        }
+
+    selected_variant_ids: set[int] = set()
+    price_column = "default_purchase_price_cents" if kind == "purchases" else "sale_price_cents"
+    for row in article_rows:
+        option_value_ids: list[int] = []
+        for option in row["options"]:
+            group = group_map.get(option["group_key"])
+            value = value_maps.get(option["group_key"], {}).get(option["value_key"])
+            if group is None or value is None:
+                raise ValueError(
+                    f"Zeile {row['line_number']}: Die importierte Variante konnte nicht angelegt werden."
+                )
+            option_value_ids.append(int(value["id"]))
+        combination_key = sorted_combination_key(option_value_ids)
+        variant = connection.execute(
+            "SELECT id FROM variants WHERE article_id = ? AND combination_key = ? AND is_active = 1",
+            (article_id, combination_key),
+        ).fetchone()
+        if variant is None:
+            raise ValueError(f"Zeile {row['line_number']}: Die Variante konnte nicht aufgelöst werden.")
+        variant_id = int(variant["id"])
+        row["variant_id"] = variant_id
+        selected_variant_ids.add(variant_id)
+        connection.execute(
+            f"UPDATE variants SET {price_column} = ?, updated_at = ? WHERE id = ?",
+            (int(row["price_cents"]), now, variant_id),
+        )
+
+    connection.execute(
+        "UPDATE variants SET is_offered = 0, updated_at = ? WHERE article_id = ? AND is_active = 1",
+        (now, article_id),
+    )
+    if selected_variant_ids:
+        placeholders = ",".join("?" for _ in selected_variant_ids)
+        connection.execute(
+            f"UPDATE variants SET is_offered = 1, updated_at = ? WHERE id IN ({placeholders})",
+            [now, *sorted(selected_variant_ids)],
+        )
+    return created_article
+
+
+def import_transaction_rows(
+    connection: sqlite3.Connection, rows: list[dict[str, Any]], kind: str
+) -> dict[str, int]:
+    """Create catalog entries and ledger rows after a successful full preflight."""
+
+    grouped = _transaction_rows_by_article(rows)
+    created_articles = sum(
+        int(_upsert_transaction_import_article(connection, article_rows, kind))
+        for article_rows in grouped.values()
+    )
+    on_date = today_iso()
+    prefix = "E" if kind == "purchases" else "V"
+    first_receipt = next_receipt_id(connection, prefix, on_date)
+    receipt_match = re.search(r"-(\d+)$", first_receipt)
+    first_sequence = int(receipt_match.group(1)) if receipt_match else 1
+    receipt_stem = first_receipt.rsplit("-", 1)[0]
+    first_ledger_id: int | None = None
+    created_at = utc_now()
+
+    for offset, row in enumerate(rows):
+        receipt_id = f"{receipt_stem}-{first_sequence + offset:03d}"
+        if kind == "purchases":
+            cursor = connection.execute(
+                """
+                INSERT INTO purchases (
+                    receipt_id, variant_id, quantity, unit_cost_cents, purchased_on,
+                    supplier, invoice_reference, invoice_file_path, comment, created_at,
+                    created_by, created_by_username
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    receipt_id,
+                    row["variant_id"],
+                    row["quantity"],
+                    row["price_cents"],
+                    on_date,
+                    row["party"],
+                    "CSV-Import",
+                    created_at,
+                    g.user["id"],
+                    g.user["username"],
+                ),
+            )
+        else:
+            amount_due = int(row["quantity"]) * int(row["price_cents"])
+            cursor = connection.execute(
+                """
+                INSERT INTO sales (
+                    receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
+                    amount_given_cents, donation_cents, payment_method, is_paid, payment_follow_up,
+                    is_received, delivery_status, customer_name, customer_address, event_name,
+                    sold_by, comment, sold_on, created_at, created_by, created_by_username
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, 'Sonstiges', 1, 0, 1, 'not_applicable', ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    receipt_id,
+                    row["variant_id"],
+                    row["quantity"],
+                    row["price_cents"],
+                    amount_due,
+                    amount_due,
+                    row["party"],
+                    g.user["username"],
+                    "CSV-Import",
+                    on_date,
+                    created_at,
+                    g.user["id"],
+                    g.user["username"],
+                ),
+            )
+        if first_ledger_id is None:
+            first_ledger_id = int(cursor.lastrowid)
+
+    fallback_prices = sum(row["price_source"] != "explicit" for row in rows)
+    audit(
+        connection,
+        "import_csv",
+        "purchases" if kind == "purchases" else "sales",
+        first_ledger_id,
+        {
+            "row_count": len(rows),
+            "article_count": len(grouped),
+            "created_article_count": created_articles,
+            "fallback_price_count": fallback_prices,
+        },
+    )
+    return {
+        "row_count": len(rows),
+        "article_count": len(grouped),
+        "created_article_count": created_articles,
+        "fallback_price_count": fallback_prices,
+    }
+
+
 def create_backup(app: Flask, *, force: bool = False) -> Path | None:
     """Create a restorable encrypted SQLite snapshot and invoice files.
 
@@ -7754,6 +8335,47 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return render_template(
             "articles.html", title="Artikelverwaltung", article_list=[dict(row) for row in article_rows], article=article
         )
+
+    @app.post("/artikelverwaltung/import/<import_kind>")
+    @login_required
+    @manager_required
+    def import_article_transactions(import_kind: str):
+        """Import a fully validated purchase or sale CSV as one atomic batch."""
+
+        kind = {"einkaeufe": "purchases", "verkaeufe": "sales"}.get(import_kind)
+        if kind is None:
+            abort(404)
+        connection = get_db()
+        try:
+            rows = transaction_csv_rows(request.files.get("csv_file"), kind)
+            connection.execute("BEGIN IMMEDIATE")
+            # Catalogue compatibility and every price fallback are resolved
+            # before the first INSERT. Any later constraint failure still
+            # rolls the complete article/variant/ledger batch back.
+            preflight_transaction_import(connection, rows)
+            resolve_transaction_import_prices(connection, rows, kind)
+            result = import_transaction_rows(connection, rows, kind)
+            connection.commit()
+            backup_after_commit()
+            transaction_label = "Einkäufe" if kind == "purchases" else "Verkäufe"
+            flash(
+                f"{result['row_count']} {transaction_label} aus der CSV importiert; "
+                f"{result['created_article_count']} neue Artikel angelegt.",
+                "success",
+            )
+        except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
+            connection.rollback()
+            message = (
+                "Die CSV-Daten kollidieren mit bestehenden Artikeln."
+                if isinstance(exc, sqlite3.IntegrityError)
+                else str(exc)
+            )
+            flash(f"CSV-Import abgebrochen: {message}", "error")
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not import transaction CSV")
+            flash("CSV-Import abgebrochen: Die Datei konnte nicht verarbeitet werden.", "error")
+        return redirect(url_for("article_management_page"))
 
     @app.get("/produktpalette")
     @login_required

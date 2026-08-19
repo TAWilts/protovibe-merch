@@ -3,6 +3,30 @@
 {% block content %}
 <div class="page-title-row"><div><p class="eyebrow">Stammdaten</p><h1>Artikelverwaltung</h1></div><form action="{{ url_for('create_article') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="primary-button" type="submit">Neuer Artikel</button></form></div>
 
+<section class="selection-panel transaction-import-panel">
+  <div class="section-heading no-margin"><div><h2>CSV-Import</h2><p>Einkäufe oder Verkäufe samt fehlender Artikel und Optionen einlesen. Die gesamte Datei wird vor dem Speichern geprüft.</p></div></div>
+  <div class="transaction-import-grid">
+    <form class="transaction-import-form" action="{{ url_for('import_article_transactions', import_kind='einkaeufe') }}" method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div><h3>Einkäufe importieren</h3><p>Preis je Stück; die fünfte Spalte enthält den Lieferanten.</p></div>
+      <div class="transaction-import-file-row">
+        <label>CSV-Datei<input type="file" name="csv_file" accept=".csv,text/csv" required></label>
+        <button class="secondary-button" type="button" data-csv-example-open="purchase-csv-example">Formatbeispiel</button>
+      </div>
+      <button class="primary-button" type="submit">Einkäufe importieren</button>
+    </form>
+    <form class="transaction-import-form" action="{{ url_for('import_article_transactions', import_kind='verkaeufe') }}" method="post" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div><h3>Verkäufe importieren</h3><p>Preis je Stück; die fünfte Spalte enthält den Kunden.</p></div>
+      <div class="transaction-import-file-row">
+        <label>CSV-Datei<input type="file" name="csv_file" accept=".csv,text/csv" required></label>
+        <button class="secondary-button" type="button" data-csv-example-open="sale-csv-example">Formatbeispiel</button>
+      </div>
+      <button class="primary-button" type="submit">Verkäufe importieren</button>
+    </form>
+  </div>
+</section>
+
 <section class="article-management-layout">
   <aside class="selection-panel article-list-panel">
     <h2>Artikel</h2>
@@ -48,5 +72,25 @@
     {% endif %}
   </section>
 </section>
+
+<dialog id="purchase-csv-example" class="confirmation-dialog csv-example-dialog">
+  <h2>Beispiel: Einkäufe</h2>
+  <p>Die Kopfzeile ist Pflicht. Mehrere Optionen stehen in einem angeführten Feld und werden mit Semikolon getrennt. Ein leerer Preis übernimmt den nächstpassenden Preis.</p>
+  <textarea id="purchase-csv-example-text" rows="5" readonly spellcheck="false">Anzahl;Artikel;Optionen;Einkaufspreis;Gekauft von
+12;T-Shirt;"Größe=S;Farbe=Schwarz";11,50;Druckerei Beispiel
+15;T-Shirt;"Größe=M;Farbe=Schwarz";;Druckerei Beispiel
+4;Poster;;2,00;Printshop Beispiel</textarea>
+  <div class="dialog-actions"><button class="secondary-button" type="button" data-csv-copy="purchase-csv-example-text">Beispiel kopieren</button><button class="primary-button" type="button" data-csv-example-close>Schließen</button></div>
+</dialog>
+
+<dialog id="sale-csv-example" class="confirmation-dialog csv-example-dialog">
+  <h2>Beispiel: Verkäufe</h2>
+  <p>Die Kopfzeile ist Pflicht. Optionsnamen und Werte werden als <strong>Optionsname=Wert</strong> geschrieben.</p>
+  <textarea id="sale-csv-example-text" rows="5" readonly spellcheck="false">Anzahl;Artikel;Optionen;Verkaufspreis;Verkauft an
+2;T-Shirt;"Größe=S;Farbe=Schwarz";20,00;Kundin Beispiel
+3;T-Shirt;"Größe=M;Farbe=Schwarz";;Kunde Beispiel
+1;Poster;;5,00;Kunde Beispiel</textarea>
+  <div class="dialog-actions"><button class="secondary-button" type="button" data-csv-copy="sale-csv-example-text">Beispiel kopieren</button><button class="primary-button" type="button" data-csv-example-close>Schließen</button></div>
+</dialog>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='table-filters.js') }}"></script>{% if article %}<script src="{{ url_for('static', filename='articles.js') }}"></script>{% endif %}{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='table-filters.js') }}"></script><script src="{{ url_for('static', filename='csv-import.js') }}"></script>{% if article %}<script src="{{ url_for('static', filename='articles.js') }}"></script>{% endif %}{% endblock %}

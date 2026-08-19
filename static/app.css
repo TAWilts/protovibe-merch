@@ -390,6 +390,18 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .article-list-panel { align-self: start; position: sticky; top: 88px; }
 .article-list-filter { margin: 12px 0; }
 .article-editor { min-width: 0; }
+.transaction-import-panel { margin-bottom: 18px; }
+.transaction-import-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.transaction-import-form { display: grid; align-content: start; gap: 13px; padding: 15px; border: 1px solid rgba(105,183,255,.24); border-radius: 12px; background: rgba(22,32,48,.28); }
+.transaction-import-form h3 { margin: 0; font-size: .95rem; }
+.transaction-import-form p { margin: 4px 0 0; color: var(--muted); font-size: .79rem; line-height: 1.4; }
+.transaction-import-file-row { display: flex; align-items: end; gap: 9px; }
+.transaction-import-file-row label { min-width: 0; flex: 1; }
+.transaction-import-file-row input[type="file"] { padding: 7px; }
+.transaction-import-file-row > button { flex: 0 0 auto; }
+.transaction-import-form > .primary-button { justify-self: start; }
+.csv-example-dialog { width: min(760px, calc(100vw - 28px)); }
+.csv-example-dialog textarea { min-height: 150px; white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .78rem; line-height: 1.5; }
 .article-offer-toggle { margin-top: 14px; color: #f7d09b; }
 .option-editor, .variant-price-section { margin-top: 25px; padding-top: 22px; border-top: 1px solid var(--border); }
 .option-table-scroll { max-height: 390px; }
@@ -663,11 +675,13 @@ body.product-slideshow-running { overflow: hidden; }
   .page-shell { padding: 23px 14px 38px; }
   .page-title-row { align-items: start; flex-direction: column; margin-bottom: 16px; }
   .receipt-preview { text-align: left; }
-  .transaction-layout, .article-management-layout { grid-template-columns: 1fr; }
+  .transaction-layout, .article-management-layout, .transaction-import-grid { grid-template-columns: 1fr; }
   .product-panel { order: 1; }
   .option-panel { order: 2; }
   .sale-details { order: 3; }
   .article-list-panel { position: static; }
+  .transaction-import-file-row { align-items: stretch; flex-direction: column; }
+  .transaction-import-file-row > button, .transaction-import-form > .primary-button { width: 100%; justify-content: center; }
   .button-list { max-height: 260px; }
   .seller-field { flex: 1 1 100%; max-width: none; margin-left: 0; }
   .two-columns, .three-columns { grid-template-columns: 1fr; }
