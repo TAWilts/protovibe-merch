@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% macro sort_header(view, key, label) -%}
-<th data-balance-sort-header data-balance-view="{{ view }}" data-balance-sort-key="{{ key }}" aria-sort="none"><button class="balance-sort-button" type="button" data-balance-sort-key="{{ key }}" data-balance-view="{{ view }}">{{ label }} <span aria-hidden="true" data-balance-sort-icon>↕</span></button></th>
+<th data-balance-sort-header data-balance-view="{{ view }}" data-balance-sort-key="{{ key }}" aria-sort="none"><button class="balance-sort-button" type="button" data-balance-sort-key="{{ key }}" data-balance-view="{{ view }}">{{ label }} <span aria-hidden="true" data-balance-sort-icon></span></button></th>
 {%- endmacro %}
 {% macro balance_headers(view) -%}
 <thead><tr>{{ sort_header(view, 'article_name', 'Artikel') }}{{ sort_header(view, 'purchased_quantity', 'Gekauft') }}{{ sort_header(view, 'sold_quantity', 'Verkauft') }}{{ sort_header(view, 'stock', 'Aktueller Bestand') }}{{ sort_header(view, 'minimum_stock', 'Mindestbestand') }}{{ sort_header(view, 'minimum_stock_warning', 'Warnung') }}{{ sort_header(view, 'no_reorder', 'Nachbestellen') }}{{ sort_header(view, 'is_available_for_sale', 'Angeboten') }}{{ sort_header(view, 'purchase_cost_cents', 'Ausgaben') }}{{ sort_header(view, 'revenue_cents', 'Umsatz') }}{{ sort_header(view, 'donation_cents', 'Spenden') }}</tr></thead>

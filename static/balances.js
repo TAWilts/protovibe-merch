@@ -131,7 +131,7 @@
     filter: "",
     onlyPurchased: onlyPurchasedInput.checked,
     grouped: groupByArticleInput.checked,
-    sort: Object.fromEntries(views.map((view) => [view, { key: "article_name", direction: "asc" }])),
+    sort: Object.fromEntries(views.map((view) => [view, { key: null, direction: "default" }])),
   };
 
   function normalise(value) {
@@ -167,25 +167,24 @@
 
   function sortedRows(view) {
     const sort = state.sort[view];
-    return rowsByView[view]
-      .filter(isVisible)
-      .slice()
-      .sort((left, right) => {
-        const leftValue = sortableValue(left, sort.key);
-        const rightValue = sortableValue(right, sort.key);
-        if (leftValue === null || rightValue === null) {
-          if (leftValue === null && rightValue !== null) return 1;
-          if (rightValue === null && leftValue !== null) return -1;
-        }
-        let comparison;
-        if (numericSortKeys.has(sort.key)) {
-          comparison = Number(leftValue) - Number(rightValue);
-        } else {
-          comparison = collator.compare(String(leftValue), String(rightValue));
-        }
-        if (comparison === 0) comparison = collator.compare(rowText(left), rowText(right));
-        return sort.direction === "asc" ? comparison : -comparison;
-      });
+    const visibleRows = rowsByView[view].filter(isVisible).slice();
+    if (!sort || sort.direction === "default" || !sort.key) return visibleRows;
+    return visibleRows.sort((left, right) => {
+      const leftValue = sortableValue(left, sort.key);
+      const rightValue = sortableValue(right, sort.key);
+      if (leftValue === null || rightValue === null) {
+        if (leftValue === null && rightValue !== null) return 1;
+        if (rightValue === null && leftValue !== null) return -1;
+      }
+      let comparison;
+      if (numericSortKeys.has(sort.key)) {
+        comparison = Number(leftValue) - Number(rightValue);
+      } else {
+        comparison = collator.compare(String(leftValue), String(rightValue));
+      }
+      if (comparison === 0) comparison = collator.compare(rowText(left), rowText(right));
+      return sort.direction === "asc" ? comparison : -comparison;
+    });
   }
 
   function groupsFor(rows) {
@@ -286,7 +285,7 @@
       const icon = document.createElement("span");
       icon.dataset.balanceSortIcon = "";
       icon.setAttribute("aria-hidden", "true");
-      icon.textContent = "↕";
+      icon.textContent = "";
       button.append(icon);
       cell.append(button);
       row.append(cell);
@@ -344,10 +343,10 @@
       const view = header.dataset.balanceView;
       const key = header.dataset.balanceSortKey;
       const sort = state.sort[view];
-      const active = sort && sort.key === key;
+      const active = sort && sort.direction !== "default" && sort.key === key;
       header.setAttribute("aria-sort", active ? (sort.direction === "asc" ? "ascending" : "descending") : "none");
       const icon = header.querySelector("[data-balance-sort-icon]");
-      if (icon) icon.textContent = active ? (sort.direction === "asc" ? "↑" : "↓") : "↕";
+      if (icon) icon.textContent = active ? (sort.direction === "asc" ? "↑" : "↓") : "";
     });
   }
 
@@ -468,10 +467,13 @@
       const key = sortButton.dataset.balanceSortKey;
       if (!views.includes(view) || !headers.some(([headerKey]) => headerKey === key)) return;
       const sort = state.sort[view];
-      state.sort[view] = {
-        key,
-        direction: sort.key === key && sort.direction === "asc" ? "desc" : "asc",
-      };
+      if (sort.key !== key || sort.direction === "default") {
+        state.sort[view] = { key, direction: "asc" };
+      } else if (sort.direction === "asc") {
+        state.sort[view] = { key, direction: "desc" };
+      } else {
+        state.sort[view] = { key: null, direction: "default" };
+      }
       render();
       return;
     }

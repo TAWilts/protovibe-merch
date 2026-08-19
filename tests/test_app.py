@@ -2052,6 +2052,67 @@ class MerchAppTestCase(unittest.TestCase):
         sales_script = (Path(__file__).parents[1] / "static" / "sales.js").read_text(encoding="utf-8")
         self.assertIn("Mindestbestandswarnung", sales_script)
 
+    def test_balance_default_sort_follows_configured_variant_order(self) -> None:
+        """Default balance order keeps S, M, L, XL instead of alphabetising labels."""
+
+        first_variant_id = self.seed_variant("Ordered Shirt")
+        with self.app.app_context():
+            connection = get_db()
+            article_id = connection.execute(
+                "SELECT article_id FROM variants WHERE id = ?", (first_variant_id,)
+            ).fetchone()[0]
+            groups = connection.execute(
+                "SELECT id, name, position FROM option_groups WHERE article_id = ? ORDER BY position, id",
+                (article_id,),
+            ).fetchall()
+            color_group, size_group = groups
+            color_value = connection.execute(
+                "SELECT id, value FROM option_values WHERE option_group_id = ?", (color_group["id"],)
+            ).fetchone()
+            medium_value = connection.execute(
+                "SELECT id, value FROM option_values WHERE option_group_id = ?", (size_group["id"],)
+            ).fetchone()
+            apply_option_configuration(
+                connection,
+                article_id,
+                [
+                    {
+                        "id": color_group["id"],
+                        "name": color_group["name"],
+                        "position": 0,
+                        "values": [{"id": color_value["id"], "value": color_value["value"], "position": 0}],
+                    },
+                    {
+                        "id": size_group["id"],
+                        "name": size_group["name"],
+                        "position": 1,
+                        "values": [
+                            {"id": None, "value": "S", "position": 0},
+                            {"id": medium_value["id"], "value": "M", "position": 1},
+                            {"id": None, "value": "L", "position": 2},
+                            {"id": None, "value": "XL", "position": 3},
+                        ],
+                    },
+                ],
+            )
+            sync_variants(connection, article_id)
+            connection.commit()
+            balances = balance_payload(connection)
+
+        self.assertEqual(
+            [row["option_text"] for row in balances["reorder_rows"]],
+            [
+                "Farbe: schwarz · Größe: S",
+                "Farbe: schwarz · Größe: M",
+                "Farbe: schwarz · Größe: L",
+                "Farbe: schwarz · Größe: XL",
+            ],
+        )
+        balance_script = (Path(__file__).parents[1] / "static" / "balances.js").read_text(encoding="utf-8")
+        self.assertIn('{ key: null, direction: "default" }', balance_script)
+        self.assertIn('sort.direction === "default"', balance_script)
+        self.assertIn('state.sort[view] = { key: null, direction: "default" }', balance_script)
+
     def test_article_and_variant_can_be_withdrawn_from_sales_assortment(self) -> None:
         """Withdrawing an item hides it from sale, not from inventory history."""
 

@@ -3326,8 +3326,9 @@ def variant_label_map(
         placeholders = ",".join("?" for _ in value_ids)
         value_rows = connection.execute(
             f"""
-            SELECT ov.id, ov.value, ov.is_active, og.name AS group_name,
-                   og.position AS group_position, og.is_active AS group_is_active
+            SELECT ov.id, ov.value, ov.position AS value_position, ov.is_active,
+                   og.name AS group_name, og.position AS group_position,
+                   og.is_active AS group_is_active
             FROM option_values ov
             JOIN option_groups og ON og.id = ov.option_group_id
             WHERE ov.id IN ({placeholders})
@@ -3352,6 +3353,7 @@ def variant_label_map(
                         "group_name": value["group_name"],
                         "value": value["value"],
                         "position": value["group_position"],
+                        "value_position": value["value_position"],
                     }
                 )
         options.sort(key=lambda item: (item["position"], item["group_name"].lower()))
@@ -5321,7 +5323,20 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
                 "is_active": bool(label["is_active"]),
             }
         )
-    rows.sort(key=lambda item: (item["article_name"].casefold(), item["option_text"].casefold()))
+    rows.sort(
+        key=lambda item: (
+            item["article_name"].casefold(),
+            tuple(
+                (
+                    int(option.get("position", 9999)),
+                    int(option.get("value_position", 9999)),
+                    str(option.get("value", "")).casefold(),
+                )
+                for option in labels[int(item["variant_id"])].get("options", [])
+            ),
+            int(item["variant_id"]),
+        )
+    )
     reorder_rows = [row for row in rows if not row["no_reorder"]]
     obsolete_rows = [row for row in rows if row["no_reorder"]]
 
