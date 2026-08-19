@@ -595,6 +595,58 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual([row["invoice_reference"] for row in references], ["ALT-42", "ALT-43"])
         self.assertTrue(all(row["invoice_file_path"] is None for row in references))
 
+    def test_existing_variant_photo_schema_defaults_photos_into_the_slideshow(self) -> None:
+        """A deployment with the previous photo feature keeps every old photo selected."""
+
+        root = Path(self.tempdir.name) / "photo-schema-migration"
+        database = root / "merch.sqlite3"
+        root.mkdir()
+        connection = sqlite3.connect(database)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE variant_photos (
+                    id INTEGER PRIMARY KEY,
+                    variant_id INTEGER NOT NULL,
+                    file_path TEXT NOT NULL UNIQUE,
+                    original_filename TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    created_by INTEGER,
+                    created_by_username TEXT
+                );
+                INSERT INTO variant_photos (variant_id, file_path, original_filename, position, created_at)
+                VALUES (1, 'existing-photo.jpg', 'existing-photo.jpg', 0, '2026-08-14T00:00:00+00:00');
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": str(database),
+                "BACKUP_DIR": str(root / "backups"),
+                "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+                "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+                "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password",
+                "APP_VERSION": "v0.3.0",
+                "AUTO_BACKUP": False,
+            }
+        )
+        with migrated_app.app_context():
+            columns = {row["name"] for row in get_db().execute("PRAGMA table_info(variant_photos)").fetchall()}
+            value = get_db().execute("SELECT include_in_slideshow FROM variant_photos WHERE id = 1").fetchone()[0]
+            indexes = {row["name"] for row in get_db().execute("PRAGMA index_list(variant_photos)").fetchall()}
+            tables = {row["name"] for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+        self.assertIn("include_in_slideshow", columns)
+        self.assertEqual(value, 1)
+        self.assertIn("idx_variant_photos_slideshow", indexes)
+        self.assertIn("slideshow_extra_photos", tables)
+
     def seed_variant(self, article_name: str = "Test Shirt") -> int:
         """Create an article with generic Farbe/Größe options and one variant."""
 
@@ -2165,6 +2217,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(uploaded.status_code, 200)
         photo = uploaded.json["photos"][0]
         photo_id = photo["id"]
+        self.assertTrue(photo["include_in_slideshow"])
 
         photo_dir = Path(self.app.config["VARIANT_PHOTO_UPLOAD_DIR"])
         stored_files = list(photo_dir.iterdir())
@@ -2176,12 +2229,13 @@ class MerchAppTestCase(unittest.TestCase):
 
         with self.app.app_context():
             photo_row = get_db().execute(
-                "SELECT file_path, original_filename FROM variant_photos WHERE id = ?", (photo_id,)
+                "SELECT file_path, original_filename, include_in_slideshow FROM variant_photos WHERE id = ?", (photo_id,)
             ).fetchone()
             catalogue = article_payload(get_db(), offered_only=True, include_variant_photos=True)
             backup = create_backup(self.app, force=True)
         self.assertEqual(photo_row["file_path"], stored_files[0].name)
         self.assertEqual(photo_row["original_filename"], "shirt.png")
+        self.assertTrue(photo_row["include_in_slideshow"])
         self.assertTrue((backup / "variant-photos" / stored_files[0].name).is_file())
         second_variant = next(
             variant
@@ -2201,6 +2255,127 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertFalse(stored_files[0].exists())
         with self.app.app_context():
             self.assertIsNone(get_db().execute("SELECT id FROM variant_photos WHERE id = ?", (photo_id,)).fetchone())
+
+    def test_product_slideshow_gallery_persists_global_photo_selection(self) -> None:
+        variant_id = self.seed_variant("Campaign Shirt")
+        source = io.BytesIO()
+        Image.new("RGB", (1200, 800), (184, 42, 129)).save(source, format="PNG")
+        source.seek(0)
+        uploaded = self.client.post(
+            f"/api/varianten/{variant_id}/fotos",
+            data={"photos": (source, "campaign.png")},
+            headers={"X-CSRF-Token": "test-csrf"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(uploaded.status_code, 200)
+        photo_id = uploaded.json["photos"][0]["id"]
+
+        gallery = self.client.get("/produktpalette")
+        self.assertEqual(gallery.status_code, 200)
+        html = gallery.get_data(as_text=True)
+        self.assertIn('href="/produktpalette"', html)
+        self.assertIn(">Diashow<", html)
+        self.assertIn('/static/slideshow.js', html)
+        self.assertIn('value="other"', html)
+        self.assertIn('id="slideshow-change-rate"', html)
+        self.assertIn('id="slideshow-animation-speed"', html)
+        self.assertIn('id="slideshow-animation-speed" type="range" min="0.1"', html)
+        slideshow_response = self.client.get("/static/slideshow.js")
+        slideshow_script = slideshow_response.get_data(as_text=True)
+        slideshow_response.close()
+        self.assertIn("function beginSlideExit()", slideshow_script)
+        self.assertIn('frame.classList.add("is-leaving"', slideshow_script)
+        match = re.search(
+            r'<script id="product-slideshow-data" type="application/json">(.*?)</script>', html, flags=re.DOTALL
+        )
+        self.assertIsNotNone(match)
+        payload = json.loads(match.group(1))
+        gallery_photo = next(photo for photo in payload["photos"] if photo["id"] == photo_id)
+        self.assertEqual(gallery_photo["article_name"], "Campaign Shirt")
+        self.assertEqual(gallery_photo["sale_price_cents"], 2000)
+        self.assertTrue(gallery_photo["include_in_slideshow"])
+
+        changed = self.client.patch(
+            f"/api/variantenfotos/{photo_id}/diashow",
+            json={"include_in_slideshow": False},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(changed.status_code, 200)
+        self.assertFalse(changed.json["include_in_slideshow"])
+        with self.app.app_context():
+            photo = get_db().execute(
+                "SELECT include_in_slideshow FROM variant_photos WHERE id = ?", (photo_id,)
+            ).fetchone()
+            audit_row = get_db().execute(
+                "SELECT details_json FROM audit_log WHERE action = 'set_slideshow_photo_inclusion' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertFalse(photo["include_in_slideshow"])
+        self.assertFalse(json.loads(audit_row["details_json"])["include_in_slideshow"])
+
+        refreshed = self.client.get("/produktpalette").get_data(as_text=True)
+        refreshed_match = re.search(
+            r'<script id="product-slideshow-data" type="application/json">(.*?)</script>', refreshed, flags=re.DOTALL
+        )
+        refreshed_payload = json.loads(refreshed_match.group(1))
+        refreshed_photo = next(photo for photo in refreshed_payload["photos"] if photo["id"] == photo_id)
+        self.assertFalse(refreshed_photo["include_in_slideshow"])
+
+        rejected = self.client.patch(
+            f"/api/variantenfotos/{photo_id}/diashow",
+            json={"include_in_slideshow": "false"},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(rejected.status_code, 400)
+
+        other_source = io.BytesIO()
+        Image.new("RGB", (900, 1400), (12, 116, 86)).save(other_source, format="PNG")
+        other_source.seek(0)
+        other_uploaded = self.client.post(
+            "/api/diashow/fotos",
+            data={"photos": (other_source, "preisliste.png")},
+            headers={"X-CSRF-Token": "test-csrf"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(other_uploaded.status_code, 200)
+        other_photo = other_uploaded.json["photos"][0]
+        self.assertEqual(other_photo["kind"], "other")
+        self.assertFalse(other_photo["is_product_photo"])
+        self.assertTrue(other_photo["include_in_slideshow"])
+
+        other_gallery = self.client.get("/produktpalette").get_data(as_text=True)
+        other_match = re.search(
+            r'<script id="product-slideshow-data" type="application/json">(.*?)</script>', other_gallery, flags=re.DOTALL
+        )
+        other_payload = json.loads(other_match.group(1))
+        catalogue_other_photo = next(photo for photo in other_payload["photos"] if photo["key"] == other_photo["key"])
+        self.assertEqual(catalogue_other_photo["original_filename"], "preisliste.png")
+        self.assertNotIn("article_name", catalogue_other_photo)
+
+        served_other = self.client.get(other_photo["url"])
+        self.assertEqual(served_other.status_code, 200)
+        self.assertEqual(served_other.mimetype, "image/jpeg")
+        changed_other = self.client.patch(
+            other_photo["url"],
+            json={"include_in_slideshow": False},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(changed_other.status_code, 200)
+        self.assertFalse(changed_other.json["include_in_slideshow"])
+        with self.app.app_context():
+            other_row = get_db().execute(
+                "SELECT file_path, include_in_slideshow FROM slideshow_extra_photos WHERE id = ?", (other_photo["id"],)
+            ).fetchone()
+        stored_other = Path(self.app.config["VARIANT_PHOTO_UPLOAD_DIR"]) / other_row["file_path"]
+        self.assertFalse(other_row["include_in_slideshow"])
+        self.assertTrue(stored_other.is_file())
+
+        deleted_other = self.client.delete(other_photo["url"], headers={"X-CSRF-Token": "test-csrf"})
+        self.assertEqual(deleted_other.status_code, 200)
+        self.assertFalse(stored_other.exists())
+        with self.app.app_context():
+            self.assertIsNone(
+                get_db().execute("SELECT id FROM slideshow_extra_photos WHERE id = ?", (other_photo["id"],)).fetchone()
+            )
 
     def test_purchase_invoice_upload_edit_delete_and_backup(self) -> None:
         """Invoices are atomically attached, replaceable and recoverable."""

@@ -192,6 +192,24 @@ CREATE TABLE IF NOT EXISTS variant_photos (
     file_path TEXT NOT NULL UNIQUE,
     original_filename TEXT NOT NULL,
     position INTEGER NOT NULL DEFAULT 0,
+    -- Product photos are global catalogue data.  They are included in the
+    -- shop-display slideshow unless a manager explicitly opts one out.
+    include_in_slideshow INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    created_by INTEGER,
+    created_by_username TEXT
+);
+
+-- Extra shop-display pictures (for example a price overview or band artwork)
+-- deliberately have no variant relation.  They reuse the same protected file
+-- store as product photos, while their metadata stays separate and globally
+-- visible to every manager.
+CREATE TABLE IF NOT EXISTS slideshow_extra_photos (
+    id INTEGER PRIMARY KEY,
+    file_path TEXT NOT NULL UNIQUE,
+    original_filename TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    include_in_slideshow INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     created_by INTEGER,
     created_by_username TEXT
@@ -298,6 +316,7 @@ CREATE INDEX IF NOT EXISTS idx_option_groups_article ON option_groups(article_id
 CREATE INDEX IF NOT EXISTS idx_option_values_group ON option_values(option_group_id, position);
 CREATE INDEX IF NOT EXISTS idx_variants_article ON variants(article_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_variant_photos_variant_position ON variant_photos(variant_id, position, id);
+CREATE INDEX IF NOT EXISTS idx_slideshow_extra_photos_position ON slideshow_extra_photos(position, id);
 CREATE INDEX IF NOT EXISTS idx_purchases_variant ON purchases(variant_id, purchased_on);
 CREATE INDEX IF NOT EXISTS idx_purchases_receipt_id ON purchases(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_receipt_attachments_receipt ON purchase_receipt_attachments(receipt_id);
@@ -317,6 +336,7 @@ OPERATION_TABLES = (
     "option_values",
     "variants",
     "variant_photos",
+    "slideshow_extra_photos",
     "purchases",
     "purchase_receipt_attachments",
     "sales",
@@ -424,6 +444,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.purchases": "Einkäufe",
         "nav.balances": "Bilanzen",
         "nav.articles": "Artikelverwaltung",
+        "nav.slideshow": "Diashow",
         "nav.administration": "Verwaltung",
         "profile.link_title": "Profil und Sicherheitseinstellungen öffnen",
         "logout": "Abmelden",
@@ -487,6 +508,39 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "photos.save_first": "Nach dem ersten Speichern verfügbar",
         "photos.upload_failed": "Die Fotos konnten nicht hochgeladen werden.",
         "photos.delete_failed": "Das Foto konnte nicht gelöscht werden.",
+        "slideshow.eyebrow": "Werbeanzeige",
+        "slideshow.title": "Produktpalette",
+        "slideshow.intro": "Stelle die gemeinsamen Produktfotos zusammen und starte eine Vollbild-Diashow für den Verkaufsstand.",
+        "slideshow.start": "Produktpalette zeigen",
+        "slideshow.start_hint": "Die Diashow endet mit einem beliebigen Tastendruck oder Klick.",
+        "slideshow.upload_title": "Weitere Produktfotos",
+        "slideshow.upload_intro": "Ordne die Fotos einer Variante zu oder wähle Anderes für eigenständige Bilder. Alle Uploads werden für alle Benutzer gespeichert und als JPEG optimiert.",
+        "slideshow.variant": "Variante",
+        "slideshow.target": "Zuordnung",
+        "slideshow.choose_variant": "Variante auswählen",
+        "slideshow.other": "Anderes",
+        "slideshow.other_hint": "Eigenständiges Dia ohne Artikel, Variante und Preis",
+        "slideshow.upload": "Fotos hochladen",
+        "slideshow.uploading": "Fotos werden hochgeladen und optimiert …",
+        "slideshow.gallery_title": "Alle Bilder für die Diashow",
+        "slideshow.gallery_intro": "Neue Fotos sind automatisch für die Produktpalette ausgewählt. Deaktiviere einzelne Fotos, um sie nur im Artikel zu behalten.",
+        "slideshow.include": "In Produktpalette zeigen",
+        "slideshow.selected_count": "{count} von {total} Fotos für die Diashow ausgewählt",
+        "slideshow.empty": "Noch keine Bilder vorhanden. Wähle oben eine Variante oder Anderes und lade die ersten Bilder hoch.",
+        "slideshow.no_selected": "Wähle mindestens ein Bild für die Diashow aus.",
+        "slideshow.variant_required": "Wähle eine Variante oder Anderes für die Fotos aus.",
+        "slideshow.default_variant": "Standardvariante",
+        "slideshow.not_offered": "Nicht im Verkauf angeboten",
+        "slideshow.exit_hint": "Beliebige Taste oder Klick beendet die Produktpalette",
+        "slideshow.update_failed": "Die Auswahl für die Produktpalette konnte nicht gespeichert werden.",
+        "slideshow.upload_failed": "Die Produktfotos konnten nicht hochgeladen werden.",
+        "slideshow.delete_other": "Bild entfernen",
+        "slideshow.delete_other_confirm": "Dieses eigenständige Dia wirklich entfernen?",
+        "slideshow.delete_failed": "Das Dia konnte nicht entfernt werden.",
+        "slideshow.change_rate": "Bildwechselrate",
+        "slideshow.change_rate_value": "alle {seconds} s",
+        "slideshow.animation_speed": "Animationsgeschwindigkeit",
+        "slideshow.animation_speed_value": "{speed}×",
     },
     "en": {
         "nav.label": "Main navigation",
@@ -496,6 +550,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.purchases": "Purchases",
         "nav.balances": "Balances",
         "nav.articles": "Catalogue",
+        "nav.slideshow": "Slideshow",
         "nav.administration": "Administration",
         "profile.link_title": "Open profile and security settings",
         "logout": "Sign out",
@@ -559,6 +614,39 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "photos.save_first": "Available after first save",
         "photos.upload_failed": "The photos could not be uploaded.",
         "photos.delete_failed": "The photo could not be deleted.",
+        "slideshow.eyebrow": "Shop display",
+        "slideshow.title": "Product display",
+        "slideshow.intro": "Curate the shared product photos and launch a full-screen slideshow for the sales stand.",
+        "slideshow.start": "Show product display",
+        "slideshow.start_hint": "Any key press or click ends the slideshow.",
+        "slideshow.upload_title": "More product photos",
+        "slideshow.upload_intro": "Assign photos to a variant or choose Other for independent pictures. Uploads are saved for every user and optimised as JPEG files.",
+        "slideshow.variant": "Variant",
+        "slideshow.target": "Assignment",
+        "slideshow.choose_variant": "Choose a variant",
+        "slideshow.other": "Other",
+        "slideshow.other_hint": "Standalone slide without article, variant or price",
+        "slideshow.upload": "Upload photos",
+        "slideshow.uploading": "Uploading and optimising photos …",
+        "slideshow.gallery_title": "All slideshow pictures",
+        "slideshow.gallery_intro": "New photos are included in the product display by default. Disable individual photos to keep them only with the product.",
+        "slideshow.include": "Show in product display",
+        "slideshow.selected_count": "{count} of {total} photos selected for the slideshow",
+        "slideshow.empty": "There are no pictures yet. Choose a variant or Other above and upload the first images.",
+        "slideshow.no_selected": "Choose at least one picture for the slideshow.",
+        "slideshow.variant_required": "Choose a variant or Other for the photos first.",
+        "slideshow.default_variant": "Standard variant",
+        "slideshow.not_offered": "Not offered for sale",
+        "slideshow.exit_hint": "Any key or click ends the product display",
+        "slideshow.update_failed": "The product-display selection could not be saved.",
+        "slideshow.upload_failed": "The product photos could not be uploaded.",
+        "slideshow.delete_other": "Remove picture",
+        "slideshow.delete_other_confirm": "Remove this standalone slide?",
+        "slideshow.delete_failed": "The slide could not be removed.",
+        "slideshow.change_rate": "Image change rate",
+        "slideshow.change_rate_value": "every {seconds} s",
+        "slideshow.animation_speed": "Animation speed",
+        "slideshow.animation_speed_value": "{speed}×",
     },
 }
 
@@ -1547,7 +1635,7 @@ def variant_photos_by_variant(
     placeholders = ",".join("?" for _ in identifiers)
     rows = connection.execute(
         f"""
-        SELECT id, variant_id, original_filename, position, created_at
+        SELECT id, variant_id, original_filename, position, include_in_slideshow, created_at
         FROM variant_photos
         WHERE variant_id IN ({placeholders})
         ORDER BY variant_id, position, id
@@ -1557,9 +1645,107 @@ def variant_photos_by_variant(
     photos: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         photo = dict(row)
+        photo["include_in_slideshow"] = bool(photo["include_in_slideshow"])
         photo["url"] = f"/api/variantenfotos/{photo['id']}"
         photos[int(photo["variant_id"])].append(photo)
     return dict(photos)
+
+
+def slideshow_extra_photo_metadata(
+    connection: sqlite3.Connection, photo_ids: Iterable[int] | None = None
+) -> list[dict[str, Any]]:
+    """Return public metadata for independently uploaded slideshow pictures."""
+
+    parameters: list[Any] = []
+    where_clause = ""
+    if photo_ids is not None:
+        identifiers = sorted({int(photo_id) for photo_id in photo_ids})
+        if not identifiers:
+            return []
+        where_clause = f"WHERE id IN ({','.join('?' for _ in identifiers)})"
+        parameters.extend(identifiers)
+    rows = connection.execute(
+        f"""
+        SELECT id, original_filename, position, include_in_slideshow, created_at
+        FROM slideshow_extra_photos
+        {where_clause}
+        ORDER BY position, id
+        """,
+        parameters,
+    ).fetchall()
+    photos: list[dict[str, Any]] = []
+    for row in rows:
+        photo = dict(row)
+        photo["kind"] = "other"
+        photo["key"] = f"other:{photo['id']}"
+        photo["is_product_photo"] = False
+        photo["include_in_slideshow"] = bool(photo["include_in_slideshow"])
+        photo["url"] = f"/api/diashow/fotos/{photo['id']}"
+        photos.append(photo)
+    return photos
+
+
+def product_slideshow_catalogue(connection: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+    """Return global, active catalogue photos and valid upload targets.
+
+    Product photos belong to variants, not to an individual account.  The
+    slideshow therefore intentionally reads one shared set of active variants
+    and carries the current price/labels alongside each safe photo URL.
+    """
+
+    variant_rows = connection.execute(
+        """
+        SELECT v.id
+        FROM variants v
+        JOIN articles a ON a.id = v.article_id
+        WHERE v.is_active = 1 AND a.is_active = 1
+        ORDER BY a.name COLLATE NOCASE, v.id
+        """
+    ).fetchall()
+    variant_ids = [int(row["id"]) for row in variant_rows]
+    labels = variant_label_map(connection, variant_ids)
+    photos_by_variant = variant_photos_by_variant(connection, variant_ids)
+
+    variants: list[dict[str, Any]] = []
+    for variant_id in variant_ids:
+        label = labels.get(variant_id)
+        if label is None:
+            continue
+        variants.append(
+            {
+                "id": variant_id,
+                "article_name": str(label["article_name"]),
+                "option_text": str(label["option_text"]),
+                "label": str(label["label"]),
+                "sale_price_cents": int(label["sale_price_cents"]),
+                "is_offered": bool(label["is_offered"] and label["article_is_offered"]),
+            }
+        )
+    variants.sort(key=lambda item: (item["article_name"].casefold(), item["option_text"].casefold(), item["id"]))
+
+    photos: list[dict[str, Any]] = []
+    for variant in variants:
+        for photo in photos_by_variant.get(int(variant["id"]), []):
+            photos.append(
+                {
+                    "id": int(photo["id"]),
+                    "kind": "variant",
+                    "key": f"variant:{photo['id']}",
+                    "is_product_photo": True,
+                    "variant_id": int(variant["id"]),
+                    "original_filename": str(photo["original_filename"]),
+                    "position": int(photo["position"]),
+                    "include_in_slideshow": bool(photo["include_in_slideshow"]),
+                    "url": str(photo["url"]),
+                    "article_name": variant["article_name"],
+                    "option_text": variant["option_text"],
+                    "label": variant["label"],
+                    "sale_price_cents": variant["sale_price_cents"],
+                    "is_offered": variant["is_offered"],
+                }
+            )
+    photos.extend(slideshow_extra_photo_metadata(connection))
+    return {"variants": variants, "photos": photos}
 
 
 def add_variant_photo_fallbacks(
@@ -2182,6 +2368,15 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
         if "is_offered" not in variant_columns:
             connection.execute("ALTER TABLE variants ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
 
+        photo_columns = {row["name"] for row in connection.execute("PRAGMA table_info(variant_photos)").fetchall()}
+        if "include_in_slideshow" not in photo_columns:
+            connection.execute(
+                "ALTER TABLE variant_photos ADD COLUMN include_in_slideshow INTEGER NOT NULL DEFAULT 1"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_variant_photos_slideshow ON variant_photos(include_in_slideshow)"
+        )
+
         # Invoice references used to be a single free-text field.  Preserve
         # those values and add a separate server-managed attachment path for
         # drag-and-drop PDF/image uploads.
@@ -2394,6 +2589,15 @@ def upgrade_operations_schema(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE variants ADD COLUMN minimum_stock INTEGER CHECK(minimum_stock >= 0)")
     if "is_offered" not in variant_columns:
         connection.execute("ALTER TABLE variants ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
+
+    photo_columns = set(table_columns(connection, "variant_photos"))
+    if "include_in_slideshow" not in photo_columns:
+        connection.execute(
+            "ALTER TABLE variant_photos ADD COLUMN include_in_slideshow INTEGER NOT NULL DEFAULT 1"
+        )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_variant_photos_slideshow ON variant_photos(include_in_slideshow)"
+    )
 
     purchase_columns = set(table_columns(connection, "purchases"))
     if "invoice_file_path" not in purchase_columns:
@@ -2652,6 +2856,7 @@ def copy_operational_tables(
 
     snapshot_columns = {
         "variant_photos": ("created_by", "created_by_username"),
+        "slideshow_extra_photos": ("created_by", "created_by_username"),
         "purchases": ("created_by", "created_by_username"),
         "purchase_receipt_attachments": ("created_by", "created_by_username"),
         "sales": ("created_by", "created_by_username"),
@@ -7535,6 +7740,19 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "articles.html", title="Artikelverwaltung", article_list=[dict(row) for row in article_rows], article=article
         )
 
+    @app.get("/produktpalette")
+    @login_required
+    @manager_required
+    def product_slideshow_page():
+        catalogue = product_slideshow_catalogue(get_db())
+        language = user_ui_language(g.user)
+        return render_template(
+            "slideshow.html",
+            title=UI_TRANSLATIONS[language]["slideshow.title"],
+            slideshow_photos=catalogue["photos"],
+            slideshow_variants=catalogue["variants"],
+        )
+
     @app.post("/artikelverwaltung/neu")
     @login_required
     @manager_required
@@ -7673,6 +7891,154 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             }
         )
 
+    @app.post("/api/diashow/fotos")
+    @login_required
+    @manager_required
+    def upload_slideshow_extra_photos():
+        """Store independent shop-display pictures outside the product catalogue."""
+
+        connection = get_db()
+        uploaded_files = [
+            uploaded_file
+            for uploaded_file in request.files.getlist("photos")
+            if uploaded_file is not None and getattr(uploaded_file, "filename", "")
+        ]
+        if not uploaded_files:
+            return jsonify({"ok": False, "error": "Bitte mindestens ein Bild auswählen."}), 400
+        stored_filenames: list[str] = []
+        inserted_photo_ids: list[int] = []
+        try:
+            prepared_photos = [normalized_variant_photo_upload(uploaded_file) for uploaded_file in uploaded_files]
+            connection.execute("BEGIN IMMEDIATE")
+            next_position = int(
+                connection.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM slideshow_extra_photos").fetchone()[0]
+            )
+            for offset, (original_filename, jpeg_bytes) in enumerate(prepared_photos):
+                filename = f"slideshow-extra-{uuid.uuid4().hex}.jpg"
+                store_variant_photo_bytes(filename, jpeg_bytes)
+                stored_filenames.append(filename)
+                cursor = connection.execute(
+                    """
+                    INSERT INTO slideshow_extra_photos (
+                        file_path, original_filename, position, created_at, created_by, created_by_username
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        filename,
+                        original_filename,
+                        next_position + offset,
+                        utc_now(),
+                        g.user["id"],
+                        g.user["username"],
+                    ),
+                )
+                inserted_photo_ids.append(int(cursor.lastrowid))
+            audit(
+                connection,
+                "upload_slideshow_extra_photos",
+                "slideshow_extra_photo",
+                inserted_photo_ids[0] if len(inserted_photo_ids) == 1 else None,
+                {"count": len(prepared_photos)},
+            )
+            connection.commit()
+        except ValueError as exc:
+            connection.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception:
+            connection.rollback()
+            for filename in stored_filenames:
+                try:
+                    delete_variant_photo_file(filename)
+                except OSError:
+                    current_app.logger.exception("Could not remove incomplete slideshow picture upload")
+            current_app.logger.exception("Could not store independent slideshow pictures")
+            return jsonify({"ok": False, "error": "Die Bilder konnten nicht gespeichert werden."}), 500
+        backup_after_commit()
+        return jsonify({"ok": True, "photos": slideshow_extra_photo_metadata(connection, inserted_photo_ids)})
+
+    @app.delete("/api/diashow/fotos/<int:photo_id>")
+    @login_required
+    @manager_required
+    def delete_slideshow_extra_photo(photo_id: int):
+        """Remove an independent shop-display picture and its local JPEG."""
+
+        connection = get_db()
+        photo = connection.execute(
+            "SELECT id, file_path FROM slideshow_extra_photos WHERE id = ?", (photo_id,)
+        ).fetchone()
+        if photo is None:
+            abort(404)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM slideshow_extra_photos WHERE id = ?", (photo_id,))
+            audit(connection, "delete_slideshow_extra_photo", "slideshow_extra_photo", photo_id, {})
+            connection.commit()
+        except sqlite3.DatabaseError:
+            connection.rollback()
+            current_app.logger.exception("Could not delete independent slideshow picture metadata")
+            return jsonify({"ok": False, "error": "Das Dia konnte nicht gelöscht werden."}), 500
+        try:
+            delete_variant_photo_file(str(photo["file_path"]))
+        except OSError:
+            current_app.logger.exception("Could not remove independent slideshow picture file: %s", photo["file_path"])
+        backup_after_commit()
+        return jsonify({"ok": True, "photo_id": photo_id})
+
+    @app.patch("/api/diashow/fotos/<int:photo_id>")
+    @login_required
+    @manager_required
+    def update_slideshow_extra_photo_inclusion(photo_id: int):
+        """Persist the global selection state of an independent slideshow picture."""
+
+        payload = request.get_json(silent=True)
+        include_in_slideshow = payload.get("include_in_slideshow") if isinstance(payload, dict) else None
+        if not isinstance(include_in_slideshow, bool):
+            return jsonify({"ok": False, "error": "Die Dia-Auswahl muss als Ja oder Nein übergeben werden."}), 400
+        connection = get_db()
+        photo = connection.execute("SELECT id FROM slideshow_extra_photos WHERE id = ?", (photo_id,)).fetchone()
+        if photo is None:
+            abort(404)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE slideshow_extra_photos SET include_in_slideshow = ? WHERE id = ?",
+                (int(include_in_slideshow), photo_id),
+            )
+            audit(
+                connection,
+                "set_slideshow_extra_photo_inclusion",
+                "slideshow_extra_photo",
+                photo_id,
+                {"include_in_slideshow": include_in_slideshow},
+            )
+            connection.commit()
+        except sqlite3.DatabaseError:
+            connection.rollback()
+            current_app.logger.exception("Could not update independent slideshow picture inclusion")
+            return jsonify({"ok": False, "error": "Die Dia-Auswahl konnte nicht gespeichert werden."}), 500
+        backup_after_commit()
+        return jsonify({"ok": True, "photo_id": photo_id, "include_in_slideshow": include_in_slideshow})
+
+    @app.get("/api/diashow/fotos/<int:photo_id>")
+    @login_required
+    def slideshow_extra_photo_file(photo_id: int):
+        """Serve an authorised independent slideshow JPEG from managed storage."""
+
+        photo = get_db().execute(
+            "SELECT file_path FROM slideshow_extra_photos WHERE id = ?", (photo_id,)
+        ).fetchone()
+        if photo is None:
+            abort(404)
+        try:
+            content = read_variant_photo_bytes(str(photo["file_path"]))
+        except ValueError:
+            abort(404)
+        if content is None:
+            abort(404)
+        response = send_file(io.BytesIO(content), mimetype="image/jpeg", max_age=0, conditional=False)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     @app.delete("/api/variantenfotos/<int:photo_id>")
     @login_required
     @manager_required
@@ -7716,6 +8082,50 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             current_app.logger.exception("Could not remove product photo file: %s", photo["file_path"])
         backup_after_commit()
         return jsonify({"ok": True, "photo_id": photo_id})
+
+    @app.patch("/api/variantenfotos/<int:photo_id>/diashow")
+    @login_required
+    @manager_required
+    def update_variant_photo_slideshow_inclusion(photo_id: int):
+        """Persist the shared choice whether one product photo is advertised."""
+
+        payload = request.get_json(silent=True)
+        include_in_slideshow = payload.get("include_in_slideshow") if isinstance(payload, dict) else None
+        if not isinstance(include_in_slideshow, bool):
+            return jsonify({"ok": False, "error": "Die Dia-Auswahl muss als Ja oder Nein übergeben werden."}), 400
+        connection = get_db()
+        photo = connection.execute(
+            """
+            SELECT vp.id, vp.variant_id
+            FROM variant_photos vp
+            JOIN variants v ON v.id = vp.variant_id
+            JOIN articles a ON a.id = v.article_id
+            WHERE vp.id = ? AND v.is_active = 1 AND a.is_active = 1
+            """,
+            (photo_id,),
+        ).fetchone()
+        if photo is None:
+            abort(404)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE variant_photos SET include_in_slideshow = ? WHERE id = ?",
+                (int(include_in_slideshow), photo_id),
+            )
+            audit(
+                connection,
+                "set_slideshow_photo_inclusion",
+                "variant_photo",
+                photo_id,
+                {"variant_id": int(photo["variant_id"]), "include_in_slideshow": include_in_slideshow},
+            )
+            connection.commit()
+        except sqlite3.DatabaseError:
+            connection.rollback()
+            current_app.logger.exception("Could not update product slideshow inclusion")
+            return jsonify({"ok": False, "error": "Die Dia-Auswahl konnte nicht gespeichert werden."}), 500
+        backup_after_commit()
+        return jsonify({"ok": True, "photo_id": photo_id, "include_in_slideshow": include_in_slideshow})
 
     @app.get("/api/variantenfotos/<int:photo_id>")
     @login_required
@@ -7876,8 +8286,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.errorhandler(RequestEntityTooLarge)
     def invoice_request_too_large(_: RequestEntityTooLarge):
         message = "Die Rechnungsdatei darf höchstens 10 MB groß sein."
-        if request.path.startswith("/api/varianten/") and request.path.endswith("/fotos"):
-            message = "Ein Produktfoto darf höchstens 10 MB groß sein."
+        if (
+            (request.path.startswith("/api/varianten/") and request.path.endswith("/fotos"))
+            or request.path == "/api/diashow/fotos"
+        ):
+            message = "Ein Bild darf höchstens 10 MB groß sein."
         if request.path == "/verwaltung/altdaten/vorschau":
             message = "Die Altdaten-Dateien dürfen zusammen höchstens 128 MB groß sein."
         if request.path.startswith("/api/"):

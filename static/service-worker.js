@@ -4,12 +4,13 @@
  * only keeps the latest authenticated sales screen and static code so that the
  * local outbox in IndexedDB can collect sales until the server is reachable.
  */
-const STATIC_CACHE = "protovibe-merch-static-v1.4.6";
-const USER_CACHE = "protovibe-merch-sales-v1.4.6";
+const STATIC_CACHE = "protovibe-merch-static-v1.4.11";
+const USER_CACHE = "protovibe-merch-sales-v1.4.11";
 const STATIC_ASSETS = [
   "/static/app.css",
   "/static/transaction.js",
   "/static/sales.js",
+  "/static/slideshow.js",
   "/static/offline-sales.js",
   "/static/pwa.js",
   "/static/table-filters.js",

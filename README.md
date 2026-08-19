@@ -31,6 +31,16 @@ Bestand, Bilanz und CSV-Export.
   entscheiden, ob diese Bilder im Verkauf unter den Variantenoptionen sichtbar
   sind. Fehlt für eine Auswahl ein Foto, zeigt die App das ähnlichste Foto
   einer anderen Variante desselben Artikels.
+- **Diashow:** Direkt nach der Artikelverwaltung finden Manager eine
+  gemeinsame Galerie aller Bilder. Neue Uploads werden dort einer Variante
+  zugeordnet oder als **Anderes** ohne Artikelbezug gespeichert und sind damit
+  für alle Konten dauerhaft verfügbar. Jedes Bild ist standardmäßig für die
+  Werbe-Diashow ausgewählt und kann einzeln ausgeschlossen werden. Die
+  Bildwechselrate und die Animationsgeschwindigkeit lassen sich vor dem Start
+  einstellen. **Produktpalette zeigen** startet eine Vollbildfolge in
+  zufälliger Reihenfolge ohne Wiederholung pro Durchlauf; bei Produktfotos
+  bewegen sich Artikelname, Variante und aktueller Preis versetzt zum Bild
+  hinein. Ein beliebiger Klick oder Tastendruck beendet die Anzeige.
 - **Einkäufe:** der zuletzt für eine Variante bezahlte Preis wird übernommen,
   kann aber pro Einkauf geändert werden. Die vollständige Einkaufshistorie
   bleibt sichtbar; Einträge lassen sich nach einer dreisekündigen

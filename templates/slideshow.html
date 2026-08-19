@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block page_class %}product-slideshow-page{% endblock %}
+{% block content %}
+<div class="page-title-row product-slideshow-title-row">
+  <div>
+    <p class="eyebrow">{{ ui_text.get('slideshow.eyebrow') }}</p>
+    <h1>{{ ui_text.get('slideshow.title') }}</h1>
+    <p class="page-intro">{{ ui_text.get('slideshow.intro') }}</p>
+  </div>
+  <div class="product-slideshow-launch">
+    <button id="start-product-slideshow" class="primary-button large-button" type="button" disabled>{{ ui_text.get('slideshow.start') }}</button>
+    <small>{{ ui_text.get('slideshow.start_hint') }}</small>
+  </div>
+</div>
+
+<section class="slideshow-timing-controls" aria-label="{{ ui_text.get('slideshow.title') }}">
+  <label class="slideshow-timing-control" for="slideshow-change-rate">
+    <span>{{ ui_text.get('slideshow.change_rate') }}</span>
+    <span class="slideshow-range-row">
+      <input id="slideshow-change-rate" type="range" min="2.5" max="15" step="0.5" value="6.5">
+      <output id="slideshow-change-rate-value" for="slideshow-change-rate" aria-live="polite"></output>
+    </span>
+  </label>
+  <label class="slideshow-timing-control" for="slideshow-animation-speed">
+    <span>{{ ui_text.get('slideshow.animation_speed') }}</span>
+    <span class="slideshow-range-row">
+      <input id="slideshow-animation-speed" type="range" min="0.1" max="2" step="0.1" value="1">
+      <output id="slideshow-animation-speed-value" for="slideshow-animation-speed" aria-live="polite"></output>
+    </span>
+  </label>
+</section>
+
+<section class="table-section slideshow-upload-section">
+  <div class="section-heading"><div><h2>{{ ui_text.get('slideshow.upload_title') }}</h2><p>{{ ui_text.get('slideshow.upload_intro') }}</p></div></div>
+  <div class="slideshow-upload-controls">
+    <label>{{ ui_text.get('slideshow.target') }}
+      <select id="slideshow-variant-select">
+        <option value="">{{ ui_text.get('slideshow.choose_variant') }}</option>
+        <option value="other">{{ ui_text.get('slideshow.other') }}</option>
+        {% for variant in slideshow_variants %}
+        <option value="{{ variant.id }}">{{ variant.article_name }} — {{ variant.option_text or ui_text.get('slideshow.default_variant') }}{% if not variant.is_offered %} · {{ ui_text.get('slideshow.not_offered') }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <small>{{ ui_text.get('slideshow.other_hint') }}</small>
+    </label>
+    <label class="secondary-button slideshow-upload-button">
+      <input id="slideshow-photo-upload" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple>
+      <span>{{ ui_text.get('slideshow.upload') }}</span>
+    </label>
+  </div>
+  <p id="slideshow-upload-status" class="file-status" role="status" aria-live="polite" hidden></p>
+</section>
+
+<section class="table-section slideshow-gallery-section">
+  <div class="section-heading slideshow-gallery-heading">
+    <div><h2>{{ ui_text.get('slideshow.gallery_title') }}</h2><p>{{ ui_text.get('slideshow.gallery_intro') }}</p></div>
+    <strong id="slideshow-selected-count" class="status good" aria-live="polite"></strong>
+  </div>
+  <div id="product-photo-gallery" class="product-photo-gallery" aria-live="polite"></div>
+</section>
+
+<div id="product-slideshow-overlay" class="product-slideshow-overlay" hidden tabindex="-1" role="dialog" aria-modal="true" aria-label="{{ ui_text.get('slideshow.title') }}">
+  <div id="product-slideshow-stage" class="product-slideshow-stage" aria-live="polite"></div>
+  <p class="product-slideshow-exit-hint">{{ ui_text.get('slideshow.exit_hint') }}</p>
+</div>
+
+<script id="product-slideshow-data" type="application/json">{{ {'photos': slideshow_photos, 'variants': slideshow_variants}|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='slideshow.js') }}"></script>{% endblock %}
