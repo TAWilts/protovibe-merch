@@ -394,11 +394,14 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .option-editor, .variant-price-section { margin-top: 25px; padding-top: 22px; border-top: 1px solid var(--border); }
 .option-table-scroll { max-height: 390px; }
 #option-grid { min-width: 540px; }
-#option-grid th { min-width: 175px; padding: 8px; vertical-align: top; }
+#option-grid th { min-width: 215px; padding: 8px; vertical-align: top; }
 #option-grid th:first-child { min-width: 88px; width: 88px; }
 #option-grid td { padding: 7px; }
 .option-heading { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 5px; }
 .option-heading input { padding: 7px 8px; font-size: .82rem; }
+.option-heading-actions { display: flex; gap: 4px; }
+.icon-button.option-move-button:hover:not(:disabled) { color: var(--text); border-color: var(--accent); background: rgba(217,95,241,.14); }
+.option-move-button:disabled { opacity: .32; cursor: default; }
 .icon-button { width: 29px; height: 29px; display: inline-grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--panel-muted); }
 .icon-button:hover { color: #ffd0d5; border-color: var(--danger); background: rgba(242,121,131,.14); }
 .value-cell { display: grid; grid-template-columns: minmax(0,1fr) 28px; gap: 5px; }

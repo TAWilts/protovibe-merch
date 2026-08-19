@@ -2114,6 +2114,54 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn('sort.direction === "default"', balance_script)
         self.assertIn('state.sort[view] = { key: null, direction: "default" }', balance_script)
 
+    def test_article_option_groups_can_be_reordered(self) -> None:
+        """The editor order is persisted as the canonical option-group order."""
+
+        variant_id = self.seed_variant("Ordered Options Shirt")
+        with self.app.app_context():
+            connection = get_db()
+            article_id = connection.execute(
+                "SELECT article_id FROM variants WHERE id = ?", (variant_id,)
+            ).fetchone()[0]
+            groups = []
+            for group in connection.execute(
+                "SELECT id, name FROM option_groups WHERE article_id = ? ORDER BY position, id",
+                (article_id,),
+            ).fetchall():
+                values = [
+                    {"id": value["id"], "value": value["value"]}
+                    for value in connection.execute(
+                        "SELECT id, value FROM option_values WHERE option_group_id = ? ORDER BY position, id",
+                        (group["id"],),
+                    ).fetchall()
+                ]
+                groups.append({"id": group["id"], "name": group["name"], "values": values})
+
+        response = self.client.post(
+            f"/artikelverwaltung/{article_id}/speichern",
+            data={
+                "csrf_token": "test-csrf",
+                "name": "Ordered Options Shirt",
+                "default_sale_price": "20,00",
+                "default_purchase_price": "11,00",
+                "options_json": json.dumps(list(reversed(groups))),
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+
+        with self.app.app_context():
+            reordered = get_db().execute(
+                "SELECT name, position FROM option_groups WHERE article_id = ? AND is_active = 1 ORDER BY position, id",
+                (article_id,),
+            ).fetchall()
+        self.assertEqual([row["name"] for row in reordered], ["Größe", "Farbe"])
+        self.assertEqual([row["position"] for row in reordered], [0, 1])
+
+        article_script = (Path(__file__).parents[1] / "static" / "articles.js").read_text(encoding="utf-8")
+        self.assertIn("moveOptionGroup", article_script)
+        self.assertIn("Option nach links", article_script)
+        self.assertIn("Option nach rechts", article_script)
+
     def test_article_and_variant_can_be_withdrawn_from_sales_assortment(self) -> None:
         """Withdrawing an item hides it from sale, not from inventory history."""
 

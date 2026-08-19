@@ -93,6 +93,14 @@
     return node;
   }
 
+  function moveOptionGroup(groupIndex, offset) {
+    const targetIndex = groupIndex + offset;
+    if (targetIndex < 0 || targetIndex >= groups.length) return;
+    syncVariantStateFromTable();
+    [groups[groupIndex], groups[targetIndex]] = [groups[targetIndex], groups[groupIndex]];
+    render();
+  }
+
   function ensureValue(groupIndex, valueIndex) {
     const values = groups[groupIndex].values;
     while (values.length <= valueIndex) values.push(newDraftValue());
@@ -457,12 +465,21 @@
         groups[groupIndex].name = input.value;
         renderVariantTable();
       });
+      const actions = document.createElement("div");
+      actions.className = "option-heading-actions";
+      const moveLeft = button("←", "icon-button option-move-button", "Option nach links");
+      moveLeft.disabled = groupIndex === 0;
+      moveLeft.addEventListener("click", () => moveOptionGroup(groupIndex, -1));
+      const moveRight = button("→", "icon-button option-move-button", "Option nach rechts");
+      moveRight.disabled = groupIndex === groups.length - 1;
+      moveRight.addEventListener("click", () => moveOptionGroup(groupIndex, 1));
       const remove = button("×", "icon-button", "Option löschen");
       remove.addEventListener("click", () => {
         groups.splice(groupIndex, 1);
         render();
       });
-      wrapper.append(input, remove);
+      actions.append(moveLeft, moveRight, remove);
+      wrapper.append(input, actions);
       header.append(wrapper);
       headingRow.append(header);
     });
