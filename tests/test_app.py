@@ -1095,6 +1095,68 @@ class MerchAppTestCase(unittest.TestCase):
             200,
         )
 
+    def test_every_user_can_message_the_admin_but_only_admin_can_view_the_inbox(self) -> None:
+        """Messages retain their sender snapshot and are rendered escaped in the private admin tab."""
+
+        seller_id = self.create_local_user("message-seller", "seller")
+        self.become_user(seller_id)
+        sales_page = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertIn('data-admin-message-open', sales_page)
+        self.assertIn('id="admin-message-dialog"', sales_page)
+        self.assertIn("static/admin-messages.js", sales_page)
+        self.assertLess(sales_page.index("data-admin-message-open"), sales_page.index("message-seller · Seller"))
+
+        sent = self.client.post(
+            "/admin-nachricht",
+            data={
+                "csrf_token": "test-csrf",
+                "next": "/verkauf",
+                "message_type": "issue",
+                "subject": "Scanner <script>alert(1)</script>",
+                "body": "Der Scanner verliert die Verbindung.\nBitte prüfen.",
+            },
+        )
+        self.assertEqual(sent.status_code, 302)
+        self.assertTrue(sent.location.endswith("/verkauf"))
+        self.assertEqual(self.client.get("/verwaltung").status_code, 403)
+
+        with self.app.app_context():
+            connection = get_user_db()
+            message = connection.execute("SELECT * FROM admin_messages").fetchone()
+            audit_row = connection.execute(
+                "SELECT * FROM audit_log WHERE action = 'send_admin_message'"
+            ).fetchone()
+        self.assertEqual(message["sender_user_id"], seller_id)
+        self.assertEqual(message["sender_username"], "message-seller")
+        self.assertEqual(message["message_type"], "issue")
+        self.assertEqual(message["body"], "Der Scanner verliert die Verbindung.\nBitte prüfen.")
+        self.assertEqual(audit_row["entity_id"], message["id"])
+
+        self.become_user(1)
+        admin_page = self.client.get("/verwaltung").get_data(as_text=True)
+        self.assertIn("Nachrichten an den Admin", admin_page)
+        self.assertIn("message-seller", admin_page)
+        self.assertIn("Scanner &lt;script&gt;alert(1)&lt;/script&gt;", admin_page)
+        self.assertNotIn("Scanner <script>alert(1)</script>", admin_page)
+        self.assertIn("Der Scanner verliert die Verbindung.", admin_page)
+
+    def test_invalid_admin_message_is_not_persisted(self) -> None:
+        response = self.client.post(
+            "/admin-nachricht",
+            data={
+                "csrf_token": "test-csrf",
+                "next": "//example.invalid",
+                "message_type": "other",
+                "subject": "Test",
+                "body": "Testnachricht",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.location.endswith("/verkauf"))
+        with self.app.app_context():
+            count = get_user_db().execute("SELECT COUNT(*) FROM admin_messages").fetchone()[0]
+        self.assertEqual(count, 0)
+
     def test_database_reset_archives_operations_and_preserves_all_accounts(self) -> None:
         """Reset is protected by password/TOTP but never touches user storage."""
 

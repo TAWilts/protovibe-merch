@@ -124,6 +124,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
     details_json TEXT NOT NULL DEFAULT '{}'
 );
 
+-- Messages belong to the account side of the application. They survive an
+-- operational data reset and retain the sender name even if that account is
+-- removed later, so the administrator's inbox remains understandable.
+CREATE TABLE IF NOT EXISTS admin_messages (
+    id INTEGER PRIMARY KEY,
+    sender_user_id INTEGER,
+    sender_username TEXT NOT NULL,
+    message_type TEXT NOT NULL CHECK(message_type IN ('issue', 'question')),
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_messages_created ON admin_messages(created_at DESC, id DESC);
+
 """
 
 OPERATIONS_SCHEMA_SQL = """
@@ -455,6 +470,22 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.slideshow": "Diashow",
         "nav.administration": "Verwaltung",
         "profile.link_title": "Profil und Sicherheitseinstellungen öffnen",
+        "message.button": "Nachricht",
+        "message.button_title": "Issue oder Frage an den Admin senden",
+        "message.title": "Nachricht an den Admin",
+        "message.intro": "Sende ein Issue oder eine Frage direkt an den Administrator.",
+        "message.type": "Art der Nachricht",
+        "message.issue": "Issue / Problem",
+        "message.question": "Frage",
+        "message.subject": "Betreff",
+        "message.body": "Nachricht",
+        "message.send": "Nachricht senden",
+        "message.cancel": "Abbrechen",
+        "message.sent": "Deine Nachricht wurde an den Admin gesendet.",
+        "message.invalid_type": "Bitte Issue oder Frage auswählen.",
+        "message.subject_required": "Bitte einen Betreff mit höchstens 120 Zeichen eingeben.",
+        "message.body_required": "Bitte eine Nachricht mit höchstens 4.000 Zeichen eingeben.",
+        "message.save_failed": "Die Nachricht konnte nicht gespeichert werden.",
         "logout": "Abmelden",
         "profile.eyebrow": "Konto",
         "profile.title": "Mein Profil",
@@ -561,6 +592,22 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.slideshow": "Slideshow",
         "nav.administration": "Administration",
         "profile.link_title": "Open profile and security settings",
+        "message.button": "Message",
+        "message.button_title": "Send an issue or question to the administrator",
+        "message.title": "Message the administrator",
+        "message.intro": "Send an issue or question directly to the administrator.",
+        "message.type": "Message type",
+        "message.issue": "Issue / problem",
+        "message.question": "Question",
+        "message.subject": "Subject",
+        "message.body": "Message",
+        "message.send": "Send message",
+        "message.cancel": "Cancel",
+        "message.sent": "Your message was sent to the administrator.",
+        "message.invalid_type": "Choose Issue or Question.",
+        "message.subject_required": "Enter a subject of no more than 120 characters.",
+        "message.body_required": "Enter a message of no more than 4,000 characters.",
+        "message.save_failed": "The message could not be saved.",
         "logout": "Sign out",
         "profile.eyebrow": "Account",
         "profile.title": "My profile",
@@ -6968,6 +7015,60 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         session.clear()
         return redirect(url_for("login"))
 
+    @app.post("/admin-nachricht")
+    @login_required
+    def send_admin_message():
+        """Persist an authenticated user's issue or question for the admin."""
+
+        language = user_ui_language(g.user)
+        strings = UI_TRANSLATIONS[language]
+        destination = safe_next_url(request.form.get("next"), fallback=url_for("sales_page"))
+        message_type = str(request.form.get("message_type", "")).strip()
+        subject = str(request.form.get("subject", "")).strip()
+        body = str(request.form.get("body", "")).strip()
+        if message_type not in {"issue", "question"}:
+            flash(strings["message.invalid_type"], "error")
+            return redirect(destination)
+        if not subject or len(subject) > 120:
+            flash(strings["message.subject_required"], "error")
+            return redirect(destination)
+        if not body or len(body) > 4_000:
+            flash(strings["message.body_required"], "error")
+            return redirect(destination)
+
+        connection = get_user_db()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                INSERT INTO admin_messages (
+                    sender_user_id, sender_username, message_type, subject, body, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    g.user["id"],
+                    g.user["username"],
+                    message_type,
+                    subject,
+                    body,
+                    utc_now(),
+                ),
+            )
+            audit(
+                connection,
+                "send_admin_message",
+                "admin_message",
+                int(cursor.lastrowid),
+                {"message_type": message_type, "subject": subject},
+            )
+            connection.commit()
+            flash(strings["message.sent"], "success")
+        except sqlite3.DatabaseError:
+            connection.rollback()
+            current_app.logger.exception("Could not store admin message")
+            flash(strings["message.save_failed"], "error")
+        return redirect(destination)
+
     def administration_users() -> list[dict[str, Any]]:
         """Return safe, display-ready user records for the admin screen."""
 
@@ -6985,6 +7086,20 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             users.append(user)
         return users
 
+    def administration_messages() -> list[dict[str, Any]]:
+        """Return the private inbox exposed only through the admin view."""
+
+        return [
+            dict(row)
+            for row in get_user_db().execute(
+                """
+                SELECT id, sender_user_id, sender_username, message_type, subject, body, created_at
+                FROM admin_messages
+                ORDER BY created_at DESC, id DESC
+                """
+            ).fetchall()
+        ]
+
     def render_administration(
         *,
         setup_credential: dict[str, str] | None = None,
@@ -6995,6 +7110,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "admin.html",
             title="Verwaltung",
             users=administration_users(),
+            admin_messages=administration_messages(),
             backups=operational_backup_points(app),
             setup_credential=setup_credential,
             reset_archive_name=reset_archive_name,
