@@ -1678,6 +1678,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("variant.sale_price_cents", sales_script)
         self.assertIn("unit_price: window.MerchTransaction.centsToInput(item.unitPriceCents)", sales_script)
         self.assertIn("variant.default_purchase_price_cents", purchases_script)
+        self.assertIn("ui.quantity.value = summary.quantity", purchases_script)
         self.assertNotIn("loadLastCost", purchases_script)
 
     def test_delivery_and_payment_queues_update_sale_statuses(self) -> None:

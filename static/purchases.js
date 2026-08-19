@@ -348,7 +348,9 @@
       comment: ui.comment.value.trim(),
       invoiceFile: currentItemInvoiceFile,
     });
-    ui.quantity.value = 1;
+    // Keep the normalized amount for the next variant: purchase quantities
+    // within one order are commonly similar.
+    ui.quantity.value = summary.quantity;
     ui.invoice.value = "";
     ui.comment.value = "";
     itemInvoiceDropzone.reset();
