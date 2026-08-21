@@ -19,28 +19,31 @@
       <a href="{{ url_for('sales_page') }}" class="{{ 'active' if request.endpoint == 'sales_page' else '' }}">{{ ui_text.get('nav.sales') }}</a>
       <a href="{{ url_for('history_page') }}" class="{{ 'active' if request.endpoint == 'history_page' else '' }}">{{ ui_text.get('nav.history') }}</a>
       <a href="{{ url_for('operations_page') }}" class="{{ 'active' if request.endpoint == 'operations_page' else '' }}">{{ ui_text.get('nav.operations') }}</a>
-      <a href="{{ url_for('purchases_page') }}" class="{{ 'active' if request.endpoint == 'purchases_page' else '' }}">{{ ui_text.get('nav.purchases') }}</a>
-      <a href="{{ url_for('band_finances_page') }}" class="{{ 'active' if request.endpoint in ['band_finances_page', 'band_transaction_attachment'] else '' }}">{{ ui_text.get('nav.band_finances') }}</a>
-      <a href="{{ url_for('balances_page') }}" class="{{ 'active' if request.endpoint == 'balances_page' else '' }}">{{ ui_text.get('nav.balances') }}</a>
       {% if current_user.can_manage_articles %}
-      <a href="{{ url_for('article_management_page') }}" class="{{ 'active' if request.endpoint in ['article_management_page', 'create_article', 'save_article'] else '' }}">{{ ui_text.get('nav.articles') }}</a>
       <a href="{{ url_for('product_slideshow_page') }}" class="{{ 'active' if request.endpoint == 'product_slideshow_page' else '' }}">{{ ui_text.get('nav.slideshow') }}</a>
       {% endif %}
+      <span class="main-nav-divider" aria-hidden="true"></span>
+      {% if current_user.can_manage_articles %}
+        {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.articles') }}</span>
+        {% else %}<a href="{{ url_for('article_management_page') }}" class="{{ 'active' if request.endpoint in ['article_management_page', 'create_article', 'save_article'] else '' }}">{{ ui_text.get('nav.articles') }}</a>{% endif %}
+      {% endif %}
+      {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.purchases') }}</span>
+      {% else %}<a href="{{ url_for('purchases_page') }}" class="{{ 'active' if request.endpoint == 'purchases_page' else '' }}">{{ ui_text.get('nav.purchases') }}</a>{% endif %}
+      {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.band_finances') }}</span>
+      {% else %}<a href="{{ url_for('band_finances_page') }}" class="{{ 'active' if request.endpoint in ['band_finances_page', 'band_transaction_attachment'] else '' }}">{{ ui_text.get('nav.band_finances') }}</a>{% endif %}
+      {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.balances') }}</span>
+      {% else %}<a href="{{ url_for('balances_page') }}" class="{{ 'active' if request.endpoint == 'balances_page' else '' }}">{{ ui_text.get('nav.balances') }}</a>{% endif %}
       {% if current_user.is_admin %}
-      <a href="{{ url_for('administration_page') }}" class="{{ 'active' if request.endpoint in ['administration_page', 'create_user', 'reset_user_password', 'update_user_role', 'update_user_active_state', 'reset_user_mfa', 'delete_user', 'reset_application_data', 'restore_application_backup', 'update_database_passphrase', 'renew_database_recovery_key'] else '' }}">{{ ui_text.get('nav.administration') }}</a>
+        {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.administration') }}</span>
+        {% else %}<a href="{{ url_for('administration_page') }}" class="{{ 'active' if request.endpoint in ['administration_page', 'create_user', 'reset_user_password', 'update_user_role', 'update_user_active_state', 'reset_user_mfa', 'delete_user', 'reset_application_data', 'restore_application_backup', 'update_database_passphrase', 'renew_database_recovery_key'] else '' }}">{{ ui_text.get('nav.administration') }}</a>{% endif %}
       {% endif %}
     </nav>
     <div class="user-menu">
-      {% if current_user.is_admin %}
-      <a
-        class="update-link"
-        href="{{ url_for('updates_page') }}"
-        data-update-indicator
-        data-update-status-url="{{ url_for('api_update_status') }}"
-        data-current-version="{{ app_version_label }}"
-        title="Installierte Version {{ app_version_label }} – Update-Status prüfen"
-      >{{ app_version_label }}</a>
-      {% endif %}
+      <form action="{{ url_for('toggle_pos_mode') }}" method="post" class="pos-mode-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="next" value="{{ request.full_path }}">
+        <button class="pos-mode-button {{ 'is-active' if pos_mode else '' }}" type="submit" aria-pressed="{{ 'true' if pos_mode else 'false' }}">POS Mode</button>
+      </form>
       <button class="user-message-button" type="button" data-admin-message-open title="{{ ui_text.get('message.button_title') }}" aria-label="{{ ui_text.get('message.button_title') }}"><span aria-hidden="true">✉</span><span class="user-message-button-label">{{ ui_text.get('message.button') }}</span></button>
       <span class="user-identity">
         <a class="user-profile-link" href="{{ url_for('profile_reauth', next=url_for('profile_page')) }}" title="{{ ui_text.get('profile.link_title') }}">{{ current_user.username }} · {{ current_user.role_label }}</a>

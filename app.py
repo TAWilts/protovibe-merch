@@ -447,6 +447,21 @@ MAX_BAND_TRANSACTION_CATEGORY_LENGTH = 80
 MAX_BAND_TRANSACTION_DESCRIPTION_LENGTH = 1_000
 BAND_TRANSACTION_TYPES = frozenset({"income", "expense"})
 
+# The POS mode intentionally leaves the sales workflow, history, open tasks
+# and product display reachable.  Everything after the visual navigation
+# divider is still protected on the server, so a copied URL cannot bypass the
+# compact point-of-sale screen.
+POS_MODE_RESTRICTED_PATH_PREFIXES = (
+    "/artikelverwaltung",
+    "/einkaeufe",
+    "/band-finanzen",
+    "/bilanzen",
+    "/verwaltung",
+    "/updates",
+    "/export",
+)
+POS_MODE_RESTRICTED_API_PATHS = frozenset({"/api/purchases", "/api/update-status"})
+
 # Roles are cumulative: every authenticated user is a seller, managers also
 # manage stock/purchases/articles, and exactly one configured account holds the
 # administrator role.  Keeping the hierarchy as a tiny mapping makes every
@@ -6033,6 +6048,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return {
             "csrf_token": csrf_token,
             "current_user": g.get("user"),
+            "pos_mode": bool(session.get("pos_mode")),
             "role_labels": ROLE_LABELS,
             "payment_methods": PAYMENT_METHODS,
             "app_version": app.config["APP_VERSION"],
@@ -6100,6 +6116,18 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 session.clear()
             else:
                 g.user = user_capabilities(user)
+
+    @app.before_request
+    def enforce_pos_mode_restrictions() -> None:
+        """Keep management/accounting pages closed while POS mode is active."""
+
+        if g.get("user") is None or not session.get("pos_mode"):
+            return None
+        if request.path in POS_MODE_RESTRICTED_API_PATHS or request.path.startswith(POS_MODE_RESTRICTED_PATH_PREFIXES):
+            abort(403)
+        if request.method in {"POST", "PATCH", "DELETE"} and request.path.startswith("/api/varianten"):
+            abort(403)
+        return None
 
     @app.after_request
     def prevent_sensitive_page_caching(response: Response) -> Response:
@@ -6571,7 +6599,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         """Freshly verify the current password before exposing account data."""
 
         target = safe_next_url(request.args.get("next"), fallback=url_for("profile_page"))
-        if has_profile_reauth(g.user):
+        # POS mode deliberately requires an actual fresh password entry to
+        # leave it; a previously cached profile confirmation is not enough.
+        if has_profile_reauth(g.user) and not session.get("pos_mode"):
             return redirect(target)
         if request.method == "POST":
             password = request.form.get("password", "")
@@ -6601,6 +6631,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                         user_id=user["id"],
                     )
                 connection.commit()
+                # A fresh password confirmation is the explicit way back out
+                # of the restricted counter workflow without logging out.
+                session.pop("pos_mode", None)
                 session["profile_reauth_user_id"] = int(user["id"])
                 session["profile_reauth_until"] = time.time() + int(current_app.config["PROFILE_REAUTH_SECONDS"])
                 return redirect(target)
@@ -6782,6 +6815,21 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def logout():
         session.clear()
         return redirect(url_for("login"))
+
+    @app.post("/pos-modus")
+    @login_required
+    def toggle_pos_mode():
+        """Toggle the session-only restricted point-of-sale workflow."""
+
+        enabled = not bool(session.get("pos_mode"))
+        if enabled:
+            session["pos_mode"] = True
+        else:
+            session.pop("pos_mode", None)
+        destination = url_for("sales_page") if enabled else safe_next_url(
+            request.form.get("next"), fallback=url_for("sales_page")
+        )
+        return redirect(destination)
 
     @app.post("/admin-nachricht")
     @login_required

@@ -1997,6 +1997,50 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn(".sale-payment-date { grid-template-columns: repeat(2, minmax(0, 1fr));", stylesheet)
         self.assertIn(".option-groups { min-height: 0; }", stylesheet)
 
+    def test_pos_mode_reorders_navigation_and_blocks_management_until_reauthentication(self) -> None:
+        """The counter workflow is session-only and cannot be bypassed by a copied URL."""
+
+        regular_sales = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertLess(regular_sales.index("Offene Vorgänge"), regular_sales.index("Diashow"))
+        self.assertLess(regular_sales.index("Diashow"), regular_sales.index('class="main-nav-divider"'))
+        self.assertLess(regular_sales.index('class="main-nav-divider"'), regular_sales.index("Artikelverwaltung"))
+        self.assertNotIn('class="update-link"', regular_sales)
+        self.assertEqual(
+            self.client.post(
+                "/profil/zugriff?next=/profil", data={"csrf_token": "test-csrf", "password": "test-password"}
+            ).status_code,
+            302,
+        )
+        self.assertIn("Aktuelle Version", self.client.get("/profil").get_data(as_text=True))
+
+        enabled = self.client.post("/pos-modus", data={"csrf_token": "test-csrf", "next": "/verwaltung"})
+        self.assertEqual(enabled.status_code, 302)
+        self.assertTrue(enabled.location.endswith("/verkauf"))
+        with self.client.session_transaction() as session:
+            self.assertTrue(session["pos_mode"])
+
+        pos_sales = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertIn('pos-mode-button is-active', pos_sales)
+        self.assertIn('class="pos-restricted-nav" aria-disabled="true">Artikelverwaltung', pos_sales)
+        for path in ("/artikelverwaltung", "/einkaeufe", "/band-finanzen", "/bilanzen", "/verwaltung", "/updates"):
+            self.assertEqual(self.client.get(path).status_code, 403, path)
+        self.assertEqual(self.client.get("/produktpalette").status_code, 200)
+        self.assertEqual(
+            self.client.post(
+                "/api/purchases", json={}, headers={"X-CSRF-Token": "test-csrf"}
+            ).status_code,
+            403,
+        )
+
+        reauthenticated = self.client.post(
+            "/profil/zugriff?next=/bilanzen", data={"csrf_token": "test-csrf", "password": "test-password"}
+        )
+        self.assertEqual(reauthenticated.status_code, 302)
+        self.assertTrue(reauthenticated.location.endswith("/bilanzen"))
+        with self.client.session_transaction() as session:
+            self.assertNotIn("pos_mode", session)
+        self.assertEqual(self.client.get("/bilanzen").status_code, 200)
+
     def test_transaction_price_inputs_are_prepopulated_from_variant_defaults(self) -> None:
         self.seed_variant()
 

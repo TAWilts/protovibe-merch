@@ -14,6 +14,9 @@
       <div><dt>{{ ui_text.get('profile.last_login') }}</dt><dd>{{ profile_user.last_login_at or ui_text.get('profile.never') }}</dd></div>
       <div><dt>{{ ui_text.get('profile.mfa') }}</dt><dd>{{ ui_text.get('profile.enabled') if profile_user.mfa_enabled else ui_text.get('profile.disabled') }}</dd></div>
     </dl>
+    {% if profile_user.is_admin and not pos_mode %}
+    <div class="button-group"><a class="secondary-button" href="{{ url_for('updates_page') }}">Aktuelle Version: {{ app_version_label }}</a></div>
+    {% endif %}
   </article>
 
   <article class="table-section profile-card">
