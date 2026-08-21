@@ -4591,6 +4591,43 @@ def sync_variants(connection: sqlite3.Connection, article_id: int) -> None:
         )
 
 
+def preserve_variants_for_new_option_groups(
+    connection: sqlite3.Connection, article_id: int, first_value_ids: Iterable[int]
+) -> None:
+    """Assign existing variants to each newly introduced option's first value.
+
+    A new option dimension changes every combination key.  Without this small
+    migration, the old variants would merely become inactive and take their
+    stock, prices and photos out of the active catalogue.  The first value is
+    deliberately the explicit mapping target, so users can move it before or
+    after saving without losing the original variant records.
+    """
+
+    defaults = [int(value_id) for value_id in first_value_ids]
+    if not defaults:
+        return
+    now = utc_now()
+    rows = connection.execute(
+        "SELECT id, option_value_ids_json FROM variants WHERE article_id = ? AND is_active = 1",
+        (article_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            option_ids = [int(value_id) for value_id in json.loads(row["option_value_ids_json"] or "[]")]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        migrated_ids = option_ids + [value_id for value_id in defaults if value_id not in option_ids]
+        if migrated_ids == option_ids:
+            continue
+        connection.execute(
+            """
+            UPDATE variants SET option_value_ids_json = ?, combination_key = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (json.dumps(migrated_ids), sorted_combination_key(migrated_ids), now, row["id"]),
+        )
+
+
 def validate_option_configuration(payload: Any) -> list[dict[str, Any]]:
     """Validate and normalise the dynamic option table submitted by the UI."""
 
@@ -4643,7 +4680,7 @@ def validate_option_configuration(payload: Any) -> list[dict[str, Any]]:
 
 def apply_option_configuration(
     connection: sqlite3.Connection, article_id: int, option_groups: list[dict[str, Any]]
-) -> None:
+) -> list[int]:
     """Apply an option-grid edit using soft deletion for removed values/groups."""
 
     now = utc_now()
@@ -4652,12 +4689,14 @@ def apply_option_configuration(
     ).fetchall()
     known_group_ids = {row["id"] for row in known_group_rows}
     submitted_group_ids: set[int] = set()
+    new_group_first_value_ids: list[int] = []
 
     for group in option_groups:
         group_id = group["id"]
         if group_id is not None and group_id not in known_group_ids:
             raise ValueError("Eine übermittelte Option gehört nicht zu diesem Artikel.")
-        if group_id is None:
+        is_new_group = group_id is None
+        if is_new_group:
             cursor = connection.execute(
                 """
                 INSERT INTO option_groups (article_id, name, position, is_active, created_at, updated_at)
@@ -4682,7 +4721,7 @@ def apply_option_configuration(
         ).fetchall()
         known_value_ids = {row["id"] for row in known_value_rows}
         submitted_value_ids: set[int] = set()
-        for value in group["values"]:
+        for value_position, value in enumerate(group["values"]):
             value_id = value["id"]
             if value_id is not None and value_id not in known_value_ids:
                 raise ValueError("Ein übermittelter Optionswert gehört nicht zu diesem Artikel.")
@@ -4706,6 +4745,8 @@ def apply_option_configuration(
                     (value["value"], value["position"], now, value_id),
                 )
             submitted_value_ids.add(value_id)
+            if is_new_group and value_position == 0:
+                new_group_first_value_ids.append(int(value_id))
 
         # The UI's delete button simply omits a value.  Soft deletion preserves
         # the old ID/label for historic sales but prevents fresh selection.
@@ -4730,6 +4771,7 @@ def apply_option_configuration(
             """,
             [now, *retired_group_ids],
         )
+    return new_group_first_value_ids
 
 
 def latest_purchase_price(connection: sqlite3.Connection, variant_id: int) -> int:
@@ -9329,7 +9371,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 """,
                 (name, sale_price, purchase_price, is_offered, utc_now(), article_id),
             )
-            apply_option_configuration(connection, article_id, option_groups)
+            new_group_first_value_ids = apply_option_configuration(connection, article_id, option_groups)
+            preserve_variants_for_new_option_groups(connection, article_id, new_group_first_value_ids)
             sync_variants(connection, article_id)
             # The article-level control is intentionally an explicit one-shot
             # action.  It is useful for a new shirt design with many sizes,
@@ -9411,7 +9454,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 "update",
                 "article",
                 article_id,
-                {"name": name, "options_changed": True, "is_offered": bool(is_offered)},
+                {
+                    "name": name,
+                    "options_changed": True,
+                    "is_offered": bool(is_offered),
+                    "new_option_default_value_ids": new_group_first_value_ids,
+                },
             )
             connection.commit()
             backup_after_commit()

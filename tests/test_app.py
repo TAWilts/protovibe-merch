@@ -2935,6 +2935,84 @@ class MerchAppTestCase(unittest.TestCase):
             label = variant_label_map(connection, [variant_id])[variant_id]["label"]
         self.assertIn("Farbe: Schwarz", label)
 
+    def test_first_value_of_a_new_option_keeps_existing_variant_stock_and_photos(self) -> None:
+        variant_id = self.seed_variant("Erweiterbares Shirt")
+        purchased = self.api_post(
+            "/api/purchases",
+            {"variant_id": variant_id, "quantity": 4, "unit_cost": "10", "purchased_on": "2026-08-22"},
+        )
+        self.assertEqual(purchased.status_code, 200)
+        with self.app.app_context():
+            connection = get_db()
+            article_id = connection.execute("SELECT article_id FROM variants WHERE id = ?", (variant_id,)).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO variant_photos (variant_id, file_path, original_filename, position, created_at)
+                VALUES (?, 'kept-photo.jpg', 'kept-photo.jpg', 0, ?)
+                """,
+                (variant_id, "2026-08-22T00:00:00+00:00"),
+            )
+            option_groups = []
+            for group in connection.execute(
+                "SELECT id, name, position FROM option_groups WHERE article_id = ? AND is_active = 1 ORDER BY position, id",
+                (article_id,),
+            ).fetchall():
+                option_groups.append(
+                    {
+                        "id": group["id"], "name": group["name"], "position": group["position"],
+                        "values": [
+                            {"id": value["id"], "value": value["value"], "position": value["position"]}
+                            for value in connection.execute(
+                                "SELECT id, value, position FROM option_values WHERE option_group_id = ? AND is_active = 1 ORDER BY position, id",
+                                (group["id"],),
+                            ).fetchall()
+                        ],
+                    }
+                )
+            option_groups.append(
+                {
+                    "id": None, "name": "Material", "position": len(option_groups),
+                    "values": [{"id": None, "value": "Baumwolle", "position": 0}],
+                }
+            )
+            connection.commit()
+        saved = self.client.post(
+            f"/artikelverwaltung/{article_id}/speichern",
+            data={
+                "csrf_token": "test-csrf", "name": "Erweiterbares Shirt", "default_sale_price": "20",
+                "default_purchase_price": "11", "options_json": json.dumps(option_groups),
+            },
+        )
+        self.assertEqual(saved.status_code, 302)
+        with self.app.app_context():
+            connection = get_db()
+            preserved = connection.execute(
+                "SELECT is_active, option_value_ids_json FROM variants WHERE id = ?", (variant_id,)
+            ).fetchone()
+            material_value = connection.execute(
+                """
+                SELECT ov.id FROM option_values ov JOIN option_groups og ON og.id = ov.option_group_id
+                WHERE og.article_id = ? AND og.name = 'Material' AND ov.value = 'Baumwolle'
+                """,
+                (article_id,),
+            ).fetchone()[0]
+            active_variants = connection.execute(
+                "SELECT COUNT(*) FROM variants WHERE article_id = ? AND is_active = 1", (article_id,)
+            ).fetchone()[0]
+            photo_count = connection.execute(
+                "SELECT COUNT(*) FROM variant_photos WHERE variant_id = ?", (variant_id,)
+            ).fetchone()[0]
+            stock = connection.execute(
+                "SELECT COALESCE(SUM(quantity), 0) FROM purchases WHERE variant_id = ?", (variant_id,)
+            ).fetchone()[0]
+        self.assertEqual(preserved["is_active"], 1)
+        self.assertIn(material_value, json.loads(preserved["option_value_ids_json"]))
+        self.assertEqual(active_variants, 1)
+        self.assertEqual(photo_count, 1)
+        self.assertEqual(stock, 4)
+        article_script = Path("static/articles.js").read_text(encoding="utf-8")
+        self.assertIn("Der erste Wert dieser neuen Option übernimmt beim Speichern Bestand und Fotos", article_script)
+
     def test_variant_photos_are_jpeg_files_and_fall_back_to_the_closest_variant(self) -> None:
         first_variant_id = self.seed_variant("Photo Shirt")
         with self.app.app_context():

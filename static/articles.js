@@ -155,6 +155,9 @@
   }
 
   const variantStateByKey = new Map();
+  const hasExistingStockOrPhotos = (source.variants || []).some(
+    (variant) => Number(variant.stock || 0) > 0 || (Array.isArray(variant.photos) && variant.photos.length > 0)
+  );
   (source.variants || []).forEach((variant) => {
     variantStateByKey.set(savedCombinationKey(variant.option_value_ids), {
       id: Number(variant.id),
@@ -509,6 +512,15 @@
       actions.append(position, moveUp, moveDown, remove);
       heading.append(nameLabel, actions);
 
+      const inventoryHint = group.id === null && hasExistingStockOrPhotos
+        ? (() => {
+            const hint = document.createElement("p");
+            hint.className = "notice option-new-group-inventory-hint";
+            hint.textContent = "Der erste Wert dieser neuen Option übernimmt beim Speichern Bestand und Fotos der bisherigen Varianten. Du kannst ihn vorher oder später umsortieren.";
+            return hint;
+          })()
+        : null;
+
       const tableScroll = document.createElement("div");
       tableScroll.className = "table-scroll option-values-scroll";
       const table = document.createElement("table");
@@ -573,7 +585,7 @@
         groups[groupIndex].values.push(newDraftValue());
         render();
       });
-      card.append(heading, tableScroll, addValue);
+      card.append(heading, ...(inventoryHint ? [inventoryHint] : []), tableScroll, addValue);
       grid.append(card);
     });
     renderVariantTable();
