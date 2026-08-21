@@ -628,21 +628,7 @@ body.product-slideshow-running { overflow: hidden; }
 .database-security-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .database-security-actions .admin-danger-confirmation > summary { border-color: rgba(105, 183, 255, .6); color: #d7edff; background: rgba(35, 77, 113, .32); }
 .database-security-actions .admin-danger-confirmation[open] > summary { border-color: #69b7ff; background: rgba(35, 77, 113, .55); }
-.legacy-import-area { border-color: rgba(105, 183, 255, .46); }
-.legacy-import-layout { display: grid; grid-template-columns: minmax(280px, .9fr) minmax(320px, 1.1fr); gap: 18px; align-items: start; margin-top: 17px; }
-.legacy-import-upload-form { padding: 16px; border: 1px solid rgba(105, 183, 255, .28); border-radius: 12px; background: rgba(22, 32, 48, .34); }
-.legacy-import-upload-form label small, .admin-sensitive-form label small { display: block; margin-top: 3px; color: var(--muted); font-weight: 500; line-height: 1.35; }
-.legacy-import-upload-form input[type="file"] { padding: 8px; }
-.legacy-import-hint, .legacy-import-preview { padding: 17px; border: 1px solid rgba(105, 183, 255, .31); border-radius: 12px; background: rgba(20, 28, 42, .42); }
-.legacy-import-hint h3, .legacy-import-preview h3 { margin: 3px 0 9px; }
-.legacy-import-hint p { margin: 0 0 12px; line-height: 1.45; }
-.legacy-import-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 13px 0; }
-.legacy-import-summary div { padding: 9px 10px; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; background: rgba(17,14,22,.25); }
-.legacy-import-summary dt { color: var(--muted); font-size: .74rem; font-weight: 750; }
-.legacy-import-summary dd { margin: 4px 0 0; font-weight: 750; }
-.legacy-import-preview .notice { margin: 11px 0; }
 .warning-notice { border-color: rgba(255, 191, 96, .5); color: #ffe0a8; background: rgba(104, 71, 24, .31); }
-.legacy-import-confirmation { margin-top: 14px; }
 .users-table { min-width: 1060px; }
 .backups-table { min-width: 940px; }
 .inline-form { display: inline; }
@@ -716,7 +702,7 @@ body.product-slideshow-running { overflow: hidden; }
   .purchase-receipt-attachments { grid-template-columns: 1fr; }
   .purchase-receipt-attachments > .file-status { grid-column: auto; }
   .metric-grid, .small-metrics { grid-template-columns: 1fr; }
-  .profile-grid, .admin-grid, .form-grid-inline, .reset-form, .legacy-import-layout { grid-template-columns: 1fr; }
+  .profile-grid, .admin-grid, .form-grid-inline, .reset-form { grid-template-columns: 1fr; }
   .theme-choice-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-slideshow-launch { width: 100%; justify-items: stretch; text-align: left; }
   .product-slideshow-launch > button { width: 100%; }
@@ -733,7 +719,6 @@ body.product-slideshow-running { overflow: hidden; }
   .product-slideshow-copy { max-width: calc(100vw - 34px); }
   .product-slideshow-copy.from-left, .product-slideshow-copy.from-right, .product-slideshow-copy.from-top, .product-slideshow-copy.from-bottom { right: 9px; bottom: 8px; left: auto; top: auto; }
   .product-slideshow-exit-hint { right: 12px; bottom: 9px; max-width: calc(100vw - 24px); }
-  .legacy-import-summary { grid-template-columns: 1fr; }
   .admin-email-status-row { align-items: stretch; flex-direction: column; }
   .admin-email-status-row button { width: 100%; justify-content: center; }
   .mfa-enrolment { grid-template-columns: 1fr; }
