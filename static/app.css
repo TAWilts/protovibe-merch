@@ -352,6 +352,10 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .band-finances-page .band-transaction-amount { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .band-finances-page .band-attachment-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .band-finances-page .band-attachment-list .invoice-link { overflow-wrap: anywhere; }
+.band-transaction-cancelled { color: var(--muted); background: color-mix(in srgb, var(--surface-muted) 70%, transparent); }
+.band-transaction-cancelled .band-transaction-description,
+.band-transaction-cancelled .band-transaction-amount { text-decoration: line-through; }
+.band-category-balance-table { margin-top: 20px; }
 .small-metrics { grid-template-columns: repeat(4, 1fr); margin-top: 14px; }
 .metric-card.subtle { min-height: 87px; padding: 15px 18px; background: #18131f; }
 .metric-card.subtle strong { font-size: 1.1rem; }

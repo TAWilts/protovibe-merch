@@ -30,7 +30,10 @@
           <input id="band-transaction-on" name="transaction_on" type="date" value="{{ today }}" required>
         </label>
         <label for="band-transaction-category">Kategorie
-          <input id="band-transaction-category" name="category" maxlength="80" placeholder="z. B. Gig, Tantiemen oder Equipment" required>
+          <select id="band-transaction-category" name="category" required>
+            {% for category in band_category_presets %}<option value="{{ category }}">{{ category }}</option>{% endfor %}
+            <option value="__new__">Neue Kategorie …</option>
+          </select>
         </label>
         <div class="band-form-field">
           <label for="band-transaction-amount">Betrag</label>
@@ -61,17 +64,27 @@
 
 <section class="table-section" aria-labelledby="band-transactions-title">
   <div class="section-heading ledger-heading"><div><h2 id="band-transactions-title">Alle Buchungen</h2><p>{{ band_transactions|length }} Einträge, absteigend nach Datum sortiert.</p></div></div>
-  <div class="table-scroll"><table class="band-finance-table" aria-labelledby="band-transactions-title"><caption class="visually-hidden">Alle erfassten Band-Ein- und Ausgaben</caption><thead><tr><th scope="col">Art</th><th scope="col">Datum</th><th scope="col">Kategorie</th><th scope="col">Beschreibung</th><th scope="col">Betrag</th><th scope="col">Anhänge</th></tr></thead>
+  <div class="table-scroll"><table class="band-finance-table" aria-labelledby="band-transactions-title"><caption class="visually-hidden">Alle erfassten Band-Ein- und Ausgaben</caption><thead><tr><th scope="col">Art</th><th scope="col">Datum</th><th scope="col">Kategorie</th><th scope="col">Beschreibung</th><th scope="col">Betrag</th><th scope="col">Anhänge</th>{% if can_manage_band_finances %}<th scope="col">Aktion</th>{% endif %}</tr></thead>
     <tbody>{% for transaction in band_transactions %}
-      <tr>
-        <td>{% if transaction.transaction_type == 'income' %}<span class="status good">Einnahme</span>{% else %}<span class="status warning">Ausgabe</span>{% endif %}</td>
+      <tr class="{{ 'band-transaction-cancelled' if transaction.is_cancelled else '' }}">
+        <td>{% if transaction.is_cancelled %}<span class="status cancelled">Storniert</span>{% elif transaction.transaction_type == 'income' %}<span class="status good">Einnahme</span>{% else %}<span class="status warning">Ausgabe</span>{% endif %}</td>
         <td>{{ transaction.transaction_on }}</td>
         <td><strong>{{ transaction.category }}</strong></td>
         <td class="band-transaction-description preserve-newlines">{{ transaction.description }}</td>
         <td class="band-transaction-amount">{% if transaction.transaction_type == 'income' %}+{% else %}−{% endif %}{{ transaction.amount_cents|money }}</td>
         <td>{% if transaction.attachments %}<ul class="band-attachment-list" aria-label="Anhänge zu {{ transaction.category }}">{% for attachment in transaction.attachments %}<li><a class="invoice-link" href="{{ url_for('band_transaction_attachment', transaction_id=transaction.id, attachment_id=attachment.id) }}" target="_blank" rel="noopener">{{ attachment.original_filename }}</a></li>{% endfor %}</ul>{% else %}<span class="muted">—</span>{% endif %}</td>
+        {% if can_manage_band_finances %}<td>{% if transaction.is_cancelled %}<small>Storniert von {{ transaction.cancelled_by_username or 'Manager' }}</small>{% else %}<form action="{{ url_for('cancel_band_transaction', transaction_id=transaction.id) }}" method="post" data-band-cancel-form><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button compact-button" type="submit">Stornieren</button></form>{% endif %}</td>{% endif %}
       </tr>
-    {% else %}<tr><td colspan="6" class="empty-cell">Noch keine Band-Ein- oder Ausgaben erfasst.</td></tr>{% endfor %}</tbody>
+    {% else %}<tr><td colspan="{{ 7 if can_manage_band_finances else 6 }}" class="empty-cell">Noch keine Band-Ein- oder Ausgaben erfasst.</td></tr>{% endfor %}</tbody>
   </table></div>
 </section>
+<dialog id="band-category-dialog" class="confirmation-dialog" aria-labelledby="band-category-dialog-title">
+  <form id="band-category-form">
+    <p class="eyebrow">Kategorie</p><h2 id="band-category-dialog-title">Neue Kategorie</h2>
+    <label for="band-new-category-name">Name<input id="band-new-category-name" maxlength="80" autocomplete="off" required></label>
+    <p id="band-category-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button id="cancel-band-category" class="secondary-button" type="button">Abbrechen</button><button class="primary-button" type="submit">Übernehmen</button></div>
+  </form>
+</dialog>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='band-finances.js') }}"></script>{% endblock %}

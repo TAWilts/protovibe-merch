@@ -3480,12 +3480,17 @@ class MerchAppTestCase(unittest.TestCase):
         # The existing merch calculation remains unchanged; only the overall
         # figure combines both otherwise independent ledgers.
         self.assertEqual(balances["summary"]["cash_balance_cents"], 1000)
-        self.assertEqual(balances["band_finances"], {
-            "income_cents": 75000,
-            "expense_cents": 1250,
-            "balance_cents": 73750,
-            "overall_balance_cents": 74750,
-        })
+        self.assertEqual(
+            {key: balances["band_finances"][key] for key in ("income_cents", "expense_cents", "balance_cents", "overall_balance_cents")},
+            {"income_cents": 75000, "expense_cents": 1250, "balance_cents": 73750, "overall_balance_cents": 74750},
+        )
+        self.assertEqual(
+            balances["band_finances"]["categories"],
+            [
+                {"category": "Equipment", "income_cents": 0, "expense_cents": 1250, "balance_cents": -1250},
+                {"category": "Gig", "income_cents": 75000, "expense_cents": 0, "balance_cents": 75000},
+            ],
+        )
 
         page = self.client.get("/band-finanzen").get_data(as_text=True)
         self.assertIn("Band-Ein- und Ausgaben", page)
@@ -3525,8 +3530,42 @@ class MerchAppTestCase(unittest.TestCase):
         )
         self.assertEqual(seller_download.status_code, 200)
         seller_download.close()
+        seller_cancellation = self.client.post(
+            f"/band-finanzen/{transactions[0]['id']}/stornieren",
+            data={"csrf_token": "test-csrf"},
+        )
+        self.assertEqual(seller_cancellation.status_code, 403)
 
         self.become_user(1)
+        cancelled = self.client.post(
+            f"/band-finanzen/{transactions[0]['id']}/stornieren",
+            data={"csrf_token": "test-csrf"},
+        )
+        self.assertEqual(cancelled.status_code, 302)
+        with self.app.app_context():
+            connection = get_db()
+            cancelled_transaction = connection.execute(
+                "SELECT is_cancelled, cancelled_at, cancelled_by_user_id, cancelled_by_username FROM band_transactions WHERE id = ?",
+                (transactions[0]["id"],),
+            ).fetchone()
+            cancelled_balances = balance_payload(connection)
+            cancellation_audit = connection.execute(
+                "SELECT action, entity_type FROM audit_log WHERE entity_type = 'band_transaction' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM band_transaction_attachments").fetchone()[0], 1)
+        self.assertEqual(cancelled_transaction["is_cancelled"], 1)
+        self.assertTrue(cancelled_transaction["cancelled_at"])
+        self.assertEqual(cancelled_transaction["cancelled_by_user_id"], 1)
+        self.assertEqual(cancelled_transaction["cancelled_by_username"], "tester")
+        self.assertEqual(dict(cancellation_audit), {"action": "cancel", "entity_type": "band_transaction"})
+        self.assertEqual(cancelled_balances["band_finances"]["income_cents"], 0)
+        self.assertEqual(cancelled_balances["band_finances"]["categories"], [
+            {"category": "Equipment", "income_cents": 0, "expense_cents": 1250, "balance_cents": -1250}
+        ])
+        cancelled_page = self.client.get("/band-finanzen").get_data(as_text=True)
+        self.assertIn("Storniert", cancelled_page)
+        self.assertIn("Neue Kategorie", cancelled_page)
+        self.assertIn("band-finances.js", cancelled_page)
         rejected = self.client.post(
             "/band-finanzen",
             data={

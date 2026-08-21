@@ -30,6 +30,9 @@
     <article class="metric-card subtle"><span>Band-Saldo</span><strong>{{ balances.band_finances.balance_cents|money }}</strong><small>Einnahmen minus Ausgaben</small></article>
     <article class="metric-card accent"><span>Gesamtsaldo</span><strong>{{ balances.band_finances.overall_balance_cents|money }}</strong><small>Merch-Saldo plus Band-Saldo</small></article>
   </div>
+  <div class="table-scroll band-category-balance-table"><table><caption class="visually-hidden">Bandfinanzen nach Kategorie</caption><thead><tr><th scope="col">Kategorie</th><th scope="col">Einnahmen</th><th scope="col">Ausgaben</th><th scope="col">Saldo</th></tr></thead><tbody>
+    {% for category in balances.band_finances.categories %}<tr><td><strong>{{ category.category }}</strong></td><td>{{ category.income_cents|money }}</td><td>{{ category.expense_cents|money }}</td><td>{{ category.balance_cents|money }}</td></tr>{% else %}<tr><td colspan="4" class="empty-cell">Noch keine aktiven Bandbuchungen erfasst.</td></tr>{% endfor %}
+  </tbody></table></div>
 </section>
 <section class="metric-grid small-metrics">
   <article class="metric-card subtle"><span>Artikel im Bestand</span><strong>{{ balances.summary.stock_count }}</strong></article>

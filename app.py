@@ -290,6 +290,10 @@ CREATE TABLE IF NOT EXISTS band_transactions (
     category TEXT NOT NULL,
     description TEXT NOT NULL,
     amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    is_cancelled INTEGER NOT NULL DEFAULT 0,
+    cancelled_at TEXT,
+    cancelled_by_user_id INTEGER,
+    cancelled_by_username TEXT,
     created_at TEXT NOT NULL,
     -- Account data lives in users.sqlite3, therefore actor IDs deliberately
     -- have no foreign key.  The immutable name snapshot keeps old entries
@@ -446,6 +450,15 @@ MAX_IMPORTED_VARIANTS_PER_ARTICLE = 10_000
 MAX_BAND_TRANSACTION_CATEGORY_LENGTH = 80
 MAX_BAND_TRANSACTION_DESCRIPTION_LENGTH = 1_000
 BAND_TRANSACTION_TYPES = frozenset({"income", "expense"})
+BAND_TRANSACTION_CATEGORY_PRESETS = (
+    "Gage",
+    "Tantiemen",
+    "Fahrgeld",
+    "Equipment",
+    "Unterkunft",
+    "Verpflegung",
+    "Sonstiges",
+)
 
 # The POS mode intentionally leaves the sales workflow, history, open tasks
 # and product display reachable.  Everything after the visual navigation
@@ -2720,6 +2733,21 @@ def group_legacy_purchases_by_date(connection: sqlite3.Connection) -> None:
         )
 
 
+def upgrade_band_transactions_schema(connection: sqlite3.Connection) -> None:
+    """Add cancellation metadata without ever rewriting band-ledger rows."""
+
+    columns = set(table_columns(connection, "band_transactions"))
+    migrations = (
+        ("is_cancelled", "INTEGER NOT NULL DEFAULT 0"),
+        ("cancelled_at", "TEXT"),
+        ("cancelled_by_user_id", "INTEGER"),
+        ("cancelled_by_username", "TEXT"),
+    )
+    for column_name, column_definition in migrations:
+        if column_name not in columns:
+            connection.execute(f"ALTER TABLE band_transactions ADD COLUMN {column_name} {column_definition}")
+
+
 def upgrade_legacy_combined_database(app: Flask) -> None:
     """Bring a pre-split ``merch.sqlite3`` to the last combined schema.
 
@@ -2734,6 +2762,7 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
     connection = db_connect(database_path, app=app)
     try:
         connection.executescript(LEGACY_COMBINED_SCHEMA_SQL)
+        upgrade_band_transactions_schema(connection)
         article_columns = {row["name"] for row in connection.execute("PRAGMA table_info(articles)").fetchall()}
         if "is_offered" not in article_columns:
             connection.execute("ALTER TABLE articles ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
@@ -3140,6 +3169,7 @@ def upgrade_operations_schema(connection: sqlite3.Connection) -> None:
     """Create and safely upgrade the operational-only database schema."""
 
     connection.executescript(OPERATIONS_SCHEMA_SQL)
+    upgrade_band_transactions_schema(connection)
     article_columns = set(table_columns(connection, "articles"))
     if "is_offered" not in article_columns:
         connection.execute("ALTER TABLE articles ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
@@ -5636,14 +5666,34 @@ def band_finance_summary_payload(connection: sqlite3.Connection) -> dict[str, in
             COALESCE(SUM(CASE WHEN transaction_type = 'expense' THEN amount_cents ELSE 0 END), 0)
                 AS expense_cents
         FROM band_transactions
+        WHERE is_cancelled = 0
         """
     ).fetchone()
     income_cents = int(totals["income_cents"])
     expense_cents = int(totals["expense_cents"])
+    categories = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT category,
+                   COALESCE(SUM(CASE WHEN transaction_type = 'income' THEN amount_cents ELSE 0 END), 0)
+                       AS income_cents,
+                   COALESCE(SUM(CASE WHEN transaction_type = 'expense' THEN amount_cents ELSE 0 END), 0)
+                       AS expense_cents
+            FROM band_transactions
+            WHERE is_cancelled = 0
+            GROUP BY category
+            ORDER BY category COLLATE NOCASE
+            """
+        ).fetchall()
+    ]
+    for category in categories:
+        category["balance_cents"] = int(category["income_cents"]) - int(category["expense_cents"])
     return {
         "income_cents": income_cents,
         "expense_cents": expense_cents,
         "balance_cents": income_cents - expense_cents,
+        "categories": categories,
     }
 
 
@@ -5655,6 +5705,7 @@ def band_transactions_payload(connection: sqlite3.Connection) -> list[dict[str, 
         for row in connection.execute(
             """
             SELECT id, transaction_type, transaction_on, category, description, amount_cents,
+                   is_cancelled, cancelled_at, cancelled_by_user_id, cancelled_by_username,
                    created_at, created_by, created_by_username
             FROM band_transactions
             ORDER BY transaction_on DESC, id DESC
@@ -7626,6 +7677,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 band_transactions=band_transactions_payload(connection),
                 today=today_iso(),
                 can_manage_band_finances=can_manage_band_finances,
+                band_category_presets=BAND_TRANSACTION_CATEGORY_PRESETS,
             )
 
         if request.method == "POST":
@@ -7713,6 +7765,49 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return redirect(url_for("band_finances_page"))
 
         return render_band_finances()
+
+    @app.post("/band-finanzen/<int:transaction_id>/stornieren")
+    @login_required
+    def cancel_band_transaction(transaction_id: int):
+        """Cancel a band booking without erasing its evidence or audit trail."""
+
+        if not has_role(g.user, "manager"):
+            abort(403)
+        connection = get_db()
+        transaction = connection.execute(
+            "SELECT id, is_cancelled FROM band_transactions WHERE id = ?", (transaction_id,)
+        ).fetchone()
+        if transaction is None:
+            abort(404)
+        if bool(transaction["is_cancelled"]):
+            flash("Diese Band-Buchung ist bereits storniert.", "error")
+            return redirect(url_for("band_finances_page"))
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE band_transactions
+                SET is_cancelled = 1, cancelled_at = ?, cancelled_by_user_id = ?, cancelled_by_username = ?
+                WHERE id = ?
+                """,
+                (utc_now(), g.user["id"], g.user["username"], transaction_id),
+            )
+            audit(
+                connection,
+                "cancel",
+                "band_transaction",
+                transaction_id,
+                {"is_cancelled": True},
+            )
+            connection.commit()
+        except sqlite3.DatabaseError:
+            connection.rollback()
+            current_app.logger.exception("Could not cancel band transaction")
+            flash("Die Band-Buchung konnte nicht storniert werden.", "error")
+        else:
+            backup_after_commit()
+            flash("Band-Buchung storniert. Die Historie und Anhänge bleiben erhalten.", "success")
+        return redirect(url_for("band_finances_page"))
 
     @app.get("/api/band-finanzen/<int:transaction_id>/anhaenge/<int:attachment_id>")
     @login_required
