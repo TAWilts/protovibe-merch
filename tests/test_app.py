@@ -990,7 +990,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(response.json["state"], "unavailable")
         self.assertFalse(response.json["update_available"])
 
-    def test_updates_page_is_admin_only_and_header_contains_the_version_link(self) -> None:
+    def test_updates_page_is_admin_only_and_header_uses_pos_mode_instead_of_version_link(self) -> None:
         updates_page = self.client.get("/updates")
         self.assertEqual(updates_page.status_code, 200)
         updates_html = updates_page.get_data(as_text=True)
@@ -998,7 +998,9 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn('data-update-panel', updates_html)
 
         sales_html = self.client.get("/verkauf").get_data(as_text=True)
-        self.assertIn('data-update-indicator', sales_html)
+        self.assertNotIn('data-update-indicator', sales_html)
+        self.assertNotIn('class="update-link"', sales_html)
+        self.assertIn("POS Mode", sales_html)
         self.assertIn('static/updates.js', sales_html)
 
         with self.app.app_context():
@@ -2134,7 +2136,7 @@ class MerchAppTestCase(unittest.TestCase):
         sales_html = self.client.get("/verkauf").get_data(as_text=True)
         purchases_html = self.client.get("/einkaeufe").get_data(as_text=True)
         self.assertIn('id="unit-price"', sales_html)
-        self.assertIn("Standard-Verkaufspreis", sales_html)
+        self.assertNotIn("Nach Auswahl wird der Standard-Verkaufspreis übernommen", sales_html)
         self.assertIn('id="unit-cost"', purchases_html)
         self.assertIn("Standard-Einkaufspreis", purchases_html)
 
