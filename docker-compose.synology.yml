@@ -37,4 +37,3 @@ services:
     volumes:
       # Database and automatic backups persist through every image update.
       - ./data:/data
-      - ./imports:/import:ro

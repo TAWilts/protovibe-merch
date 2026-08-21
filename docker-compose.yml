@@ -29,5 +29,3 @@ services:
       # For local plaintext mode, use DATA_VOLUME=./local-data so the
       # encrypted production data/ directory is never opened as SQLite.
       - ${DATA_VOLUME:-./data}:/data
-      # Put the existing ODS file here if you want to use the one-time importer.
-      - ./imports:/import:ro

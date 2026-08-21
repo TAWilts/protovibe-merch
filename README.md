@@ -2,7 +2,7 @@
 
 Eine bewusst schlanke, selbst gehostete Merch-Verwaltung für eine Band.  Die
 Anwendung läuft als einzelnes Python-/Flask-Containerprojekt auf der Synology
-und ersetzt die festen Tabellenbereiche und Formelketten der bisherigen ODS.
+und bündelt Bestand, Buchungen und Auswertungen zentral.
 
 Sie ist kein öffentlicher Onlineshop und kein großes ERP.  Ihr Zweck ist die
 schnelle, nachvollziehbare Erfassung am Merch-Stand: Verkauf, Wareneingang,
@@ -101,9 +101,6 @@ Bestand, Bilanz und CSV-Export.
   Der Admin benötigt eine kostenlose, lokale TOTP-2FA; die anderen Rollen
   können sie freiwillig aktivieren. Profilzugriff, Passwortwechsel und der
   Datenreset verlangen eine erneute Passwortbestätigung.
-- **Legacy-Import:** ein Skript importiert die vorhandene ODS als echte
-  Buchungen, nicht als fragile Tabellenformeln.
-
 ## Wichtige Datenmodell-Entscheidungen
 
 ### Artikel und Varianten
@@ -463,59 +460,6 @@ mit Konten, Rollen und MFA bleibt unverändert. Alte Ein-Datei-Sicherungen, die
 noch eine `users`-Tabelle enthalten, werden absichtlich nicht automatisch
 geladen.
 
-## Import der bisherigen ODS
-
-> Wichtig: Der Import ist nur für eine noch leere Artikel-, Verkaufs- und
-> Einkaufsdatenbank vorgesehen. Vorher daher zuerst den Teststart machen und
-> dann importieren, bevor neue Buchungen angelegt werden.
-
-Für die bereinigte Neuaufstellung verwende die vorbereitete Datei
-`protovibe-merch-bereinigt.ods`. Sie enthält eine nachvollziehbare
-`Zuordnung` der alten Namen, explizite Varianten-IDs, die dynamischen Optionen
-(`Farbe`, `Passform`, `Größe`, `Motiv`) und gruppierte historische
-Verkaufsbelege.
-
-1. Kopiere die ODS in den Ordner `imports`, etwa als
-   `imports/protovibe-merch-bereinigt.ods`.
-2. Stelle sicher, dass während des Imports niemand in der App arbeitet. Öffne
-   im Container Manager die Konsole des laufenden Containers oder nutze SSH auf
-   der Synology.
-3. Führe aus und gib die **Datenbank-Passphrase erst an der verdeckten
-   Terminal-Abfrage** ein:
-
-   ```bash
-   docker exec -it protovibe-merch python scripts/import_ods.py /import/protovibe-merch-bereinigt.ods
-   ```
-
-   Die Passphrase gehört nicht hinter den Befehl und wird nicht in der Shell-
-   History gespeichert.
-4. Lade die App neu und kontrolliere zuerst Artikelbilanz, Einkaufswarenkörbe
-   und ein paar alte Verkäufe.
-
-Lokal aus VS Code funktioniert derselbe Ablauf mit:
-
-```powershell
-python -m scripts.import_ods .\imports\protovibe-merch-bereinigt.ods
-```
-
-Ohne Docker verwendet das Skript automatisch den projektlokalen Ordner
-`data/` und fragt ebenfalls interaktiv nach der Datenbank-Passphrase.
-
-Das Skript erkennt weiterhin auch die ursprüngliche ODS mit den Spalten
-`Name`, `Art` und `Größe`. Die bereinigte Fassung ist jedoch vorzuziehen: Der
-Importer liest dort nur die tatsächlich vorhandenen Varianten ein. Durch
-Optionen technisch erzeugte, aber in der ODS nicht vorhandene Kombinationen
-werden automatisch als **nicht angeboten** markiert und erscheinen deshalb
-nicht im Verkaufsfenster.
-
-Das Importskript verwendet für Buchungen immer die Eingangsdaten
-`Stück × Preis/Stück`. Es kopiert also nicht versehentlich eine fehlerhafte
-Berechnung aus einer abgeleiteten ODS-Spalte.
-
-Einkaufszeilen desselben Kalendertags werden beim Import als ein
-Einkaufswarenkorb mit gemeinsamer Beleg-ID angelegt. Preis, Lieferant,
-Rechnungsnummer und Kommentar bleiben dabei an der jeweiligen Position.
-
 ## Für Entwickler: Orientierung im Quellcode
 
 | Datei/Ordner | Aufgabe |
@@ -529,7 +473,6 @@ Rechnungsnummer und Kommentar bleiben dabei an der jeweiligen Position.
 | `static/purchases.js` | Einkaufswarenkorb, positions- und warenkorbbezogene Rechnungsanhänge sowie abgesicherte Korrektur/Löschung. |
 | `static/operations.js` | Speichert die Statusänderungen für offene Sendungen und Zahlungen. |
 | `static/articles.js` | Dynamische Optionsspalten, Live-Vorschau der Varianten sowie Mindestbestands- und Angebotssteuerung. |
-| `scripts/import_ods.py` | Einmaliger ODS-Migrationsimport. |
 | `tests/test_app.py` | Regressionstests für Bestand, Rollen, 2FA, Profil-Reauthentifizierung, Datenreset, Statusvorgänge und Artikeldefaults. |
 
 Die Anwendung speichert Geldbeträge immer als ganzzahlige Cent-Werte und

@@ -74,7 +74,7 @@ import pyotp
 import qrcode
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-try:  # The legacy ODS helper can still give a useful install error without it.
+try:
     from sqlcipher3 import dbapi2 as sqlcipher
 except ImportError:  # pragma: no cover - deployment configuration, not business rules.
     sqlcipher = None
@@ -2489,7 +2489,7 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
         article_columns = {row["name"] for row in connection.execute("PRAGMA table_info(articles)").fetchall()}
         if "is_offered" not in article_columns:
             connection.execute("ALTER TABLE articles ADD COLUMN is_offered INTEGER NOT NULL DEFAULT 1")
-        # The first released schema did not have this legacy-ODS convenience
+        # The first released schema did not have this inventory convenience
         # flag.  Keeping this tiny migration here makes a future update safe.
         variant_columns = {row["name"] for row in connection.execute("PRAGMA table_info(variants)").fetchall()}
         if "no_reorder" not in variant_columns:
