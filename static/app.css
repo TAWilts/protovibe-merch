@@ -726,6 +726,8 @@ body.product-slideshow-running { overflow: hidden; }
   .product-panel { order: 1; }
   .option-panel { order: 2; }
   .sale-details { order: 3; }
+  /* A phone does not need the desktop reservation below a single option. */
+  .option-groups { min-height: 0; }
   .article-list-panel { position: static; }
   .transaction-import-file-row { align-items: stretch; flex-direction: column; }
   .transaction-import-file-row > button, .transaction-import-form > .primary-button { width: 100%; justify-content: center; }

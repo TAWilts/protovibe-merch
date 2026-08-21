@@ -1979,6 +1979,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn('id="sale-event-dialog"', sales_html)
         self.assertIn("Neue Veranstaltung", sales_html)
         self.assertEqual(sales_html.count("data-mobile-collapsed"), 2)
+        self.assertNotIn("Nach Auswahl wird der Standard-Verkaufspreis übernommen", sales_html)
 
         offline_script = (Path(__file__).parents[1] / "static" / "offline-sales.js").read_text(encoding="utf-8")
         sales_script = (Path(__file__).parents[1] / "static" / "sales.js").read_text(encoding="utf-8")
@@ -1994,6 +1995,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("refreshSaleEvents", sales_script)
         self.assertIn("window.setInterval(refreshVisibleSaleEvents, 15000)", sales_script)
         self.assertIn(".sale-payment-date { grid-template-columns: repeat(2, minmax(0, 1fr));", stylesheet)
+        self.assertIn(".option-groups { min-height: 0; }", stylesheet)
 
     def test_transaction_price_inputs_are_prepopulated_from_variant_defaults(self) -> None:
         self.seed_variant()
