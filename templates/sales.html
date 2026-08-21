@@ -86,7 +86,15 @@
           </label>
           <label>Datum<input id="sold-on" type="date" value="{{ today }}"></label>
         </div>
-        <label>Veranstaltung / Kommentar<input id="event-name" placeholder="z. B. Wilwarin 2026"></label>
+        <label>Veranstaltung
+          <select id="sale-event" data-current-event-id="{{ current_sale_event_id or '' }}">
+            <option value="">Keine Veranstaltung</option>
+            {% for event in sale_events %}
+            <option value="{{ event.id }}"{% if event.id == current_sale_event_id %} selected{% endif %}>{{ event.name }}</option>
+            {% endfor %}
+            <option value="__new__">Neue Veranstaltung …</option>
+          </select>
+        </label>
         <label>Zusätzliche Notiz<textarea id="comment" rows="2" placeholder="Optional"></textarea></label>
       </div>
     </details>
@@ -123,6 +131,21 @@
   <h2>Kauf erfolgreich</h2>
   <p id="success-message">Der Verkauf wurde mit der Beleg-ID <strong id="success-receipt"></strong> gespeichert.</p>
   <button id="close-success" class="primary-button" type="button">Neuen Kauf erfassen</button>
+</dialog>
+
+<dialog id="sale-event-dialog" class="confirmation-dialog sale-event-dialog" aria-labelledby="sale-event-dialog-title">
+  <form id="sale-event-form">
+    <p class="eyebrow">Veranstaltung</p>
+    <h2 id="sale-event-dialog-title">Neue Veranstaltung</h2>
+    <label>Name
+      <input id="sale-event-name" maxlength="120" autocomplete="off" placeholder="z. B. Wilwarin 2026" required>
+    </label>
+    <p id="sale-event-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button id="cancel-sale-event" class="secondary-button" type="button">Abbrechen</button>
+      <button id="save-sale-event" class="primary-button" type="submit">Anlegen</button>
+    </div>
+  </form>
 </dialog>
 
 <script id="articles-data" type="application/json">{{ articles|tojson }}</script>

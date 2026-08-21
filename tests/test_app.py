@@ -422,12 +422,17 @@ class MerchAppTestCase(unittest.TestCase):
                 """
                 INSERT INTO sales (
                     id, receipt_id, variant_id, quantity, unit_price_cents, amount_due_cents,
-                    payment_method, is_paid, is_received, delivery_status, sold_on, created_at,
+                    payment_method, is_paid, is_received, delivery_status, event_name, sold_on, created_at,
                     created_by, created_by_username
                 ) VALUES (19, 'V-20260814-001', 11, 1, 2500, 2500, 'Bar', 1, 1,
-                          'not_applicable', '2026-08-14', '2026-08-14T00:00:00+00:00', 7, NULL)
+                          'not_applicable', 'Historisches Festival', '2026-08-14',
+                          '2026-08-14T00:00:00+00:00', 7, NULL)
                 """
             )
+            # Model the released combined schema before global events existed.
+            # The split migration must recreate and seed both tables itself.
+            connection.execute("DROP TABLE sale_event_state")
+            connection.execute("DROP TABLE sale_events")
             connection.commit()
         finally:
             connection.close()
@@ -452,17 +457,95 @@ class MerchAppTestCase(unittest.TestCase):
             sale = get_db().execute(
                 "SELECT id, variant_id, created_by, created_by_username FROM sales WHERE id = 19"
             ).fetchone()
+            event = get_db().execute(
+                "SELECT id, name FROM sale_events WHERE name = 'Historisches Festival'"
+            ).fetchone()
+            selected_event = get_db().execute(
+                "SELECT event_id FROM sale_event_state WHERE id = 1"
+            ).fetchone()
             operational_tables = {
                 row["name"]
                 for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
             }
         self.assertEqual(dict(actor), {"id": 7, "username": "historic-seller"})
         self.assertEqual(dict(sale), {"id": 19, "variant_id": 11, "created_by": 7, "created_by_username": "historic-seller"})
+        self.assertEqual(event["name"], "Historisches Festival")
+        self.assertEqual(selected_event["event_id"], event["id"])
         self.assertNotIn("users", operational_tables)
         archives = list(Path(split_app.config["MIGRATION_ARCHIVE_DIR"]).glob("*.zip"))
         self.assertEqual(len(archives), 1)
         with ZipFile(archives[0]) as archive:
             self.assertIn("data/merch.sqlite3", archive.namelist())
+
+    def test_existing_operational_sales_seed_the_shared_event_catalogue(self) -> None:
+        """A separated legacy database derives its first global event from sales."""
+
+        variant_id = self.seed_variant("Event-Migration-Shirt")
+        first = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "payment_method": "Bar",
+                "sold_on": "2026-05-01",
+                "event_name": "Frühes Festival",
+            },
+        )
+        second = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "payment_method": "Bar",
+                "sold_on": "2026-06-01",
+                "event_name": "Spätes Festival",
+            },
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        with self.app.app_context():
+            connection = get_db()
+            connection.execute(
+                "UPDATE sales SET created_at = '2026-05-01T12:00:00+00:00' WHERE event_name = 'Frühes Festival'"
+            )
+            connection.execute(
+                "UPDATE sales SET created_at = '2026-06-01T12:00:00+00:00' WHERE event_name = 'Spätes Festival'"
+            )
+            # This reproduces a deployment from before the new catalogue
+            # tables existed; the restart must add them without a data reset.
+            connection.execute("DROP TABLE sale_event_state")
+            connection.execute("DROP TABLE sale_events")
+            connection.commit()
+
+        restarted = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": self.app.config["DATABASE"],
+                "USERS_DATABASE": self.app.config["USERS_DATABASE"],
+                "BACKUP_DIR": self.app.config["BACKUP_DIR"],
+                "RESET_ARCHIVE_DIR": self.app.config["RESET_ARCHIVE_DIR"],
+                "INVOICE_UPLOAD_DIR": self.app.config["INVOICE_UPLOAD_DIR"],
+                "VARIANT_PHOTO_UPLOAD_DIR": self.app.config["VARIANT_PHOTO_UPLOAD_DIR"],
+                "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password",
+                "AUTO_BACKUP": False,
+            }
+        )
+        with restarted.app_context():
+            catalogue = get_db().execute("SELECT name FROM sale_events ORDER BY id").fetchall()
+            current = get_db().execute(
+                """
+                SELECT e.name
+                FROM sale_event_state state
+                JOIN sale_events e ON e.id = state.event_id
+                WHERE state.id = 1
+                """
+            ).fetchone()
+        self.assertCountEqual(
+            [row["name"] for row in catalogue], ["Frühes Festival", "Spätes Festival"]
+        )
+        self.assertEqual(current["name"], "Spätes Festival")
 
     def test_existing_purchase_table_gets_invoice_attachment_column(self) -> None:
         """A deployed database upgrades without losing its free-text reference."""
@@ -1546,6 +1629,80 @@ class MerchAppTestCase(unittest.TestCase):
             {(first_variant_id, 2, 1450, 2900), (second_variant_id, 1, 1700, 1700)},
         )
 
+    def test_sale_events_are_global_and_legacy_sale_payloads_remain_compatible(self) -> None:
+        """Every seller shares the last selection, while old free-text sales still work."""
+
+        first_event = self.api_post("/api/sale-events", {"name": "Sommerfest 2026"})
+        self.assertEqual(first_event.status_code, 201)
+        first_event_id = first_event.json["event"]["id"]
+        self.assertEqual(first_event.json["current_event_id"], first_event_id)
+
+        seller_id = self.create_local_user("event-seller", "seller")
+        self.become_user(seller_id)
+        seller_catalogue = self.client.get("/api/sale-events")
+        self.assertEqual(seller_catalogue.status_code, 200)
+        self.assertEqual(seller_catalogue.json["current_event_id"], first_event_id)
+        seller_page = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertIn(f'<option value="{first_event_id}" selected>Sommerfest 2026</option>', seller_page)
+
+        unknown_event = self.api_post("/api/sale-events/987654/select", {})
+        self.assertEqual(unknown_event.status_code, 404)
+        too_long_event = self.api_post("/api/sale-events", {"name": "x" * 121})
+        self.assertEqual(too_long_event.status_code, 400)
+
+        second_event = self.api_post("/api/sale-events", {"name": "Herbsthalle"})
+        self.assertEqual(second_event.status_code, 201)
+        second_event_id = second_event.json["event"]["id"]
+        self.assertEqual(second_event.json["current_event_id"], second_event_id)
+
+        selected = self.api_post(f"/api/sale-events/{first_event_id}/select", {})
+        self.assertEqual(selected.status_code, 200)
+        self.assertEqual(selected.json["current_event_id"], first_event_id)
+        self.become_user(1)
+        admin_catalogue = self.client.get("/api/sale-events")
+        self.assertEqual(admin_catalogue.json["current_event_id"], first_event_id)
+        sales_page = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertIn(
+            f'<option value="{first_event_id}" selected>Sommerfest 2026</option>', sales_page
+        )
+
+        variant_id = self.seed_variant("Event API Shirt")
+        canonical_sale = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "payment_method": "Bar",
+                "sold_on": "2026-08-20",
+                "event_id": first_event_id,
+                "event_name": "Veraltete Schreibweise",
+            },
+        )
+        # An offline request with an event ID from an earlier installation can
+        # still fall back to its established event_name field.
+        legacy_sale = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "payment_method": "Bar",
+                "sold_on": "2026-08-21",
+                "event_id": 987654,
+                "event_name": "Offline Altbestand",
+            },
+        )
+        self.assertEqual(canonical_sale.status_code, 200)
+        self.assertEqual(legacy_sale.status_code, 200)
+        with self.app.app_context():
+            sales = get_db().execute("SELECT event_name FROM sales ORDER BY id DESC LIMIT 2").fetchall()
+            current = get_db().execute("SELECT event_id FROM sale_event_state WHERE id = 1").fetchone()
+            remembered = get_db().execute(
+                "SELECT name FROM sale_events WHERE name = 'Offline Altbestand'"
+            ).fetchone()
+        self.assertEqual([row["event_name"] for row in reversed(sales)], ["Sommerfest 2026", "Offline Altbestand"])
+        self.assertEqual(current["event_id"], first_event_id)
+        self.assertEqual(remembered["name"], "Offline Altbestand")
+
     def test_offline_sale_event_is_idempotent_and_rejects_id_collisions(self) -> None:
         """A lost browser response may be retried, but must never duplicate a sale."""
 
@@ -1611,6 +1768,9 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertLess(sales_html.index('class="sale-additional-details"'), sales_html.index('id="sale-contact-details"'))
         self.assertLess(sales_html.index('id="sale-contact-details"'), sales_html.index('id="amount-given"'))
         self.assertIn('class="field-grid two-columns sale-payment-date"', sales_html)
+        self.assertIn('id="sale-event"', sales_html)
+        self.assertIn('id="sale-event-dialog"', sales_html)
+        self.assertIn("Neue Veranstaltung", sales_html)
         self.assertEqual(sales_html.count("data-mobile-collapsed"), 2)
 
         offline_script = (Path(__file__).parents[1] / "static" / "offline-sales.js").read_text(encoding="utf-8")
@@ -1620,6 +1780,12 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertNotIn("sync-offline-sales", offline_script)
         self.assertIn("initializeResponsiveDetails", sales_script)
         self.assertIn("ui.contactDetails.open = true", sales_script)
+        self.assertIn("selectedSaleEventPayload", sales_script)
+        self.assertIn("/api/sale-events", sales_script)
+        self.assertIn("event_id: selectedEvent.event_id", sales_script)
+        self.assertIn("const confirmedValue = selectedSaleEventValue", sales_script)
+        self.assertIn("refreshSaleEvents", sales_script)
+        self.assertIn("window.setInterval(refreshVisibleSaleEvents, 15000)", sales_script)
         self.assertIn(".sale-payment-date { grid-template-columns: repeat(2, minmax(0, 1fr));", stylesheet)
 
     def test_transaction_price_inputs_are_prepopulated_from_variant_defaults(self) -> None:

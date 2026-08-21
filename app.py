@@ -301,6 +301,26 @@ CREATE TABLE IF NOT EXISTS sales (
     created_by_username TEXT
 );
 
+-- Veranstaltungen are shared operational metadata, rather than a per-user
+-- preference.  Sales intentionally retain their event_name snapshot so older
+-- bookings, CSV exports and offline clients stay readable without a foreign
+-- key that could couple historic accounting rows to catalogue edits.
+CREATE TABLE IF NOT EXISTS sale_events (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    created_at TEXT NOT NULL,
+    last_selected_at TEXT NOT NULL
+);
+
+-- A missing row deliberately means that no event has been selected yet.  The
+-- one-row table makes the current event exact and global even when several
+-- users have the sales page open at once.
+CREATE TABLE IF NOT EXISTS sale_event_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    event_id INTEGER NOT NULL REFERENCES sale_events(id) ON DELETE RESTRICT,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -340,6 +360,7 @@ CREATE INDEX IF NOT EXISTS idx_purchases_receipt_id ON purchases(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_receipt_attachments_receipt ON purchase_receipt_attachments(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_sales_variant ON sales(variant_id, sold_on);
 CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
+CREATE INDEX IF NOT EXISTS idx_sale_events_last_selected ON sale_events(last_selected_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_events_actor_created ON sync_events(actor_user_id, created_at);
 """
 
@@ -358,6 +379,8 @@ OPERATION_TABLES = (
     "purchases",
     "purchase_receipt_attachments",
     "sales",
+    "sale_events",
+    "sale_event_state",
     "audit_log",
     "sync_events",
 )
@@ -369,6 +392,7 @@ TRANSACTION_CSV_HEADERS = {
     "sales": ["Anzahl", "Artikel", "Optionen", "Verkaufspreis", "Verkauft an"],
 }
 MAX_TRANSACTION_CSV_BYTES = 2 * 1024 * 1024
+MAX_SALE_EVENT_NAME_LENGTH = 120
 MAX_TRANSACTION_CSV_ROWS = 5_000
 MAX_IMPORTED_VARIANTS_PER_ARTICLE = 10_000
 
@@ -2613,6 +2637,7 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
         sync_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sync_events)").fetchall()}
         if "actor_username" not in sync_columns:
             connection.execute("ALTER TABLE sync_events ADD COLUMN actor_username TEXT")
+        seed_sale_events_from_legacy_sales(connection)
 
         # Upgrade the former single-admin account table in place.  Existing
         # administrator rows become the one admin account; any unexpected
@@ -2709,6 +2734,169 @@ def table_columns(connection: sqlite3.Connection, table_name: str) -> list[str]:
     return [row["name"] for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()]
 
 
+def normalise_sale_event_name(value: Any, *, max_length: int | None = None) -> str | None:
+    """Return a usable event label while keeping legacy free-text sales valid."""
+
+    name = str(value or "").strip()
+    if not name:
+        return None
+    if max_length is not None and len(name) > max_length:
+        raise ValueError(f"Der Veranstaltungsname darf höchstens {max_length} Zeichen lang sein.")
+    return name
+
+
+def sale_event_catalogue(connection: sqlite3.Connection) -> dict[str, Any]:
+    """Return the globally selected event plus the catalogue for the sales UI."""
+
+    current = connection.execute(
+        """
+        SELECT e.id, e.name
+        FROM sale_event_state state
+        JOIN sale_events e ON e.id = state.event_id
+        WHERE state.id = 1
+        """
+    ).fetchone()
+    current_event_id = int(current["id"]) if current is not None else None
+    events = connection.execute(
+        """
+        SELECT id, name
+        FROM sale_events
+        ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END,
+                 last_selected_at DESC, id DESC
+        """,
+        (current_event_id,),
+    ).fetchall()
+    return {
+        "current_event_id": current_event_id,
+        "events": [{"id": int(row["id"]), "name": str(row["name"])} for row in events],
+    }
+
+
+def sale_event_by_id(connection: sqlite3.Connection, event_id: int) -> sqlite3.Row | None:
+    return connection.execute("SELECT id, name FROM sale_events WHERE id = ?", (event_id,)).fetchone()
+
+
+def select_sale_event(connection: sqlite3.Connection, event_id: int) -> dict[str, Any]:
+    """Make one existing event the global default within the caller's transaction."""
+
+    event = sale_event_by_id(connection, event_id)
+    if event is None:
+        raise LookupError("Die Veranstaltung wurde nicht gefunden.")
+    now = utc_now()
+    connection.execute("UPDATE sale_events SET last_selected_at = ? WHERE id = ?", (now, event_id))
+    if connection.execute("SELECT 1 FROM sale_event_state WHERE id = 1").fetchone() is None:
+        connection.execute(
+            "INSERT INTO sale_event_state (id, event_id, updated_at) VALUES (1, ?, ?)",
+            (event_id, now),
+        )
+    else:
+        connection.execute(
+            "UPDATE sale_event_state SET event_id = ?, updated_at = ? WHERE id = 1",
+            (event_id, now),
+        )
+    return {"id": int(event["id"]), "name": str(event["name"])}
+
+
+def create_sale_event(connection: sqlite3.Connection, name: str) -> dict[str, Any]:
+    """Create a shared event or reuse its case-insensitive existing entry."""
+
+    existing = connection.execute(
+        "SELECT id FROM sale_events WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if existing is None:
+        now = utc_now()
+        cursor = connection.execute(
+            "INSERT INTO sale_events (name, created_at, last_selected_at) VALUES (?, ?, ?)",
+            (name, now, now),
+        )
+        event_id = int(cursor.lastrowid)
+    else:
+        event_id = int(existing["id"])
+    return select_sale_event(connection, event_id)
+
+
+def remember_legacy_sale_event(connection: sqlite3.Connection, name: str) -> str:
+    """Add an old free-text event to the catalogue without changing the default."""
+
+    existing = connection.execute(
+        "SELECT name FROM sale_events WHERE name = ? COLLATE NOCASE", (name,)
+    ).fetchone()
+    if existing is not None:
+        return str(existing["name"])
+    now = utc_now()
+    connection.execute(
+        "INSERT INTO sale_events (name, created_at, last_selected_at) VALUES (?, ?, ?)",
+        (name, now, now),
+    )
+    return name
+
+
+def event_name_for_sale_payload(connection: sqlite3.Connection, payload: dict[str, Any]) -> str | None:
+    """Resolve new event IDs while preserving old event_name-only sale payloads."""
+
+    legacy_name = normalise_sale_event_name(payload.get("event_name"))
+    raw_event_id = payload.get("event_id")
+    if raw_event_id is not None and str(raw_event_id).strip():
+        try:
+            event_id = int(raw_event_id)
+        except (TypeError, ValueError):
+            event_id = None
+        if event_id is not None:
+            event = sale_event_by_id(connection, event_id)
+            if event is not None:
+                # The canonical stored label protects historic reporting if a
+                # stale tab sends an old spelling together with a valid ID.
+                return str(event["name"])
+    if legacy_name is not None:
+        # A queued pre-dropdown sale must never overwrite a more recent global
+        # selection, but its historic label should become selectable later.
+        return remember_legacy_sale_event(connection, legacy_name)
+    if raw_event_id is not None and str(raw_event_id).strip():
+        raise ValueError("Die ausgewählte Veranstaltung ist nicht mehr verfügbar.")
+    return None
+
+
+def seed_sale_events_from_legacy_sales(connection: sqlite3.Connection) -> None:
+    """Seed the shared catalogue and first global default from historic sales.
+
+    The helper is deliberately idempotent.  Once a real user has chosen an
+    event, the singleton is never replaced merely because the app restarts.
+    """
+
+    if not table_exists(connection, "sales") or "event_name" not in set(table_columns(connection, "sales")):
+        return
+    rows = connection.execute(
+        """
+        SELECT TRIM(event_name) AS name,
+               COALESCE(NULLIF(created_at, ''), sold_on || 'T00:00:00+00:00') AS occurred_at,
+               id
+        FROM sales
+        WHERE NULLIF(TRIM(event_name), '') IS NOT NULL
+        ORDER BY occurred_at DESC, id DESC
+        """
+    ).fetchall()
+    for row in rows:
+        name = normalise_sale_event_name(row["name"])
+        if name is None:
+            continue
+        occurred_at = str(row["occurred_at"] or utc_now())
+        # Newest historic spelling/time wins because the query is descending.
+        connection.execute(
+            "INSERT OR IGNORE INTO sale_events (name, created_at, last_selected_at) VALUES (?, ?, ?)",
+            (name, occurred_at, occurred_at),
+        )
+    if connection.execute("SELECT 1 FROM sale_event_state WHERE id = 1").fetchone() is not None:
+        return
+    latest = connection.execute(
+        "SELECT id FROM sale_events ORDER BY last_selected_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    if latest is not None:
+        connection.execute(
+            "INSERT INTO sale_event_state (id, event_id, updated_at) VALUES (1, ?, ?)",
+            (int(latest["id"]), utc_now()),
+        )
+
+
 def upgrade_operations_schema(connection: sqlite3.Connection) -> None:
     """Create and safely upgrade the operational-only database schema."""
 
@@ -2791,6 +2979,7 @@ def upgrade_operations_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_sync_events_actor_created ON sync_events(actor_user_id, created_at)"
     )
+    seed_sale_events_from_legacy_sales(connection)
 
 
 def upgrade_users_schema(
@@ -6780,16 +6969,77 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.get("/verkauf")
     @login_required
     def sales_page():
+        connection = get_db()
         show_variant_photos = user_shows_variant_photos(g.user)
+        event_catalogue = sale_event_catalogue(connection)
         return render_template(
             "sales.html",
             title="Verkauf",
             articles=article_payload(
-                get_db(), offered_only=True, include_variant_photos=show_variant_photos
+                connection, offered_only=True, include_variant_photos=show_variant_photos
             ),
             show_variant_photos=show_variant_photos,
+            sale_events=event_catalogue["events"],
+            current_sale_event_id=event_catalogue["current_event_id"],
             today=today_iso(),
         )
+
+    @app.get("/api/sale-events")
+    @login_required
+    def sale_events_api():
+        """Expose the shared event catalogue and the current global default."""
+
+        return jsonify({"ok": True, **sale_event_catalogue(get_db())})
+
+    @app.post("/api/sale-events")
+    @login_required
+    def create_sale_event_api():
+        """Create/select one global event from the compact sales dialog."""
+
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"ok": False, "error": "Ungültige Veranstaltungsdaten."}), 400
+        connection = get_db()
+        try:
+            name = normalise_sale_event_name(
+                payload.get("name"), max_length=MAX_SALE_EVENT_NAME_LENGTH
+            )
+            if name is None:
+                raise ValueError("Bitte einen Namen für die Veranstaltung eingeben.")
+            connection.execute("BEGIN IMMEDIATE")
+            event = create_sale_event(connection, name)
+            audit(connection, "create", "sale_event", int(event["id"]), {"name": event["name"]})
+            connection.commit()
+            backup_after_commit()
+            return jsonify({"ok": True, "event": event, **sale_event_catalogue(connection)}), 201
+        except ValueError as exc:
+            connection.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not create sale event")
+            return jsonify({"ok": False, "error": "Die Veranstaltung konnte nicht gespeichert werden."}), 500
+
+    @app.post("/api/sale-events/<int:event_id>/select")
+    @login_required
+    def select_sale_event_api(event_id: int):
+        """Set one existing event as the global sales-page default."""
+
+        connection = get_db()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            event = select_sale_event(connection, event_id)
+            audit(connection, "select", "sale_event", event_id, {"name": event["name"]})
+            connection.commit()
+            backup_after_commit()
+            return jsonify({"ok": True, "event": event, **sale_event_catalogue(connection)})
+        except LookupError as exc:
+            connection.rollback()
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        except Exception:
+            connection.rollback()
+            current_app.logger.exception("Could not select sale event")
+            return jsonify({"ok": False, "error": "Die Veranstaltung konnte nicht ausgewählt werden."}), 500
 
     @app.get("/api/receipt-preview")
     @login_required
@@ -6906,11 +7156,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
             sold_on = str(payload.get("sold_on") or today_iso())
             date.fromisoformat(sold_on)
-            event_name = str(payload.get("event_name", "")).strip() or None
             comment = str(payload.get("comment", "")).strip() or None
 
             if sync_event is None:
                 connection.execute("BEGIN IMMEDIATE")
+            event_name = event_name_for_sale_payload(connection, payload)
             # The inventory is a ledger, not a hard sales lock: a missed
             # purchase entry or a later shipment must not prevent the merch
             # stand from recording a real sale.  Holding the write lock gives

@@ -34,7 +34,13 @@
     customerAddress: $("customer-address"),
     method: $("payment-method"),
     soldOn: $("sold-on"),
-    eventName: $("event-name"),
+    saleEvent: $("sale-event"),
+    saleEventDialog: $("sale-event-dialog"),
+    saleEventForm: $("sale-event-form"),
+    saleEventName: $("sale-event-name"),
+    saleEventError: $("sale-event-error"),
+    cancelSaleEvent: $("cancel-sale-event"),
+    saveSaleEvent: $("save-sale-event"),
     comment: $("comment"),
     unitPrice: $("unit-price"),
     quantity: $("quantity"),
@@ -57,6 +63,9 @@
   let currentVariant = null;
   const cartItems = [];
   const mobileCollapsedDetails = Array.from(root.querySelectorAll("[data-mobile-collapsed]"));
+  let selectedSaleEventValue = ui.saleEvent?.value || "";
+  let saleEventBusy = false;
+  let saleEventRefreshPromise = null;
 
   function initializeResponsiveDetails() {
     const isMobile = window.matchMedia("(max-width: 760px)").matches;
@@ -122,6 +131,160 @@
   function showError(message) {
     ui.error.textContent = message;
     ui.error.hidden = !message;
+  }
+
+  function showSaleEventError(message) {
+    if (!ui.saleEventError) return;
+    ui.saleEventError.textContent = message;
+    ui.saleEventError.hidden = !message;
+  }
+
+  function selectedSaleEventPayload() {
+    const confirmedValue = selectedSaleEventValue;
+    if (!ui.saleEvent || !confirmedValue || confirmedValue === "__new__") {
+      return { event_id: null, event_name: "" };
+    }
+    const eventId = Number(confirmedValue);
+    const option = Array.from(ui.saleEvent.options).find((candidate) => candidate.value === confirmedValue);
+    if (!Number.isInteger(eventId) || eventId <= 0 || !option) {
+      return { event_id: null, event_name: "" };
+    }
+    return { event_id: eventId, event_name: option.textContent.trim() };
+  }
+
+  function renderSaleEvents(body, selectedEventId = body.current_event_id) {
+    if (!ui.saleEvent) return;
+    const desiredValue = selectedEventId === null || selectedEventId === undefined
+      ? ""
+      : String(selectedEventId);
+    const fragment = document.createDocumentFragment();
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "Keine Veranstaltung";
+    fragment.append(none);
+    (body.events || []).forEach((event) => {
+      const option = document.createElement("option");
+      option.value = String(event.id);
+      option.textContent = event.name;
+      fragment.append(option);
+    });
+    const create = document.createElement("option");
+    create.value = "__new__";
+    create.textContent = "Neue Veranstaltung …";
+    fragment.append(create);
+    ui.saleEvent.replaceChildren(fragment);
+    ui.saleEvent.value = desiredValue;
+    if (ui.saleEvent.value !== desiredValue) ui.saleEvent.value = "";
+    selectedSaleEventValue = ui.saleEvent.value;
+    ui.saleEvent.dataset.currentEventId = body.current_event_id ?? "";
+  }
+
+  function setSaleEventBusy(busy) {
+    saleEventBusy = busy;
+    if (ui.saleEvent) ui.saleEvent.disabled = busy;
+    ui.confirm.disabled = busy || cartItems.length === 0;
+  }
+
+  async function saleEventApi(url, options = {}) {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": window.MERCH_APP.csrfToken,
+        ...(options.headers || {}),
+      },
+    });
+    const body = await response.json();
+    if (!response.ok || !body.ok) throw new Error(body.error || "Die Veranstaltung konnte nicht gespeichert werden.");
+    return body;
+  }
+
+  async function refreshSaleEvents({ showFailure = false } = {}) {
+    if (!ui.saleEvent || saleEventBusy) return null;
+    if (saleEventRefreshPromise) return saleEventRefreshPromise;
+    const preserveEmptyChoice = selectedSaleEventValue === "";
+    saleEventRefreshPromise = saleEventApi("/api/sale-events", { cache: "no-store" })
+      .then((body) => {
+        // A deliberately blank event remains local to the current sale. Every
+        // actual event tracks the shared default, including on pages that were
+        // already open when another user changed it.
+        renderSaleEvents(body, preserveEmptyChoice ? null : body.current_event_id);
+        return body;
+      })
+      .catch((error) => {
+        if (showFailure) showError(error instanceof Error ? error.message : "Die Veranstaltungen konnten nicht aktualisiert werden.");
+        return null;
+      })
+      .finally(() => {
+        saleEventRefreshPromise = null;
+      });
+    return saleEventRefreshPromise;
+  }
+
+  function openSaleEventDialog() {
+    if (!ui.saleEventDialog || !ui.saleEventName) return;
+    ui.saleEvent.value = selectedSaleEventValue;
+    showSaleEventError("");
+    ui.saleEventName.value = "";
+    ui.saleEventDialog.showModal();
+    ui.saleEventName.focus();
+  }
+
+  function closeSaleEventDialog() {
+    if (!ui.saleEventDialog) return;
+    ui.saleEventDialog.close();
+  }
+
+  async function changeSaleEvent() {
+    if (!ui.saleEvent) return;
+    const nextValue = ui.saleEvent.value;
+    if (nextValue === "__new__") {
+      openSaleEventDialog();
+      return;
+    }
+    if (!nextValue) {
+      selectedSaleEventValue = "";
+      return;
+    }
+    const eventId = Number(nextValue);
+    if (!Number.isInteger(eventId) || eventId <= 0) {
+      ui.saleEvent.value = selectedSaleEventValue;
+      return;
+    }
+    setSaleEventBusy(true);
+    try {
+      const body = await saleEventApi(`/api/sale-events/${eventId}/select`, { method: "POST" });
+      renderSaleEvents(body, body.current_event_id);
+    } catch (error) {
+      ui.saleEvent.value = selectedSaleEventValue;
+      showError(error.message);
+    } finally {
+      setSaleEventBusy(false);
+    }
+  }
+
+  async function saveSaleEvent(event) {
+    event.preventDefault();
+    const name = ui.saleEventName?.value.trim() || "";
+    if (!name) {
+      showSaleEventError("Bitte einen Namen für die Veranstaltung eingeben.");
+      ui.saleEventName?.focus();
+      return;
+    }
+    showSaleEventError("");
+    ui.saveSaleEvent.disabled = true;
+    try {
+      const body = await saleEventApi("/api/sale-events", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      renderSaleEvents(body, body.event?.id ?? body.current_event_id);
+      closeSaleEventDialog();
+    } catch (error) {
+      showSaleEventError(error.message);
+    } finally {
+      ui.saveSaleEvent.disabled = false;
+    }
   }
 
   function showStockWarning(message) {
@@ -208,7 +371,7 @@
     ui.amountDue.textContent = window.MerchTransaction.centsToEuro(dueCents);
     ui.donation.textContent = window.MerchTransaction.centsToEuro(donationCents);
     ui.addCart.disabled = !currentVariant || unitPriceCents === null;
-    ui.confirm.disabled = cartItems.length === 0;
+    ui.confirm.disabled = saleEventBusy || cartItems.length === 0;
     updateStockWarning();
     if (!ui.error.dataset.serverError) showError("");
     return { dueCents, unitPriceCents };
@@ -354,6 +517,14 @@
   }
 
   async function confirmSale() {
+    if (saleEventBusy) return;
+    const offline = window.MerchOffline;
+    if (!offline?.isOffline()) {
+      // Fetch immediately before saving, so a tab that stayed open while a
+      // colleague selected another event cannot silently book to an old one.
+      ui.confirm.disabled = true;
+      await refreshSaleEvents();
+    }
     const { dueCents } = updateSummary();
     if (!cartItems.length) return showError("Bitte mindestens einen Artikel zum Warenkorb hinzufügen.");
     if ((!ui.received.checked || !ui.paid.checked) && (!ui.customerName.value.trim() || !ui.customerAddress.value.trim())) {
@@ -367,6 +538,7 @@
     ui.error.dataset.serverError = "";
     ui.confirm.disabled = true;
     ui.confirm.textContent = "Speichert …";
+    const selectedEvent = selectedSaleEventPayload();
     const salePayload = {
       receipt_id: ui.receipt.textContent,
       items: cartItems.map((item) => ({
@@ -381,11 +553,13 @@
       amount_given: ui.amountGiven.value.trim(),
       customer_name: ui.customerName.value.trim(),
       customer_address: ui.customerAddress.value.trim(),
-      event_name: ui.eventName.value.trim(),
+      event_id: selectedEvent.event_id,
+      // Keep the former free-text field in the request.  Queued clients from
+      // before the dropdown and a restored browser outbox remain compatible.
+      event_name: selectedEvent.event_name,
       sold_by: ui.soldBy.value.trim(),
       comment: ui.comment.value.trim(),
     };
-    const offline = window.MerchOffline;
     let requestPayload = salePayload;
     let responseReceived = false;
     try {
@@ -439,9 +613,9 @@
     ui.amountGiven.value = "";
     ui.customerName.value = "";
     ui.customerAddress.value = "";
-    // A merch stand normally records many sales for the same event and with
-    // the same seller.  Keep both fields across confirmation; the optional
-    // free-text comment still resets.
+    // A merch stand normally records many sales for the same globally chosen
+    // event and the same seller. Keep both choices across confirmation; only
+    // the optional free-text comment resets.
     ui.comment.value = "";
     ui.error.dataset.serverError = "";
     showError("");
@@ -458,6 +632,12 @@
   ui.amountGiven.addEventListener("input", updateSummary);
   ui.paid.addEventListener("change", () => { updatePaidFields(); updateContactFields(); updateSummary(); });
   ui.received.addEventListener("change", () => { updateContactFields(); updateSummary(); });
+  ui.saleEvent?.addEventListener("change", changeSaleEvent);
+  ui.saleEventForm?.addEventListener("submit", saveSaleEvent);
+  ui.cancelSaleEvent?.addEventListener("click", closeSaleEventDialog);
+  ui.saleEventDialog?.addEventListener("cancel", () => {
+    if (ui.saleEvent) ui.saleEvent.value = selectedSaleEventValue;
+  });
   ui.addCart.addEventListener("click", addCurrentItem);
   ui.cartItems.addEventListener("click", (event) => {
     const button = event.target.closest("[data-cart-index]");
@@ -471,6 +651,17 @@
   ui.confirm.addEventListener("click", confirmSale);
   ui.closeDialog.addEventListener("click", () => ui.dialog.close());
   ui.dialog.addEventListener("close", resetSaleForm);
+  const refreshVisibleSaleEvents = () => {
+    if (
+      document.visibilityState === "visible"
+      && document.activeElement !== ui.saleEvent
+      && !ui.saleEventDialog?.open
+      && !window.MerchOffline?.isOffline()
+    ) refreshSaleEvents();
+  };
+  window.addEventListener("focus", refreshVisibleSaleEvents);
+  document.addEventListener("visibilitychange", refreshVisibleSaleEvents);
+  window.setInterval(refreshVisibleSaleEvents, 15000);
   window.addEventListener("merch-offline-sale-synced", (event) => {
     if (event.detail?.ok) applySaleStockUpdate(event.detail);
   });
