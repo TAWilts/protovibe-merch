@@ -451,6 +451,24 @@ class MerchAppTestCase(unittest.TestCase):
             connection.execute(
                 "INSERT INTO slideshow_settings (id, collage_show_prices) VALUES (1, 0)"
             )
+            connection.execute(
+                """
+                INSERT INTO band_transactions (
+                    id, transaction_type, transaction_on, category, description, amount_cents,
+                    created_at, created_by, created_by_username
+                ) VALUES (31, 'income', '2026-08-14', 'Gig', 'Historische Gage', 75000,
+                          '2026-08-14T00:00:00+00:00', 7, NULL)
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO band_transaction_attachments (
+                    id, transaction_id, file_path, original_filename,
+                    created_at, created_by, created_by_username
+                ) VALUES (37, 31, 'historic-gig.pdf', 'historischer-gig.pdf',
+                          '2026-08-14T00:00:00+00:00', 7, NULL)
+                """
+            )
             # Model the released combined schema before global events existed.
             # The split migration must recreate and seed both tables itself.
             connection.execute("DROP TABLE sale_event_state")
@@ -494,6 +512,18 @@ class MerchAppTestCase(unittest.TestCase):
             slideshow_settings = get_db().execute(
                 "SELECT collage_show_prices FROM slideshow_settings WHERE id = 1"
             ).fetchone()
+            band_transaction = get_db().execute(
+                """
+                SELECT id, transaction_type, amount_cents, created_by, created_by_username
+                FROM band_transactions WHERE id = 31
+                """
+            ).fetchone()
+            band_attachment = get_db().execute(
+                """
+                SELECT id, transaction_id, original_filename, created_by, created_by_username
+                FROM band_transaction_attachments WHERE id = 37
+                """
+            ).fetchone()
             operational_tables = {
                 row["name"]
                 for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
@@ -505,6 +535,28 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(dict(product_photo), {"include_in_slideshow": 1, "show_price": 0})
         self.assertEqual(dict(extra_photo), {"include_in_slideshow": 1, "show_price": 0})
         self.assertEqual(slideshow_settings["collage_show_prices"], 0)
+        self.assertEqual(
+            dict(band_transaction),
+            {
+                "id": 31,
+                "transaction_type": "income",
+                "amount_cents": 75000,
+                "created_by": 7,
+                "created_by_username": "historic-seller",
+            },
+        )
+        self.assertEqual(
+            dict(band_attachment),
+            {
+                "id": 37,
+                "transaction_id": 31,
+                "original_filename": "historischer-gig.pdf",
+                "created_by": 7,
+                "created_by_username": "historic-seller",
+            },
+        )
+        self.assertIn("band_transactions", operational_tables)
+        self.assertIn("band_transaction_attachments", operational_tables)
         self.assertNotIn("users", operational_tables)
         archives = list(Path(split_app.config["MIGRATION_ARCHIVE_DIR"]).glob("*.zip"))
         self.assertEqual(len(archives), 1)
@@ -3312,6 +3364,233 @@ class MerchAppTestCase(unittest.TestCase):
         with self.app.app_context():
             self.assertEqual(get_db().execute("SELECT COUNT(*) FROM purchases").fetchone()[0], 0)
         self.assertEqual(list(Path(self.app.config["INVOICE_UPLOAD_DIR"]).iterdir()), [])
+
+    def test_band_finances_record_attachments_keep_merch_balance_and_allow_seller_read_access(self) -> None:
+        """Managers write the separate ledger; every signed-in seller can read it."""
+
+        variant_id = self.seed_variant("Band-Balance-Shirt")
+        purchase = self.api_post(
+            "/api/purchases",
+            {"variant_id": variant_id, "quantity": 1, "unit_cost": "10,00", "purchased_on": "2026-08-14"},
+        )
+        self.assertEqual(purchase.status_code, 200)
+        sale = self.api_post(
+            "/api/sales",
+            {"variant_id": variant_id, "quantity": 1, "payment_method": "Bar", "sold_on": "2026-08-14"},
+        )
+        self.assertEqual(sale.status_code, 200)
+
+        income = self.client.post(
+            "/band-finanzen",
+            data={
+                "csrf_token": "test-csrf",
+                "transaction_type": "income",
+                "transaction_on": "2026-08-15",
+                "category": "Gig",
+                "amount": "750,00",
+                "description": "Gage für das Sommerfest",
+                "attachments": (io.BytesIO(b"%PDF-1.7\nGig receipt\n"), "gig-beleg.pdf"),
+            },
+        )
+        self.assertEqual(income.status_code, 302)
+        expense = self.client.post(
+            "/band-finanzen",
+            data={
+                "csrf_token": "test-csrf",
+                "transaction_type": "expense",
+                "transaction_on": "2026-08-16",
+                "category": "Equipment",
+                "amount": "12,50",
+                "description": "Neue Kabel",
+            },
+        )
+        self.assertEqual(expense.status_code, 302)
+
+        with self.app.app_context():
+            connection = get_db()
+            transactions = connection.execute(
+                "SELECT * FROM band_transactions ORDER BY transaction_on, id"
+            ).fetchall()
+            attachment = connection.execute("SELECT * FROM band_transaction_attachments").fetchone()
+            balances = balance_payload(connection)
+            audit_entry = connection.execute(
+                """
+                SELECT action, entity_type, user_id, user_username
+                FROM audit_log WHERE entity_type = 'band_transaction' ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+        self.assertEqual(len(transactions), 2)
+        self.assertEqual(transactions[0]["amount_cents"], 75000)
+        self.assertEqual(transactions[0]["created_by"], 1)
+        self.assertEqual(transactions[0]["created_by_username"], "tester")
+        self.assertEqual(transactions[1]["amount_cents"], 1250)
+        self.assertEqual(attachment["original_filename"], "gig-beleg.pdf")
+        attachment_path = Path(self.app.config["INVOICE_UPLOAD_DIR"]) / attachment["file_path"]
+        self.assertTrue(attachment_path.is_file())
+        self.assertEqual(
+            dict(audit_entry),
+            {"action": "create", "entity_type": "band_transaction", "user_id": 1, "user_username": "tester"},
+        )
+        # The existing merch calculation remains unchanged; only the overall
+        # figure combines both otherwise independent ledgers.
+        self.assertEqual(balances["summary"]["cash_balance_cents"], 1000)
+        self.assertEqual(balances["band_finances"], {
+            "income_cents": 75000,
+            "expense_cents": 1250,
+            "balance_cents": 73750,
+            "overall_balance_cents": 74750,
+        })
+
+        page = self.client.get("/band-finanzen").get_data(as_text=True)
+        self.assertIn("Band-Ein- und Ausgaben", page)
+        self.assertIn("Gage für das Sommerfest", page)
+        self.assertIn("gig-beleg.pdf", page)
+        self.assertIn("/api/band-finanzen/", page)
+        balances_page = self.client.get("/bilanzen").get_data(as_text=True)
+        self.assertIn("Gesamtsaldo", balances_page)
+        self.assertIn("Bandfinanzen öffnen", balances_page)
+
+        attachment_response = self.client.get(
+            f"/api/band-finanzen/{attachment['transaction_id']}/anhaenge/{attachment['id']}"
+        )
+        self.assertEqual(attachment_response.status_code, 200)
+        self.assertEqual(attachment_response.data, b"%PDF-1.7\nGig receipt\n")
+        attachment_response.close()
+
+        seller_id = self.create_local_user("band-read-only", "seller")
+        self.become_user(seller_id)
+        seller_page = self.client.get("/band-finanzen").get_data(as_text=True)
+        self.assertIn("Nur Lesezugriff", seller_page)
+        self.assertNotIn('name="transaction_type"', seller_page)
+        forbidden = self.client.post(
+            "/band-finanzen",
+            data={
+                "csrf_token": "test-csrf",
+                "transaction_type": "income",
+                "transaction_on": "2026-08-17",
+                "category": "Gig",
+                "amount": "10",
+                "description": "Nicht erlaubt",
+            },
+        )
+        self.assertEqual(forbidden.status_code, 403)
+        seller_download = self.client.get(
+            f"/api/band-finanzen/{attachment['transaction_id']}/anhaenge/{attachment['id']}"
+        )
+        self.assertEqual(seller_download.status_code, 200)
+        seller_download.close()
+
+        self.become_user(1)
+        rejected = self.client.post(
+            "/band-finanzen",
+            data={
+                "csrf_token": "test-csrf",
+                "transaction_type": "expense",
+                "transaction_on": "2026-08-17",
+                "category": "Equipment",
+                "amount": "10",
+                "description": "Nicht als Textdatei speichern",
+                "attachments": [
+                    (io.BytesIO(b"%PDF-1.7\nrollback test\n"), "zuerst-gueltig.pdf"),
+                    (io.BytesIO(b"not a permitted attachment"), "notiz.txt"),
+                ],
+            },
+        )
+        self.assertEqual(rejected.status_code, 400)
+        with self.app.app_context():
+            self.assertEqual(get_db().execute("SELECT COUNT(*) FROM band_transactions").fetchone()[0], 2)
+        # The first upload was already written when the later invalid file was
+        # rejected; the transaction rollback must remove that orphan as well.
+        self.assertEqual(list(Path(self.app.config["INVOICE_UPLOAD_DIR"]).iterdir()), [attachment_path])
+
+    def test_band_finance_multipart_validation_rolls_back_saved_attachments(self) -> None:
+        """A later invalid multipart file removes an earlier stored upload again."""
+
+        response = self.client.post(
+            "/band-finanzen",
+            data={
+                "csrf_token": "test-csrf",
+                "transaction_type": "expense",
+                "transaction_on": "2026-08-17",
+                "category": "Equipment",
+                "amount": "10,00",
+                "description": "Upload muss vollständig gültig sein",
+                "attachments": [
+                    (io.BytesIO(b"%PDF-1.7\nvalid first\n"), "zuerst-gueltig.pdf"),
+                    (io.BytesIO(b"not an attachment"), "spaeter-ungueltig.txt"),
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 400)
+        with self.app.app_context():
+            connection = get_db()
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM band_transactions").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM band_transaction_attachments").fetchone()[0], 0)
+        self.assertEqual(list(Path(self.app.config["INVOICE_UPLOAD_DIR"]).iterdir()), [])
+
+    def test_legacy_operations_database_adds_band_finance_tables_without_resetting_it(self) -> None:
+        """A deployed operational database gains the new ledger additively."""
+
+        root = Path(self.tempdir.name) / "legacy-band-finances"
+        root.mkdir()
+        database = root / "merch.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("CREATE TABLE deployment_marker (value TEXT NOT NULL)")
+            connection.execute("INSERT INTO deployment_marker (value) VALUES ('keep-me')")
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": str(database),
+                "USERS_DATABASE": str(root / "users.sqlite3"),
+                "BACKUP_DIR": str(root / "backups"),
+                "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+                "MIGRATION_ARCHIVE_DIR": str(root / "migration-archives"),
+                "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+                "VARIANT_PHOTO_UPLOAD_DIR": str(root / "variant-photos"),
+                "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password",
+                "AUTO_BACKUP": False,
+            }
+        )
+        with migrated_app.app_context():
+            connection = get_db()
+            tables = {
+                row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+            transaction_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(band_transactions)")
+            }
+            attachment_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(band_transaction_attachments)")
+            }
+            transaction_indexes = {
+                row["name"] for row in connection.execute("PRAGMA index_list(band_transactions)")
+            }
+            attachment_indexes = {
+                row["name"] for row in connection.execute("PRAGMA index_list(band_transaction_attachments)")
+            }
+            marker = connection.execute("SELECT value FROM deployment_marker").fetchone()[0]
+        self.assertEqual(marker, "keep-me")
+        self.assertTrue({"band_transactions", "band_transaction_attachments"}.issubset(tables))
+        self.assertTrue(
+            {
+                "transaction_type",
+                "transaction_on",
+                "category",
+                "description",
+                "amount_cents",
+                "created_by_username",
+            }.issubset(transaction_columns)
+        )
+        self.assertTrue({"transaction_id", "file_path", "original_filename"}.issubset(attachment_columns))
+        self.assertIn("idx_band_transactions_on", transaction_indexes)
+        self.assertIn("idx_band_transaction_attachments_transaction", attachment_indexes)
 
 
 if __name__ == "__main__":

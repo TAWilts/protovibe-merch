@@ -337,6 +337,15 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .metric-card strong { margin: 4px 0; font-size: 1.42rem; letter-spacing: -.035em; }
 .metric-card.accent { background: linear-gradient(140deg, #492151, #2b1a34); border-color: #8b429e; }
 .metric-card.accent strong { color: var(--accent-bright); }
+.band-finances-page .band-finance-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.band-finances-page .band-transaction-fields { min-width: 0; margin: 0; padding: 0; border: 0; }
+.band-finances-page .band-form-field { display: grid; gap: 6px; min-width: 0; }
+.band-finances-page .band-form-field > small { color: var(--muted); font-size: .74rem; font-weight: 500; line-height: 1.35; }
+.band-finances-page .band-finance-table { min-width: 790px; }
+.band-finances-page .band-transaction-description { min-width: 250px; }
+.band-finances-page .band-transaction-amount { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.band-finances-page .band-attachment-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.band-finances-page .band-attachment-list .invoice-link { overflow-wrap: anywhere; }
 .small-metrics { grid-template-columns: repeat(4, 1fr); margin-top: 14px; }
 .metric-card.subtle { min-height: 87px; padding: 15px 18px; background: #18131f; }
 .metric-card.subtle strong { font-size: 1.1rem; }
@@ -695,6 +704,7 @@ body.product-slideshow-running { overflow: hidden; }
   .sale-details { grid-column: 1 / -1; }
   .sale-details > .quantity-and-total, .sale-details > .payment-inputs { max-width: 520px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
+  .band-finances-page .band-finance-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .insight-grid { grid-template-columns: 1fr; }
   .article-management-layout { grid-template-columns: 220px 1fr; }
   .theme-choice-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -731,6 +741,7 @@ body.product-slideshow-running { overflow: hidden; }
   .purchase-receipt-attachments { grid-template-columns: 1fr; }
   .purchase-receipt-attachments > .file-status { grid-column: auto; }
   .metric-grid, .small-metrics { grid-template-columns: 1fr; }
+  .band-finances-page .band-finance-metrics { grid-template-columns: 1fr; }
   .profile-grid, .admin-grid, .form-grid-inline, .reset-form { grid-template-columns: 1fr; }
   .theme-choice-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-slideshow-launch { width: 100%; justify-items: stretch; text-align: left; }

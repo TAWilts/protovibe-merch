@@ -279,6 +279,35 @@ CREATE TABLE IF NOT EXISTS purchase_receipt_attachments (
     created_by_username TEXT
 );
 
+-- Band finances deliberately have their own ledger.  Merch purchases and
+-- sales remain a self-contained stock/accounting history, while gigs,
+-- royalties and equipment can be tracked alongside them without changing a
+-- historic merch balance.
+CREATE TABLE IF NOT EXISTS band_transactions (
+    id INTEGER PRIMARY KEY,
+    transaction_type TEXT NOT NULL CHECK(transaction_type IN ('income', 'expense')),
+    transaction_on TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+    created_at TEXT NOT NULL,
+    -- Account data lives in users.sqlite3, therefore actor IDs deliberately
+    -- have no foreign key.  The immutable name snapshot keeps old entries
+    -- readable after a user account is removed.
+    created_by INTEGER,
+    created_by_username TEXT
+);
+
+CREATE TABLE IF NOT EXISTS band_transaction_attachments (
+    id INTEGER PRIMARY KEY,
+    transaction_id INTEGER NOT NULL REFERENCES band_transactions(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL UNIQUE,
+    original_filename TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by INTEGER,
+    created_by_username TEXT
+);
+
 CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY,
     -- One receipt can contain several line items.  ``receipt_id`` therefore
@@ -371,6 +400,9 @@ CREATE INDEX IF NOT EXISTS idx_slideshow_extra_photos_position ON slideshow_extr
 CREATE INDEX IF NOT EXISTS idx_purchases_variant ON purchases(variant_id, purchased_on);
 CREATE INDEX IF NOT EXISTS idx_purchases_receipt_id ON purchases(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_purchase_receipt_attachments_receipt ON purchase_receipt_attachments(receipt_id);
+CREATE INDEX IF NOT EXISTS idx_band_transactions_on ON band_transactions(transaction_on DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_band_transaction_attachments_transaction
+    ON band_transaction_attachments(transaction_id, id);
 CREATE INDEX IF NOT EXISTS idx_sales_variant ON sales(variant_id, sold_on);
 CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
 CREATE INDEX IF NOT EXISTS idx_sale_events_last_selected ON sale_events(last_selected_at DESC, id DESC);
@@ -392,6 +424,8 @@ OPERATION_TABLES = (
     "slideshow_settings",
     "purchases",
     "purchase_receipt_attachments",
+    "band_transactions",
+    "band_transaction_attachments",
     "sales",
     "sale_events",
     "sale_event_state",
@@ -409,6 +443,9 @@ MAX_TRANSACTION_CSV_BYTES = 2 * 1024 * 1024
 MAX_SALE_EVENT_NAME_LENGTH = 120
 MAX_TRANSACTION_CSV_ROWS = 5_000
 MAX_IMPORTED_VARIANTS_PER_ARTICLE = 10_000
+MAX_BAND_TRANSACTION_CATEGORY_LENGTH = 80
+MAX_BAND_TRANSACTION_DESCRIPTION_LENGTH = 1_000
+BAND_TRANSACTION_TYPES = frozenset({"income", "expense"})
 
 # Roles are cumulative: every authenticated user is a seller, managers also
 # manage stock/purchases/articles, and exactly one configured account holds the
@@ -449,7 +486,12 @@ DELIVERY_WORKFLOW_STATUSES = ("pending", "shipped", "received")
 # Invoice uploads deliberately stay small enough for the NAS and for regular
 # automatic backups.  The browser validates the same extensions for a nicer
 # experience, but the server is the authoritative check.
-ALLOWED_INVOICE_FILE_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+ALLOWED_INVOICE_FILE_EXTENSIONS = frozenset({".pdf", ".png", ".jpg", ".jpeg"})
+# Band booking attachments deliberately follow the established invoice policy
+# so every stored attachment has the same small, well-understood attack
+# surface and can use the shared encrypted store.
+ALLOWED_BAND_TRANSACTION_ATTACHMENT_EXTENSIONS = ALLOWED_INVOICE_FILE_EXTENSIONS
+MANAGED_ATTACHMENT_FILE_EXTENSIONS = ALLOWED_INVOICE_FILE_EXTENSIONS
 MAX_INVOICE_FILE_BYTES = 10 * 1024 * 1024
 
 # Variant pictures are deliberately normalised on upload.  This avoids huge
@@ -506,6 +548,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.history": "Historie",
         "nav.operations": "Offene Vorgänge",
         "nav.purchases": "Einkäufe",
+        "nav.band_finances": "Bandfinanzen",
         "nav.balances": "Bilanzen",
         "nav.articles": "Artikelverwaltung",
         "nav.slideshow": "Diashow",
@@ -633,6 +676,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.history": "History",
         "nav.operations": "Open tasks",
         "nav.purchases": "Purchases",
+        "nav.band_finances": "Band finances",
         "nav.balances": "Balances",
         "nav.articles": "Catalogue",
         "nav.slideshow": "Slideshow",
@@ -1152,6 +1196,7 @@ def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
     user["role_label"] = ROLE_LABELS[role]
     user["is_admin"] = role == "admin"
     user["can_manage_purchases"] = has_role(user, "manager")
+    user["can_manage_band_finances"] = has_role(user, "manager")
     user["can_manage_articles"] = has_role(user, "manager")
     user["mfa_enabled"] = int(effective_mfa_enabled(user))
     user["ui_theme"] = user_ui_theme(user)
@@ -1514,21 +1559,110 @@ def purchase_request_payload() -> tuple[Any, Any]:
     return request.form, request.files
 
 
-def invoice_file_extension(uploaded_file: Any | None) -> str | None:
-    """Validate an optional invoice upload and return its lowercase suffix.
+def band_transaction_values_from_form(form: Any) -> dict[str, Any]:
+    """Validate one browser-submitted band income/expense booking."""
 
-    Only PDFs, PNGs and JPEGs are accepted.  In addition to the filename the
-    small signature checks reject a renamed HTML/text file.  The user-provided
-    filename is never used as a filesystem path.
+    transaction_type = str(form.get("transaction_type", "")).strip().lower()
+    if transaction_type not in BAND_TRANSACTION_TYPES:
+        raise ValueError("Bitte Einnahme oder Ausgabe auswählen.")
+
+    raw_date = str(form.get("transaction_on", "")).strip()
+    try:
+        transaction_on = date.fromisoformat(raw_date).isoformat()
+    except ValueError as exc:
+        raise ValueError("Bitte ein gültiges Buchungsdatum eingeben.") from exc
+
+    category = " ".join(str(form.get("category", "")).split())
+    if not category:
+        raise ValueError("Bitte eine Kategorie eingeben.")
+    if len(category) > MAX_BAND_TRANSACTION_CATEGORY_LENGTH:
+        raise ValueError("Die Kategorie darf höchstens 80 Zeichen lang sein.")
+
+    description = str(form.get("description", "")).strip()
+    if not description:
+        raise ValueError("Bitte eine Beschreibung eingeben.")
+    if len(description) > MAX_BAND_TRANSACTION_DESCRIPTION_LENGTH:
+        raise ValueError("Die Beschreibung darf höchstens 1.000 Zeichen lang sein.")
+
+    amount_cents = money_to_cents(form.get("amount"), field_name="Betrag")
+    if amount_cents <= 0:
+        raise ValueError("Der Betrag muss größer als null sein.")
+
+    return {
+        "transaction_type": transaction_type,
+        "transaction_on": transaction_on,
+        "category": category,
+        "description": description,
+        "amount_cents": amount_cents,
+    }
+
+
+def band_attachment_original_filename(uploaded_file: Any) -> str:
+    """Return a display-safe, non-path filename for a saved band attachment."""
+
+    supplied_name = str(getattr(uploaded_file, "filename", "") or "")
+    filename = Path(supplied_name.replace("\x00", "").replace("\\", "/")).name.strip()[:255]
+    if not filename:
+        raise ValueError("Der Anhang braucht einen Dateinamen.")
+    return filename
+
+
+def managed_attachment_extension(
+    uploaded_file: Any | None,
+    *,
+    allowed_extensions: frozenset[str],
+    file_label: str,
+) -> str | None:
+    """Validate one small managed attachment and return its lowercase suffix.
+
+    The filesystem never receives a user-provided filename. A concise
+    signature check prevents renamed HTML/text files from becoming apparently
+    harmless attachments.
     """
 
     if uploaded_file is None or not getattr(uploaded_file, "filename", ""):
         return None
 
     extension = Path(str(uploaded_file.filename)).suffix.lower()
+    if extension not in allowed_extensions:
+        raise ValueError(f"Bitte {file_label} als PDF, PNG oder JPG hochladen.")
+
+    stream = uploaded_file.stream
+    try:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(0)
+        if size <= 0:
+            raise ValueError(f"Die {file_label.lower()} ist leer.")
+        if size > int(current_app.config["MAX_INVOICE_FILE_BYTES"]):
+            raise ValueError(f"Die {file_label.lower()} darf höchstens 10 MB groß sein.")
+
+        signature = stream.read(16)
+        is_valid = (
+            (extension == ".pdf" and signature.startswith(b"%PDF-"))
+            or (extension == ".png" and signature.startswith(b"\x89PNG\r\n\x1a\n"))
+            or (extension in {".jpg", ".jpeg"} and signature.startswith(b"\xff\xd8\xff"))
+        )
+        if not is_valid:
+            raise ValueError(f"Die Datei passt nicht zum gewählten {file_label.lower()}format.")
+        return extension
+    finally:
+        stream.seek(0)
+
+
+def invoice_file_extension(uploaded_file: Any | None) -> str | None:
+    """Validate an optional invoice upload and return its lowercase suffix.
+
+    Only PDFs, PNGs and JPEGs are accepted. In addition to the filename the
+    small signature checks reject a renamed HTML/text file. The user-provided
+    filename is never used as a filesystem path.
+    """
+
+    if uploaded_file is None or not getattr(uploaded_file, "filename", ""):
+        return None
+    extension = Path(str(uploaded_file.filename)).suffix.lower()
     if extension not in ALLOWED_INVOICE_FILE_EXTENSIONS:
         raise ValueError("Bitte nur eine Rechnung als PDF, PNG oder JPG hochladen.")
-
     stream = uploaded_file.stream
     stream.seek(0, os.SEEK_END)
     size = stream.tell()
@@ -1550,6 +1684,16 @@ def invoice_file_extension(uploaded_file: Any | None) -> str | None:
     return extension
 
 
+def band_transaction_attachment_extension(uploaded_file: Any | None) -> str | None:
+    """Validate an optional document kept with a band income/expense entry."""
+
+    return managed_attachment_extension(
+        uploaded_file,
+        allowed_extensions=ALLOWED_BAND_TRANSACTION_ATTACHMENT_EXTENSIONS,
+        file_label="Anhang",
+    )
+
+
 def invoice_storage_path(
     filename: str | None,
     *,
@@ -1566,7 +1710,7 @@ def invoice_storage_path(
     if not filename:
         return None
     safe_name = Path(str(filename)).name
-    if safe_name != str(filename) or Path(safe_name).suffix.lower() not in ALLOWED_INVOICE_FILE_EXTENSIONS:
+    if safe_name != str(filename) or Path(safe_name).suffix.lower() not in MANAGED_ATTACHMENT_FILE_EXTENSIONS:
         return None
     configured_app = app
     if configured_app is None and has_app_context():
@@ -1650,6 +1794,18 @@ def save_invoice_file(uploaded_file: Any | None, receipt_id: str) -> str | None:
     if extension is None:
         return None
     filename = f"{receipt_id}-{secrets.token_hex(12)}{extension}"
+    uploaded_file.stream.seek(0)
+    store_invoice_bytes(filename, uploaded_file.stream.read())
+    return filename
+
+
+def save_band_transaction_attachment(uploaded_file: Any | None, transaction_token: str) -> str | None:
+    """Store a validated band attachment under an opaque transaction filename."""
+
+    extension = band_transaction_attachment_extension(uploaded_file)
+    if extension is None:
+        return None
+    filename = f"band-{transaction_token}-{secrets.token_hex(12)}{extension}"
     uploaded_file.stream.seek(0)
     store_invoice_bytes(filename, uploaded_file.stream.read())
     return filename
@@ -3264,6 +3420,8 @@ def copy_operational_tables(
         "slideshow_extra_photos": ("created_by", "created_by_username"),
         "purchases": ("created_by", "created_by_username"),
         "purchase_receipt_attachments": ("created_by", "created_by_username"),
+        "band_transactions": ("created_by", "created_by_username"),
+        "band_transaction_attachments": ("created_by", "created_by_username"),
         "sales": ("created_by", "created_by_username"),
         "audit_log": ("user_id", "user_username"),
         "sync_events": ("actor_user_id", "actor_username"),
@@ -5452,6 +5610,59 @@ def reset_data_store(app: Flask) -> None:
     initialise_operations_database(app)
 
 
+def band_finance_summary_payload(connection: sqlite3.Connection) -> dict[str, int]:
+    """Return the independent band-ledger totals without touching merch data."""
+
+    totals = connection.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN transaction_type = 'income' THEN amount_cents ELSE 0 END), 0)
+                AS income_cents,
+            COALESCE(SUM(CASE WHEN transaction_type = 'expense' THEN amount_cents ELSE 0 END), 0)
+                AS expense_cents
+        FROM band_transactions
+        """
+    ).fetchone()
+    income_cents = int(totals["income_cents"])
+    expense_cents = int(totals["expense_cents"])
+    return {
+        "income_cents": income_cents,
+        "expense_cents": expense_cents,
+        "balance_cents": income_cents - expense_cents,
+    }
+
+
+def band_transactions_payload(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return the band ledger with public attachment metadata grouped by row."""
+
+    transactions = [
+        dict(row)
+        for row in connection.execute(
+            """
+            SELECT id, transaction_type, transaction_on, category, description, amount_cents,
+                   created_at, created_by, created_by_username
+            FROM band_transactions
+            ORDER BY transaction_on DESC, id DESC
+            """
+        ).fetchall()
+    ]
+    attachment_rows = connection.execute(
+        """
+        SELECT id, transaction_id, original_filename
+        FROM band_transaction_attachments
+        ORDER BY transaction_id, id
+        """
+    ).fetchall()
+    attachments_by_transaction: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in attachment_rows:
+        attachments_by_transaction[int(row["transaction_id"])].append(
+            {"id": int(row["id"]), "original_filename": str(row["original_filename"])}
+        )
+    for transaction in transactions:
+        transaction["attachments"] = attachments_by_transaction[int(transaction["id"])]
+    return transactions
+
+
 def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
     """Calculate the article balance table and headline figures from ledgers."""
 
@@ -5665,6 +5876,9 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
             """
         ).fetchall()
     ]
+    cash_balance_cents = total_collected + total_donation - total_purchase_cost
+    band_finances = band_finance_summary_payload(connection)
+    band_finances["overall_balance_cents"] = cash_balance_cents + band_finances["balance_cents"]
     return {
         "rows": rows,
         "reorder_rows": reorder_rows,
@@ -5674,12 +5888,13 @@ def balance_payload(connection: sqlite3.Connection) -> dict[str, Any]:
             "revenue_cents": total_revenue,
             "collected_cents": total_collected,
             "donation_cents": total_donation,
-            "cash_balance_cents": total_collected + total_donation - total_purchase_cost,
+            "cash_balance_cents": cash_balance_cents,
             "outstanding_cents": int(outstanding_paid),
             "pending_delivery_count": int(pending_delivery),
             "stock_count": sum(row["stock"] for row in rows),
             "minimum_stock_warning_count": sum(1 for row in rows if row["minimum_stock_warning"]),
         },
+        "band_finances": band_finances,
         "analytics": {
             "top_selling_items": top_selling_items,
             "top_revenue_items": top_revenue_items,
@@ -7345,6 +7560,139 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             receipts=purchase_receipt_payload(connection, purchase_rows),
             today=today_iso(),
             can_manage_purchases=has_role(g.user, "manager"),
+        )
+
+    @app.route("/band-finanzen", methods=["GET", "POST"])
+    @login_required
+    def band_finances_page():
+        """Show the shared band ledger; managers may append immutable entries."""
+
+        connection = get_db()
+        can_manage_band_finances = has_role(g.user, "manager")
+
+        def render_band_finances() -> str:
+            return render_template(
+                "band_finances.html",
+                title="Band-Ein- und Ausgaben",
+                band_finance_summary=band_finance_summary_payload(connection),
+                band_transactions=band_transactions_payload(connection),
+                today=today_iso(),
+                can_manage_band_finances=can_manage_band_finances,
+            )
+
+        if request.method == "POST":
+            if not can_manage_band_finances:
+                abort(403)
+            stored_files: list[str] = []
+            try:
+                values = band_transaction_values_from_form(request.form)
+                uploaded_files = [
+                    uploaded_file
+                    for uploaded_file in request.files.getlist("attachments")
+                    if getattr(uploaded_file, "filename", "")
+                ]
+                connection.execute("BEGIN IMMEDIATE")
+                transaction_cursor = connection.execute(
+                    """
+                    INSERT INTO band_transactions (
+                        transaction_type, transaction_on, category, description, amount_cents,
+                        created_at, created_by, created_by_username
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        values["transaction_type"],
+                        values["transaction_on"],
+                        values["category"],
+                        values["description"],
+                        values["amount_cents"],
+                        utc_now(),
+                        g.user["id"],
+                        g.user["username"],
+                    ),
+                )
+                transaction_id = int(transaction_cursor.lastrowid)
+                for uploaded_file in uploaded_files:
+                    original_filename = band_attachment_original_filename(uploaded_file)
+                    file_path = save_band_transaction_attachment(uploaded_file, uuid.uuid4().hex)
+                    if file_path is None:
+                        continue
+                    stored_files.append(file_path)
+                    connection.execute(
+                        """
+                        INSERT INTO band_transaction_attachments (
+                            transaction_id, file_path, original_filename,
+                            created_at, created_by, created_by_username
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            transaction_id,
+                            file_path,
+                            original_filename,
+                            utc_now(),
+                            g.user["id"],
+                            g.user["username"],
+                        ),
+                    )
+                audit(
+                    connection,
+                    "create",
+                    "band_transaction",
+                    transaction_id,
+                    {
+                        "transaction_type": values["transaction_type"],
+                        "transaction_on": values["transaction_on"],
+                        "category": values["category"],
+                        "amount_cents": values["amount_cents"],
+                        "attachment_count": len(stored_files),
+                    },
+                )
+                connection.commit()
+            except (ValueError, TypeError) as exc:
+                connection.rollback()
+                for file_path in stored_files:
+                    delete_invoice_file(file_path)
+                flash(str(exc), "error")
+                return render_band_finances(), 400
+            except Exception:
+                connection.rollback()
+                for file_path in stored_files:
+                    delete_invoice_file(file_path)
+                current_app.logger.exception("Could not create band transaction")
+                flash("Die Band-Buchung konnte nicht gespeichert werden.", "error")
+            else:
+                backup_after_commit()
+                flash("Band-Buchung wurde gespeichert.", "success")
+            return redirect(url_for("band_finances_page"))
+
+        return render_band_finances()
+
+    @app.get("/api/band-finanzen/<int:transaction_id>/anhaenge/<int:attachment_id>")
+    @login_required
+    def band_transaction_attachment(transaction_id: int, attachment_id: int):
+        """Serve a managed band attachment only to an authenticated user."""
+
+        attachment = get_db().execute(
+            """
+            SELECT file_path, original_filename
+            FROM band_transaction_attachments
+            WHERE id = ? AND transaction_id = ?
+            """,
+            (attachment_id, transaction_id),
+        ).fetchone()
+        filename = str(attachment["file_path"]) if attachment and attachment["file_path"] else None
+        try:
+            content = read_invoice_bytes(filename) if filename else None
+        except ValueError:
+            abort(404)
+        if content is None:
+            abort(404)
+        original_filename = str(attachment["original_filename"]).replace("\x00", "").replace("\\", "/")
+        download_name = Path(original_filename).name or filename
+        return send_file(
+            io.BytesIO(content),
+            mimetype=invoice_mimetype(filename),
+            as_attachment=False,
+            download_name=download_name,
         )
 
     @app.get("/api/variants/<int:variant_id>/last-purchase-price")

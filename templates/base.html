@@ -20,6 +20,7 @@
       <a href="{{ url_for('history_page') }}" class="{{ 'active' if request.endpoint == 'history_page' else '' }}">{{ ui_text.get('nav.history') }}</a>
       <a href="{{ url_for('operations_page') }}" class="{{ 'active' if request.endpoint == 'operations_page' else '' }}">{{ ui_text.get('nav.operations') }}</a>
       <a href="{{ url_for('purchases_page') }}" class="{{ 'active' if request.endpoint == 'purchases_page' else '' }}">{{ ui_text.get('nav.purchases') }}</a>
+      <a href="{{ url_for('band_finances_page') }}" class="{{ 'active' if request.endpoint in ['band_finances_page', 'band_transaction_attachment'] else '' }}">{{ ui_text.get('nav.band_finances') }}</a>
       <a href="{{ url_for('balances_page') }}" class="{{ 'active' if request.endpoint == 'balances_page' else '' }}">{{ ui_text.get('nav.balances') }}</a>
       {% if current_user.can_manage_articles %}
       <a href="{{ url_for('article_management_page') }}" class="{{ 'active' if request.endpoint in ['article_management_page', 'create_article', 'save_article'] else '' }}">{{ ui_text.get('nav.articles') }}</a>
