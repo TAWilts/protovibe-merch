@@ -25,6 +25,7 @@
   const grid = document.getElementById("option-grid");
   const hiddenInput = document.getElementById("options-json");
   const addColumnButton = document.getElementById("add-option-column");
+  const optionOrderStatus = document.getElementById("option-order-status");
   const variantBody = document.getElementById("variant-price-body");
   const newVariantHint = document.getElementById("new-variant-hint");
   const minimumStockForAll = document.getElementById("minimum-stock-for-all");
@@ -87,12 +88,33 @@
     return node;
   }
 
+  function announceOptionOrder(message) {
+    if (optionOrderStatus) optionOrderStatus.textContent = message;
+  }
+
+  function moveOptionGroup(groupIndex, offset) {
+    const targetIndex = groupIndex + offset;
+    if (targetIndex < 0 || targetIndex >= groups.length) return;
+    syncVariantStateFromTable();
+    [groups[groupIndex], groups[targetIndex]] = [groups[targetIndex], groups[groupIndex]];
+    const movedGroup = groups[targetIndex];
+    announceOptionOrder(
+      `Die Option „${String(movedGroup.name || "").trim() || "Ohne Namen"}“ ist jetzt an Position ${targetIndex + 1} von ${groups.length}.`
+    );
+    render();
+  }
+
   function moveOptionValue(groupIndex, valueIndex, offset) {
     const values = groups[groupIndex]?.values;
     const targetIndex = valueIndex + offset;
     if (!values || targetIndex < 0 || targetIndex >= values.length) return;
     syncVariantStateFromTable();
     [values[valueIndex], values[targetIndex]] = [values[targetIndex], values[valueIndex]];
+    const movedValue = values[targetIndex];
+    const groupName = String(groups[groupIndex]?.name || "").trim() || "Ohne Namen";
+    announceOptionOrder(
+      `Der Wert „${String(movedValue.value || "").trim() || "Ohne Namen"}“ der Option „${groupName}“ ist jetzt an Position ${targetIndex + 1} von ${values.length}.`
+    );
     render();
   }
 
@@ -461,12 +483,31 @@
         renderVariantTable();
       });
       nameLabel.append(nameInput);
+      const actions = document.createElement("div");
+      actions.className = "option-group-actions";
+      actions.setAttribute("role", "group");
+      actions.setAttribute("aria-label", "Option anordnen oder löschen");
+      const position = document.createElement("span");
+      position.className = "option-group-position";
+      position.id = `option-group-position-${groupIndex}`;
+      position.textContent = `Pos. ${groupIndex + 1}/${groups.length}`;
+      position.setAttribute("aria-label", `Position ${groupIndex + 1} von ${groups.length}`);
+      position.title = `Position ${groupIndex + 1} von ${groups.length}`;
+      const moveUp = button("↑", "icon-button option-group-move-button", "Option nach oben verschieben");
+      moveUp.disabled = groupIndex === 0;
+      moveUp.setAttribute("aria-describedby", position.id);
+      moveUp.addEventListener("click", () => moveOptionGroup(groupIndex, -1));
+      const moveDown = button("↓", "icon-button option-group-move-button", "Option nach unten verschieben");
+      moveDown.disabled = groupIndex === groups.length - 1;
+      moveDown.setAttribute("aria-describedby", position.id);
+      moveDown.addEventListener("click", () => moveOptionGroup(groupIndex, 1));
       const remove = button("×", "icon-button", "Option löschen");
       remove.addEventListener("click", () => {
         groups.splice(groupIndex, 1);
         render();
       });
-      heading.append(nameLabel, remove);
+      actions.append(position, moveUp, moveDown, remove);
+      heading.append(nameLabel, actions);
 
       const tableScroll = document.createElement("div");
       tableScroll.className = "table-scroll option-values-scroll";

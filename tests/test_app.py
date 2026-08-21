@@ -2173,7 +2173,9 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("moveOptionValue", article_script)
         self.assertIn("Wert nach oben", article_script)
         self.assertIn("Wert nach unten", article_script)
-        self.assertNotIn("moveOptionGroup", article_script)
+        self.assertIn("moveOptionGroup", article_script)
+        self.assertIn("Option nach oben verschieben", article_script)
+        self.assertIn("Option nach unten verschieben", article_script)
 
     def test_sales_csv_import_creates_catalogue_and_withdraws_unlisted_combinations(self) -> None:
         """A manager can atomically build a catalogue and sales ledger from CSV."""

@@ -423,6 +423,8 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .option-value-card { min-width: 0; overflow: hidden; padding: 12px; border: 1px solid rgba(255,255,255,.1); border-radius: 11px; background: rgba(17,14,22,.28); }
 .option-value-heading { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 8px; margin-bottom: 10px; }
 .option-value-heading input { padding: 7px 8px; font-size: .86rem; }
+.option-group-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; }
+.option-group-position { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .72rem; white-space: nowrap; }
 .option-values-scroll { max-height: 330px; }
 .option-values-table { min-width: 330px; }
 .option-values-table th, .option-values-table td { padding: 7px; }
@@ -430,8 +432,8 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .option-values-table th:last-child { width: 108px; }
 .option-values-table input { min-width: 110px; padding: 7px 8px; font-size: .86rem; }
 .option-value-actions { display: flex; gap: 4px; }
-.icon-button.option-value-move-button:hover:not(:disabled) { color: var(--text); border-color: var(--accent); background: rgba(217,95,241,.14); }
-.option-value-move-button:disabled { opacity: .32; cursor: default; }
+.icon-button.option-value-move-button:hover:not(:disabled), .icon-button.option-group-move-button:hover:not(:disabled) { color: var(--text); border-color: var(--accent); background: rgba(217,95,241,.14); }
+.option-value-move-button:disabled, .option-group-move-button:disabled { opacity: .32; cursor: default; }
 .option-add-value { margin-top: 10px; }
 .option-editor-empty { min-height: 90px; margin: 0 0 12px; }
 .icon-button { width: 29px; height: 29px; display: inline-grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--panel-muted); }

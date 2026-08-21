@@ -27,8 +27,9 @@
       </div>
       <label class="toggle-label article-offer-toggle"><input type="checkbox" name="not_offered" {% if not article.is_offered %}checked{% endif %}><span>Artikel nicht mehr anbieten</span></label>
       <section class="option-editor">
-        <div class="section-heading"><div><h3>Artikeloptionen</h3><p>Beispiele: Farbe, Größe, Schnitt oder Material. Mit ↑ und ↓ legst du je Option die Standardreihenfolge ihrer Werte fest.</p></div><button id="add-option-column" class="secondary-button" type="button">Option hinzufügen</button></div>
+        <div class="section-heading"><div><h3>Artikeloptionen</h3><p>Beispiele: Farbe, Größe, Schnitt oder Material. Mit ↑ und ↓ legst du die Reihenfolge der Optionen und ihrer Werte fest.</p></div><button id="add-option-column" class="secondary-button" type="button">Option hinzufügen</button></div>
         <div id="option-grid" class="option-card-grid"></div>
+        <p id="option-order-status" class="visually-hidden" aria-live="polite"></p>
         <p class="notice">Beim Speichern von Änderungen oder gelöschten Werten erscheint eine Warnung. Gelöschte Optionen bleiben nur für historische Belege erhalten und können nicht mehr neu verkauft werden.</p>
       </section>
       <section class="variant-price-section">
