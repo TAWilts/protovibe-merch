@@ -18,15 +18,18 @@
   const changeRateOutput = document.getElementById("slideshow-change-rate-value");
   const animationSpeedInput = document.getElementById("slideshow-animation-speed");
   const animationSpeedOutput = document.getElementById("slideshow-animation-speed-value");
+  const collageShowPricesInput = document.getElementById("slideshow-collage-show-prices");
   const overlay = document.getElementById("product-slideshow-overlay");
   const stage = document.getElementById("product-slideshow-stage");
   if (
     !dataNode || !gallery || !startButton || !selectedCount || !variantSelect || !uploadInput || !uploadStatus
-    || !changeRateInput || !changeRateOutput || !animationSpeedInput || !animationSpeedOutput || !overlay || !stage
+    || !changeRateInput || !changeRateOutput || !animationSpeedInput || !animationSpeedOutput || !collageShowPricesInput
+    || !overlay || !stage
   ) return;
 
   const source = JSON.parse(dataNode.textContent || "{}");
   const variants = Array.isArray(source.variants) ? source.variants : [];
+  const slideshowSettings = source.settings && typeof source.settings === "object" ? source.settings : {};
   const strings = {
     selectedCount: "{count} von {total} Fotos für die Diashow ausgewählt",
     empty: "Noch keine Bilder für die Diashow vorhanden.",
@@ -42,6 +45,10 @@
     deleteOther: "Bild entfernen",
     deleteOtherConfirm: "Dieses eigenständige Dia wirklich entfernen?",
     deleteFailed: "Das Dia konnte nicht entfernt werden.",
+    include: "In Produktpalette zeigen",
+    showPrice: "Preis im Dia zeigen",
+    collageUpdateFailed: "Die Preis-Anzeige der Abschluss-Collage konnte nicht gespeichert werden.",
+    collageLabel: "Abschluss-Collage",
     changeRateValue: "alle {seconds} s",
     animationSpeedValue: "{speed}×",
     ...(window.MERCH_APP?.slideshowStrings || {}),
@@ -49,14 +56,20 @@
   const directions = ["from-left", "from-right", "from-top", "from-bottom"];
   const exitDirections = ["to-left", "to-right", "to-top", "to-bottom"];
   const photos = Array.isArray(source.photos) ? source.photos.map(normalizePhoto) : [];
-  let slideDurationMs = 6500;
-  let frameAnimationMs = 750;
-  let copyAnimationMs = 810;
-  let copyDelayMs = 140;
+  let slideDurationMs = 8000;
+  let frameAnimationMs = 2500;
+  let copyAnimationMs = 2700;
+  let copyDelayMs = 250;
+  let collageAnimationMs = 2500;
+  let collageStaggerMs = 200;
+  let collageShowPrices = typeof slideshowSettings.collage_show_prices === "boolean"
+    ? slideshowSettings.collage_show_prices
+    : true;
   let uploadBusy = false;
   let slideshowRunning = false;
   let slideshowTimer = null;
   let slideshowBag = [];
+  let cyclePhotos = [];
   let previousSlideKey = null;
   let viewportFitFrame = null;
 
@@ -84,6 +97,7 @@
       key: String(photo.key || `${kind}:${photo.id}`),
       is_product_photo: productPhoto,
       include_in_slideshow: Boolean(photo.include_in_slideshow),
+      show_price: photo.show_price !== false,
     };
   }
 
@@ -128,11 +142,14 @@
   }
 
   function updateTimingControls() {
-    const seconds = rangeValue(changeRateInput, 6.5);
+    const seconds = rangeValue(changeRateInput, 8);
     const speed = rangeValue(animationSpeedInput, 1);
-    const frameDuration = Math.max(0.2, 0.75 / speed);
+    // 1× deliberately matches the former 0.3× setting (2.5 seconds), so
+    // existing shop displays retain their calmer, readable motion by default.
+    const frameDuration = Math.max(0.2, 2.5 / speed);
     const copyDuration = Math.max(0.22, frameDuration * 1.08);
     const copyDelay = Math.min(0.25, frameDuration * 0.18);
+    const collageStagger = Math.min(0.22, Math.max(0.08, frameDuration * 0.08));
 
     changeRateInput.value = String(seconds);
     animationSpeedInput.value = String(speed);
@@ -144,9 +161,13 @@
     frameAnimationMs = Math.round(frameDuration * 1000);
     copyAnimationMs = Math.round(copyDuration * 1000);
     copyDelayMs = Math.round(copyDelay * 1000);
+    collageAnimationMs = Math.round(frameDuration * 1000);
+    collageStaggerMs = Math.round(collageStagger * 1000);
     overlay.style.setProperty("--slideshow-frame-duration", `${frameDuration.toFixed(2)}s`);
     overlay.style.setProperty("--slideshow-copy-duration", `${copyDuration.toFixed(2)}s`);
     overlay.style.setProperty("--slideshow-copy-delay", `${copyDelay.toFixed(2)}s`);
+    overlay.style.setProperty("--slideshow-collage-duration", `${frameDuration.toFixed(2)}s`);
+    overlay.style.setProperty("--slideshow-collage-stagger", `${collageStagger.toFixed(2)}s`);
   }
 
   function cssPixels(value) {
@@ -286,7 +307,19 @@
       const label = document.createElement("span");
       label.textContent = strings.include;
       include.append(checkbox, label);
+      const showPrice = document.createElement("label");
+      showPrice.className = "slideshow-price-toggle toggle-label";
+      const priceCheckbox = document.createElement("input");
+      priceCheckbox.type = "checkbox";
+      priceCheckbox.checked = photo.show_price !== false;
+      priceCheckbox.dataset.photoPrice = photoKey(photo);
+      const priceLabel = document.createElement("span");
+      priceLabel.textContent = strings.showPrice;
+      showPrice.append(priceCheckbox, priceLabel);
       card.append(include);
+      // Standalone artwork has no catalogue price.  Its price switch would be
+      // misleading, while every product photo keeps its own explicit toggle.
+      if (productPhoto) card.append(showPrice);
       gallery.append(card);
     });
     updateSelectionControls();
@@ -322,6 +355,7 @@
         key: `variant:${returnedPhoto.id}`,
         is_product_photo: true,
         variant_id: Number(variant.id),
+        article_id: Number(variant.article_id),
         include_in_slideshow: Boolean(returnedPhoto.include_in_slideshow),
         article_name: variant.article_name,
         option_text: variant.option_text,
@@ -376,33 +410,67 @@
     }
   });
 
-  gallery.addEventListener("change", async (event) => {
-    const checkbox = event.target;
-    if (!(checkbox instanceof HTMLInputElement) || checkbox.dataset.photoInclusion === undefined) return;
-    const photo = photos.find((item) => photoKey(item) === checkbox.dataset.photoInclusion);
-    if (!photo) return;
-    const previousValue = Boolean(photo.include_in_slideshow);
-    const nextValue = checkbox.checked;
-    photo.include_in_slideshow = nextValue;
-    renderGallery();
-    const endpoint = isProductPhoto(photo)
+  function photoSettingsEndpoint(photo) {
+    return isProductPhoto(photo)
       ? `/api/variantenfotos/${photo.id}/diashow`
       : `/api/diashow/fotos/${photo.id}`;
+  }
+
+  async function updatePhotoSetting(photo, field, nextValue) {
+    const previousValue = Boolean(photo[field]);
+    photo[field] = nextValue;
+    renderGallery();
+    const endpoint = photoSettingsEndpoint(photo);
     try {
       const response = await fetch(endpoint, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
-        body: JSON.stringify({ include_in_slideshow: nextValue }),
+        body: JSON.stringify({ [field]: nextValue }),
       });
       const body = await responseBody(response, strings.updateFailed);
-      photo.include_in_slideshow = Boolean(body.include_in_slideshow);
+      photo[field] = typeof body[field] === "boolean" ? body[field] : nextValue;
       renderGallery();
     } catch (error) {
-      photo.include_in_slideshow = previousValue;
+      photo[field] = previousValue;
       showUploadStatus(error instanceof Error ? error.message : strings.updateFailed, true);
       renderGallery();
     }
+  }
+
+  gallery.addEventListener("change", (event) => {
+    const checkbox = event.target;
+    if (!(checkbox instanceof HTMLInputElement)) return;
+    const [field, key] = checkbox.dataset.photoInclusion !== undefined
+      ? ["include_in_slideshow", checkbox.dataset.photoInclusion]
+      : checkbox.dataset.photoPrice !== undefined
+        ? ["show_price", checkbox.dataset.photoPrice]
+        : [null, null];
+    if (!field || !key) return;
+    const photo = photos.find((item) => photoKey(item) === key);
+    if (!photo) return;
+    updatePhotoSetting(photo, field, checkbox.checked);
   });
+
+  async function updateCollageShowPrices(nextValue) {
+    const previousValue = collageShowPrices;
+    collageShowPrices = nextValue;
+    try {
+      const response = await fetch("/api/diashow/einstellungen", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
+        body: JSON.stringify({ collage_show_prices: nextValue }),
+      });
+      const body = await responseBody(response, strings.collageUpdateFailed);
+      const savedSettings = body.settings && typeof body.settings === "object" ? body.settings : body;
+      collageShowPrices = typeof savedSettings.collage_show_prices === "boolean"
+        ? savedSettings.collage_show_prices
+        : nextValue;
+    } catch (error) {
+      collageShowPrices = previousValue;
+      showUploadStatus(error instanceof Error ? error.message : strings.collageUpdateFailed, true);
+    }
+    collageShowPricesInput.checked = collageShowPrices;
+  }
 
   gallery.addEventListener("click", async (event) => {
     if (!(event.target instanceof Element)) return;
@@ -445,6 +513,112 @@
       const alternative = Math.floor(Math.random() * lastIndex);
       [slideshowBag[lastIndex], slideshowBag[alternative]] = [slideshowBag[alternative], slideshowBag[lastIndex]];
     }
+    // The bag is consumed from its end, so this preserves the picture order
+    // shown during this cycle for the small closing collage.
+    cyclePhotos = [...slideshowBag].reverse();
+  }
+
+  function collagePlacement(index, count) {
+    const layouts = {
+      1: [[19, 8, -2]],
+      2: [[7, 13, -8], [48, 29, 7]],
+      3: [[7, 8, -8], [51, 12, 7], [28, 45, -3]],
+      4: [[4, 9, -9], [52, 6, 8], [8, 48, 6], [54, 47, -7]],
+      5: [[3, 9, -9], [53, 5, 8], [7, 49, 6], [56, 47, -7], [30, 26, -2]],
+    };
+    const layout = layouts[count] || layouts[5];
+    const [x, y, rotation] = layout[index] || layout[layout.length - 1];
+    return { x, y, rotation };
+  }
+
+  function renderCollage(collagePhotos) {
+    const collage = document.createElement("section");
+    collage.className = "product-slideshow-collage";
+    collage.dataset.count = String(collagePhotos.length);
+    collage.setAttribute("aria-label", strings.collageLabel);
+
+    collagePhotos.forEach((photo, index) => {
+      const placement = collagePlacement(index, collagePhotos.length);
+      const card = document.createElement("figure");
+      card.className = "product-slideshow-collage-card";
+      card.style.setProperty("--collage-x", String(placement.x));
+      card.style.setProperty("--collage-y", String(placement.y));
+      card.style.setProperty("--collage-rotation", `${placement.rotation}deg`);
+      card.style.setProperty("--collage-index", String(index));
+      card.style.setProperty("--collage-total", String(collagePhotos.length));
+      card.style.setProperty("--collage-entry-delay", `${index * collageStaggerMs}ms`);
+      card.style.setProperty("--collage-exit-delay", `${(collagePhotos.length - index - 1) * collageStaggerMs}ms`);
+      card.style.setProperty("--collage-entry-x", index % 2 === 0 ? "-24vw" : "24vw");
+      card.style.setProperty("--collage-entry-y", index < 2 ? "-12vh" : "14vh");
+      card.style.zIndex = String(index + 1);
+
+      const image = document.createElement("img");
+      image.src = photoUrl(photo);
+      image.alt = photoAlt(photo);
+      image.decoding = "async";
+      card.append(image);
+
+      if (isProductPhoto(photo)) {
+        const copy = document.createElement("figcaption");
+        copy.className = "product-slideshow-collage-copy";
+        const article = document.createElement("strong");
+        article.textContent = photo.article_name;
+        const variant = document.createElement("span");
+        variant.textContent = photoVariantLabel(photo);
+        copy.append(article, variant);
+        if (collageShowPrices && photo.show_price !== false) {
+          const price = document.createElement("em");
+          price.textContent = money(photo.sale_price_cents);
+          copy.append(price);
+        }
+        card.append(copy);
+      }
+      collage.append(card);
+    });
+    stage.replaceChildren(collage);
+  }
+
+  function collageAnimationTotalMs() {
+    const cards = stage.querySelectorAll(".product-slideshow-collage-card").length;
+    return collageAnimationMs + Math.max(0, cards - 1) * collageStaggerMs;
+  }
+
+  function beginCollageExit() {
+    if (!slideshowRunning) return;
+    const collage = stage.querySelector(".product-slideshow-collage");
+    if (!(collage instanceof HTMLElement)) {
+      showNextSlide();
+      return;
+    }
+    if (collage.classList.contains("is-leaving")) return;
+    collage.classList.add("is-leaving");
+    slideshowTimer = window.setTimeout(showNextSlide, collageAnimationTotalMs());
+  }
+
+  function scheduleCollageExit() {
+    const animationDuration = collageAnimationTotalMs();
+    const delayBeforeExit = Math.max(animationDuration, slideDurationMs - animationDuration);
+    slideshowTimer = window.setTimeout(beginCollageExit, delayBeforeExit);
+  }
+
+  function showCycleCollage() {
+    // A cycle may contain several photos of the same article, plus standalone
+    // artwork. The closing collage deliberately represents only products,
+    // never repeating an article merely because it has multiple pictures.
+    const seenItems = new Set();
+    const collagePhotos = cyclePhotos.filter(isProductPhoto).filter((photo) => {
+      const itemKey = `article:${photo.article_id ?? photo.article_name ?? photo.variant_id}`;
+      if (seenItems.has(itemKey)) return false;
+      seenItems.add(itemKey);
+      return true;
+    }).slice(0, 5);
+    cyclePhotos = [];
+    if (!collagePhotos.length) {
+      showNextSlide();
+      return;
+    }
+    renderCollage(collagePhotos);
+    scheduleCollageExit();
   }
 
   function randomDirection() {
@@ -466,6 +640,10 @@
 
   function beginSlideExit() {
     if (!slideshowRunning) return;
+    if (stage.querySelector(".product-slideshow-collage")) {
+      beginCollageExit();
+      return;
+    }
     const frame = stage.querySelector(".product-slideshow-frame");
     const copy = stage.querySelector(".product-slideshow-copy");
     if (!(frame instanceof HTMLElement)) {
@@ -516,9 +694,12 @@
       article.textContent = photo.article_name;
       const variant = document.createElement("span");
       variant.textContent = photoVariantLabel(photo);
-      const price = document.createElement("em");
-      price.textContent = money(photo.sale_price_cents);
-      copy.append(article, variant, price);
+      copy.append(article, variant);
+      if (photo.show_price !== false) {
+        const price = document.createElement("em");
+        price.textContent = money(photo.sale_price_cents);
+        copy.append(price);
+      }
       slide.append(copy);
     }
     stage.replaceChildren(slide);
@@ -535,7 +716,13 @@
 
   function showNextSlide() {
     if (!slideshowRunning) return;
-    if (!slideshowBag.length) refillSlideshowBag();
+    if (!slideshowBag.length) {
+      if (cyclePhotos.length) {
+        showCycleCollage();
+        return;
+      }
+      refillSlideshowBag();
+    }
     const photo = slideshowBag.pop();
     if (!photo) {
       closeSlideshow();
@@ -562,6 +749,8 @@
     slideshowRunning = false;
     window.clearTimeout(slideshowTimer);
     slideshowTimer = null;
+    slideshowBag = [];
+    cyclePhotos = [];
     if (viewportFitFrame !== null) window.cancelAnimationFrame(viewportFitFrame);
     viewportFitFrame = null;
     removeExitListeners();
@@ -592,6 +781,7 @@
     showUploadStatus();
     slideshowRunning = true;
     slideshowBag = [];
+    cyclePhotos = [];
     previousSlideKey = null;
     overlay.hidden = false;
     overlay.setAttribute("aria-hidden", "false");
@@ -613,6 +803,15 @@
     updateTimingControls();
     if (!slideshowRunning) return;
     window.clearTimeout(slideshowTimer);
+    const collage = stage.querySelector(".product-slideshow-collage");
+    if (collage instanceof HTMLElement) {
+      if (collage.classList.contains("is-leaving")) {
+        slideshowTimer = window.setTimeout(showNextSlide, collageAnimationTotalMs());
+      } else {
+        scheduleCollageExit();
+      }
+      return;
+    }
     const currentSlide = stage.querySelector(".product-slideshow-slide");
     if (currentSlide?.querySelector(".is-leaving")) {
       const hasCopy = currentSlide.querySelector(".product-slideshow-copy") instanceof HTMLElement;
@@ -628,10 +827,12 @@
   startButton.addEventListener("click", startSlideshow);
   changeRateInput.addEventListener("input", onTimingInput);
   animationSpeedInput.addEventListener("input", onTimingInput);
+  collageShowPricesInput.addEventListener("change", () => updateCollageShowPrices(collageShowPricesInput.checked));
   window.addEventListener("resize", fitCurrentSlide);
   window.visualViewport?.addEventListener("resize", fitCurrentSlide);
   document.addEventListener("fullscreenchange", onFullscreenChange);
   updateTimingControls();
+  collageShowPricesInput.checked = collageShowPrices;
   renderGallery();
   setUploadBusy(false);
 })();

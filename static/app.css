@@ -480,6 +480,9 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .slideshow-upload-button input { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; opacity: 0; cursor: pointer; }
 .slideshow-upload-button.is-disabled, .slideshow-upload-button.is-busy { cursor: default; opacity: .56; }
 .slideshow-upload-button.is-disabled input, .slideshow-upload-button.is-busy input { cursor: default; }
+.slideshow-collage-price-control { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.slideshow-price-toggle-row { display: inline-flex; align-items: center; gap: 9px; min-height: 22px; color: var(--text); font-size: .8rem; font-weight: 650; }
+.slideshow-price-toggle-row input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent-bright); }
 .slideshow-upload-section .file-status { margin: 12px 0 0; }
 .slideshow-gallery-heading { align-items: start; }
 .slideshow-gallery-heading > .status { flex: 0 0 auto; margin-top: 2px; white-space: nowrap; }
@@ -496,11 +499,12 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .product-photo-card-copy .status { width: fit-content; margin-top: 4px; font-size: .66rem; }
 .product-photo-card-copy small { color: var(--muted); font-size: .69rem; line-height: 1.25; }
 .product-photo-delete-button { justify-self: start; min-height: 32px; margin-top: 4px; padding: 5px 8px; font-size: .7rem; }
-.slideshow-include-toggle { min-height: 44px; margin: 0 10px 10px; padding-top: 9px; border-top: 1px solid rgba(255,255,255,.08); color: var(--text); font-size: .75rem; }
-.slideshow-include-toggle input { width: 17px; height: 17px; }
+.slideshow-include-toggle, .slideshow-price-toggle { min-height: 40px; margin: 0 10px; padding-top: 9px; border-top: 1px solid rgba(255,255,255,.08); color: var(--text); font-size: .75rem; }
+.slideshow-price-toggle { margin-bottom: 10px; }
+.slideshow-include-toggle input, .slideshow-price-toggle input { width: 17px; height: 17px; }
 
 body.product-slideshow-running { overflow: hidden; }
-.product-slideshow-overlay { --slideshow-frame-duration: .75s; --slideshow-copy-duration: .81s; --slideshow-copy-delay: .14s; --slideshow-edge: clamp(10px, 1.8vw, 32px); --slideshow-bottom: clamp(38px, 5vw, 64px); position: fixed; z-index: 100; top: 0; right: 0; left: 0; height: 100vh; height: 100dvh; display: grid; place-items: center; overflow: hidden; isolation: isolate; color: #fff; background: radial-gradient(circle at 50% 42%, #25252b 0, #08080a 48%, #000 100%); cursor: pointer; }
+.product-slideshow-overlay { --slideshow-frame-duration: .75s; --slideshow-copy-duration: .81s; --slideshow-copy-delay: .14s; --slideshow-collage-duration: .75s; --slideshow-collage-stagger: .12s; --slideshow-edge: clamp(10px, 1.8vw, 32px); --slideshow-bottom: clamp(38px, 5vw, 64px); position: fixed; z-index: 100; top: 0; right: 0; left: 0; height: 100vh; height: 100dvh; display: grid; place-items: center; overflow: hidden; isolation: isolate; color: #fff; background: radial-gradient(circle at 50% 42%, #25252b 0, #08080a 48%, #000 100%); cursor: pointer; }
 .product-slideshow-overlay[hidden] { display: none; }
 .product-slideshow-overlay::before { position: absolute; z-index: -1; inset: 0; content: ""; opacity: .38; background: repeating-linear-gradient(135deg, rgba(255,255,255,.026) 0 1px, transparent 1px 10px); }
 .product-slideshow-stage { width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; place-items: center; padding: var(--slideshow-edge) var(--slideshow-edge) var(--slideshow-bottom); }
@@ -514,6 +518,18 @@ body.product-slideshow-running { overflow: hidden; }
 .product-slideshow-copy.from-left { bottom: clamp(16px, 3vw, 44px); left: clamp(12px, 3vw, 46px); animation: product-copy-in-left var(--slideshow-copy-duration) var(--slideshow-copy-delay) both cubic-bezier(.2,.82,.2,1); }
 .product-slideshow-copy.from-right { right: clamp(12px, 3vw, 46px); bottom: clamp(16px, 3vw, 44px); animation: product-copy-in-right var(--slideshow-copy-duration) var(--slideshow-copy-delay) both cubic-bezier(.2,.82,.2,1); }
 .product-slideshow-copy.from-top { top: clamp(12px, 3vw, 46px); left: clamp(12px, 3vw, 46px); animation: product-copy-in-top var(--slideshow-copy-duration) var(--slideshow-copy-delay) both cubic-bezier(.2,.82,.2,1); }
+.product-slideshow-collage { --slideshow-collage-card-width: min(36vw, 480px); position: relative; width: min(92vw, 1360px); height: min(76dvh, 900px); min-height: 250px; max-height: 100%; }
+.product-slideshow-collage[data-count="1"] { --slideshow-collage-card-width: min(64vw, 860px); }
+.product-slideshow-collage[data-count="2"] { --slideshow-collage-card-width: min(43vw, 640px); }
+.product-slideshow-collage[data-count="3"] { --slideshow-collage-card-width: min(40vw, 560px); }
+.product-slideshow-collage-card { position: absolute; top: calc(var(--collage-y) * 1%); left: calc(var(--collage-x) * 1%); width: var(--slideshow-collage-card-width); aspect-ratio: 4 / 3; margin: 0; overflow: hidden; border: 2px solid #000; border-radius: clamp(3px, .5vw, 8px); background: #000; box-shadow: 0 22px 52px rgba(0,0,0,.56); transform: translate3d(0, 0, 0) rotate(var(--collage-rotation)) scale(1); transform-origin: center; animation: product-collage-card-in var(--slideshow-collage-duration) var(--collage-entry-delay) both cubic-bezier(.16,.84,.22,1); }
+.product-slideshow-collage-card img { display: block; width: 100%; height: 100%; background: #000; object-fit: contain; object-position: center; }
+.product-slideshow-collage-copy { position: absolute; right: clamp(4px, .8vw, 11px); bottom: clamp(4px, .8vw, 11px); left: clamp(4px, .8vw, 11px); display: grid; gap: 1px; min-width: 0; padding: clamp(5px, .7vw, 10px) clamp(6px, .9vw, 12px); border: 1px solid rgba(255,255,255,.19); border-radius: clamp(3px, .45vw, 7px); color: #fff; background: linear-gradient(135deg, rgba(10,10,13,.92), rgba(26,19,31,.7)); box-shadow: 0 8px 20px rgba(0,0,0,.38); backdrop-filter: blur(7px); }
+.product-slideshow-collage-copy strong, .product-slideshow-collage-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.product-slideshow-collage-copy strong { font-size: clamp(.74rem, 1.35vw, 1.14rem); line-height: 1.1; letter-spacing: -.02em; }
+.product-slideshow-collage-copy span { color: rgba(255,255,255,.78); font-size: clamp(.61rem, .95vw, .82rem); line-height: 1.15; }
+.product-slideshow-collage-copy em { margin-top: 1px; color: var(--accent-bright); font-size: clamp(.74rem, 1.15vw, 1rem); font-style: normal; font-weight: 850; line-height: 1.1; }
+.product-slideshow-collage.is-leaving .product-slideshow-collage-card { animation: product-collage-card-out var(--slideshow-collage-duration) var(--collage-exit-delay) both cubic-bezier(.68,.04,.8,.25); }
 .product-slideshow-copy.from-bottom { right: clamp(12px, 3vw, 46px); bottom: clamp(16px, 3vw, 44px); animation: product-copy-in-bottom var(--slideshow-copy-duration) var(--slideshow-copy-delay) both cubic-bezier(.2,.82,.2,1); }
 .product-slideshow-frame.from-left { animation: product-frame-in-left var(--slideshow-frame-duration) both cubic-bezier(.18,.82,.22,1); }
 .product-slideshow-frame.from-right { animation: product-frame-in-right var(--slideshow-frame-duration) both cubic-bezier(.18,.82,.22,1); }
@@ -553,6 +569,8 @@ body.product-slideshow-running { overflow: hidden; }
 .compact-copy { margin: -5px 0 0; font-size: .78rem; }
 .empty-state { margin: 10vh auto; max-width: 480px; text-align: center; padding: 34px; border: 1px dashed var(--border); border-radius: var(--radius); background: var(--panel); }
 .empty-state.compact { margin: 0; }
+@keyframes product-collage-card-in { from { opacity: 0; transform: translate3d(var(--collage-entry-x), var(--collage-entry-y), 0) rotate(var(--collage-rotation)) scale(.76); } to { opacity: 1; transform: translate3d(0, 0, 0) rotate(var(--collage-rotation)) scale(1); } }
+@keyframes product-collage-card-out { from { opacity: 1; transform: translate3d(0, 0, 0) rotate(var(--collage-rotation)) scale(1); } to { opacity: 0; transform: translate3d(var(--collage-entry-x), var(--collage-entry-y), 0) rotate(var(--collage-rotation)) scale(.76); } }
 .empty-state h1, .empty-state h2 { margin: 0 0 10px; }
 .empty-state p { color: var(--muted); margin: 0 0 20px; }
 
@@ -729,6 +747,7 @@ body.product-slideshow-running { overflow: hidden; }
   .sale-payment-date label { min-width: 0; }
   .product-slideshow-stage { padding: var(--slideshow-edge) var(--slideshow-edge) var(--slideshow-bottom); }
   .product-slideshow-slide { width: 100%; height: 100%; }
+  .slideshow-collage-price-control { grid-template-columns: 1fr; justify-items: start; }
   .product-slideshow-copy { max-width: calc(100vw - 34px); }
   .product-slideshow-copy.from-left, .product-slideshow-copy.from-right, .product-slideshow-copy.from-top, .product-slideshow-copy.from-bottom { right: 9px; bottom: 8px; left: auto; top: auto; }
   .product-slideshow-exit-hint { right: 12px; bottom: 9px; max-width: calc(100vw - 24px); }
@@ -740,6 +759,8 @@ body.product-slideshow-running { overflow: hidden; }
   .recovery-actions { flex-direction: column; }
   .recovery-actions > * { width: 100%; }
   .security-card { padding: 24px 19px; }
+  .product-slideshow-collage { width: 100%; height: min(74dvh, 700px); min-height: 220px; }
+  .product-slideshow-collage-copy { right: 4px; bottom: 4px; left: 4px; padding: 5px 6px; }
   .database-recovery-key { font-size: .87rem; letter-spacing: .05em; }
   .metric-card { min-height: 95px; }
   .update-version-grid { grid-template-columns: 1fr; }
@@ -762,5 +783,6 @@ body.product-slideshow-running { overflow: hidden; }
   .product-slideshow-frame.from-left, .product-slideshow-frame.from-right, .product-slideshow-frame.from-top, .product-slideshow-frame.from-bottom,
   .product-slideshow-frame.to-left, .product-slideshow-frame.to-right, .product-slideshow-frame.to-top, .product-slideshow-frame.to-bottom,
   .product-slideshow-copy.from-left, .product-slideshow-copy.from-right, .product-slideshow-copy.from-top, .product-slideshow-copy.from-bottom,
-  .product-slideshow-copy.to-left, .product-slideshow-copy.to-right, .product-slideshow-copy.to-top, .product-slideshow-copy.to-bottom { animation: none; }
+  .product-slideshow-copy.to-left, .product-slideshow-copy.to-right, .product-slideshow-copy.to-top, .product-slideshow-copy.to-bottom,
+  .product-slideshow-collage-card, .product-slideshow-collage.is-leaving .product-slideshow-collage-card { animation: none; }
 }

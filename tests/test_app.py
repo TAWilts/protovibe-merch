@@ -34,6 +34,7 @@ from app import (
     regenerate_database_recovery_key,
     setup_encrypted_databases,
     send_smtp_notification,
+    slideshow_settings_payload,
     smtp_notification_status,
     store_invoice_bytes,
     sync_variants,
@@ -429,6 +430,27 @@ class MerchAppTestCase(unittest.TestCase):
                           '2026-08-14T00:00:00+00:00', 7, NULL)
                 """
             )
+            connection.execute(
+                """
+                INSERT INTO variant_photos (
+                    id, variant_id, file_path, original_filename, position,
+                    include_in_slideshow, show_price, created_at
+                ) VALUES (23, 11, 'historic-product.jpg', 'historic-product.jpg', 0, 1, 0,
+                          '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO slideshow_extra_photos (
+                    id, file_path, original_filename, position,
+                    include_in_slideshow, show_price, created_at
+                ) VALUES (29, 'historic-extra.jpg', 'historic-extra.jpg', 0, 1, 0,
+                          '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                "INSERT INTO slideshow_settings (id, collage_show_prices) VALUES (1, 0)"
+            )
             # Model the released combined schema before global events existed.
             # The split migration must recreate and seed both tables itself.
             connection.execute("DROP TABLE sale_event_state")
@@ -463,6 +485,15 @@ class MerchAppTestCase(unittest.TestCase):
             selected_event = get_db().execute(
                 "SELECT event_id FROM sale_event_state WHERE id = 1"
             ).fetchone()
+            product_photo = get_db().execute(
+                "SELECT include_in_slideshow, show_price FROM variant_photos WHERE id = 23"
+            ).fetchone()
+            extra_photo = get_db().execute(
+                "SELECT include_in_slideshow, show_price FROM slideshow_extra_photos WHERE id = 29"
+            ).fetchone()
+            slideshow_settings = get_db().execute(
+                "SELECT collage_show_prices FROM slideshow_settings WHERE id = 1"
+            ).fetchone()
             operational_tables = {
                 row["name"]
                 for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
@@ -471,6 +502,9 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(dict(sale), {"id": 19, "variant_id": 11, "created_by": 7, "created_by_username": "historic-seller"})
         self.assertEqual(event["name"], "Historisches Festival")
         self.assertEqual(selected_event["event_id"], event["id"])
+        self.assertEqual(dict(product_photo), {"include_in_slideshow": 1, "show_price": 0})
+        self.assertEqual(dict(extra_photo), {"include_in_slideshow": 1, "show_price": 0})
+        self.assertEqual(slideshow_settings["collage_show_prices"], 0)
         self.assertNotIn("users", operational_tables)
         archives = list(Path(split_app.config["MIGRATION_ARCHIVE_DIR"]).glob("*.zip"))
         self.assertEqual(len(archives), 1)
@@ -546,6 +580,101 @@ class MerchAppTestCase(unittest.TestCase):
             [row["name"] for row in catalogue], ["Frühes Festival", "Spätes Festival"]
         )
         self.assertEqual(current["name"], "Spätes Festival")
+
+    def test_combined_photo_migration_adds_price_defaults_before_split(self) -> None:
+        """A pre-price combined database keeps its selected product and extra slides."""
+
+        legacy_database = Path(self.tempdir.name) / "combined-photo-schema.sqlite3"
+        connection = sqlite3.connect(legacy_database)
+        try:
+            connection.executescript(LEGACY_COMBINED_SCHEMA_SQL)
+            # Recreate exactly the prior photo schema: it already knew the
+            # global include switch but not the new price switch/settings.
+            connection.executescript(
+                """
+                DROP TABLE slideshow_settings;
+                DROP TABLE slideshow_extra_photos;
+                DROP TABLE variant_photos;
+                CREATE TABLE variant_photos (
+                    id INTEGER PRIMARY KEY,
+                    variant_id INTEGER NOT NULL REFERENCES variants(id),
+                    file_path TEXT NOT NULL UNIQUE,
+                    original_filename TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    include_in_slideshow INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    created_by INTEGER,
+                    created_by_username TEXT
+                );
+                CREATE TABLE slideshow_extra_photos (
+                    id INTEGER PRIMARY KEY,
+                    file_path TEXT NOT NULL UNIQUE,
+                    original_filename TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    include_in_slideshow INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    created_by INTEGER,
+                    created_by_username TEXT
+                );
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO articles (id, name, created_at, updated_at)
+                VALUES (41, 'Archiv-Shirt', '2026-08-14T00:00:00+00:00', '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO variants (
+                    id, article_id, option_value_ids_json, combination_key,
+                    sale_price_cents, default_purchase_price_cents, created_at, updated_at
+                ) VALUES (42, 41, '[]', '', 1200, 700, '2026-08-14T00:00:00+00:00', '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO variant_photos (variant_id, file_path, original_filename, created_at)
+                VALUES (42, 'archive-product.jpg', 'archive-product.jpg', '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO slideshow_extra_photos (file_path, original_filename, created_at)
+                VALUES ('archive-extra.jpg', 'archive-extra.jpg', '2026-08-14T00:00:00+00:00')
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        split_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": str(legacy_database),
+                "USERS_DATABASE": str(Path(self.tempdir.name) / "combined-photo-users.sqlite3"),
+                "BACKUP_DIR": str(Path(self.tempdir.name) / "combined-photo-backups"),
+                "RESET_ARCHIVE_DIR": str(Path(self.tempdir.name) / "combined-photo-reset-archives"),
+                "INVOICE_UPLOAD_DIR": str(Path(self.tempdir.name) / "combined-photo-invoices"),
+                "VARIANT_PHOTO_UPLOAD_DIR": str(Path(self.tempdir.name) / "combined-photo-photos"),
+                "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password",
+                "APP_VERSION": "v0.3.0",
+                "AUTO_BACKUP": False,
+            }
+        )
+        with split_app.app_context():
+            product_photo = get_db().execute(
+                "SELECT include_in_slideshow, show_price FROM variant_photos WHERE file_path = 'archive-product.jpg'"
+            ).fetchone()
+            extra_photo = get_db().execute(
+                "SELECT include_in_slideshow, show_price FROM slideshow_extra_photos WHERE file_path = 'archive-extra.jpg'"
+            ).fetchone()
+            settings = slideshow_settings_payload(get_db())
+        self.assertEqual(dict(product_photo), {"include_in_slideshow": 1, "show_price": 1})
+        self.assertEqual(dict(extra_photo), {"include_in_slideshow": 1, "show_price": 1})
+        self.assertTrue(settings["collage_show_prices"])
 
     def test_existing_purchase_table_gets_invoice_attachment_column(self) -> None:
         """A deployed database upgrades without losing its free-text reference."""
@@ -641,6 +770,18 @@ class MerchAppTestCase(unittest.TestCase):
                 );
                 INSERT INTO variant_photos (variant_id, file_path, original_filename, position, created_at)
                 VALUES (1, 'existing-photo.jpg', 'existing-photo.jpg', 0, '2026-08-14T00:00:00+00:00');
+                CREATE TABLE slideshow_extra_photos (
+                    id INTEGER PRIMARY KEY,
+                    file_path TEXT NOT NULL UNIQUE,
+                    original_filename TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    include_in_slideshow INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    created_by INTEGER,
+                    created_by_username TEXT
+                );
+                INSERT INTO slideshow_extra_photos (file_path, original_filename, position, created_at)
+                VALUES ('existing-extra.jpg', 'existing-extra.jpg', 0, '2026-08-14T00:00:00+00:00');
                 """
             )
             connection.commit()
@@ -664,13 +805,27 @@ class MerchAppTestCase(unittest.TestCase):
         )
         with migrated_app.app_context():
             columns = {row["name"] for row in get_db().execute("PRAGMA table_info(variant_photos)").fetchall()}
-            value = get_db().execute("SELECT include_in_slideshow FROM variant_photos WHERE id = 1").fetchone()[0]
+            extra_columns = {
+                row["name"] for row in get_db().execute("PRAGMA table_info(slideshow_extra_photos)").fetchall()
+            }
+            value = get_db().execute(
+                "SELECT include_in_slideshow, show_price FROM variant_photos WHERE id = 1"
+            ).fetchone()
+            extra_value = get_db().execute(
+                "SELECT include_in_slideshow, show_price FROM slideshow_extra_photos WHERE id = 1"
+            ).fetchone()
+            settings = slideshow_settings_payload(get_db())
             indexes = {row["name"] for row in get_db().execute("PRAGMA index_list(variant_photos)").fetchall()}
             tables = {row["name"] for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         self.assertIn("include_in_slideshow", columns)
-        self.assertEqual(value, 1)
+        self.assertIn("show_price", columns)
+        self.assertIn("show_price", extra_columns)
+        self.assertEqual(dict(value), {"include_in_slideshow": 1, "show_price": 1})
+        self.assertEqual(dict(extra_value), {"include_in_slideshow": 1, "show_price": 1})
+        self.assertTrue(settings["collage_show_prices"])
         self.assertIn("idx_variant_photos_slideshow", indexes)
         self.assertIn("slideshow_extra_photos", tables)
+        self.assertIn("slideshow_settings", tables)
 
     def seed_variant(self, article_name: str = "Test Shirt") -> int:
         """Create an article with generic Farbe/Größe options and one variant."""
@@ -2691,14 +2846,23 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn(">Diashow<", html)
         self.assertIn('/static/slideshow.js', html)
         self.assertIn('value="other"', html)
-        self.assertIn('id="slideshow-change-rate"', html)
+        self.assertIn(
+            'id="slideshow-change-rate" type="range" min="5" max="20" step="0.5" value="8"', html
+        )
         self.assertIn('id="slideshow-animation-speed"', html)
         self.assertIn('id="slideshow-animation-speed" type="range" min="0.1"', html)
+        self.assertIn('id="slideshow-collage-show-prices" type="checkbox" checked', html)
         slideshow_response = self.client.get("/static/slideshow.js")
         slideshow_script = slideshow_response.get_data(as_text=True)
         slideshow_response.close()
         self.assertIn("function beginSlideExit()", slideshow_script)
         self.assertIn('frame.classList.add("is-leaving"', slideshow_script)
+        self.assertIn("2.5 / speed", slideshow_script)
+        self.assertIn("function showCycleCollage()", slideshow_script)
+        self.assertIn("cyclePhotos.filter(isProductPhoto)", slideshow_script)
+        self.assertIn(".slice(0, 5)", slideshow_script)
+        self.assertIn("collageShowPrices && photo.show_price !== false", slideshow_script)
+        self.assertIn("if (photo.show_price !== false)", slideshow_script)
         match = re.search(
             r'<script id="product-slideshow-data" type="application/json">(.*?)</script>', html, flags=re.DOTALL
         )
@@ -2708,6 +2872,9 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(gallery_photo["article_name"], "Campaign Shirt")
         self.assertEqual(gallery_photo["sale_price_cents"], 2000)
         self.assertTrue(gallery_photo["include_in_slideshow"])
+        self.assertTrue(gallery_photo["show_price"])
+        self.assertIn("article_id", gallery_photo)
+        self.assertTrue(payload["settings"]["collage_show_prices"])
 
         changed = self.client.patch(
             f"/api/variantenfotos/{photo_id}/diashow",
@@ -2726,6 +2893,38 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertFalse(photo["include_in_slideshow"])
         self.assertFalse(json.loads(audit_row["details_json"])["include_in_slideshow"])
 
+        price_changed = self.client.patch(
+            f"/api/variantenfotos/{photo_id}/diashow",
+            json={"show_price": False},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(price_changed.status_code, 200)
+        self.assertFalse(price_changed.json["show_price"])
+        with self.app.app_context():
+            photo = get_db().execute(
+                "SELECT include_in_slideshow, show_price FROM variant_photos WHERE id = ?", (photo_id,)
+            ).fetchone()
+            price_audit_row = get_db().execute(
+                "SELECT details_json FROM audit_log WHERE action = 'set_slideshow_photo_price_visibility' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        self.assertFalse(photo["include_in_slideshow"])
+        self.assertFalse(photo["show_price"])
+        self.assertFalse(json.loads(price_audit_row["details_json"])["show_price"])
+
+        settings_changed = self.client.patch(
+            "/api/diashow/einstellungen",
+            json={"collage_show_prices": False},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(settings_changed.status_code, 200)
+        self.assertFalse(settings_changed.json["collage_show_prices"])
+        self.assertFalse(settings_changed.json["settings"]["collage_show_prices"])
+        with self.app.app_context():
+            settings = get_db().execute(
+                "SELECT collage_show_prices FROM slideshow_settings WHERE id = 1"
+            ).fetchone()
+        self.assertEqual(settings["collage_show_prices"], 0)
+
         refreshed = self.client.get("/produktpalette").get_data(as_text=True)
         refreshed_match = re.search(
             r'<script id="product-slideshow-data" type="application/json">(.*?)</script>', refreshed, flags=re.DOTALL
@@ -2733,6 +2932,8 @@ class MerchAppTestCase(unittest.TestCase):
         refreshed_payload = json.loads(refreshed_match.group(1))
         refreshed_photo = next(photo for photo in refreshed_payload["photos"] if photo["id"] == photo_id)
         self.assertFalse(refreshed_photo["include_in_slideshow"])
+        self.assertFalse(refreshed_photo["show_price"])
+        self.assertFalse(refreshed_payload["settings"]["collage_show_prices"])
 
         rejected = self.client.patch(
             f"/api/variantenfotos/{photo_id}/diashow",
@@ -2740,6 +2941,19 @@ class MerchAppTestCase(unittest.TestCase):
             headers={"X-CSRF-Token": "test-csrf"},
         )
         self.assertEqual(rejected.status_code, 400)
+
+        rejected_price = self.client.patch(
+            f"/api/variantenfotos/{photo_id}/diashow",
+            json={"show_price": "false"},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(rejected_price.status_code, 400)
+        rejected_settings = self.client.patch(
+            "/api/diashow/einstellungen",
+            json={"collage_show_prices": "false"},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(rejected_settings.status_code, 400)
 
         other_source = io.BytesIO()
         Image.new("RGB", (900, 1400), (12, 116, 86)).save(other_source, format="PNG")
@@ -2755,6 +2969,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(other_photo["kind"], "other")
         self.assertFalse(other_photo["is_product_photo"])
         self.assertTrue(other_photo["include_in_slideshow"])
+        self.assertTrue(other_photo["show_price"])
 
         other_gallery = self.client.get("/produktpalette").get_data(as_text=True)
         other_match = re.search(
@@ -2764,6 +2979,7 @@ class MerchAppTestCase(unittest.TestCase):
         catalogue_other_photo = next(photo for photo in other_payload["photos"] if photo["key"] == other_photo["key"])
         self.assertEqual(catalogue_other_photo["original_filename"], "preisliste.png")
         self.assertNotIn("article_name", catalogue_other_photo)
+        self.assertTrue(catalogue_other_photo["show_price"])
 
         served_other = self.client.get(other_photo["url"])
         self.assertEqual(served_other.status_code, 200)
@@ -2783,6 +2999,19 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertFalse(other_row["include_in_slideshow"])
         self.assertTrue(stored_other.is_file())
 
+        changed_other_price = self.client.patch(
+            other_photo["url"],
+            json={"show_price": False},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(changed_other_price.status_code, 200)
+        self.assertFalse(changed_other_price.json["show_price"])
+        with self.app.app_context():
+            other_show_price = get_db().execute(
+                "SELECT show_price FROM slideshow_extra_photos WHERE id = ?", (other_photo["id"],)
+            ).fetchone()
+        self.assertFalse(other_show_price["show_price"])
+
         deleted_other = self.client.delete(other_photo["url"], headers={"X-CSRF-Token": "test-csrf"})
         self.assertEqual(deleted_other.status_code, 200)
         self.assertFalse(stored_other.exists())
@@ -2790,6 +3019,22 @@ class MerchAppTestCase(unittest.TestCase):
             self.assertIsNone(
                 get_db().execute("SELECT id FROM slideshow_extra_photos WHERE id = ?", (other_photo["id"],)).fetchone()
             )
+
+        with self.app.app_context():
+            get_user_db().execute("UPDATE users SET ui_language = 'en' WHERE id = 1")
+            get_user_db().commit()
+        english_gallery = self.client.get("/produktpalette").get_data(as_text=True)
+        self.assertIn("Closing collage", english_gallery)
+        self.assertIn("Show prices in the collage", english_gallery)
+
+        seller_id = self.create_local_user("slideshow-seller", "seller")
+        self.become_user(seller_id)
+        forbidden = self.client.patch(
+            "/api/diashow/einstellungen",
+            json={"collage_show_prices": True},
+            headers={"X-CSRF-Token": "test-csrf"},
+        )
+        self.assertEqual(forbidden.status_code, 403)
 
     def test_purchase_invoice_upload_edit_delete_and_backup(self) -> None:
         """Invoices are atomically attached, replaceable and recoverable."""

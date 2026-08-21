@@ -213,6 +213,10 @@ CREATE TABLE IF NOT EXISTS variant_photos (
     -- Product photos are global catalogue data.  They are included in the
     -- shop-display slideshow unless a manager explicitly opts one out.
     include_in_slideshow INTEGER NOT NULL DEFAULT 1,
+    -- Price overlays are independently configurable for each product photo.
+    -- Keeping this per image lets a detail shot stay uncluttered while the
+    -- main product picture still advertises its price.
+    show_price INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     created_by INTEGER,
     created_by_username TEXT
@@ -228,9 +232,18 @@ CREATE TABLE IF NOT EXISTS slideshow_extra_photos (
     original_filename TEXT NOT NULL,
     position INTEGER NOT NULL DEFAULT 0,
     include_in_slideshow INTEGER NOT NULL DEFAULT 1,
+    show_price INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     created_by INTEGER,
     created_by_username TEXT
+);
+
+-- One optional, global display preference.  No seed row is needed: a missing
+-- row deliberately resolves to the safe default (show prices), and avoids a
+-- synthetic row complicating the combined-database copy migration.
+CREATE TABLE IF NOT EXISTS slideshow_settings (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    collage_show_prices INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS purchases (
@@ -376,6 +389,7 @@ OPERATION_TABLES = (
     "variants",
     "variant_photos",
     "slideshow_extra_photos",
+    "slideshow_settings",
     "purchases",
     "purchase_receipt_attachments",
     "sales",
@@ -607,6 +621,11 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "slideshow.change_rate_value": "alle {seconds} s",
         "slideshow.animation_speed": "Animationsgeschwindigkeit",
         "slideshow.animation_speed_value": "{speed}×",
+        "slideshow.show_price": "Preis im Dia zeigen",
+        "slideshow.collage_price_title": "Abschluss-Collage",
+        "slideshow.collage_show_prices": "Preise in der Collage zeigen",
+        "slideshow.collage_update_failed": "Die Preis-Anzeige der Abschluss-Collage konnte nicht gespeichert werden.",
+        "slideshow.collage_label": "Abschluss-Collage",
     },
     "en": {
         "nav.label": "Main navigation",
@@ -729,6 +748,11 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "slideshow.change_rate_value": "every {seconds} s",
         "slideshow.animation_speed": "Animation speed",
         "slideshow.animation_speed_value": "{speed}×",
+        "slideshow.show_price": "Show price on the slide",
+        "slideshow.collage_price_title": "Closing collage",
+        "slideshow.collage_show_prices": "Show prices in the collage",
+        "slideshow.collage_update_failed": "The closing-collage price display could not be saved.",
+        "slideshow.collage_label": "Closing collage",
     },
 }
 
@@ -1794,7 +1818,7 @@ def variant_photos_by_variant(
     placeholders = ",".join("?" for _ in identifiers)
     rows = connection.execute(
         f"""
-        SELECT id, variant_id, original_filename, position, include_in_slideshow, created_at
+        SELECT id, variant_id, original_filename, position, include_in_slideshow, show_price, created_at
         FROM variant_photos
         WHERE variant_id IN ({placeholders})
         ORDER BY variant_id, position, id
@@ -1805,6 +1829,7 @@ def variant_photos_by_variant(
     for row in rows:
         photo = dict(row)
         photo["include_in_slideshow"] = bool(photo["include_in_slideshow"])
+        photo["show_price"] = bool(photo["show_price"])
         photo["url"] = f"/api/variantenfotos/{photo['id']}"
         photos[int(photo["variant_id"])].append(photo)
     return dict(photos)
@@ -1825,7 +1850,7 @@ def slideshow_extra_photo_metadata(
         parameters.extend(identifiers)
     rows = connection.execute(
         f"""
-        SELECT id, original_filename, position, include_in_slideshow, created_at
+        SELECT id, original_filename, position, include_in_slideshow, show_price, created_at
         FROM slideshow_extra_photos
         {where_clause}
         ORDER BY position, id
@@ -1839,12 +1864,33 @@ def slideshow_extra_photo_metadata(
         photo["key"] = f"other:{photo['id']}"
         photo["is_product_photo"] = False
         photo["include_in_slideshow"] = bool(photo["include_in_slideshow"])
+        photo["show_price"] = bool(photo["show_price"])
         photo["url"] = f"/api/diashow/fotos/{photo['id']}"
         photos.append(photo)
     return photos
 
 
-def product_slideshow_catalogue(connection: sqlite3.Connection) -> dict[str, list[dict[str, Any]]]:
+def slideshow_settings_payload(connection: sqlite3.Connection) -> dict[str, bool]:
+    """Return global slideshow preferences, retaining safe defaults for old data."""
+
+    row = connection.execute(
+        "SELECT collage_show_prices FROM slideshow_settings WHERE id = 1"
+    ).fetchone()
+    return {"collage_show_prices": True if row is None else bool(row["collage_show_prices"])}
+
+
+def slideshow_photo_setting_from_payload(payload: Any) -> tuple[str, bool]:
+    """Validate the one mutable, boolean slideshow setting in a PATCH body."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("Die Dia-Einstellung muss als Ja oder Nein übergeben werden.")
+    requested = [(field, payload[field]) for field in ("include_in_slideshow", "show_price") if field in payload]
+    if len(requested) != 1 or not isinstance(requested[0][1], bool):
+        raise ValueError("Die Dia-Einstellung muss als Ja oder Nein übergeben werden.")
+    return requested[0][0], requested[0][1]
+
+
+def product_slideshow_catalogue(connection: sqlite3.Connection) -> dict[str, Any]:
     """Return global, active catalogue photos and valid upload targets.
 
     Product photos belong to variants, not to an individual account.  The
@@ -1873,6 +1919,7 @@ def product_slideshow_catalogue(connection: sqlite3.Connection) -> dict[str, lis
         variants.append(
             {
                 "id": variant_id,
+                "article_id": int(label["article_id"]),
                 "article_name": str(label["article_name"]),
                 "option_text": str(label["option_text"]),
                 "label": str(label["label"]),
@@ -1892,9 +1939,11 @@ def product_slideshow_catalogue(connection: sqlite3.Connection) -> dict[str, lis
                     "key": f"variant:{photo['id']}",
                     "is_product_photo": True,
                     "variant_id": int(variant["id"]),
+                    "article_id": int(variant["article_id"]),
                     "original_filename": str(photo["original_filename"]),
                     "position": int(photo["position"]),
                     "include_in_slideshow": bool(photo["include_in_slideshow"]),
+                    "show_price": bool(photo["show_price"]),
                     "url": str(photo["url"]),
                     "article_name": variant["article_name"],
                     "option_text": variant["option_text"],
@@ -1904,7 +1953,11 @@ def product_slideshow_catalogue(connection: sqlite3.Connection) -> dict[str, lis
                 }
             )
     photos.extend(slideshow_extra_photo_metadata(connection))
-    return {"variants": variants, "photos": photos}
+    return {
+        "variants": variants,
+        "photos": photos,
+        "settings": slideshow_settings_payload(connection),
+    }
 
 
 def add_variant_photo_fallbacks(
@@ -2532,9 +2585,24 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
             connection.execute(
                 "ALTER TABLE variant_photos ADD COLUMN include_in_slideshow INTEGER NOT NULL DEFAULT 1"
             )
+        if "show_price" not in photo_columns:
+            connection.execute(
+                "ALTER TABLE variant_photos ADD COLUMN show_price INTEGER NOT NULL DEFAULT 1"
+            )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_variant_photos_slideshow ON variant_photos(include_in_slideshow)"
         )
+        extra_photo_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(slideshow_extra_photos)").fetchall()
+        }
+        if "include_in_slideshow" not in extra_photo_columns:
+            connection.execute(
+                "ALTER TABLE slideshow_extra_photos ADD COLUMN include_in_slideshow INTEGER NOT NULL DEFAULT 1"
+            )
+        if "show_price" not in extra_photo_columns:
+            connection.execute(
+                "ALTER TABLE slideshow_extra_photos ADD COLUMN show_price INTEGER NOT NULL DEFAULT 1"
+            )
 
         # Invoice references used to be a single free-text field.  Preserve
         # those values and add a separate server-managed attachment path for
@@ -2918,9 +2986,22 @@ def upgrade_operations_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE variant_photos ADD COLUMN include_in_slideshow INTEGER NOT NULL DEFAULT 1"
         )
+    if "show_price" not in photo_columns:
+        connection.execute(
+            "ALTER TABLE variant_photos ADD COLUMN show_price INTEGER NOT NULL DEFAULT 1"
+        )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_variant_photos_slideshow ON variant_photos(include_in_slideshow)"
     )
+    extra_photo_columns = set(table_columns(connection, "slideshow_extra_photos"))
+    if "include_in_slideshow" not in extra_photo_columns:
+        connection.execute(
+            "ALTER TABLE slideshow_extra_photos ADD COLUMN include_in_slideshow INTEGER NOT NULL DEFAULT 1"
+        )
+    if "show_price" not in extra_photo_columns:
+        connection.execute(
+            "ALTER TABLE slideshow_extra_photos ADD COLUMN show_price INTEGER NOT NULL DEFAULT 1"
+        )
 
     purchase_columns = set(table_columns(connection, "purchases"))
     if "invoice_file_path" not in purchase_columns:
@@ -8002,7 +8083,46 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             title=UI_TRANSLATIONS[language]["slideshow.title"],
             slideshow_photos=catalogue["photos"],
             slideshow_variants=catalogue["variants"],
+            slideshow_settings=catalogue["settings"],
         )
+
+    @app.patch("/api/diashow/einstellungen")
+    @login_required
+    @manager_required
+    def update_slideshow_settings():
+        """Persist the shared price-display preference for closing collages."""
+
+        payload = request.get_json(silent=True)
+        collage_show_prices = payload.get("collage_show_prices") if isinstance(payload, dict) else None
+        if not isinstance(collage_show_prices, bool):
+            return jsonify({"ok": False, "error": "Die Collage-Preis-Anzeige muss als Ja oder Nein übergeben werden."}), 400
+        connection = get_db()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                "UPDATE slideshow_settings SET collage_show_prices = ? WHERE id = 1",
+                (int(collage_show_prices),),
+            )
+            if updated.rowcount == 0:
+                connection.execute(
+                    "INSERT INTO slideshow_settings (id, collage_show_prices) VALUES (1, ?)",
+                    (int(collage_show_prices),),
+                )
+            settings = slideshow_settings_payload(connection)
+            audit(
+                connection,
+                "set_slideshow_collage_price_visibility",
+                "slideshow_settings",
+                1,
+                settings,
+            )
+            connection.commit()
+        except sqlite3.DatabaseError:
+            connection.rollback()
+            current_app.logger.exception("Could not update slideshow settings")
+            return jsonify({"ok": False, "error": "Die Collage-Einstellung konnte nicht gespeichert werden."}), 500
+        backup_after_commit()
+        return jsonify({"ok": True, "settings": settings, **settings})
 
     @app.post("/artikelverwaltung/neu")
     @login_required
@@ -8239,36 +8359,41 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @manager_required
     def update_slideshow_extra_photo_inclusion(photo_id: int):
-        """Persist the global selection state of an independent slideshow picture."""
+        """Persist an independent slide's inclusion or price-display setting."""
 
-        payload = request.get_json(silent=True)
-        include_in_slideshow = payload.get("include_in_slideshow") if isinstance(payload, dict) else None
-        if not isinstance(include_in_slideshow, bool):
-            return jsonify({"ok": False, "error": "Die Dia-Auswahl muss als Ja oder Nein übergeben werden."}), 400
+        try:
+            field, value = slideshow_photo_setting_from_payload(request.get_json(silent=True))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         connection = get_db()
         photo = connection.execute("SELECT id FROM slideshow_extra_photos WHERE id = ?", (photo_id,)).fetchone()
         if photo is None:
             abort(404)
         try:
             connection.execute("BEGIN IMMEDIATE")
+            column = "include_in_slideshow" if field == "include_in_slideshow" else "show_price"
             connection.execute(
-                "UPDATE slideshow_extra_photos SET include_in_slideshow = ? WHERE id = ?",
-                (int(include_in_slideshow), photo_id),
+                f"UPDATE slideshow_extra_photos SET {column} = ? WHERE id = ?",
+                (int(value), photo_id),
             )
             audit(
                 connection,
-                "set_slideshow_extra_photo_inclusion",
+                (
+                    "set_slideshow_extra_photo_inclusion"
+                    if field == "include_in_slideshow"
+                    else "set_slideshow_extra_photo_price_visibility"
+                ),
                 "slideshow_extra_photo",
                 photo_id,
-                {"include_in_slideshow": include_in_slideshow},
+                {field: value},
             )
             connection.commit()
         except sqlite3.DatabaseError:
             connection.rollback()
-            current_app.logger.exception("Could not update independent slideshow picture inclusion")
-            return jsonify({"ok": False, "error": "Die Dia-Auswahl konnte nicht gespeichert werden."}), 500
+            current_app.logger.exception("Could not update independent slideshow picture setting")
+            return jsonify({"ok": False, "error": "Die Dia-Einstellung konnte nicht gespeichert werden."}), 500
         backup_after_commit()
-        return jsonify({"ok": True, "photo_id": photo_id, "include_in_slideshow": include_in_slideshow})
+        return jsonify({"ok": True, "photo_id": photo_id, field: value})
 
     @app.get("/api/diashow/fotos/<int:photo_id>")
     @login_required
@@ -8338,12 +8463,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @manager_required
     def update_variant_photo_slideshow_inclusion(photo_id: int):
-        """Persist the shared choice whether one product photo is advertised."""
+        """Persist a product photo's slideshow inclusion or price visibility."""
 
-        payload = request.get_json(silent=True)
-        include_in_slideshow = payload.get("include_in_slideshow") if isinstance(payload, dict) else None
-        if not isinstance(include_in_slideshow, bool):
-            return jsonify({"ok": False, "error": "Die Dia-Auswahl muss als Ja oder Nein übergeben werden."}), 400
+        try:
+            field, value = slideshow_photo_setting_from_payload(request.get_json(silent=True))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         connection = get_db()
         photo = connection.execute(
             """
@@ -8359,24 +8484,29 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             abort(404)
         try:
             connection.execute("BEGIN IMMEDIATE")
+            column = "include_in_slideshow" if field == "include_in_slideshow" else "show_price"
             connection.execute(
-                "UPDATE variant_photos SET include_in_slideshow = ? WHERE id = ?",
-                (int(include_in_slideshow), photo_id),
+                f"UPDATE variant_photos SET {column} = ? WHERE id = ?",
+                (int(value), photo_id),
             )
             audit(
                 connection,
-                "set_slideshow_photo_inclusion",
+                (
+                    "set_slideshow_photo_inclusion"
+                    if field == "include_in_slideshow"
+                    else "set_slideshow_photo_price_visibility"
+                ),
                 "variant_photo",
                 photo_id,
-                {"variant_id": int(photo["variant_id"]), "include_in_slideshow": include_in_slideshow},
+                {"variant_id": int(photo["variant_id"]), field: value},
             )
             connection.commit()
         except sqlite3.DatabaseError:
             connection.rollback()
-            current_app.logger.exception("Could not update product slideshow inclusion")
-            return jsonify({"ok": False, "error": "Die Dia-Auswahl konnte nicht gespeichert werden."}), 500
+            current_app.logger.exception("Could not update product slideshow setting")
+            return jsonify({"ok": False, "error": "Die Dia-Einstellung konnte nicht gespeichert werden."}), 500
         backup_after_commit()
-        return jsonify({"ok": True, "photo_id": photo_id, "include_in_slideshow": include_in_slideshow})
+        return jsonify({"ok": True, "photo_id": photo_id, field: value})
 
     @app.get("/api/variantenfotos/<int:photo_id>")
     @login_required
