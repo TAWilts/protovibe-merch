@@ -664,11 +664,18 @@ body.product-slideshow-running { overflow: hidden; }
 .admin-email-status-row p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 .admin-email-status-row form { flex: 0 0 auto; }
 .admin-message-inbox { margin-bottom: 16px; border-color: rgba(217,95,241,.38); }
-.admin-message-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 11px; }
+.email-settings-dialog { width: min(650px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow-y: auto; }
+.email-settings-dialog label small { display: block; margin-top: 4px; color: var(--muted); font-size: .73rem; font-weight: 500; }
+.admin-message-list { display: grid; max-height: min(62dvh, 680px); gap: 11px; overflow-y: auto; padding-right: 4px; }
 .admin-message-card { min-width: 0; padding: 14px; border: 1px solid rgba(255,255,255,.09); border-radius: 11px; background: rgba(17,14,22,.32); }
-.admin-message-card header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.admin-message-card.is-resolved { opacity: .62; border-color: rgba(255,255,255,.05); }
+.admin-message-card summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; cursor: pointer; list-style: none; }
+.admin-message-card summary::-webkit-details-marker { display: none; }
+.admin-message-card summary strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-message-card-content { display: grid; gap: 10px; padding-top: 12px; }
+.admin-message-card-content form { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.admin-message-card-content form small { color: var(--muted); font-size: .73rem; }
 .admin-message-card time { color: var(--muted); font-size: .72rem; white-space: nowrap; }
-.admin-message-card h3 { margin: 12px 0 4px; overflow-wrap: anywhere; font-size: .96rem; }
 .admin-message-sender { margin: 0 0 11px; color: var(--muted); font-size: .77rem; }
 .admin-message-body { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: .86rem; line-height: 1.48; }
 .database-security-area { border-color: rgba(105, 183, 255, .44); }

@@ -35,6 +35,7 @@ from app import (
     setup_encrypted_databases,
     send_smtp_notification,
     slideshow_settings_payload,
+    smtp_notification_config,
     smtp_notification_status,
     store_invoice_bytes,
     sync_variants,
@@ -1344,6 +1345,7 @@ class MerchAppTestCase(unittest.TestCase):
                 "csrf_token": "test-csrf",
                 "next": "/verkauf",
                 "message_type": "issue",
+                "sender_email": "seller@example.test",
                 "subject": "Scanner <script>alert(1)</script>",
                 "body": "Der Scanner verliert die Verbindung.\nBitte prüfen.",
             },
@@ -1360,6 +1362,7 @@ class MerchAppTestCase(unittest.TestCase):
             ).fetchone()
         self.assertEqual(message["sender_user_id"], seller_id)
         self.assertEqual(message["sender_username"], "message-seller")
+        self.assertEqual(message["sender_email"], "seller@example.test")
         self.assertEqual(message["message_type"], "issue")
         self.assertEqual(message["body"], "Der Scanner verliert die Verbindung.\nBitte prüfen.")
         self.assertEqual(audit_row["entity_id"], message["id"])
@@ -1368,9 +1371,21 @@ class MerchAppTestCase(unittest.TestCase):
         admin_page = self.client.get("/verwaltung").get_data(as_text=True)
         self.assertIn("Nachrichten an den Admin", admin_page)
         self.assertIn("message-seller", admin_page)
+        self.assertIn("seller@example.test", admin_page)
         self.assertIn("Scanner &lt;script&gt;alert(1)&lt;/script&gt;", admin_page)
         self.assertNotIn("Scanner <script>alert(1)</script>", admin_page)
         self.assertIn("Der Scanner verliert die Verbindung.", admin_page)
+        self.assertIn("Als erledigt markieren", admin_page)
+        resolved = self.client.post(
+            f"/verwaltung/nachrichten/{message['id']}/status",
+            data={"csrf_token": "test-csrf", "is_resolved": "1"},
+        )
+        self.assertEqual(resolved.status_code, 302)
+        with self.app.app_context():
+            resolved_message = get_user_db().execute(
+                "SELECT is_resolved, resolved_by_username FROM admin_messages WHERE id = ?", (message["id"],)
+            ).fetchone()
+        self.assertEqual(dict(resolved_message), {"is_resolved": 1, "resolved_by_username": "tester"})
 
     def test_invalid_admin_message_is_not_persisted(self) -> None:
         response = self.client.post(
@@ -1388,6 +1403,45 @@ class MerchAppTestCase(unittest.TestCase):
         with self.app.app_context():
             count = get_user_db().execute("SELECT COUNT(*) FROM admin_messages").fetchone()[0]
         self.assertEqual(count, 0)
+
+    def test_legacy_admin_inbox_adds_resolution_fields_before_its_index(self) -> None:
+        root = Path(self.tempdir.name) / "legacy-admin-inbox"
+        root.mkdir()
+        users_database = root / "users.sqlite3"
+        connection = sqlite3.connect(users_database)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE admin_messages (
+                    id INTEGER PRIMARY KEY, sender_user_id INTEGER, sender_username TEXT NOT NULL,
+                    message_type TEXT NOT NULL, subject TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO admin_messages (sender_username, message_type, subject, body, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("legacy", "question", "Alt", "Bestehende Nachricht", "2026-08-22T00:00:00+00:00"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        migrated = create_app(
+            {
+                "TESTING": True, "SECRET_KEY": "test-secret", "DATABASE": str(root / "merch.sqlite3"),
+                "USERS_DATABASE": str(users_database), "BACKUP_DIR": str(root / "backups"),
+                "RESET_ARCHIVE_DIR": str(root / "reset-archives"), "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+                "VARIANT_PHOTO_UPLOAD_DIR": str(root / "variant-photos"), "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password", "AUTO_BACKUP": False,
+            }
+        )
+        with migrated.app_context():
+            connection = get_user_db()
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(admin_messages)")}
+            indexes = {row["name"] for row in connection.execute("PRAGMA index_list(admin_messages)")}
+            legacy_message = connection.execute("SELECT sender_username, is_resolved FROM admin_messages").fetchone()
+        self.assertTrue({"sender_email", "is_resolved", "resolved_at", "resolved_by_user_id", "resolved_by_username"}.issubset(columns))
+        self.assertIn("idx_admin_messages_resolution", indexes)
+        self.assertEqual(dict(legacy_message), {"sender_username": "legacy", "is_resolved": 0})
 
     def test_smtp_notification_uses_tls_without_exposing_credentials_in_status(self) -> None:
         config = {
@@ -1438,6 +1492,37 @@ class MerchAppTestCase(unittest.TestCase):
         smtp_client.login.assert_called_once_with("notifier@example.test", "private-app-password")
         smtp_client.send_message.assert_called_once()
 
+    def test_admin_can_store_encrypted_smtp_settings_without_rendering_the_password(self) -> None:
+        self.app.config["LOCAL_DEV_MODE"] = True
+        saved = self.client.post(
+            "/verwaltung/email/einstellungen",
+            data={
+                "csrf_token": "test-csrf",
+                "enabled": "on",
+                "host": "smtp.example.test",
+                "port": "465",
+                "security": "ssl",
+                "timeout_seconds": "8",
+                "username": "notifier@example.test",
+                "password": "stored-private-password",
+                "sender_address": "notifier@example.test",
+                "recipient_address": "admin@example.test",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(saved.status_code, 302)
+        with self.app.app_context():
+            connection = get_user_db()
+            row = connection.execute("SELECT password_encrypted FROM smtp_notification_settings WHERE id = 1").fetchone()
+            active_config = smtp_notification_config(connection, self.app)
+        self.assertTrue(row["password_encrypted"])
+        self.assertNotEqual(row["password_encrypted"], "stored-private-password")
+        self.assertEqual(active_config["SMTP_PASSWORD"], "stored-private-password")
+        page = self.client.get("/verwaltung").get_data(as_text=True)
+        self.assertIn("E-Mail-Zugangsdaten", page)
+        self.assertIn("verschlÃ¼sselt in der App gespeichert", page)
+        self.assertNotIn("stored-private-password", page)
+
     def test_admin_message_email_is_optional_and_smtp_failure_keeps_the_message(self) -> None:
         self.app.config.update(
             EMAIL_NOTIFICATIONS_ENABLED=True,
@@ -1458,9 +1543,10 @@ class MerchAppTestCase(unittest.TestCase):
                 "/admin-nachricht",
                 data={
                     "csrf_token": "test-csrf",
-                    "next": "/verkauf",
-                    "message_type": "question",
-                    "subject": "Erste Frage",
+                "next": "/verkauf",
+                "message_type": "question",
+                "sender_email": "email-seller@example.test",
+                "subject": "Erste Frage",
                     "body": "Bitte per E-Mail benachrichtigen.",
                 },
             )
@@ -1473,9 +1559,10 @@ class MerchAppTestCase(unittest.TestCase):
                 "/admin-nachricht",
                 data={
                     "csrf_token": "test-csrf",
-                    "next": "/verkauf",
-                    "message_type": "issue",
-                    "subject": "Zweite Nachricht",
+                "next": "/verkauf",
+                "message_type": "issue",
+                "sender_email": "email-seller@example.test",
+                "subject": "Zweite Nachricht",
                     "body": "Diese Nachricht muss trotz SMTP-Ausfall erhalten bleiben.",
                 },
             )

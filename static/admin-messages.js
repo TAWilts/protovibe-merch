@@ -11,4 +11,15 @@
     dialog.querySelector('input[name="subject"]')?.focus();
   });
   closeButton?.addEventListener("click", () => dialog.close());
+
+  const emailDialog = document.getElementById("email-settings-dialog");
+  const emailOpenButton = document.querySelector("[data-email-settings-open]");
+  const emailCloseButton = document.querySelector("[data-email-settings-close]");
+  if (emailDialog instanceof HTMLDialogElement && emailOpenButton instanceof HTMLButtonElement) {
+    emailOpenButton.addEventListener("click", () => {
+      emailDialog.showModal();
+      emailDialog.querySelector('input[name="host"]')?.focus();
+    });
+    emailCloseButton?.addEventListener("click", () => emailDialog.close());
+  }
 })();

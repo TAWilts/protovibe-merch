@@ -134,13 +134,34 @@ CREATE TABLE IF NOT EXISTS admin_messages (
     id INTEGER PRIMARY KEY,
     sender_user_id INTEGER,
     sender_username TEXT NOT NULL,
+    sender_email TEXT,
     message_type TEXT NOT NULL CHECK(message_type IN ('issue', 'question')),
     subject TEXT NOT NULL,
     body TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    is_resolved INTEGER NOT NULL DEFAULT 0,
+    resolved_at TEXT,
+    resolved_by_user_id INTEGER,
+    resolved_by_username TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_admin_messages_created ON admin_messages(created_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS smtp_notification_settings (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    host TEXT NOT NULL DEFAULT '',
+    port INTEGER NOT NULL DEFAULT 465,
+    security TEXT NOT NULL DEFAULT 'ssl',
+    username TEXT NOT NULL DEFAULT '',
+    password_encrypted TEXT,
+    sender_address TEXT NOT NULL DEFAULT '',
+    recipient_address TEXT NOT NULL DEFAULT '',
+    timeout_seconds REAL NOT NULL DEFAULT 8,
+    updated_at TEXT,
+    updated_by_user_id INTEGER,
+    updated_by_username TEXT
+);
 
 """
 
@@ -930,6 +951,91 @@ def smtp_notification_status(config: Any) -> dict[str, Any]:
         "security": security,
         "recipient": required["ADMIN_NOTIFICATION_EMAIL"],
         "timeout_seconds": timeout_seconds,
+        "source": str(config.get("_smtp_source", "environment")),
+        "password_configured": bool(config.get("_smtp_password_configured", required["SMTP_PASSWORD"])),
+        "password_decryption_failed": bool(config.get("_smtp_password_decryption_failed", False)),
+    }
+
+
+def smtp_fernet(app: Flask | None = None) -> Fernet:
+    """Derive an SMTP-specific encryption key from this installation's secret."""
+
+    configured_app = app or current_app._get_current_object()
+    material = str(configured_app.config["SECRET_KEY"]).encode("utf-8")
+    key = base64.urlsafe_b64encode(hashlib.sha256(b"protovibe-merch:smtp:" + material).digest())
+    return Fernet(key)
+
+
+def encrypt_smtp_password(password: str, app: Flask | None = None) -> str:
+    return smtp_fernet(app).encrypt(str(password).encode("utf-8")).decode("ascii")
+
+
+def decrypt_smtp_password(value: str | None, app: Flask | None = None) -> str | None:
+    if not value:
+        return None
+    try:
+        return smtp_fernet(app).decrypt(str(value).encode("ascii")).decode("utf-8")
+    except (InvalidToken, UnicodeError, ValueError):
+        return None
+
+
+def smtp_notification_config(connection: sqlite3.Connection, app: Flask | None = None) -> dict[str, Any]:
+    """Return environment defaults or the encrypted, admin-managed override."""
+
+    configured_app = app or current_app._get_current_object()
+    config = {
+        "EMAIL_NOTIFICATIONS_ENABLED": bool(configured_app.config.get("EMAIL_NOTIFICATIONS_ENABLED", False)),
+        "SMTP_HOST": str(configured_app.config.get("SMTP_HOST", "") or "").strip(),
+        "SMTP_PORT": configured_app.config.get("SMTP_PORT", "465"),
+        "SMTP_SECURITY": str(configured_app.config.get("SMTP_SECURITY", "ssl") or "ssl").strip().lower(),
+        "SMTP_USERNAME": str(configured_app.config.get("SMTP_USERNAME", "") or "").strip(),
+        "SMTP_PASSWORD": str(configured_app.config.get("SMTP_PASSWORD", "") or ""),
+        "SMTP_FROM": str(configured_app.config.get("SMTP_FROM", "") or "").strip(),
+        "ADMIN_NOTIFICATION_EMAIL": str(configured_app.config.get("ADMIN_NOTIFICATION_EMAIL", "") or "").strip(),
+        "SMTP_TIMEOUT_SECONDS": configured_app.config.get("SMTP_TIMEOUT_SECONDS", "8"),
+        "_smtp_source": "environment",
+        "_smtp_password_configured": bool(configured_app.config.get("SMTP_PASSWORD")),
+    }
+    if not table_exists(connection, "smtp_notification_settings"):
+        return config
+    row = connection.execute("SELECT * FROM smtp_notification_settings WHERE id = 1").fetchone()
+    if row is None:
+        return config
+    password = decrypt_smtp_password(row["password_encrypted"], configured_app)
+    config.update(
+        {
+            "EMAIL_NOTIFICATIONS_ENABLED": bool(row["enabled"]),
+            "SMTP_HOST": str(row["host"] or "").strip(),
+            "SMTP_PORT": row["port"],
+            "SMTP_SECURITY": str(row["security"] or "ssl").strip().lower(),
+            "SMTP_USERNAME": str(row["username"] or "").strip(),
+            "SMTP_PASSWORD": password or "",
+            "SMTP_FROM": str(row["sender_address"] or "").strip(),
+            "ADMIN_NOTIFICATION_EMAIL": str(row["recipient_address"] or "").strip(),
+            "SMTP_TIMEOUT_SECONDS": row["timeout_seconds"],
+            "_smtp_source": "stored",
+            "_smtp_password_configured": bool(row["password_encrypted"]),
+            "_smtp_password_decryption_failed": bool(row["password_encrypted"]) and password is None,
+        }
+    )
+    return config
+
+
+def smtp_notification_settings_public(config: dict[str, Any]) -> dict[str, Any]:
+    """Return SMTP form defaults without ever putting its password in HTML."""
+
+    status = smtp_notification_status(config)
+    return {
+        "enabled": bool(config.get("EMAIL_NOTIFICATIONS_ENABLED")),
+        "host": str(config.get("SMTP_HOST", "") or "").strip(),
+        "port": status["port"] or 465,
+        "security": status["security"],
+        "username": str(config.get("SMTP_USERNAME", "") or "").strip(),
+        "sender_address": str(config.get("SMTP_FROM", "") or "").strip(),
+        "recipient_address": str(config.get("ADMIN_NOTIFICATION_EMAIL", "") or "").strip(),
+        "timeout_seconds": status["timeout_seconds"] or 8,
+        "password_configured": status["password_configured"],
+        "source": status["source"],
     }
 
 
@@ -974,6 +1080,7 @@ def send_admin_message_email(config: Any, message: dict[str, Any]) -> None:
         body=(
             "Eine neue Nachricht wurde im Admin-Postfach gespeichert.\n\n"
             f"Absender: {message['sender_username']}\n"
+            f"E-Mail: {message.get('sender_email') or 'Nicht angegeben'}\n"
             f"Kategorie: {type_label}\n"
             f"Zeitpunkt: {message['created_at']}\n"
             f"Betreff: {message['subject']}\n\n"
@@ -1240,6 +1347,15 @@ def valid_username(value: Any) -> str:
     if not re.fullmatch(r"[^\s]{3,48}", username):
         raise ValueError("Der Benutzername muss 3 bis 48 Zeichen lang sein und darf keine Leerzeichen enthalten.")
     return username
+
+
+def valid_email_address(value: Any, *, field_name: str = "E-Mail-Adresse") -> str:
+    """Perform a deliberately small validation for contact and SMTP addresses."""
+
+    address = str(value or "").strip()
+    if len(address) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", address):
+        raise ValueError(f"{field_name} ist nicht gÃ¼ltig.")
+    return address
 
 
 def offline_sync_event(payload: dict[str, Any], actor_user_id: int) -> dict[str, str | int] | None:
@@ -3264,12 +3380,33 @@ def upgrade_operations_schema(connection: sqlite3.Connection) -> None:
     seed_sale_events_from_legacy_sales(connection)
 
 
+def upgrade_admin_messages_schema(connection: sqlite3.Connection) -> None:
+    """Add inbox fields before creating indexes that depend on them."""
+
+    columns = set(table_columns(connection, "admin_messages"))
+    migrations = (
+        ("sender_email", "TEXT"),
+        ("is_resolved", "INTEGER NOT NULL DEFAULT 0"),
+        ("resolved_at", "TEXT"),
+        ("resolved_by_user_id", "INTEGER"),
+        ("resolved_by_username", "TEXT"),
+    )
+    for column_name, column_definition in migrations:
+        if column_name not in columns:
+            connection.execute(f"ALTER TABLE admin_messages ADD COLUMN {column_name} {column_definition}")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_admin_messages_resolution "
+        "ON admin_messages(is_resolved, created_at DESC, id DESC)"
+    )
+
+
 def upgrade_users_schema(
     connection: sqlite3.Connection, app: Flask, *, bootstrap_administrator: bool = True
 ) -> None:
     """Create/upgrade the account database and enforce the one-admin rule."""
 
     connection.executescript(USERS_SCHEMA_SQL)
+    upgrade_admin_messages_schema(connection)
     user_columns = set(table_columns(connection, "users"))
     user_column_migrations = (
         ("role", "TEXT NOT NULL DEFAULT 'seller'"),
@@ -6902,6 +7039,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if not body or len(body) > 4_000:
             flash(strings["message.body_required"], "error")
             return redirect(destination)
+        try:
+            sender_email = valid_email_address(request.form.get("sender_email"), field_name="Die E-Mail-Adresse")
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return redirect(destination)
 
         connection = get_user_db()
         created_at = utc_now()
@@ -6911,12 +7053,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             cursor = connection.execute(
                 """
                 INSERT INTO admin_messages (
-                    sender_user_id, sender_username, message_type, subject, body, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    sender_user_id, sender_username, sender_email, message_type, subject, body, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     g.user["id"],
                     g.user["username"],
+                    sender_email,
                     message_type,
                     subject,
                     body,
@@ -6926,6 +7069,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             persisted_message = {
                 "id": int(cursor.lastrowid),
                 "sender_username": str(g.user["username"]),
+                "sender_email": sender_email,
                 "message_type": message_type,
                 "subject": subject,
                 "body": body,
@@ -6946,9 +7090,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return redirect(destination)
 
         flash(strings["message.sent"], "success")
-        if current_app.config.get("EMAIL_NOTIFICATIONS_ENABLED") and persisted_message is not None:
+        notification_config = smtp_notification_config(connection, current_app)
+        if notification_config.get("EMAIL_NOTIFICATIONS_ENABLED") and persisted_message is not None:
             try:
-                send_admin_message_email(current_app.config, persisted_message)
+                send_admin_message_email(notification_config, persisted_message)
             except (ValueError, OSError, smtplib.SMTPException):
                 current_app.logger.exception(
                     "Admin message %s was stored, but its email notification failed",
@@ -6980,9 +7125,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             dict(row)
             for row in get_user_db().execute(
                 """
-                SELECT id, sender_user_id, sender_username, message_type, subject, body, created_at
+                SELECT id, sender_user_id, sender_username, sender_email, message_type, subject, body,
+                       created_at, is_resolved, resolved_at, resolved_by_user_id, resolved_by_username
                 FROM admin_messages
-                ORDER BY created_at DESC, id DESC
+                ORDER BY is_resolved ASC, created_at DESC, id DESC
                 """
             ).fetchall()
         ]
@@ -6992,6 +7138,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         setup_credential: dict[str, str] | None = None,
         reset_archive_name: str | None = None,
     ):
+        notification_config = smtp_notification_config(get_user_db(), app)
         return render_template(
             "admin.html",
             title="Verwaltung",
@@ -7002,7 +7149,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             reset_archive_name=reset_archive_name,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
             database_encryption_active=database_encryption_enabled(app),
-            email_notification=smtp_notification_status(current_app.config),
+            email_notification=smtp_notification_status(notification_config),
+            email_settings=smtp_notification_settings_public(notification_config),
         )
 
     @app.get("/verwaltung")
@@ -7017,7 +7165,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def test_admin_email_notification():
         """Let the admin verify SMTP without exposing account credentials."""
 
-        status = smtp_notification_status(current_app.config)
+        notification_config = smtp_notification_config(get_user_db(), app)
+        status = smtp_notification_status(notification_config)
         if not status["ready"]:
             details = [*status["missing"], *status["errors"]]
             flash(
@@ -7028,7 +7177,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return redirect(url_for("administration_page"))
         try:
             send_smtp_notification(
-                current_app.config,
+                notification_config,
                 subject="[Merch Manager] SMTP-Test",
                 body=(
                     "Die SMTP-Konfiguration des Protovibe Merch Managers funktioniert.\n\n"
@@ -7044,6 +7193,129 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             )
         else:
             flash(f"Test-E-Mail an {status['recipient']} wurde gesendet.", "success")
+        return redirect(url_for("administration_page"))
+
+    @app.post("/verwaltung/nachrichten/<int:message_id>/status")
+    @login_required
+    @admin_required
+    def update_admin_message_resolution(message_id: int):
+        """Mark a private inbox item done or reopen it without deleting it."""
+
+        is_resolved = request.form.get("is_resolved") == "1"
+        connection = get_user_db()
+        if connection.execute("SELECT id FROM admin_messages WHERE id = ?", (message_id,)).fetchone() is None:
+            abort(404)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if is_resolved:
+                connection.execute(
+                    """
+                    UPDATE admin_messages
+                    SET is_resolved = 1, resolved_at = ?, resolved_by_user_id = ?, resolved_by_username = ?
+                    WHERE id = ?
+                    """,
+                    (utc_now(), g.user["id"], g.user["username"], message_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE admin_messages
+                    SET is_resolved = 0, resolved_at = NULL, resolved_by_user_id = NULL, resolved_by_username = NULL
+                    WHERE id = ?
+                    """,
+                    (message_id,),
+                )
+            audit(
+                connection,
+                "resolve_admin_message" if is_resolved else "reopen_admin_message",
+                "admin_message",
+                message_id,
+                {"is_resolved": is_resolved},
+            )
+            connection.commit()
+        except sqlite3.DatabaseError:
+            connection.rollback()
+            current_app.logger.exception("Could not update admin message resolution")
+            flash("Der Nachrichtenstatus konnte nicht gespeichert werden.", "error")
+        else:
+            flash("Nachricht als erledigt markiert." if is_resolved else "Nachricht wieder geöffnet.", "success")
+        return redirect(url_for("administration_page"))
+
+    @app.post("/verwaltung/email/einstellungen")
+    @login_required
+    @admin_required
+    def save_admin_email_notification_settings():
+        """Persist SMTP credentials encrypted after a fresh admin confirmation."""
+
+        connection = get_user_db()
+        try:
+            enabled = 1 if request.form.get("enabled") else 0
+            host = str(request.form.get("host", "")).strip()
+            username = str(request.form.get("username", "")).strip()
+            sender_address = str(request.form.get("sender_address", "")).strip()
+            recipient_address = str(request.form.get("recipient_address", "")).strip()
+            security = str(request.form.get("security", "ssl")).strip().lower()
+            if len(host) > 255 or len(username) > 254:
+                raise ValueError("SMTP-Server und Benutzername dÃ¼rfen hÃ¶chstens 254 Zeichen lang sein.")
+            if security not in {"ssl", "starttls"}:
+                raise ValueError("Bitte SSL oder STARTTLS auswÃ¤hlen.")
+            try:
+                port = int(request.form.get("port", ""))
+                timeout_seconds = float(request.form.get("timeout_seconds", ""))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("SMTP-Port und Zeitlimit mÃ¼ssen Zahlen sein.") from exc
+            if not 1 <= port <= 65_535 or not 0 < timeout_seconds <= 60:
+                raise ValueError("SMTP-Port oder Zeitlimit liegt auÃŸerhalb des erlaubten Bereichs.")
+            if sender_address:
+                sender_address = valid_email_address(sender_address, field_name="Absenderadresse")
+            if recipient_address:
+                recipient_address = valid_email_address(recipient_address, field_name="EmpfÃ¤ngeradresse")
+            new_password = str(request.form.get("password", ""))
+            if len(new_password) > 2_000:
+                raise ValueError("Das SMTP-Passwort ist zu lang.")
+
+            existing = connection.execute(
+                "SELECT password_encrypted FROM smtp_notification_settings WHERE id = 1"
+            ).fetchone()
+            password_encrypted = existing["password_encrypted"] if existing is not None else None
+            if new_password:
+                password_encrypted = encrypt_smtp_password(new_password, app)
+            if request.form.get("clear_password"):
+                password_encrypted = None
+
+            connection.execute("BEGIN IMMEDIATE")
+            verify_admin_sensitive_action(
+                connection,
+                password=request.form.get("current_password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="save_smtp_notification_settings",
+            )
+            connection.execute(
+                """
+                INSERT INTO smtp_notification_settings (
+                    id, enabled, host, port, security, username, password_encrypted, sender_address,
+                    recipient_address, timeout_seconds, updated_at, updated_by_user_id, updated_by_username
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    enabled = excluded.enabled, host = excluded.host, port = excluded.port,
+                    security = excluded.security, username = excluded.username,
+                    password_encrypted = excluded.password_encrypted, sender_address = excluded.sender_address,
+                    recipient_address = excluded.recipient_address, timeout_seconds = excluded.timeout_seconds,
+                    updated_at = excluded.updated_at, updated_by_user_id = excluded.updated_by_user_id,
+                    updated_by_username = excluded.updated_by_username
+                """,
+                (
+                    enabled, host, port, security, username, password_encrypted, sender_address,
+                    recipient_address, timeout_seconds, utc_now(), g.user["id"], g.user["username"],
+                ),
+            )
+            audit(connection, "save_smtp_notification_settings", "smtp_notification_settings", 1, {"enabled": bool(enabled)})
+            connection.commit()
+        except (ValueError, sqlite3.DatabaseError) as exc:
+            connection.rollback()
+            flash("E-Mail-Einstellungen konnten nicht gespeichert werden: " + str(exc), "error")
+        else:
+            flash("E-Mail-Einstellungen wurden verschlÃ¼sselt gespeichert.", "success")
         return redirect(url_for("administration_page"))
 
     @app.post("/verwaltung/benutzer")
