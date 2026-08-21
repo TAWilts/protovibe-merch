@@ -1601,6 +1601,27 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("client_event_id", offline_script)
         self.assertIn("syncPending", offline_script)
 
+    def test_sales_mobile_details_and_automatic_sync_are_compact(self) -> None:
+        """Optional sales fields collapse on phones while syncing stays automatic."""
+
+        sales_html = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertIn('class="offline-sync-status"', sales_html)
+        self.assertNotIn('id="sync-offline-sales"', sales_html)
+        self.assertLess(sales_html.index('class="cart-section"'), sales_html.index('class="sale-additional-details"'))
+        self.assertLess(sales_html.index('class="sale-additional-details"'), sales_html.index('id="sale-contact-details"'))
+        self.assertLess(sales_html.index('id="sale-contact-details"'), sales_html.index('id="amount-given"'))
+        self.assertIn('class="field-grid two-columns sale-payment-date"', sales_html)
+        self.assertEqual(sales_html.count("data-mobile-collapsed"), 2)
+
+        offline_script = (Path(__file__).parents[1] / "static" / "offline-sales.js").read_text(encoding="utf-8")
+        sales_script = (Path(__file__).parents[1] / "static" / "sales.js").read_text(encoding="utf-8")
+        stylesheet = (Path(__file__).parents[1] / "static" / "app.css").read_text(encoding="utf-8")
+        self.assertIn("RETRY_DELAYS_MS", offline_script)
+        self.assertNotIn("sync-offline-sales", offline_script)
+        self.assertIn("initializeResponsiveDetails", sales_script)
+        self.assertIn("ui.contactDetails.open = true", sales_script)
+        self.assertIn(".sale-payment-date { grid-template-columns: repeat(2, minmax(0, 1fr));", stylesheet)
+
     def test_transaction_price_inputs_are_prepopulated_from_variant_defaults(self) -> None:
         self.seed_variant()
 

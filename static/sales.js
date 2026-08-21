@@ -28,6 +28,7 @@
     paid: $("is-paid"),
     received: $("is-received"),
     soldBy: $("sold-by"),
+    contactDetails: $("sale-contact-details"),
     contactFields: $("contact-fields"),
     customerName: $("customer-name"),
     customerAddress: $("customer-address"),
@@ -55,6 +56,14 @@
   };
   let currentVariant = null;
   const cartItems = [];
+  const mobileCollapsedDetails = Array.from(root.querySelectorAll("[data-mobile-collapsed]"));
+
+  function initializeResponsiveDetails() {
+    const isMobile = window.matchMedia("(max-width: 760px)").matches;
+    mobileCollapsedDetails.forEach((details) => {
+      details.open = !isMobile;
+    });
+  }
 
   function renderVariantPhotos(variant) {
     if (!ui.photoPreview || !ui.photoCaption || !ui.photoList) return;
@@ -125,6 +134,7 @@
     ui.contactFields.hidden = !needsContact;
     ui.customerName.required = needsContact;
     ui.customerAddress.required = needsContact;
+    if (needsContact && ui.contactDetails) ui.contactDetails.open = true;
   }
 
   function updatePaidFields() {
@@ -465,6 +475,7 @@
     if (event.detail?.ok) applySaleStockUpdate(event.detail);
   });
 
+  initializeResponsiveDetails();
   updateContactFields();
   updatePaidFields();
   renderCart();

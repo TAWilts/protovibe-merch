@@ -12,11 +12,6 @@
   </div>
 </div>
 
-<section id="offline-sync-panel" class="offline-sync-panel" data-connection="online" aria-live="polite">
-  <div><strong id="offline-sync-title">Offline-Modus wird vorbereitet …</strong><small id="offline-sync-detail">Die lokale Verkaufswarteschlange wird geprüft.</small></div>
-  <button id="sync-offline-sales" class="secondary-button compact-button" type="button" disabled>Jetzt synchronisieren</button>
-</section>
-
 <section class="transaction-layout" id="sales-app">
   <aside class="selection-panel product-panel">
     <h2>Artikel</h2>
@@ -53,28 +48,6 @@
   </section>
 
   <section class="selection-panel sale-details">
-    <div class="checkbox-row">
-      <label class="toggle-label"><input id="is-paid" type="checkbox" checked><span>Bezahlt</span></label>
-      <label class="toggle-label"><input id="is-received" type="checkbox" checked><span>Artikel erhalten</span></label>
-      <label class="seller-field"><span>Verkauft von</span><input id="sold-by" value="{{ current_user.username }}" placeholder="Optional"></label>
-    </div>
-
-    <div class="contact-fields" id="contact-fields" hidden>
-      <p class="notice">Bei noch nicht bezahlten oder noch nicht erhaltenen Artikeln sind die Kontaktdaten erforderlich.</p>
-      <label>Name<input id="customer-name" autocomplete="name"></label>
-      <label>Adresse<textarea id="customer-address" rows="2" autocomplete="street-address"></textarea></label>
-    </div>
-
-    <div class="field-grid two-columns">
-      <label>Bezahlart
-        <select id="payment-method">
-          {% for method in payment_methods %}<option>{{ method }}</option>{% endfor %}
-        </select>
-      </label>
-      <label>Datum<input id="sold-on" type="date" value="{{ today }}"></label>
-    </div>
-    <label>Veranstaltung / Kommentar<input id="event-name" placeholder="z. B. Wilwarin 2026"></label>
-    <label>Zusätzliche Notiz<textarea id="comment" rows="2" placeholder="Optional"></textarea></label>
     <label>Preis pro Stück<input id="unit-price" inputmode="decimal" placeholder="z. B. 18,00" disabled></label>
     <p class="muted compact-copy">Nach Auswahl wird der Standard-Verkaufspreis übernommen. Bei Rabatt einfach hier überschreiben.</p>
 
@@ -101,6 +74,40 @@
         <p class="muted">Noch keine Artikel hinzugefügt.</p>
       </div>
     </section>
+
+    <details class="sale-additional-details" data-mobile-collapsed>
+      <summary>Weitere Verkaufsangaben</summary>
+      <div class="sale-additional-details-content">
+        <div class="field-grid two-columns sale-payment-date">
+          <label>Bezahlart
+            <select id="payment-method">
+              {% for method in payment_methods %}<option>{{ method }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Datum<input id="sold-on" type="date" value="{{ today }}"></label>
+        </div>
+        <label>Veranstaltung / Kommentar<input id="event-name" placeholder="z. B. Wilwarin 2026"></label>
+        <label>Zusätzliche Notiz<textarea id="comment" rows="2" placeholder="Optional"></textarea></label>
+      </div>
+    </details>
+
+    <details id="sale-contact-details" class="sale-contact-details" data-mobile-collapsed>
+      <summary>Zahlung, Übergabe &amp; Kontaktdaten</summary>
+      <div class="sale-contact-details-content">
+        <div class="checkbox-row">
+          <label class="toggle-label"><input id="is-paid" type="checkbox" checked><span>Bezahlt</span></label>
+          <label class="toggle-label"><input id="is-received" type="checkbox" checked><span>Artikel erhalten</span></label>
+          <label class="seller-field"><span>Verkauft von</span><input id="sold-by" value="{{ current_user.username }}" placeholder="Optional"></label>
+        </div>
+
+        <div class="contact-fields" id="contact-fields" hidden>
+          <p class="notice">Bei noch nicht bezahlten oder noch nicht erhaltenen Artikeln sind die Kontaktdaten erforderlich.</p>
+          <label>Name<input id="customer-name" autocomplete="name"></label>
+          <label>Adresse<textarea id="customer-address" rows="2" autocomplete="street-address"></textarea></label>
+        </div>
+      </div>
+    </details>
+
     <div class="field-grid two-columns payment-inputs">
       <label>Gegeben <input id="amount-given" inputmode="decimal" placeholder="Optional"></label>
       <div class="donation-box"><span>Spende</span><strong id="donation-preview">0,00 €</strong></div>
@@ -120,4 +127,4 @@
 
 <script id="articles-data" type="application/json">{{ articles|tojson }}</script>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='transaction.js') }}"></script><script src="{{ url_for('static', filename='offline-sales.js') }}"></script><script src="{{ url_for('static', filename='sales.js') }}"></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='transaction.js') }}"></script><script src="{{ url_for('static', filename='sales.js') }}"></script>{% endblock %}

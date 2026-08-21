@@ -11,7 +11,6 @@
   const panel = document.getElementById("offline-sync-panel");
   const title = document.getElementById("offline-sync-title");
   const detail = document.getElementById("offline-sync-detail");
-  const syncButton = document.getElementById("sync-offline-sales");
   if (!user || !window.indexedDB || !window.isSecureContext) {
     if (panel && title && detail) {
       panel.dataset.connection = "offline";
@@ -25,10 +24,14 @@
   const DATABASE_VERSION = 1;
   const META_STORE = "meta";
   const OUTBOX_STORE = "sales_outbox";
+  const RETRY_DELAYS_MS = [5000, 15000, 30000, 60000];
   let databasePromise = null;
   let pendingCount = 0;
   let syncing = false;
   let lastError = "";
+  let retryTimer = null;
+  let retryAttempt = 0;
+  let retryAllowed = true;
 
   function randomUuid() {
     if (window.crypto?.randomUUID) return window.crypto.randomUUID();
@@ -120,7 +123,7 @@
   }
 
   function renderStatus(message = "") {
-    if (!panel || !title || !detail || !syncButton) return;
+    if (!panel || !title || !detail) return;
     const offline = !navigator.onLine;
     panel.dataset.connection = offline ? "offline" : "online";
     if (syncing) {
@@ -138,8 +141,25 @@
       title.textContent = "Online und synchron";
       detail.textContent = message || "Verkäufe werden direkt auf dem Server gesichert.";
     }
-    syncButton.disabled = syncing || !navigator.onLine || pendingCount === 0;
-    syncButton.textContent = syncing ? "Synchronisiert …" : "Jetzt synchronisieren";
+  }
+
+  function cancelRetry() {
+    if (retryTimer === null) return;
+    window.clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+
+  function scheduleRetry(delay) {
+    cancelRetry();
+    if (!navigator.onLine || !pendingCount || syncing || !retryAllowed) return;
+    const retryDelay = Number.isFinite(delay)
+      ? delay
+      : RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
+    retryAttempt = Math.min(retryAttempt + 1, RETRY_DELAYS_MS.length - 1);
+    retryTimer = window.setTimeout(() => {
+      retryTimer = null;
+      syncPending().catch(() => {});
+    }, retryDelay);
   }
 
   async function refreshStatus(message = "") {
@@ -167,7 +187,9 @@
   async function queueSale(payload) {
     await putOutboxEntry({ ...payload, queued_at: new Date().toISOString(), last_error: "" });
     lastError = "";
+    retryAllowed = true;
     await refreshStatus();
+    if (navigator.onLine) scheduleRetry(1000);
     return payload;
   }
 
@@ -175,6 +197,10 @@
     await deleteOutboxEntry(eventId);
     lastError = "";
     await refreshStatus();
+    if (!pendingCount) {
+      retryAttempt = 0;
+      cancelRetry();
+    }
   }
 
   async function syncPending() {
@@ -182,8 +208,17 @@
       await refreshStatus();
       return { synced: 0, pending: pendingCount };
     }
-    const entries = await currentEntries();
+    cancelRetry();
+    let entries;
+    try {
+      entries = await currentEntries();
+    } catch (_) {
+      lastError = "Der lokale Offline-Speicher ist nicht verfügbar.";
+      await refreshStatus(lastError);
+      return { synced: 0, pending: pendingCount };
+    }
     if (!entries.length) {
+      retryAttempt = 0;
       await refreshStatus();
       return { synced: 0, pending: 0 };
     }
@@ -214,7 +249,17 @@
           // The current login is required to protect the user binding. More
           // attempts with another account cannot fix this and only obscure the
           // actionable reason in the status panel.
-          if (response.status === 401 || response.status === 403) break;
+          if (response.status === 401 || response.status === 403) {
+            retryAllowed = false;
+            break;
+          }
+          // Other client-side validation failures also need a correction on
+          // the server or in a future version of the app; retrying them in a
+          // tight loop would not make progress.
+          if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+            retryAllowed = false;
+            break;
+          }
           continue;
         }
         await deleteOutboxEntry(entry.client_event_id);
@@ -224,6 +269,12 @@
     } finally {
       syncing = false;
       await refreshStatus(synced ? `${synced} Offline-Verkauf/Verkäufe wurden übertragen.` : lastError);
+      if (pendingCount && navigator.onLine && retryAllowed) {
+        scheduleRetry();
+      } else if (!pendingCount) {
+        retryAttempt = 0;
+        cancelRetry();
+      }
     }
     return { synced, pending: pendingCount };
   }
@@ -237,9 +288,16 @@
     isOffline: () => !navigator.onLine,
   };
 
-  syncButton?.addEventListener("click", () => { syncPending(); });
-  window.addEventListener("online", () => { syncPending(); });
-  window.addEventListener("offline", () => { refreshStatus(); });
+  window.addEventListener("online", () => {
+    retryAllowed = true;
+    retryAttempt = 0;
+    cancelRetry();
+    syncPending().catch(() => {});
+  });
+  window.addEventListener("offline", () => {
+    cancelRetry();
+    refreshStatus();
+  });
   document.querySelectorAll("[data-offline-logout]").forEach((form) => {
     form.addEventListener("submit", (event) => {
       if (pendingCount && !window.confirm(
@@ -247,5 +305,7 @@
       )) event.preventDefault();
     });
   });
-  refreshStatus().then(() => { if (navigator.onLine) syncPending(); });
+  refreshStatus().then(() => {
+    if (navigator.onLine) syncPending().catch(() => {});
+  });
 })();
