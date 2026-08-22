@@ -22,7 +22,6 @@ RUN apt-get update \
 COPY app.py .
 COPY templates ./templates
 COPY static ./static
-COPY scripts ./scripts
 
 EXPOSE 8000
 
