@@ -9,12 +9,12 @@
   <form method="post" class="stack-form security-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Einrichtungs-Admin-Passwort<input name="bootstrap_password" type="password" autocomplete="current-password" required autofocus></label>
-    <label>Datenbank-Passphrase <small>Mindestens 12 Zeichen. Sie wird nach jedem Neustart zum Entsperren benötigt.</small><input name="database_passphrase" type="password" autocomplete="new-password" minlength="12" required></label>
+    <label>Datenbank-Passphrase <small>Mindestens 12 Zeichen. Sie wird nach normalen oder ungeplanten Neustarts zum Entsperren benötigt.</small><input name="database_passphrase" type="password" autocomplete="new-password" minlength="12" required></label>
     <label>Datenbank-Passphrase wiederholen<input name="database_passphrase_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
     <button class="primary-button" type="submit">Verschlüsselte Datenbank erstellen</button>
   </form>
   <aside class="notice warning-notice">
-    <strong>Wichtig:</strong> Nach dem nächsten Container- oder App-Neustart ist die Anwendung gesperrt, bis ein Admin die Datenbank-Passphrase oder den danach angezeigten Wiederherstellungsschlüssel eingibt. Wenn beides verloren geht, können die Daten nicht entschlüsselt werden.
+    <strong>Wichtig:</strong> Nach einem normalen oder ungeplanten Container-/App-Neustart ist die Anwendung gesperrt, bis ein Admin die Datenbank-Passphrase oder den danach angezeigten Wiederherstellungsschlüssel eingibt. Wenn beides verloren geht, können die Daten nicht entschlüsselt werden.
   </aside>
 </section>
 {% endblock %}

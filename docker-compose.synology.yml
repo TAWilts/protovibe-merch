@@ -34,6 +34,14 @@ services:
       UPDATE_CHECK_TOKEN: ${UPDATE_CHECK_TOKEN:-}
       UPDATE_CHECK_TIMEOUT_SECONDS: ${UPDATE_CHECK_TIMEOUT_SECONDS:-3}
       UPDATE_CHECK_CACHE_SECONDS: ${UPDATE_CHECK_CACHE_SECONDS:-21600}
+      # Optional scheduled-update unlock. The values remain in root-only files
+      # under this read-only mount; never put either secret into .env.
+      SCHEDULED_RESTART_AUTH_TOKEN_FILE: /run/protovibe-scheduled-restart/authorisation-token
+      SCHEDULED_RESTART_UNLOCK_SECRET_FILE: /run/protovibe-scheduled-restart/one-time-unlock-secret
+      SCHEDULED_RESTART_UNLOCK_TTL_SECONDS: ${SCHEDULED_RESTART_UNLOCK_TTL_SECONDS:-1200}
     volumes:
       # Database and automatic backups persist through every image update.
       - ./data:/data
+      # Disabled by default. Set SCHEDULED_RESTART_SECRETS_DIR to a root-only
+      # DSM directory outside the project and data/ directories to opt in.
+      - ${SCHEDULED_RESTART_SECRETS_DIR:-./scheduled-restart-secrets-disabled}:/run/protovibe-scheduled-restart:ro

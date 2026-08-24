@@ -28,10 +28,14 @@ from app import (
     database_encryption_state,
     decrypt_mfa_secret,
     encrypt_mfa_secret,
+    generate_database_recovery_key,
+    generate_scheduled_restart_unlock_secret,
     get_db,
     get_user_db,
+    new_database_encryption_metadata,
     read_invoice_bytes,
     regenerate_database_recovery_key,
+    scheduled_restart_unlock_pass_path,
     setup_encrypted_databases,
     send_smtp_notification,
     slideshow_settings_payload,
@@ -41,6 +45,7 @@ from app import (
     sync_variants,
     unlock_encrypted_databases,
     variant_label_map,
+    write_database_encryption_metadata,
 )
 
 
@@ -177,6 +182,153 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(database_encryption_state(restarted_app), "unlocked")
         with restarted_app.app_context():
             self.assertEqual(get_user_db().execute("SELECT username FROM users").fetchone()[0], "encrypted-admin")
+
+    def test_scheduled_release_unlock_pass_is_authorized_version_bound_and_one_time(self) -> None:
+        """A DSM update grant must not turn ordinary restarts into automatic unlocks."""
+
+        root = Path(self.tempdir.name) / "scheduled-update-unlock"
+        secrets_directory = root / "scheduler-secrets"
+        secrets_directory.mkdir(parents=True)
+        authorization_token = "scheduler-authorisation-token-" + "x" * 32
+        authorization_file = secrets_directory / "authorisation-token"
+        one_time_secret_file = secrets_directory / "one-time-unlock-secret"
+        authorization_file.write_text(authorization_token, encoding="utf-8")
+        authorization_file.chmod(0o600)
+        config = {
+            "TESTING": True,
+            "SECRET_KEY": "test-secret",
+            "DATABASE": str(root / "data" / "merch.sqlite3"),
+            "USERS_DATABASE": str(root / "data" / "users.sqlite3"),
+            "BACKUP_DIR": str(root / "data" / "backups"),
+            "RESET_ARCHIVE_DIR": str(root / "data" / "reset-archives"),
+            "INVOICE_UPLOAD_DIR": str(root / "data" / "invoices"),
+            "DATABASE_ENCRYPTION_ENABLED": True,
+            "ADMIN_USERNAME": "encrypted-admin",
+            "ADMIN_PASSWORD": "bootstrap-admin-password",
+            "APP_VERSION": "v0.3.0",
+            "AUTO_BACKUP": False,
+            "SCHEDULED_RESTART_AUTH_TOKEN_FILE": str(authorization_file),
+            "SCHEDULED_RESTART_UNLOCK_SECRET_FILE": str(one_time_secret_file),
+            "SCHEDULED_RESTART_UNLOCK_TTL_SECONDS": 1200,
+        }
+        database_key = bytes(range(32))
+        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database"):
+            issuing_app = create_app(config)
+        metadata = new_database_encryption_metadata(
+            "a strong local database passphrase",
+            generate_database_recovery_key(),
+            database_key,
+        )
+        metadata["databases_ready"] = True
+        write_database_encryption_metadata(issuing_app, metadata)
+        issuing_app.extensions["database_encryption_key"] = database_key
+        issuing_client = issuing_app.test_client()
+        endpoint = "/system/verschluesselung/geplanter-neustart-pass"
+        target_headers = {"X-Planned-Restart-Target-Version": "v0.3.1"}
+
+        # The machine route deliberately has no browser CSRF token, but is
+        # undiscoverable without its separate mounted scheduler token.
+        self.assertEqual(issuing_client.post(endpoint, headers=target_headers).status_code, 404)
+        self.assertEqual(
+            issuing_client.post(
+                endpoint,
+                headers={**target_headers, "Authorization": "Bearer wrong-token"},
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            issuing_client.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {authorization_token}",
+                    "X-Planned-Restart-Target-Version": "v0.3.0",
+                },
+            ).status_code,
+            400,
+        )
+
+        issued = issuing_client.post(
+            endpoint,
+            headers={**target_headers, "Authorization": f"Bearer {authorization_token}"},
+        )
+        self.assertEqual(issued.status_code, 201)
+        one_time_secret = issued.get_data(as_text=True).strip()
+        self.assertTrue(one_time_secret.startswith("PVM-UP1-"))
+        pass_path = scheduled_restart_unlock_pass_path(issuing_app)
+        pass_contents = pass_path.read_text(encoding="utf-8")
+        self.assertNotIn(one_time_secret, pass_contents)
+        self.assertNotIn(authorization_token, pass_contents)
+        self.assertEqual(json.loads(pass_contents)["target_app_version"], "v0.3.1")
+        one_time_secret_file.write_text(f"{one_time_secret}\n", encoding="utf-8")
+        one_time_secret_file.chmod(0o600)
+
+        # Restarting the old image leaves the grant pending and the database
+        # locked, even though the temporary secret is still mounted.
+        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database") as initialise_mock:
+            old_image_restart = create_app(config)
+        self.assertEqual(database_encryption_state(old_image_restart), "locked")
+        self.assertTrue(pass_path.is_file())
+        initialise_mock.assert_not_called()
+
+        updated_config = {**config, "APP_VERSION": "v0.3.1"}
+        with (
+            patch("app._sqlcipher_dbapi"),
+            patch("app.initialise_database") as initialise_mock,
+            patch("app.invalidate_all_user_sessions_after_scheduled_restart_unlock") as invalidate_mock,
+        ):
+            updated_image = create_app(updated_config)
+        self.assertEqual(database_encryption_state(updated_image), "unlocked")
+        self.assertEqual(updated_image.extensions["database_encryption_key"], database_key)
+        initialise_mock.assert_called_once_with(updated_image)
+        invalidate_mock.assert_called_once_with(updated_image, target_version="v0.3.1")
+        self.assertFalse(pass_path.exists())
+
+        # A pass is gone after successful use; the same release cannot replay
+        # it on a second restart.
+        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database") as initialise_mock:
+            replayed_restart = create_app(updated_config)
+        self.assertEqual(database_encryption_state(replayed_restart), "locked")
+        initialise_mock.assert_not_called()
+        self.assertEqual(
+            replayed_restart.test_client().post(
+                endpoint,
+                headers={**target_headers, "Authorization": f"Bearer {authorization_token}"},
+            ).status_code,
+            423,
+        )
+
+        # A valid-looking but wrong per-update secret consumes the matching
+        # pass and fails closed rather than permitting retry attacks.
+        issued_again = issuing_client.post(
+            endpoint,
+            headers={**target_headers, "Authorization": f"Bearer {authorization_token}"},
+        )
+        self.assertEqual(issued_again.status_code, 201)
+        one_time_secret_file.write_text(generate_scheduled_restart_unlock_secret(), encoding="utf-8")
+        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database") as initialise_mock:
+            wrong_secret_restart = create_app(updated_config)
+        self.assertEqual(database_encryption_state(wrong_secret_restart), "locked")
+        self.assertFalse(pass_path.exists())
+        initialise_mock.assert_not_called()
+
+        # Expiry is enforced before any schema migration, even if the genuine
+        # one-time secret is still available to the matching image.
+        issued_expiring = issuing_client.post(
+            endpoint,
+            headers={**target_headers, "Authorization": f"Bearer {authorization_token}"},
+        )
+        self.assertEqual(issued_expiring.status_code, 201)
+        expiring_secret = issued_expiring.get_data(as_text=True).strip()
+        expired_payload = json.loads(pass_path.read_text(encoding="utf-8"))
+        expired_payload["issued_at"] = "1999-12-31T00:00:00+00:00"
+        expired_payload["expires_at"] = "2000-01-01T00:00:00+00:00"
+        pass_path.write_text(json.dumps(expired_payload), encoding="utf-8")
+        one_time_secret_file.write_text(expiring_secret, encoding="utf-8")
+        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database") as initialise_mock:
+            expired_restart = create_app(updated_config)
+        self.assertEqual(database_encryption_state(expired_restart), "locked")
+        self.assertFalse(pass_path.exists())
+        initialise_mock.assert_not_called()
 
     def test_plaintext_legacy_import_is_not_available(self) -> None:
         """Plaintext stores cannot be uploaded into the active installation."""

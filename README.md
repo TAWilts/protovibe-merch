@@ -311,6 +311,163 @@ Passwort und 2FA möglich. Weder die Datenbank-Passphrase noch der
 Wiederherstellungsschlüssel gehören in `.env`, ein Git-Repository oder einen
 Shell-Befehl.
 
+### Optionaler Einmal-Entsperrpass für geplante Image-Updates
+
+Standardmäßig bleibt die vorherige Regel unverändert: Nach einem ungeplanten
+Neustart, einem NAS-Neustart oder einem erneuten Start **derselben** Image-
+Version bleibt die Datenbank gesperrt. Optional kann ein DSM-Aufgabenplaner
+für genau ein bereits geprüftes, anderes Release-Image einen Einmalpass
+anfordern. Das ist ausdrücklich kein allgemeines `GEPLANTER_NEUSTART=1`-
+Flag und auch keine dauerhaft hinterlegte Datenbank-Passphrase.
+
+Während die alte App noch entsperrt läuft, authentifiziert sich die
+root-ausgeführte DSM-Aufgabe mit einem separaten, zufälligen Token. Die App
+erstellt daraufhin einen zusätzlichen Schlüsselumschlag, der nur für die
+angegebene Zielversion (zum Beispiel `v0.3.1`) und standardmäßig 20 Minuten
+gilt (bewusst begrenzt auf 1 bis 60 Minuten).
+Die Aufgabe erhält dazu einen frischen zweiten Einmalcode. Erst die Kombination
+aus diesem kurzlebigen Umschlag in `data/` und dem Einmalcode öffnet beim Start
+des **exakt passenden** neuen Images die Datenbank. Der Umschlag wird atomar
+verbraucht und der Einmalcode danach vom NAS gelöscht. Das dauerhafte
+Task-Token allein kann weder eine kopierte Datenbank noch ein Backup öffnen.
+
+Bei einer falschen Zielversion, einem abgelaufenen Pass, einem fehlerhaften
+Einmalcode oder einer fehlgeschlagenen Migration bleibt die Datenbank gesperrt;
+die normale Entsperrseite mit Passphrase oder Wiederherstellungsschlüssel bleibt
+der sichere Notfallweg. Beim automatischen Entsperren werden außerdem alle
+Browser-Sitzungen abgemeldet, damit ein alter Sitzungs-Cookie nie eine Anmeldung
+überspringt.
+
+Die Funktion ist ab Werk ausgeschaltet. Für die erste Aktualisierung auf eine
+Version, die diese Funktion enthält, ist deshalb noch eine manuelle
+Entsperrung nötig.
+
+1. Lege außerhalb von Projekt-, `data/`- und Backup-Ordnern ein nur für `root`
+   zugängliches Verzeichnis an, zum Beispiel
+   `/volume1/docker/protovibe-merch-secrets`. Die DSM-Aufgabe muss als `root`
+   laufen. Verzeichnisrechte sind `0700`, Dateirechte `0600`:
+
+   ```sh
+   umask 077
+   mkdir -p /volume1/docker/protovibe-merch-secrets
+   openssl rand -base64 48 > /volume1/docker/protovibe-merch-secrets/authorisation-token
+   chmod 700 /volume1/docker/protovibe-merch-secrets
+   chmod 600 /volume1/docker/protovibe-merch-secrets/authorisation-token
+   ```
+
+   Die Datei `authorisation-token` ist ein dauerhaftes **Task**-Geheimnis,
+   nicht die Datenbank-Passphrase. Die Datei
+   `one-time-unlock-secret` erzeugt die Aufgabe nur kurzfristig und löscht sie
+   wieder. Beide Dateien dürfen nicht in `.env`, Git, `data/`, Backups oder
+   einen Docker-Command gelangen.
+
+2. Ergänze in der Projekt-`.env` nur den Pfad (keinen Geheimwert):
+
+   ```dotenv
+   SCHEDULED_RESTART_SECRETS_DIR=/volume1/docker/protovibe-merch-secrets
+   SCHEDULED_RESTART_UNLOCK_TTL_SECONDS=1200
+   ```
+
+   Starte das Synology-Projekt danach einmal neu, damit der schreibgeschützte
+   Mount unter `/run/protovibe-scheduled-restart` aktiv wird. Die App akzeptiert
+   keine Geheimdatei innerhalb des dauerhaften Datenordners.
+
+3. Lege die folgende Aufgabe als **benutzerdefiniertes Skript** im
+   Synology-Aufgabenplaner an. Sie erwartet den geprüften Release-Tag als erstes
+   Argument, zum Beispiel `v0.3.1`. Setze `PROJECT_NAME` auf den tatsächlichen
+   Namen des bestehenden Container-Manager-Projekts; ein abweichender Name
+   könnte einen zweiten Compose-Stack erzeugen. Lege die aktiv ausgeführte
+   Skriptdatei selbst in einem root-geschützten Verwaltungsordner ab, nicht in
+   einem für normale NAS-Nutzer beschreibbaren Checkout. Beispiel: Speichere
+   sie als `/volume1/docker/protovibe-merch-admin/scheduled-update.sh` mit
+   Recht `0700`; im DSM-Aufgabenplaner lautet der eigentliche Befehl dann
+   `/bin/sh /volume1/docker/protovibe-merch-admin/scheduled-update.sh v0.3.1`.
+   Für einen anderen Release-Tag wird genau dieses letzte Argument geändert.
+
+   ```sh
+   #!/bin/sh
+   set -eu
+   umask 077
+
+   PROJECT_DIR=/volume1/docker/protovibe-merch
+   PROJECT_NAME=protovibe-merch
+   SECRETS_DIR=/volume1/docker/protovibe-merch-secrets
+   APP_URL=http://127.0.0.1:8088
+   TARGET_VERSION="${1:?Bitte einen Release-Tag wie v0.3.1 angeben}"
+
+   if ! printf '%s\n' "$TARGET_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+     echo "Nur konkrete Release-Tags vX.Y.Z sind erlaubt." >&2
+     exit 2
+   fi
+
+   AUTH_FILE="$SECRETS_DIR/authorisation-token"
+   ONE_TIME_FILE="$SECRETS_DIR/one-time-unlock-secret"
+   ONE_TIME_TMP="$ONE_TIME_FILE.tmp.$$"
+   CURL_CONFIG="$(mktemp "$SECRETS_DIR/.update-unlock-curl.XXXXXX")"
+   ENV_FILE="$PROJECT_DIR/.env"
+   ENV_TMP=""
+
+   cleanup() {
+     rm -f "$ONE_TIME_FILE" "$ONE_TIME_TMP" "$CURL_CONFIG" ${ENV_TMP:+"$ENV_TMP"}
+   }
+   trap cleanup EXIT HUP INT TERM
+
+   [ -r "$AUTH_FILE" ] || { echo "Autorisierungsdatei fehlt." >&2; exit 1; }
+   [ -f "$ENV_FILE" ] || { echo ".env fehlt." >&2; exit 1; }
+
+   compose() {
+     MERCH_IMAGE_TAG="$TARGET_VERSION" docker compose \
+       --project-name "$PROJECT_NAME" \
+       -f "$PROJECT_DIR/docker-compose.synology.yml" "$@"
+   }
+
+   # Das Image erst laden; erst danach beginnt das kurze 20-Minuten-Fenster.
+   compose pull merch
+
+   ENV_TMP="$(mktemp "$PROJECT_DIR/.env.update.XXXXXX")"
+   awk -v version="$TARGET_VERSION" '
+     BEGIN { changed = 0 }
+     /^MERCH_IMAGE_TAG=/ { print "MERCH_IMAGE_TAG=" version; changed = 1; next }
+     { print }
+     END { if (!changed) print "MERCH_IMAGE_TAG=" version }
+   ' "$ENV_FILE" > "$ENV_TMP"
+   chmod 600 "$ENV_TMP"
+   mv "$ENV_TMP" "$ENV_FILE"
+   ENV_TMP=""
+
+   # Der Token liegt nur in einer kurzlebigen, root-lesbaren curl-Konfiguration,
+   # nicht als Argument in der Prozessliste.
+   {
+     printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '\r\n' < "$AUTH_FILE")"
+     printf 'header = "X-Planned-Restart-Target-Version: %s"\n' "$TARGET_VERSION"
+     printf 'url = "%s/system/verschluesselung/geplanter-neustart-pass"\n' "$APP_URL"
+   } > "$CURL_CONFIG"
+   curl --fail --silent --show-error --request POST --config "$CURL_CONFIG" --output "$ONE_TIME_TMP"
+   [ -s "$ONE_TIME_TMP" ] || { echo "Kein Einmalcode empfangen." >&2; exit 1; }
+   chmod 600 "$ONE_TIME_TMP"
+   mv "$ONE_TIME_TMP" "$ONE_TIME_FILE"
+   rm -f "$CURL_CONFIG"
+   CURL_CONFIG=""
+
+   compose up -d --no-deps --force-recreate merch
+
+   ready=0
+   for attempt in $(seq 1 60); do
+     status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$APP_URL/login" || true)"
+     if [ "$status" = 200 ]; then ready=1; break; fi
+     sleep 2
+   done
+   [ "$ready" -eq 1 ] || { echo "Neues Image blieb gesperrt oder wurde nicht bereit." >&2; exit 1; }
+   ```
+
+   Der Ablauf akzeptiert nur konkrete Tags, nie `latest` oder `stable`. Er lädt
+   das Zielimage vor dem Ausstellen des Passes, prüft nach dem Neustart die
+   Anmeldeseite und löscht den Einmalcode bei **jedem** Ende der Aufgabe. Wird
+   die Aufgabe nach dem Ausstellen abgebrochen, läuft der Pass höchstens bis
+   zum Ablauf und ohne die gelöschte Geheimdatei nicht mehr nutzbar. Ein
+   privilegierter DSM-/Docker-Administrator kann den Ablauf missbrauchen; das
+   liegt in derselben Vertrauensgrenze wie ein bereits entsperrter Container.
+
 Wenn sowohl Datenbank-Passphrase als auch Wiederherstellungsschlüssel verloren
 gehen, sind die Daten kryptografisch nicht wiederherstellbar. Das ist keine
 absichtliche Schikane, sondern die Konsequenz daraus, dass auf dem NAS kein

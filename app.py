@@ -865,6 +865,14 @@ DATABASE_ENCRYPTION_SALT_BYTES = 16
 DATABASE_ENCRYPTION_RECOVERY_PREFIX = "PVM-RK1"
 DATABASE_ENCRYPTION_RECOVERY_TOKEN_BYTES = 30
 DATABASE_ENCRYPTION_PENDING_RECOVERY_TTL_SECONDS = 15 * 60
+# A scheduled image update may carry one additional, short-lived wrapped copy
+# of the in-memory database key.  It is deliberately a separate sidecar, not
+# part of encryption.json, so normal backups never retain it.
+SCHEDULED_RESTART_UNLOCK_PASS_VERSION = 1
+SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX = "PVM-UP1-"
+SCHEDULED_RESTART_UNLOCK_SECRET_BYTES = 32
+SCHEDULED_RESTART_UNLOCK_MIN_TTL_SECONDS = 60
+SCHEDULED_RESTART_UNLOCK_MAX_TTL_SECONDS = 60 * 60
 
 # These values are intentionally only used when a *new* article is created.
 # Existing articles can have completely different option groups (for example a
@@ -901,6 +909,15 @@ def display_version(version: str) -> str:
 
     cleaned = str(version).strip()
     return cleaned if cleaned.startswith("v") else f"v{cleaned}"
+
+
+def canonical_release_version(version: Any) -> str:
+    """Return one unambiguous release tag or reject values unsuitable for a grant."""
+
+    parsed = version_tuple(str(version))
+    if parsed is None:
+        raise ValueError("Die Zielversion muss dem Format vX.Y.Z entsprechen.")
+    return f"v{parsed[0]}.{parsed[1]}.{parsed[2]}"
 
 
 def environment_flag(name: str, default: bool = False) -> bool:
@@ -2421,6 +2438,125 @@ def database_encryption_metadata_path(app: Flask) -> Path:
     return Path(app.config["DATABASE_ENCRYPTION_METADATA"])
 
 
+def scheduled_restart_unlock_pass_path(app: Flask) -> Path:
+    """Return the one-use update grant beside, but separate from, encryption metadata."""
+
+    return database_encryption_metadata_path(app).with_name("scheduled-restart-unlock.json")
+
+
+def _configured_scheduled_restart_secret_path(app: Flask, config_name: str) -> Path | None:
+    """Read a mounted secret-file location without allowing it inside persistent data."""
+
+    configured = str(app.config.get(config_name, "") or "").strip()
+    if not configured:
+        return None
+    path = Path(configured)
+    try:
+        data_directory = database_encryption_metadata_path(app).parent.resolve()
+        resolved_path = path.resolve()
+    except OSError as exc:
+        raise DatabaseEncryptionError("Die Geheimdatei für einen geplanten Neustart kann nicht geprüft werden.") from exc
+    try:
+        resolved_path.relative_to(data_directory)
+    except ValueError:
+        return path
+    raise DatabaseEncryptionError(
+        "Die Geheimdatei für einen geplanten Neustart darf nicht im dauerhaften Datenordner liegen."
+    )
+
+
+def _read_scheduled_restart_secret_file(app: Flask, config_name: str, *, label: str) -> str | None:
+    """Read one small root-only scheduler secret without ever placing it in config."""
+
+    path = _configured_scheduled_restart_secret_path(app, config_name)
+    if path is None:
+        return None
+    try:
+        details = path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise DatabaseEncryptionError(f"Die {label}-Datei kann nicht gelesen werden.") from exc
+    if not path.is_file() or details.st_size <= 0 or details.st_size > 512:
+        raise DatabaseEncryptionError(f"Die {label}-Datei hat kein zulässiges Format.")
+    # NAS Docker deployments are Linux-based.  Windows test environments do
+    # not expose equivalent POSIX permission bits, so the owner-only check is
+    # intentionally conditional there.
+    if os.name != "nt" and details.st_mode & 0o077:
+        raise DatabaseEncryptionError(f"Die {label}-Datei muss ausschließlich für ihren Besitzer lesbar sein.")
+    try:
+        value = path.read_text(encoding="utf-8").rstrip("\r\n")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DatabaseEncryptionError(f"Die {label}-Datei kann nicht gelesen werden.") from exc
+    if not value or "\x00" in value or any(character.isspace() for character in value):
+        raise DatabaseEncryptionError(f"Die {label}-Datei hat kein zulässiges Format.")
+    return value
+
+
+def _scheduled_restart_authorization_is_valid(app: Flask, authorization: Any) -> bool:
+    """Authenticate the scheduler with its separate, mounted high-entropy token."""
+
+    try:
+        expected = _read_scheduled_restart_secret_file(
+            app,
+            "SCHEDULED_RESTART_AUTH_TOKEN_FILE",
+            label="Autorisierungs",
+        )
+    except DatabaseEncryptionError:
+        # Do not disclose whether the feature is configured, or why its local
+        # secret was rejected, to a network caller.
+        app.logger.warning("Scheduled restart authorization secret is unavailable or unsafe")
+        return False
+    if expected is None or len(expected) < 32:
+        return False
+    bearer_prefix = "Bearer "
+    provided = str(authorization or "")
+    if not provided.startswith(bearer_prefix):
+        return False
+    return secrets.compare_digest(expected, provided[len(bearer_prefix):])
+
+
+def _normalised_scheduled_restart_unlock_secret(value: Any) -> str:
+    """Validate the printable, per-update secret returned to the scheduler once."""
+
+    secret = str(value or "")
+    if not secret.startswith(SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX):
+        raise ValueError("Der Einmal-Entsperrcode hat kein gültiges Format.")
+    token = secret[len(SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX):]
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        raise ValueError("Der Einmal-Entsperrcode hat kein gültiges Format.")
+    try:
+        decoded = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+    except (ValueError, UnicodeEncodeError, binascii.Error) as exc:
+        raise ValueError("Der Einmal-Entsperrcode hat kein gültiges Format.") from exc
+    canonical_token = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
+    if len(decoded) != SCHEDULED_RESTART_UNLOCK_SECRET_BYTES or not secrets.compare_digest(token, canonical_token):
+        raise ValueError("Der Einmal-Entsperrcode hat kein gültiges Format.")
+    return f"{SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX}{canonical_token}"
+
+
+def generate_scheduled_restart_unlock_secret() -> str:
+    """Create the second half of an update grant; it is never persisted by the app."""
+
+    token = base64.urlsafe_b64encode(secrets.token_bytes(SCHEDULED_RESTART_UNLOCK_SECRET_BYTES)).decode("ascii")
+    return f"{SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX}{token.rstrip('=')}"
+
+
+def _scheduled_restart_unlock_ttl_seconds(app: Flask) -> int:
+    """Keep a scheduler-issued unlock window intentionally short and bounded."""
+
+    try:
+        ttl = int(app.config["SCHEDULED_RESTART_UNLOCK_TTL_SECONDS"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("SCHEDULED_RESTART_UNLOCK_TTL_SECONDS muss eine ganze Zahl sein.") from exc
+    if not SCHEDULED_RESTART_UNLOCK_MIN_TTL_SECONDS <= ttl <= SCHEDULED_RESTART_UNLOCK_MAX_TTL_SECONDS:
+        raise RuntimeError(
+            "SCHEDULED_RESTART_UNLOCK_TTL_SECONDS muss zwischen "
+            f"{SCHEDULED_RESTART_UNLOCK_MIN_TTL_SECONDS} und {SCHEDULED_RESTART_UNLOCK_MAX_TTL_SECONDS} liegen."
+        )
+    return ttl
+
+
 def _decode_encryption_base64(value: Any, *, field: str) -> bytes:
     try:
         decoded = base64.urlsafe_b64decode(str(value).encode("ascii"))
@@ -2559,13 +2695,12 @@ def load_database_encryption_metadata(app: Flask) -> dict[str, Any] | None:
     return metadata
 
 
-def write_database_encryption_metadata(app: Flask, metadata: dict[str, Any]) -> None:
-    """Atomically persist the wrapped key envelope with owner-only permissions."""
+def _write_owner_only_json(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically write a small security envelope with conservative file permissions."""
 
-    path = database_encryption_metadata_path(app)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    encoded = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     try:
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as output:
@@ -2581,6 +2716,220 @@ def write_database_encryption_metadata(app: Flask, metadata: dict[str, Any]) -> 
             pass
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def write_database_encryption_metadata(app: Flask, metadata: dict[str, Any]) -> None:
+    """Atomically persist the normal wrapped key envelope with owner-only permissions."""
+
+    _write_owner_only_json(database_encryption_metadata_path(app), metadata)
+
+
+def _parse_scheduled_restart_unlock_timestamp(value: Any, *, field: str) -> datetime:
+    """Parse an explicitly UTC-aware timestamp from a short-lived update grant."""
+
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise DatabaseEncryptionError(f"Der Einmal-Entsperrpass enthält kein gültiges Feld: {field}.") from exc
+    if parsed.tzinfo is None:
+        raise DatabaseEncryptionError(f"Der Einmal-Entsperrpass enthält kein gültiges Feld: {field}.")
+    return parsed.astimezone(timezone.utc)
+
+
+def _load_scheduled_restart_unlock_pass_from_path(path: Path) -> dict[str, Any] | None:
+    """Read and strictly validate a pending update grant without attempting an unlock."""
+
+    if not path.is_file():
+        return None
+    try:
+        if path.stat().st_size <= 0 or path.stat().st_size > 16 * 1024:
+            raise DatabaseEncryptionError("Der Einmal-Entsperrpass hat keine zulässige Größe.")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise DatabaseEncryptionError("Der Einmal-Entsperrpass kann nicht gelesen werden.") from exc
+    if not isinstance(payload, dict) or payload.get("version") != SCHEDULED_RESTART_UNLOCK_PASS_VERSION:
+        raise DatabaseEncryptionError("Der Einmal-Entsperrpass hat eine nicht unterstützte Version.")
+    if payload.get("purpose") != "scheduled-update-unlock":
+        raise DatabaseEncryptionError("Der Einmal-Entsperrpass hat keinen zulässigen Zweck.")
+    try:
+        uuid.UUID(str(payload["grant_id"]))
+        target_version = canonical_release_version(payload["target_app_version"])
+    except (KeyError, ValueError, AttributeError) as exc:
+        raise DatabaseEncryptionError("Der Einmal-Entsperrpass ist unvollständig.") from exc
+    if payload.get("target_app_version") != target_version:
+        raise DatabaseEncryptionError("Der Einmal-Entsperrpass enthält keine eindeutige Zielversion.")
+    issued_at = _parse_scheduled_restart_unlock_timestamp(payload.get("issued_at"), field="issued_at")
+    expires_at = _parse_scheduled_restart_unlock_timestamp(payload.get("expires_at"), field="expires_at")
+    if expires_at <= issued_at:
+        raise DatabaseEncryptionError("Der Einmal-Entsperrpass enthält keine gültige Gültigkeitsdauer.")
+    envelope = payload.get("envelope")
+    if not isinstance(envelope, dict):
+        raise DatabaseEncryptionError("Der Einmal-Entsperrpass ist unvollständig.")
+    _encryption_kdf_parameters(envelope)
+    if not isinstance(envelope.get("wrapped_key"), str):
+        raise DatabaseEncryptionError("Der Einmal-Entsperrpass ist unvollständig.")
+    return payload
+
+
+def load_scheduled_restart_unlock_pass(app: Flask) -> dict[str, Any] | None:
+    """Load the optional, transient update grant without putting it into backups."""
+
+    return _load_scheduled_restart_unlock_pass_from_path(scheduled_restart_unlock_pass_path(app))
+
+
+def _scheduled_restart_unlock_pass_targets_current_app(app: Flask, payload: dict[str, Any]) -> bool:
+    """Only the exact next release may consume a grant issued by the old release."""
+
+    target_version = canonical_release_version(payload["target_app_version"])
+    current_version = canonical_release_version(app.config["APP_VERSION"])
+    return secrets.compare_digest(target_version, current_version)
+
+
+def create_scheduled_restart_unlock_pass(app: Flask, target_version: Any) -> str:
+    """Create one short-lived key envelope for one different, planned release start."""
+
+    if database_encryption_state(app) != "unlocked":
+        raise DatabaseLockedError("Die Datenbank muss vor dem geplanten Neustart entsperrt sein.")
+    target = canonical_release_version(target_version)
+    current = canonical_release_version(app.config["APP_VERSION"])
+    if secrets.compare_digest(target, current):
+        raise ValueError("Der Einmal-Entsperrpass ist nur für ein anderes Release-Image möglich.")
+    unlock_secret = generate_scheduled_restart_unlock_secret()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    expires_at = now + timedelta(seconds=_scheduled_restart_unlock_ttl_seconds(app))
+    payload = {
+        "version": SCHEDULED_RESTART_UNLOCK_PASS_VERSION,
+        "purpose": "scheduled-update-unlock",
+        "grant_id": str(uuid.uuid4()),
+        "issued_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "target_app_version": target,
+        "envelope": _wrap_database_key(active_database_key(app), unlock_secret),
+    }
+    _write_owner_only_json(scheduled_restart_unlock_pass_path(app), payload)
+    return unlock_secret
+
+
+def _claim_scheduled_restart_unlock_pass(app: Flask) -> Path | None:
+    """Atomically move the pending file so no second process can consume it too."""
+
+    pending = scheduled_restart_unlock_pass_path(app)
+    claimed = pending.with_name(f".{pending.name}.{uuid.uuid4().hex}.claimed")
+    try:
+        os.replace(pending, claimed)
+    except FileNotFoundError:
+        return None
+    return claimed
+
+
+def invalidate_all_user_sessions_after_scheduled_restart_unlock(app: Flask, *, target_version: str) -> None:
+    """Ensure automatic database unlock never restores an already authenticated browser."""
+
+    connection = db_connect(app.config["USERS_DATABASE"], app=app)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("UPDATE users SET session_version = session_version + 1")
+        connection.execute(
+            """
+            INSERT INTO audit_log (
+                created_at, user_id, user_username, action, entity_type, entity_id, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                utc_now(),
+                None,
+                None,
+                "scheduled_restart_unlock",
+                "database_encryption",
+                None,
+                json.dumps({"target_app_version": target_version}, ensure_ascii=False),
+            ),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def consume_scheduled_restart_unlock_pass(app: Flask) -> bool:
+    """Consume a matching update grant at startup, otherwise leave the store locked.
+
+    The pass deliberately remains untouched when this is an unexpected restart
+    of the old image.  Once the matching release claims it, any success or
+    failure consumes it, so a corrected second attempt requires a manual
+    database unlock or a newly issued pass from a still-unlocked old release.
+    """
+
+    if not database_encryption_enabled(app):
+        return False
+    try:
+        if database_encryption_state(app) != "locked":
+            return False
+    except DatabaseEncryptionError:
+        app.logger.warning("Scheduled restart unlock skipped because encryption metadata is unavailable")
+        return False
+    try:
+        unlock_secret = _read_scheduled_restart_secret_file(
+            app,
+            "SCHEDULED_RESTART_UNLOCK_SECRET_FILE",
+            label="Einmal-Entsperrcode",
+        )
+    except DatabaseEncryptionError:
+        app.logger.warning("Scheduled restart one-time secret is unavailable or unsafe")
+        return False
+    if unlock_secret is None:
+        return False
+    try:
+        normalised_secret = _normalised_scheduled_restart_unlock_secret(unlock_secret)
+        pending = load_scheduled_restart_unlock_pass(app)
+    except (ValueError, DatabaseEncryptionError):
+        app.logger.warning("Scheduled restart unlock pass or one-time secret was rejected")
+        return False
+    if pending is None or not _scheduled_restart_unlock_pass_targets_current_app(app, pending):
+        return False
+    try:
+        claimed = _claim_scheduled_restart_unlock_pass(app)
+    except OSError:
+        app.logger.warning("Scheduled restart unlock pass could not be claimed")
+        return False
+    if claimed is None:
+        return False
+    try:
+        payload = _load_scheduled_restart_unlock_pass_from_path(claimed)
+        if payload is None or not _scheduled_restart_unlock_pass_targets_current_app(app, payload):
+            raise DatabaseEncryptionError("Der Einmal-Entsperrpass passt nicht zum gestarteten Release.")
+        expires_at = _parse_scheduled_restart_unlock_timestamp(payload["expires_at"], field="expires_at")
+        if datetime.now(timezone.utc) >= expires_at:
+            raise DatabaseEncryptionError("Der Einmal-Entsperrpass ist abgelaufen.")
+        database_key = _unwrap_database_key(payload["envelope"], normalised_secret)
+        app.extensions["database_encryption_key"] = database_key
+        try:
+            initialise_database(app)
+            invalidate_all_user_sessions_after_scheduled_restart_unlock(
+                app,
+                target_version=canonical_release_version(payload["target_app_version"]),
+            )
+        except Exception:
+            app.extensions.pop("database_encryption_key", None)
+            raise
+        return True
+    except (ValueError, DatabaseEncryptionError, OSError):
+        app.extensions.pop("database_encryption_key", None)
+        app.logger.warning("Scheduled restart unlock pass could not be consumed")
+        return False
+    except Exception:
+        app.extensions.pop("database_encryption_key", None)
+        app.logger.exception("Scheduled restart unlock failed while starting the encrypted database")
+        return False
+    finally:
+        try:
+            claimed.unlink(missing_ok=True)
+        except OSError:
+            # A claimed filename is never reconsidered by a later startup, so
+            # inability to clean it up cannot replay the one-time envelope.
+            app.logger.warning("Consumed scheduled restart unlock pass could not be removed")
 
 
 def database_encryption_state(app: Flask) -> str:
@@ -4040,6 +4389,10 @@ def require_csrf() -> None:
     """Validate mutation requests before anything is written to the database."""
 
     if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return
+    if request.endpoint == "issue_scheduled_restart_unlock_pass":
+        # This machine-only route has no browser session. Its independent,
+        # high-entropy authorization token is checked by the route itself.
         return
     provided = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
     if not provided or provided != session.get("csrf_token"):
@@ -6291,6 +6644,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         # A published image receives the GitHub release tag at Docker build
         # time.  The neutral fallback only applies to local development builds.
         APP_VERSION=os.environ.get("APP_VERSION", "0.0.0").strip(),
+        # These are file locations inside a read-only, root-owned bind mount.
+        # The actual values never enter .env or a container environment value.
+        SCHEDULED_RESTART_AUTH_TOKEN_FILE=os.environ.get("SCHEDULED_RESTART_AUTH_TOKEN_FILE", "").strip(),
+        SCHEDULED_RESTART_UNLOCK_SECRET_FILE=os.environ.get("SCHEDULED_RESTART_UNLOCK_SECRET_FILE", "").strip(),
+        SCHEDULED_RESTART_UNLOCK_TTL_SECONDS=os.environ.get("SCHEDULED_RESTART_UNLOCK_TTL_SECONDS", "1200"),
         # A public repository needs no token.  For a private repository, use a
         # separate, fine-grained read-only token; it remains server-side.
         UPDATE_CHECK_REPOSITORY=os.environ.get("UPDATE_CHECK_REPOSITORY", "TAWilts/protovibe-merch").strip(),
@@ -6326,6 +6684,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         app.config["MIGRATION_ARCHIVE_DIR"] = str(Path(app.config["DATABASE"]).parent / "migration-archives")
     if version_tuple(str(app.config["APP_VERSION"])) is None:
         raise RuntimeError("APP_VERSION muss dem Format vX.Y.Z entsprechen, zum Beispiel v0.3.0.")
+    _scheduled_restart_unlock_ttl_seconds(app)
     if app.config["SECRET_KEY"] == "development-only-change-me" and not app.config.get("TESTING"):
         raise RuntimeError("Set SECRET_KEY in .env before starting the app.")
     if app.config.get("LOCAL_DEV_MODE"):
@@ -6362,6 +6721,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         # Fail closed. A production deployment may never silently fall back to
         # ordinary SQLite just because a native SQLCipher dependency is absent.
         _sqlcipher_dbapi()
+        # A normal restart has no mounted one-time secret and therefore stays
+        # locked.  This only succeeds for a short-lived grant that names this
+        # exact release image; failures remain available for manual unlock.
+        with app.extensions["database_encryption_lock"]:
+            consume_scheduled_restart_unlock_pass(app)
     else:
         initialise_database(app)
     app.teardown_appcontext(close_db)
@@ -6403,6 +6767,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "encryption_unlock",
             "encryption_recovery",
             "encryption_legacy_data",
+            # It returns 423 while locked and can only issue a pass from an
+            # already unlocked process, but must not redirect a DSM task to an
+            # HTML unlock form where curl would mistake a 302 for success.
+            "issue_scheduled_restart_unlock_pass",
         }
         if request.endpoint in allowed_endpoints:
             return None
@@ -6585,6 +6953,32 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 current_app.logger.exception("Could not unlock encrypted databases")
                 flash("Die Datenbank konnte nicht entsperrt werden.", "error")
         return render_template("encryption_unlock.html", title="Datenbank entsperren")
+
+    @app.post("/system/verschluesselung/geplanter-neustart-pass")
+    def issue_scheduled_restart_unlock_pass():
+        """Give a root-owned DSM task one ephemeral secret for one target image start."""
+
+        if not database_encryption_enabled(app) or not _scheduled_restart_authorization_is_valid(
+            app, request.headers.get("Authorization")
+        ):
+            # The task capability should not become a discoverable network
+            # feature when its separate host-side authorization file is absent.
+            abort(404)
+        if database_encryption_state(app) != "unlocked":
+            return Response(status=423)
+        try:
+            with app.extensions["database_encryption_lock"]:
+                unlock_secret = create_scheduled_restart_unlock_pass(
+                    app,
+                    request.headers.get("X-Planned-Restart-Target-Version"),
+                )
+        except (ValueError, DatabaseEncryptionError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        response = Response(f"{unlock_secret}\n", status=201, mimetype="text/plain")
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @app.get("/system/verschluesselung/altdaten")
     def encryption_legacy_data():
