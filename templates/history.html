@@ -15,7 +15,7 @@
   {% for receipt in receipts %}
   <tr class="{{ 'cancelled-row' if receipt.is_cancelled else '' }}" data-filter-row data-filter-group="receipt-{{ receipt.primary_sale_id }}" data-filter-text="{{ receipt.search_text }}">
     <td class="cart-toggle-cell"><button class="cart-toggle" type="button" data-cart-toggle data-target="cart-details-{{ receipt.primary_sale_id }}" aria-expanded="false" aria-label="Warenkorb für {{ receipt.receipt_id }} anzeigen"><span aria-hidden="true">▸</span></button></td>
-    <td>{{ receipt.sold_on }}</td><td class="mono">{{ receipt.receipt_id }}</td>
+    <td>{{ receipt.sold_on }}<small class="table-subline"><time datetime="{{ receipt.recorded_at }}">{{ receipt.recorded_at_time }}</time></small></td><td class="mono">{{ receipt.receipt_id }}</td>
     <td><strong>{{ receipt.summary_label }}</strong>{% if receipt.summary_options %}<small class="table-subline">{{ receipt.summary_options }}</small>{% endif %}</td>
     <td>{{ receipt.total_quantity }}</td><td>{{ receipt.amount_due_cents|money }}{% if receipt.is_partially_cancelled %}<small class="table-subline">Aktiv: {{ receipt.active_amount_due_cents|money }}</small>{% endif %}</td>
     <td>{% if receipt.amount_given_cents is not none %}{{ receipt.amount_given_cents|money }}{% else %}—{% endif %}{% if receipt.donation_cents %}<small class="table-subline donation">+ {{ receipt.donation_cents|money }} Spende</small>{% endif %}{% if receipt.is_partially_cancelled and receipt.active_amount_given_cents is not none %}<small class="table-subline">Aktiv: {{ receipt.active_amount_given_cents|money }}</small>{% endif %}</td>

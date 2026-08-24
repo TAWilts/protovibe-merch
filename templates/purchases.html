@@ -77,7 +77,7 @@
 {% else %}
 <section class="table-section read-only-notice">
   <h2>Einkäufe ansehen</h2>
-  <p>Als Seller kannst du alle Einkaufswarenkörbe und Rechnungen einsehen, aber keine Einkäufe, Anhänge oder Preise verändern.</p>
+  <p>Als Member kannst du alle Einkaufswarenkörbe und Rechnungen einsehen, aber keine Einkäufe, Anhänge oder Preise verändern.</p>
 </section>
 {% endif %}
 
@@ -90,7 +90,7 @@
   <tbody id="purchase-receipts">{% for receipt in receipts %}
     <tr data-filter-row data-filter-group="purchase-{{ receipt.primary_purchase_id }}" data-filter-text="{{ receipt.search_text }}">
       <td class="cart-toggle-cell"><button type="button" class="cart-toggle" data-purchase-cart-toggle data-receipt-id="{{ receipt.receipt_id }}" aria-expanded="false" aria-label="Warenkorb {{ receipt.receipt_id }} anzeigen">▸</button></td>
-      <td>{{ receipt.purchased_on }}</td><td class="mono">{{ receipt.receipt_id }}</td>
+       <td>{{ receipt.purchased_on }}<small class="table-subline"><time datetime="{{ receipt.recorded_at }}">{{ receipt.recorded_at_time }}</time></small></td><td class="mono">{{ receipt.receipt_id }}</td>
       <td><strong>{{ receipt.summary_label }}</strong>{% if receipt.summary_options %}<small class="table-subline">{{ receipt.summary_options }}</small>{% endif %}</td>
       <td>{{ receipt.total_quantity }}</td><td>{{ receipt.total_cost_cents|money }}</td>
       <td>{% if receipt["attachments"] %}{{ receipt["attachments"]|length }} am Warenkorb{% else %}—{% endif %}</td>

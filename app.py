@@ -47,6 +47,7 @@ from threading import Lock
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from flask import (
@@ -90,7 +91,7 @@ CREATE TABLE IF NOT EXISTS users (
     -- ``is_admin`` remains for safe upgrades from the first single-admin
     -- release.  New authorization decisions use the explicit role below.
     is_admin INTEGER NOT NULL DEFAULT 0,
-    role TEXT NOT NULL DEFAULT 'seller' CHECK(role IN ('seller', 'manager', 'admin')),
+    role TEXT NOT NULL DEFAULT 'seller' CHECK(role IN ('seller', 'member', 'manager', 'admin')),
     is_active INTEGER NOT NULL DEFAULT 1,
     must_set_password INTEGER NOT NULL DEFAULT 0,
     setup_code_hash TEXT,
@@ -496,13 +497,13 @@ POS_MODE_RESTRICTED_PATH_PREFIXES = (
 )
 POS_MODE_RESTRICTED_API_PATHS = frozenset({"/api/purchases", "/api/update-status"})
 
-# Roles are cumulative: every authenticated user is a seller, managers also
-# manage stock/purchases/articles, and exactly one configured account holds the
-# administrator role.  Keeping the hierarchy as a tiny mapping makes every
-# server-side authorization decision explicit and easy to audit.
-ROLE_LEVELS = {"seller": 1, "manager": 2, "admin": 3}
-ROLE_LABELS = {"seller": "Seller", "manager": "Manager", "admin": "Admin"}
-MANAGED_USER_ROLES = ("seller", "manager")
+# Roles are cumulative.  ``member`` preserves the former Seller workflow,
+# while the new, deliberately restricted Seller role is for the sales stand.
+# Keeping the hierarchy as a tiny mapping makes every server-side
+# authorization decision explicit and easy to audit.
+ROLE_LEVELS = {"seller": 1, "member": 2, "manager": 3, "admin": 4}
+ROLE_LABELS = {"seller": "Seller", "member": "Member", "manager": "Manager", "admin": "Admin"}
+MANAGED_USER_ROLES = ("seller", "member", "manager")
 SETUP_CODE_ALPHABET = string.ascii_uppercase + string.digits
 SYNC_EVENT_METADATA_FIELDS = frozenset(
     {"client_event_id", "client_device_id", "client_actor_id", "client_created_at"}
@@ -1247,6 +1248,26 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def display_recorded_time(value: Any, timezone_name: str) -> str:
+    """Format a stored UTC timestamp for the band's local history view.
+
+    Older records can be malformed or lack an offset.  Treat those values as
+    UTC rather than silently applying the server's timezone, and keep the
+    page readable even if an optional IANA timezone is unavailable.
+    """
+
+    try:
+        recorded_at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return "—"
+    if recorded_at.tzinfo is None:
+        recorded_at = recorded_at.replace(tzinfo=timezone.utc)
+    try:
+        return recorded_at.astimezone(ZoneInfo(timezone_name)).strftime("%H:%M")
+    except ZoneInfoNotFoundError:
+        return recorded_at.astimezone(timezone.utc).strftime("%H:%M UTC")
+
+
 def today_iso() -> str:
     return date.today().isoformat()
 
@@ -1259,7 +1280,9 @@ def normalized_role(user: dict[str, Any] | sqlite3.Row | None) -> str:
     role = str(user["role"] or "").strip().lower() if "role" in user.keys() else ""
     if role in ROLE_LEVELS:
         return role
-    return "admin" if bool(user["is_admin"]) else "seller"
+    # A record without a role predates the restricted Seller account.  Preserve
+    # its former Seller rights until the startup migration stores ``member``.
+    return "admin" if bool(user["is_admin"]) else "member"
 
 
 def has_role(user: dict[str, Any] | sqlite3.Row | None, required_role: str) -> bool:
@@ -1330,9 +1353,11 @@ def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
     user["role"] = role
     user["role_label"] = ROLE_LABELS[role]
     user["is_admin"] = role == "admin"
+    user["can_access_member_workflows"] = has_role(user, "member")
     user["can_manage_purchases"] = has_role(user, "manager")
     user["can_manage_band_finances"] = has_role(user, "manager")
     user["can_manage_articles"] = has_role(user, "manager")
+    user["can_manage_slideshow"] = has_role(user, "manager")
     user["mfa_enabled"] = int(effective_mfa_enabled(user))
     user["ui_theme"] = user_ui_theme(user)
     user["ui_language"] = user_ui_language(user)
@@ -1354,7 +1379,7 @@ def valid_email_address(value: Any, *, field_name: str = "E-Mail-Adresse") -> st
 
     address = str(value or "").strip()
     if len(address) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", address):
-        raise ValueError(f"{field_name} ist nicht gÃ¼ltig.")
+        raise ValueError(f"{field_name} ist nicht gültig.")
     return address
 
 
@@ -2864,6 +2889,61 @@ def upgrade_band_transactions_schema(connection: sqlite3.Connection) -> None:
             connection.execute(f"ALTER TABLE band_transactions ADD COLUMN {column_name} {column_definition}")
 
 
+def users_table_needs_member_role_migration(connection: sqlite3.Connection) -> bool:
+    """Return whether an older SQLite CHECK constraint still excludes Member."""
+
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+    ).fetchone()
+    if row is None:
+        return False
+    definition = str(row["sql"] if isinstance(row, sqlite3.Row) else row[0]).lower()
+    return "'member'" not in definition and '"member"' not in definition
+
+
+def rebuild_users_for_member_role(connection: sqlite3.Connection) -> None:
+    """Replace the legacy role constraint and preserve former Seller rights.
+
+    SQLite cannot add a value to an existing CHECK constraint.  Renaming and
+    copying the small account table is atomic with the surrounding startup
+    transaction, preserves every account field, and gives old ``seller`` rows
+    their new ``member`` identity exactly once.
+    """
+
+    if not users_table_needs_member_role_migration(connection):
+        return
+    connection.execute("ALTER TABLE users RENAME TO users_before_member_role")
+    connection.executescript(USERS_SCHEMA_SQL)
+    connection.execute(
+        """
+        INSERT INTO users (
+            id, username, password_hash, is_admin, role, is_active,
+            must_set_password, setup_code_hash, setup_code_expires_at,
+            mfa_secret_encrypted, mfa_pending_secret_encrypted,
+            mfa_recovery_code_hashes_json, mfa_enabled, mfa_enrolled_at,
+            session_version, last_login_at, ui_theme, ui_language,
+            show_variant_photos, created_at
+        )
+        SELECT
+            id, username, password_hash, is_admin,
+            CASE
+                WHEN role = 'admin' THEN 'admin'
+                WHEN role = 'manager' THEN 'manager'
+                WHEN role = 'member' THEN 'member'
+                WHEN is_admin = 1 THEN 'admin'
+                ELSE 'member'
+            END,
+            is_active, must_set_password, setup_code_hash,
+            setup_code_expires_at, mfa_secret_encrypted,
+            mfa_pending_secret_encrypted, mfa_recovery_code_hashes_json,
+            mfa_enabled, mfa_enrolled_at, session_version, last_login_at,
+            ui_theme, ui_language, show_variant_photos, created_at
+        FROM users_before_member_role
+        """
+    )
+    connection.execute("DROP TABLE users_before_member_role")
+
+
 def upgrade_legacy_combined_database(app: Flask) -> None:
     """Bring a pre-split ``merch.sqlite3`` to the last combined schema.
 
@@ -3059,8 +3139,9 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
                 "UPDATE users SET role = CASE WHEN is_admin = 1 THEN 'admin' ELSE 'seller' END"
             )
         connection.execute(
-            "UPDATE users SET role = 'seller' WHERE role NOT IN ('seller', 'manager', 'admin') OR role IS NULL"
+            "UPDATE users SET role = 'seller' WHERE role NOT IN ('seller', 'member', 'manager', 'admin') OR role IS NULL"
         )
+        rebuild_users_for_member_role(connection)
         admin_rows = connection.execute(
             "SELECT id FROM users WHERE role = 'admin' ORDER BY id"
         ).fetchall()
@@ -3435,8 +3516,9 @@ def upgrade_users_schema(
     if added_role_column:
         connection.execute("UPDATE users SET role = CASE WHEN is_admin = 1 THEN 'admin' ELSE 'seller' END")
     connection.execute(
-        "UPDATE users SET role = 'seller' WHERE role NOT IN ('seller', 'manager', 'admin') OR role IS NULL"
+        "UPDATE users SET role = 'seller' WHERE role NOT IN ('seller', 'member', 'manager', 'admin') OR role IS NULL"
     )
+    rebuild_users_for_member_role(connection)
     admin_rows = connection.execute("SELECT id FROM users WHERE role = 'admin' ORDER BY id").fetchall()
     if len(admin_rows) > 1:
         connection.executemany(
@@ -3918,6 +4000,12 @@ def manager_required(view):
     return role_required("manager")(view)
 
 
+def member_required(view):
+    """Permit the former Seller workflow to Member, Manager and Admin."""
+
+    return role_required("member")(view)
+
+
 def admin_required(view):
     """Restrict system and account administration to the single Admin role."""
 
@@ -4165,7 +4253,10 @@ def purchases_with_labels(
 
 
 def purchase_receipt_payload(
-    connection: sqlite3.Connection, purchase_rows: Iterable[sqlite3.Row]
+    connection: sqlite3.Connection,
+    purchase_rows: Iterable[sqlite3.Row],
+    *,
+    timezone_name: str = "Europe/Berlin",
 ) -> list[dict[str, Any]]:
     """Group purchase ledger rows into expandable, editable shopping carts."""
 
@@ -4199,6 +4290,8 @@ def purchase_receipt_payload(
             {
                 "primary_purchase_id": first_item["purchase_id"],
                 "purchased_on": first_item["purchased_on"],
+                "recorded_at": first_item["created_at"],
+                "recorded_at_time": display_recorded_time(first_item["created_at"], timezone_name),
                 "item_count": len(items),
                 "total_quantity": sum(int(item["quantity"]) for item in items),
                 "total_cost_cents": sum(int(item["quantity"]) * int(item["unit_cost_cents"]) for item in items),
@@ -4261,7 +4354,10 @@ def distribute_cents(total_cents: int, weights: list[int]) -> list[int]:
 
 
 def receipt_history_payload(
-    connection: sqlite3.Connection, sale_rows: Iterable[sqlite3.Row]
+    connection: sqlite3.Connection,
+    sale_rows: Iterable[sqlite3.Row],
+    *,
+    timezone_name: str = "Europe/Berlin",
 ) -> list[dict[str, Any]]:
     """Group sale ledger rows into expandable receipts for the history page.
 
@@ -4286,6 +4382,8 @@ def receipt_history_payload(
             {
                 "primary_sale_id": first_item["sale_id"],
                 "sold_on": first_item["sold_on"],
+                "recorded_at": first_item["created_at"],
+                "recorded_at_time": display_recorded_time(first_item["created_at"], timezone_name),
                 "customer_name": first_item["customer_name"],
                 "customer_address": first_item["customer_address"],
                 "event_name": first_item["event_name"],
@@ -6179,6 +6277,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         ADMIN_PASSWORD=os.environ.get("ADMIN_PASSWORD", "replace-this-password"),
         ACCOUNT_SETUP_CODE_DAYS=int(os.environ.get("ACCOUNT_SETUP_CODE_DAYS", "14")),
         PROFILE_REAUTH_SECONDS=int(os.environ.get("PROFILE_REAUTH_SECONDS", "600")),
+        DISPLAY_TIMEZONE=os.environ.get("DISPLAY_TIMEZONE", "Europe/Berlin").strip(),
         MFA_ISSUER=os.environ.get("MFA_ISSUER", "Protovibe Merch Manager").strip(),
         EMAIL_NOTIFICATIONS_ENABLED=environment_flag("EMAIL_NOTIFICATIONS_ENABLED"),
         SMTP_HOST=os.environ.get("SMTP_HOST", "").strip(),
@@ -7049,17 +7148,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @app.post("/pos-modus")
     @login_required
     def toggle_pos_mode():
-        """Toggle the session-only restricted point-of-sale workflow."""
+        """Enter POS mode, or require a fresh password to leave it."""
 
-        enabled = not bool(session.get("pos_mode"))
-        if enabled:
-            session["pos_mode"] = True
-        else:
-            session.pop("pos_mode", None)
-        destination = url_for("sales_page") if enabled else safe_next_url(
-            request.form.get("next"), fallback=url_for("sales_page")
-        )
-        return redirect(destination)
+        if session.get("pos_mode"):
+            destination = safe_next_url(request.form.get("next"), fallback=url_for("sales_page"))
+            return redirect(url_for("profile_reauth", next=destination))
+        session["pos_mode"] = True
+        return redirect(url_for("sales_page"))
 
     @app.post("/admin-nachricht")
     @login_required
@@ -7298,20 +7393,20 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             recipient_address = str(request.form.get("recipient_address", "")).strip()
             security = str(request.form.get("security", "ssl")).strip().lower()
             if len(host) > 255 or len(username) > 254:
-                raise ValueError("SMTP-Server und Benutzername dÃ¼rfen hÃ¶chstens 254 Zeichen lang sein.")
+                raise ValueError("SMTP-Server und Benutzername dürfen höchstens 254 Zeichen lang sein.")
             if security not in {"ssl", "starttls"}:
-                raise ValueError("Bitte SSL oder STARTTLS auswÃ¤hlen.")
+                raise ValueError("Bitte SSL oder STARTTLS auswählen.")
             try:
                 port = int(request.form.get("port", ""))
                 timeout_seconds = float(request.form.get("timeout_seconds", ""))
             except (TypeError, ValueError) as exc:
-                raise ValueError("SMTP-Port und Zeitlimit mÃ¼ssen Zahlen sein.") from exc
+                raise ValueError("SMTP-Port und Zeitlimit müssen Zahlen sein.") from exc
             if not 1 <= port <= 65_535 or not 0 < timeout_seconds <= 60:
-                raise ValueError("SMTP-Port oder Zeitlimit liegt auÃŸerhalb des erlaubten Bereichs.")
+                raise ValueError("SMTP-Port oder Zeitlimit liegt außerhalb des erlaubten Bereichs.")
             if sender_address:
                 sender_address = valid_email_address(sender_address, field_name="Absenderadresse")
             if recipient_address:
-                recipient_address = valid_email_address(recipient_address, field_name="EmpfÃ¤ngeradresse")
+                recipient_address = valid_email_address(recipient_address, field_name="Empfängeradresse")
             new_password = str(request.form.get("password", ""))
             if len(new_password) > 2_000:
                 raise ValueError("Das SMTP-Passwort ist zu lang.")
@@ -7357,7 +7452,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             connection.rollback()
             flash("E-Mail-Einstellungen konnten nicht gespeichert werden: " + str(exc), "error")
         else:
-            flash("E-Mail-Einstellungen wurden verschlÃ¼sselt gespeichert.", "success")
+            flash("E-Mail-Einstellungen wurden verschlüsselt gespeichert.", "success")
         return redirect(url_for("administration_page"))
 
     @app.post("/verwaltung/benutzer")
@@ -7368,7 +7463,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             username = valid_username(request.form.get("username"))
             role = str(request.form.get("role", "seller")).strip().lower()
             if role not in MANAGED_USER_ROLES:
-                raise ValueError("Neue Benutzer können nur die Rollen Seller oder Manager erhalten.")
+                raise ValueError("Neue Benutzer können nur die Rollen Seller, Member oder Manager erhalten.")
             setup_code = generate_setup_code()
             connection = get_user_db()
             connection.execute(
@@ -7435,7 +7530,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def update_user_role(user_id: int):
         role = str(request.form.get("role", "")).strip().lower()
         if role not in MANAGED_USER_ROLES:
-            flash("Es sind nur die Rollen Seller und Manager auswählbar.", "error")
+            flash("Es sind nur die Rollen Seller, Member und Manager auswählbar.", "error")
             return redirect(url_for("administration_page"))
         connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -7876,6 +7971,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             # the response authoritative post-sale stock values for every
             # basket line.
             receipt_id = unique_receipt_id(connection, "V", payload.get("receipt_id"), sold_on)
+            created_at = utc_now()
             for item in basket_items:
                 cursor = connection.execute(
                     """
@@ -7891,7 +7987,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                         item["amount_due_cents"], item["amount_given_cents"], item["donation_cents"],
                         payment_method, int(is_paid), payment_follow_up, int(is_received), delivery_status,
                         customer_name or None, customer_address or None, event_name, sold_by or None,
-                        comment, sold_on, utc_now(), g.user["id"], g.user["username"],
+                        comment, sold_on, created_at, g.user["id"], g.user["username"],
                     ),
                 )
                 item["sale_id"] = cursor.lastrowid
@@ -7963,6 +8059,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/einkaeufe")
     @login_required
+    @member_required
     def purchases_page():
         connection = get_db()
         purchase_rows = connection.execute("SELECT * FROM purchases ORDER BY purchased_on DESC, id DESC").fetchall()
@@ -7970,13 +8067,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "purchases.html",
             title="Einkäufe",
             articles=article_payload(connection),
-            receipts=purchase_receipt_payload(connection, purchase_rows),
+            receipts=purchase_receipt_payload(
+                connection, purchase_rows, timezone_name=app.config["DISPLAY_TIMEZONE"]
+            ),
             today=today_iso(),
             can_manage_purchases=has_role(g.user, "manager"),
         )
 
     @app.route("/band-finanzen", methods=["GET", "POST"])
     @login_required
+    @member_required
     def band_finances_page():
         """Show the shared band ledger; managers may append immutable entries."""
 
@@ -8125,6 +8225,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/api/band-finanzen/<int:transaction_id>/anhaenge/<int:attachment_id>")
     @login_required
+    @member_required
     def band_transaction_attachment(transaction_id: int, attachment_id: int):
         """Serve a managed band attachment only to an authenticated user."""
 
@@ -8154,6 +8255,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/api/variants/<int:variant_id>/last-purchase-price")
     @login_required
+    @member_required
     def last_purchase_price(variant_id: int):
         variant = get_db().execute("SELECT id FROM variants WHERE id = ? AND is_active = 1", (variant_id,)).fetchone()
         if variant is None:
@@ -8177,6 +8279,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
             connection.execute("BEGIN IMMEDIATE")
             receipt_id = unique_receipt_id(connection, "E", payload.get("receipt_id"), purchased_on)
+            created_at = utc_now()
             for item_index, item in enumerate(cart_items):
                 invoice_file_path = save_invoice_file(item["uploaded_invoice"], receipt_id)
                 if invoice_file_path:
@@ -8192,7 +8295,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     (
                         receipt_id, item["variant_id"], item["quantity"], item["unit_cost_cents"], purchased_on,
                         item["supplier"], item["invoice_reference"], invoice_file_path, item["comment"],
-                        utc_now(), g.user["id"], g.user["username"],
+                        created_at, g.user["id"], g.user["username"],
                     ),
                 )
                 item["purchase_id"] = cursor.lastrowid
@@ -8466,6 +8569,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/api/purchases/<int:purchase_id>/invoice")
     @login_required
+    @member_required
     def purchase_invoice(purchase_id: int):
         """Serve an invoice only when it belongs to an existing booking."""
 
@@ -8544,6 +8648,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/api/purchase-receipts/<receipt_id>/attachments/<int:attachment_id>")
     @login_required
+    @member_required
     def purchase_receipt_attachment(receipt_id: str, attachment_id: int):
         """Serve a cart invoice only when it belongs to that purchase receipt."""
 
@@ -8564,15 +8669,21 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/historie")
     @login_required
+    @member_required
     def history_page():
         connection = get_db()
         sale_rows = connection.execute("SELECT * FROM sales ORDER BY sold_on DESC, id DESC").fetchall()
         return render_template(
-            "history.html", title="Historie", receipts=receipt_history_payload(connection, sale_rows)
+            "history.html",
+            title="Historie",
+            receipts=receipt_history_payload(
+                connection, sale_rows, timezone_name=app.config["DISPLAY_TIMEZONE"]
+            ),
         )
 
     @app.patch("/api/sales/<int:sale_id>/cancel")
     @login_required
+    @member_required
     def cancel_sale(sale_id: int):
         """Cancel one basket item or all remaining items of its receipt."""
 
@@ -8645,6 +8756,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/vorgaenge")
     @login_required
+    @member_required
     def operations_page():
         """Show shipment and payment work queues without hiding sale history."""
 
@@ -8684,6 +8796,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.patch("/api/sales/<int:sale_id>/delivery-status")
     @login_required
+    @member_required
     def update_delivery_status(sale_id: int):
         """Advance or correct a later-delivery sale's shipping state."""
 
@@ -8737,6 +8850,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.patch("/api/sales/<int:sale_id>/payment-status")
     @login_required
+    @member_required
     def update_payment_status(sale_id: int):
         """Mark an outstanding sale as paid (or correct it back to outstanding)."""
 
@@ -8790,11 +8904,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/bilanzen")
     @login_required
+    @member_required
     def balances_page():
         return render_template("balances.html", title="Bilanzen", balances=balance_payload(get_db()))
 
     @app.get("/export/<kind>.csv")
     @login_required
+    @member_required
     def export_csv(kind: str):
         try:
             filename, headers, rows = csv_rows(get_db(), kind)
@@ -8808,6 +8924,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/export/alles.zip")
     @login_required
+    @member_required
     def export_all():
         buffer = io.BytesIO()
         with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
@@ -8879,7 +8996,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/produktpalette")
     @login_required
-    @manager_required
     def product_slideshow_page():
         catalogue = product_slideshow_catalogue(get_db())
         language = user_ui_language(g.user)
@@ -8889,6 +9005,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             slideshow_photos=catalogue["photos"],
             slideshow_variants=catalogue["variants"],
             slideshow_settings=catalogue["settings"],
+            can_manage_slideshow=has_role(g.user, "manager"),
         )
 
     @app.patch("/api/diashow/einstellungen")

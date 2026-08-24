@@ -13,7 +13,7 @@
   </div>
 </div>
 
-<section class="slideshow-timing-controls" aria-label="{{ ui_text.get('slideshow.title') }}">
+<section class="slideshow-timing-controls" aria-label="{{ ui_text.get('slideshow.title') }}"{% if not can_manage_slideshow %} hidden{% endif %}>
   <label class="slideshow-timing-control" for="slideshow-change-rate">
     <span>{{ ui_text.get('slideshow.change_rate') }}</span>
     <span class="slideshow-range-row">
@@ -37,7 +37,7 @@
   </label>
 </section>
 
-<section class="table-section slideshow-upload-section">
+<section class="table-section slideshow-upload-section"{% if not can_manage_slideshow %} hidden{% endif %}>
   <div class="section-heading"><div><h2>{{ ui_text.get('slideshow.upload_title') }}</h2><p>{{ ui_text.get('slideshow.upload_intro') }}</p></div></div>
   <div class="slideshow-upload-controls">
     <label>{{ ui_text.get('slideshow.target') }}
@@ -58,7 +58,7 @@
   <p id="slideshow-upload-status" class="file-status" role="status" aria-live="polite" hidden></p>
 </section>
 
-<section class="table-section slideshow-gallery-section">
+<section class="table-section slideshow-gallery-section"{% if not can_manage_slideshow %} hidden{% endif %}>
   <div class="section-heading slideshow-gallery-heading">
     <div><h2>{{ ui_text.get('slideshow.gallery_title') }}</h2><p>{{ ui_text.get('slideshow.gallery_intro') }}</p></div>
     <strong id="slideshow-selected-count" class="status good" aria-live="polite"></strong>

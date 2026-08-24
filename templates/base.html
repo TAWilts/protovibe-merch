@@ -17,25 +17,27 @@
     </a>
     <nav class="main-nav" aria-label="{{ ui_text.get('nav.label') }}">
       <a href="{{ url_for('sales_page') }}" class="{{ 'active' if request.endpoint == 'sales_page' else '' }}">{{ ui_text.get('nav.sales') }}</a>
+      {% if current_user.can_access_member_workflows %}
       <a href="{{ url_for('history_page') }}" class="{{ 'active' if request.endpoint == 'history_page' else '' }}">{{ ui_text.get('nav.history') }}</a>
       <a href="{{ url_for('operations_page') }}" class="{{ 'active' if request.endpoint == 'operations_page' else '' }}">{{ ui_text.get('nav.operations') }}</a>
-      {% if current_user.can_manage_articles %}
+      {% endif %}
       <a href="{{ url_for('product_slideshow_page') }}" class="{{ 'active' if request.endpoint == 'product_slideshow_page' else '' }}">{{ ui_text.get('nav.slideshow') }}</a>
-      {% endif %}
+      {% if current_user.can_access_member_workflows %}
       <span class="main-nav-divider" aria-hidden="true"></span>
-      {% if current_user.can_manage_articles %}
-        {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.articles') }}</span>
-        {% else %}<a href="{{ url_for('article_management_page') }}" class="{{ 'active' if request.endpoint in ['article_management_page', 'create_article', 'save_article'] else '' }}">{{ ui_text.get('nav.articles') }}</a>{% endif %}
-      {% endif %}
-      {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.purchases') }}</span>
-      {% else %}<a href="{{ url_for('purchases_page') }}" class="{{ 'active' if request.endpoint == 'purchases_page' else '' }}">{{ ui_text.get('nav.purchases') }}</a>{% endif %}
-      {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.band_finances') }}</span>
-      {% else %}<a href="{{ url_for('band_finances_page') }}" class="{{ 'active' if request.endpoint in ['band_finances_page', 'band_transaction_attachment'] else '' }}">{{ ui_text.get('nav.band_finances') }}</a>{% endif %}
-      {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.balances') }}</span>
-      {% else %}<a href="{{ url_for('balances_page') }}" class="{{ 'active' if request.endpoint == 'balances_page' else '' }}">{{ ui_text.get('nav.balances') }}</a>{% endif %}
-      {% if current_user.is_admin %}
-        {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.administration') }}</span>
-        {% else %}<a href="{{ url_for('administration_page') }}" class="{{ 'active' if request.endpoint in ['administration_page', 'create_user', 'reset_user_password', 'update_user_role', 'update_user_active_state', 'reset_user_mfa', 'delete_user', 'reset_application_data', 'restore_application_backup', 'update_database_passphrase', 'renew_database_recovery_key'] else '' }}">{{ ui_text.get('nav.administration') }}</a>{% endif %}
+        {% if current_user.can_manage_articles %}
+          {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.articles') }}</span>
+          {% else %}<a href="{{ url_for('article_management_page') }}" class="{{ 'active' if request.endpoint in ['article_management_page', 'create_article', 'save_article'] else '' }}">{{ ui_text.get('nav.articles') }}</a>{% endif %}
+        {% endif %}
+        {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.purchases') }}</span>
+        {% else %}<a href="{{ url_for('purchases_page') }}" class="{{ 'active' if request.endpoint == 'purchases_page' else '' }}">{{ ui_text.get('nav.purchases') }}</a>{% endif %}
+        {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.band_finances') }}</span>
+        {% else %}<a href="{{ url_for('band_finances_page') }}" class="{{ 'active' if request.endpoint in ['band_finances_page', 'band_transaction_attachment'] else '' }}">{{ ui_text.get('nav.band_finances') }}</a>{% endif %}
+        {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.balances') }}</span>
+        {% else %}<a href="{{ url_for('balances_page') }}" class="{{ 'active' if request.endpoint == 'balances_page' else '' }}">{{ ui_text.get('nav.balances') }}</a>{% endif %}
+        {% if current_user.is_admin %}
+          {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.administration') }}</span>
+          {% else %}<a href="{{ url_for('administration_page') }}" class="{{ 'active' if request.endpoint in ['administration_page', 'create_user', 'reset_user_password', 'update_user_role', 'update_user_active_state', 'reset_user_mfa', 'delete_user', 'reset_application_data', 'restore_application_backup', 'update_database_passphrase', 'renew_database_recovery_key'] else '' }}">{{ ui_text.get('nav.administration') }}</a>{% endif %}
+        {% endif %}
       {% endif %}
     </nav>
     <div class="user-menu">

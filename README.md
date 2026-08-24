@@ -88,9 +88,11 @@ Bestand, Bilanz und CSV-Export.
   sowie automatische, verschlüsselte Sicherung nach jeder erfolgreichen
   Änderung, einschließlich Versand- und Zahlungsstatus. Hochgeladene
   Rechnungen und Produktfotos gehören zum jeweiligen Sicherungspunkt dazu.
-- **Konten, Rollen & Schutz:** Der einzelne Admin kann Seller und Manager mit
+- **Konten, Rollen & Schutz:** Der einzelne Admin kann Seller, Member und Manager mit
   zeitlich begrenztem Einrichtungscode anlegen und zurücksetzen. Seller können
-  verkaufen und Einkaufsdaten lesen, Manager verwalten zusätzlich Artikel und
+  ausschließlich verkaufen sowie die Diashow ansehen und abspielen. Member
+  behalten den bisherigen Seller-Zugriff auf Historie, Vorgänge, Einkäufe,
+  Bandfinanzen und Bilanzen. Manager verwalten zusätzlich Artikel und
   Einkaufswarenkörbe, nur der Admin verwaltet Konten oder setzt Betriebsdaten
   zurück. Konten, Passwörter und 2FA liegen unabhängig von Artikeln und
   Buchungen in einer eigenen, verschlüsselten SQLite-Datei. Nicht-Admin-Konten lassen sich
@@ -234,7 +236,7 @@ getrennten Ort. Bestehende Sitzungen werden beim Update einmal abgemeldet,
 damit ein bereits geöffneter Admin-Browser die 2FA-Einrichtung nicht umgehen
 kann.
 
-Im Reiter **Verwaltung** kannst du danach Seller und Manager anlegen. Sie
+Im Reiter **Verwaltung** kannst du danach Seller, Member und Manager anlegen. Sie
 melden sich zuerst mit dem ausgegebenen Einrichtungscode an und setzen sofort
 ihr eigenes Passwort. Der angemeldete Benutzername steht standardmäßig im Feld
 **Verkauft von**, kann dort aber weiterhin überschrieben werden.
@@ -402,7 +404,7 @@ Offline-PWA installiert werden.
 
 Vor einem Gig:
 
-1. Mit dem vorgesehenen Seller-/Manager-Konto online anmelden.
+1. Mit dem vorgesehenen Seller-/Member-/Manager-Konto online anmelden.
 2. Die Seite **Verkauf** einmal vollständig öffnen und optional über den
    Browser zum Startbildschirm hinzufügen.
 3. Den Status „Online und synchron“ abwarten und das Gerät mit einer

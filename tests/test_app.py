@@ -393,6 +393,77 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertNotIn("users", tables)
         self.assertTrue(list(Path(legacy_app.config["MIGRATION_ARCHIVE_DIR"]).glob("*.zip")))
 
+    def test_existing_seller_accounts_become_members_only_during_role_schema_upgrade(self) -> None:
+        """The role CHECK rebuild preserves old rights without changing new Sellers."""
+
+        root = Path(self.tempdir.name) / "member-role-migration"
+        root.mkdir()
+        users_database = root / "users.sqlite3"
+        connection = sqlite3.connect(users_database)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    role TEXT NOT NULL DEFAULT 'seller' CHECK(role IN ('seller', 'manager', 'admin')),
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO users (id, username, password_hash, is_admin, role, is_active, created_at)
+                VALUES
+                    (1, 'old-seller', 'seller-hash', 0, 'seller', 1, '2026-08-14T00:00:00+00:00'),
+                    (2, 'old-manager', 'manager-hash', 0, 'manager', 1, '2026-08-14T00:00:00+00:00'),
+                    (3, 'old-admin', 'admin-hash', 1, 'admin', 1, '2026-08-14T00:00:00+00:00');
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        config = {
+            "TESTING": True,
+            "SECRET_KEY": "test-secret",
+            "DATABASE": str(root / "merch.sqlite3"),
+            "USERS_DATABASE": str(users_database),
+            "BACKUP_DIR": str(root / "backups"),
+            "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+            "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+            "VARIANT_PHOTO_UPLOAD_DIR": str(root / "variant-photos"),
+            "ADMIN_USERNAME": "tester",
+            "ADMIN_PASSWORD": "test-password",
+            "APP_VERSION": "v0.3.0",
+            "AUTO_BACKUP": False,
+        }
+        migrated_app = create_app(config)
+        with migrated_app.app_context():
+            connection = get_user_db()
+            roles = {
+                row["username"]: row["role"]
+                for row in connection.execute("SELECT username, role FROM users ORDER BY id").fetchall()
+            }
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+            ).fetchone()["sql"]
+            connection.execute(
+                """
+                INSERT INTO users (username, password_hash, is_admin, role, is_active, created_at)
+                VALUES ('new-seller', 'new-seller-hash', 0, 'seller', 1, '2026-08-24T00:00:00+00:00')
+                """
+            )
+            connection.commit()
+        self.assertEqual(roles, {"old-seller": "member", "old-manager": "manager", "old-admin": "admin"})
+        self.assertIn("'member'", schema)
+
+        restarted_app = create_app(config)
+        with restarted_app.app_context():
+            new_seller = get_user_db().execute(
+                "SELECT role FROM users WHERE username = 'new-seller'"
+            ).fetchone()
+        self.assertEqual(new_seller["role"], "seller")
+
     def test_combined_database_split_keeps_bookings_and_actor_snapshots(self) -> None:
         """The one-time migration preserves IDs, rows and a readable actor name."""
 
@@ -1038,7 +1109,9 @@ class MerchAppTestCase(unittest.TestCase):
             created = get_user_db().execute("SELECT * FROM users WHERE username = 'seller-one'").fetchone()
         self.assertTrue(created["must_set_password"])
         self.assertTrue(created["setup_code_hash"])
+        self.assertEqual(created["role"], "seller")
         self.assertFalse(check_password_hash(created["password_hash"], setup_code))
+        self.assertIn('<option value="member">Member</option>', response.get_data(as_text=True))
 
         with self.client.session_transaction() as session:
             session.clear()
@@ -1278,29 +1351,38 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("data-filter-linked", (Path(__file__).parents[1] / "static" / "table-filters.js").read_text(encoding="utf-8"))
 
     def test_roles_are_enforced_on_the_server_not_only_in_navigation(self) -> None:
-        """Seller may view purchases but cannot mutate them through direct URLs."""
+        """Seller is sales-only; Member preserves the former Seller workflow."""
 
         variant_id = self.seed_variant()
         seller_id = self.create_local_user("seller-role", "seller")
+        member_id = self.create_local_user("member-role", "member")
         manager_id = self.create_local_user("manager-role", "manager")
 
         self.become_user(seller_id)
-        purchase_page = self.client.get("/einkaeufe")
-        self.assertEqual(purchase_page.status_code, 200)
-        self.assertIn("Nur Lesezugriff", purchase_page.get_data(as_text=True))
+        seller_page = self.client.get("/verkauf").get_data(as_text=True)
+        self.assertIn('href="/verkauf"', seller_page)
+        self.assertIn('href="/produktpalette"', seller_page)
+        self.assertIn('href="/profil/zugriff?next=/profil"', seller_page)
+        self.assertIn('data-admin-message-open', seller_page)
+        for hidden_tab in ("/historie", "/vorgaenge", "/einkaeufe", "/band-finanzen", "/bilanzen"):
+            self.assertNotIn(f'href="{hidden_tab}"', seller_page)
+        seller_slideshow = self.client.get("/produktpalette")
+        self.assertEqual(seller_slideshow.status_code, 200)
+        self.assertIn('id="start-product-slideshow"', seller_slideshow.get_data(as_text=True))
+        self.assertIn('class="table-section slideshow-upload-section" hidden', seller_slideshow.get_data(as_text=True))
+        for path in ("/historie", "/vorgaenge", "/einkaeufe", "/band-finanzen", "/bilanzen", "/export/sales.csv"):
+            self.assertEqual(self.client.get(path).status_code, 403, path)
         self.assertEqual(self.client.get("/artikelverwaltung").status_code, 403)
         self.assertEqual(self.client.get("/verwaltung").status_code, 403)
         self.assertEqual(
-            self.post_csv_import(
-                "verkaeufe",
-                "Anzahl;Artikel;Optionen;Verkaufspreis;Verkauft an\n1;Direktimport;;1,00;Testkunde",
-            ).status_code,
+            self.client.get(f"/api/variants/{variant_id}/last-purchase-price").status_code,
             403,
         )
         self.assertEqual(
-            self.api_post(
-                "/api/purchases",
-                {"variant_id": variant_id, "quantity": 1, "unit_cost": "11", "purchased_on": "2026-08-14"},
+            self.client.patch(
+                "/api/diashow/einstellungen",
+                json={"collage_show_prices": False},
+                headers={"X-CSRF-Token": "test-csrf"},
             ).status_code,
             403,
         )
@@ -1317,6 +1399,28 @@ class MerchAppTestCase(unittest.TestCase):
                 },
             ).status_code,
             200,
+        )
+
+        self.become_user(member_id)
+        member_page = self.client.get("/verkauf").get_data(as_text=True)
+        for visible_tab in ("/verkauf", "/historie", "/vorgaenge", "/einkaeufe", "/band-finanzen", "/bilanzen", "/produktpalette"):
+            self.assertIn(f'href="{visible_tab}"', member_page)
+        self.assertEqual(self.client.get("/historie").status_code, 200)
+        self.assertEqual(self.client.get("/vorgaenge").status_code, 200)
+        purchase_page = self.client.get("/einkaeufe")
+        self.assertEqual(purchase_page.status_code, 200)
+        self.assertIn("Nur Lesezugriff", purchase_page.get_data(as_text=True))
+        self.assertIn("Als Member kannst du", purchase_page.get_data(as_text=True))
+        self.assertEqual(self.client.get("/band-finanzen").status_code, 200)
+        self.assertEqual(self.client.get("/bilanzen").status_code, 200)
+        self.assertEqual(self.client.get("/export/sales.csv").status_code, 200)
+        self.assertEqual(self.client.get("/artikelverwaltung").status_code, 403)
+        self.assertEqual(
+            self.api_post(
+                "/api/purchases",
+                {"variant_id": variant_id, "quantity": 1, "unit_cost": "11", "purchased_on": "2026-08-14"},
+            ).status_code,
+            403,
         )
 
         self.become_user(manager_id)
@@ -1522,7 +1626,8 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(active_config["SMTP_PASSWORD"], "stored-private-password")
         page = self.client.get("/verwaltung").get_data(as_text=True)
         self.assertIn("E-Mail-Zugangsdaten", page)
-        self.assertIn("verschlÃ¼sselt in der App gespeichert", page)
+        self.assertIn("verschlüsselt in der App gespeichert", page)
+        self.assertNotIn("verschl\u00c3\u00bcsselt in der App gespeichert", page)
         self.assertNotIn("stored-private-password", page)
 
     def test_admin_message_email_is_optional_and_smtp_failure_keeps_the_message(self) -> None:
@@ -1793,6 +1898,50 @@ class MerchAppTestCase(unittest.TestCase):
                 (variant_id, variant_id),
             ).fetchone()[0]
         self.assertEqual(stock, 1)
+
+    def test_history_and_purchase_receipts_show_the_recorded_time_below_the_date(self) -> None:
+        """UTC ledger timestamps are rendered in the configured local timezone."""
+
+        variant_id = self.seed_variant()
+        purchase = self.api_post(
+            "/api/purchases",
+            {"variant_id": variant_id, "quantity": 1, "unit_cost": "11,00", "purchased_on": "2026-08-14"},
+        )
+        sale = self.api_post(
+            "/api/sales",
+            {
+                "variant_id": variant_id,
+                "quantity": 1,
+                "is_paid": True,
+                "is_received": True,
+                "payment_method": "Bar",
+                "sold_on": "2026-08-14",
+            },
+        )
+        self.assertEqual(purchase.status_code, 200)
+        self.assertEqual(sale.status_code, 200)
+        with self.app.app_context():
+            connection = get_db()
+            connection.execute(
+                "UPDATE purchases SET created_at = '2026-08-14T12:34:00+00:00' WHERE receipt_id = ?",
+                (purchase.json["receipt_id"],),
+            )
+            connection.execute(
+                "UPDATE sales SET created_at = '2026-01-15T14:23:00+00:00' WHERE receipt_id = ?",
+                (sale.json["receipt_id"],),
+            )
+            connection.commit()
+
+        history = self.client.get("/historie").get_data(as_text=True)
+        purchases = self.client.get("/einkaeufe").get_data(as_text=True)
+        self.assertIn(
+            '2026-08-14<small class="table-subline"><time datetime="2026-01-15T14:23:00+00:00">15:23</time></small>',
+            history,
+        )
+        self.assertIn(
+            '2026-08-14<small class="table-subline"><time datetime="2026-08-14T12:34:00+00:00">14:34</time></small>',
+            purchases,
+        )
 
     def test_sale_can_be_recorded_when_the_ledger_has_no_stock(self) -> None:
         """A missing inventory booking must not block a real counter sale."""
@@ -2120,6 +2269,21 @@ class MerchAppTestCase(unittest.TestCase):
             ).status_code,
             403,
         )
+
+        unlock_request = self.client.post(
+            "/pos-modus", data={"csrf_token": "test-csrf", "next": "/bilanzen"}
+        )
+        self.assertEqual(unlock_request.status_code, 302)
+        self.assertIn("/profil/zugriff?next=/bilanzen", unlock_request.location)
+        with self.client.session_transaction() as session:
+            self.assertTrue(session["pos_mode"])
+        wrong_password = self.client.post(
+            "/profil/zugriff?next=/bilanzen",
+            data={"csrf_token": "test-csrf", "password": "not-the-password"},
+        )
+        self.assertEqual(wrong_password.status_code, 200)
+        with self.client.session_transaction() as session:
+            self.assertTrue(session["pos_mode"])
 
         reauthenticated = self.client.post(
             "/profil/zugriff?next=/bilanzen", data={"csrf_token": "test-csrf", "password": "test-password"}
@@ -3578,8 +3742,8 @@ class MerchAppTestCase(unittest.TestCase):
             self.assertEqual(get_db().execute("SELECT COUNT(*) FROM purchases").fetchone()[0], 0)
         self.assertEqual(list(Path(self.app.config["INVOICE_UPLOAD_DIR"]).iterdir()), [])
 
-    def test_band_finances_record_attachments_keep_merch_balance_and_allow_seller_read_access(self) -> None:
-        """Managers write the separate ledger; every signed-in seller can read it."""
+    def test_band_finances_record_attachments_keep_merch_balance_and_allow_member_read_access(self) -> None:
+        """Managers write the separate ledger; every Member can read it."""
 
         variant_id = self.seed_variant("Band-Balance-Shirt")
         purchase = self.api_post(
@@ -3675,11 +3839,11 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(attachment_response.data, b"%PDF-1.7\nGig receipt\n")
         attachment_response.close()
 
-        seller_id = self.create_local_user("band-read-only", "seller")
-        self.become_user(seller_id)
-        seller_page = self.client.get("/band-finanzen").get_data(as_text=True)
-        self.assertIn("Nur Lesezugriff", seller_page)
-        self.assertNotIn('name="transaction_type"', seller_page)
+        member_id = self.create_local_user("band-read-only", "member")
+        self.become_user(member_id)
+        member_page = self.client.get("/band-finanzen").get_data(as_text=True)
+        self.assertIn("Nur Lesezugriff", member_page)
+        self.assertNotIn('name="transaction_type"', member_page)
         forbidden = self.client.post(
             "/band-finanzen",
             data={
@@ -3692,16 +3856,16 @@ class MerchAppTestCase(unittest.TestCase):
             },
         )
         self.assertEqual(forbidden.status_code, 403)
-        seller_download = self.client.get(
+        member_download = self.client.get(
             f"/api/band-finanzen/{attachment['transaction_id']}/anhaenge/{attachment['id']}"
         )
-        self.assertEqual(seller_download.status_code, 200)
-        seller_download.close()
-        seller_cancellation = self.client.post(
+        self.assertEqual(member_download.status_code, 200)
+        member_download.close()
+        member_cancellation = self.client.post(
             f"/band-finanzen/{transactions[0]['id']}/stornieren",
             data={"csrf_token": "test-csrf"},
         )
-        self.assertEqual(seller_cancellation.status_code, 403)
+        self.assertEqual(member_cancellation.status_code, 403)
 
         self.become_user(1)
         cancelled = self.client.post(
