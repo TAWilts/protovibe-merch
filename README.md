@@ -88,21 +88,23 @@ Bestand, Bilanz und CSV-Export.
   sowie automatische, verschlüsselte Sicherung nach jeder erfolgreichen
   Änderung, einschließlich Versand- und Zahlungsstatus. Hochgeladene
   Rechnungen und Produktfotos gehören zum jeweiligen Sicherungspunkt dazu.
-- **Konten, Rollen & Schutz:** Der einzelne Admin kann Seller, Member und Manager mit
-  zeitlich begrenztem Einrichtungscode anlegen und zurücksetzen. Seller können
+- **Konten, Rollen & Schutz:** Band-Admins können Seller, Member, Manager und
+  weitere Band-Admins mit zeitlich begrenztem Einrichtungscode anlegen und
+  zurücksetzen. Seller können
   ausschließlich verkaufen sowie die Diashow ansehen und abspielen. Member
   behalten den bisherigen Seller-Zugriff auf Historie, Vorgänge, Einkäufe,
   Bandfinanzen und Bilanzen. Manager verwalten zusätzlich Artikel und
-  Einkaufswarenkörbe, nur der Admin verwaltet Konten oder setzt Betriebsdaten
-  zurück. Konten, Passwörter und 2FA liegen unabhängig von Artikeln und
-  Buchungen in einer eigenen, verschlüsselten SQLite-Datei. Nicht-Admin-Konten lassen sich
-  nach erneuter Passwort- und 2FA-Bestätigung löschen, ohne ihre historischen
-  Buchungen zu entfernen.
+  Einkaufswarenkörbe; Band-Admins verwalten die Konten ihrer Band und dürfen
+  deren Betriebsdaten zurücksetzen. Konten, Passwörter und 2FA liegen
+  unabhängig von Artikeln und Buchungen in einer eigenen, verschlüsselten
+  SQLite-Datei. Konten lassen sich nach einer erneuten Sicherheitsbestätigung
+  löschen, ohne ihre historischen Buchungen zu entfernen.
   Jede Person kann ihren eigenen Benutzernamen, Sprache, Farbthema und die
   Anzeige von Variantenfotos nach einer frischen Sicherheitsbestätigung ändern.
-  Der Admin benötigt eine kostenlose, lokale TOTP-2FA; die anderen Rollen
-  können sie freiwillig aktivieren. Profilzugriff, Passwortwechsel und der
-  Datenreset verlangen eine erneute Passwortbestätigung.
+  Für Band-Admins ist die kostenlose, lokale TOTP-2FA optional; System- und
+  Support-Admins müssen sie verwenden. Profilzugriff, Passwortwechsel und
+  sensible Band-Admin-Aktionen verlangen das aktuelle Passwort und, sofern für
+  das Konto eingerichtet, zusätzlich einen 2FA- oder Wiederherstellungscode.
 ## Wichtige Datenmodell-Entscheidungen
 
 ### Artikel und Varianten
@@ -203,8 +205,10 @@ Die folgenden Schritte sind bewusst ohne SSH-Zwang beschrieben.
    einmalig das `ADMIN_PASSWORD` aus der `.env`, wähle eine **separate
    Datenbank-Passphrase** und speichere den angezeigten
    Wiederherstellungsschlüssel offline.
-7. Melde dich danach mit `ADMIN_USERNAME` und `ADMIN_PASSWORD` an und richte
-   die verpflichtende Admin-2FA ein.
+7. Melde dich danach mit `ADMIN_USERNAME` und `ADMIN_PASSWORD` als erster
+   Band-Admin an. Die 2FA kannst du im Profil aktivieren. Den ersten getrennten
+   System-Admin legst du anschließend einmalig unter **Verwaltung** an; dieses
+   Plattformkonto muss beim ersten Login 2FA einrichten.
 
 Alle dauerhaften Daten liegen ausschließlich in `data/`:
 
@@ -227,19 +231,37 @@ keine Buchung unlesbar macht.
 ### Benutzerkonten, Rollen und 2FA
 
 Es ist kein externer Login-Dienst und kein kostenpflichtiger 2FA-Anbieter nötig.
-Der optionale E-Mail-Versand für Admin-Nachrichten kann über ein bestehendes
-Mailkonto erfolgen. Nach dem Update meldest du dich einmal als bisheriger
-Admin an und richtest die verpflichtende Zwei-Faktor-Authentifizierung per
-QR-Code in einer Authenticator-App ein. Anschließend speicherst du die zehn
-einmalig nutzbaren Wiederherstellungscodes an einem sicheren, vom Handy
-getrennten Ort. Bestehende Sitzungen werden beim Update einmal abgemeldet,
-damit ein bereits geöffneter Admin-Browser die 2FA-Einrichtung nicht umgehen
-kann.
+Der optionale E-Mail-Versand für Support-Nachrichten kann über ein bestehendes
+Mailkonto erfolgen. Beim Rollen-Upgrade wird das bisherige, aktive
+`admin`-Konto (bevorzugt das zu `ADMIN_USERNAME` passende Konto, andernfalls
+das einzige vorhandene Admin-Konto) zum `system_admin`. Gibt es genau einen
+aktiven `manager`, wird dieser in derselben Migration zum `band_admin`. Beide
+alten Sitzungen werden dabei ungültig. Gibt es keinen oder mehrere aktive
+Manager, bleibt das bisherige Admin-Konto vorübergehend Band-Admin, damit das
+Live-System bedienbar bleibt. In **Verwaltung** muss dann einmalig ein Manager
+ausgewählt oder ein neues Band-Admin-Konto angelegt werden; erst mit diesem
+atomaren Übergang wird das bisherige Konto System-Admin und abgemeldet. Ein
+persistenter Migrationsstatus verhindert doppelte oder zufällige Zuweisungen
+bei einem Neustart. Weitere alte Admin-Konten bleiben aus Gründen der kleinsten
+Rechte Band-Admins. Die Rollen einer Band sind `seller`, `member`, `manager`
+und `band_admin`.
 
-Im Reiter **Verwaltung** kannst du danach Seller, Member und Manager anlegen. Sie
+Im Reiter **Verwaltung** kannst du diese Bandkonten anlegen. Sie
 melden sich zuerst mit dem ausgegebenen Einrichtungscode an und setzen sofort
 ihr eigenes Passwort. Der angemeldete Benutzername steht standardmäßig im Feld
 **Verkauft von**, kann dort aber weiterhin überschrieben werden.
+
+Bei einer frischen Installation – oder wenn mehrere alte Admin-Konten keinen
+eindeutigen Plattforminhaber erkennen lassen – kann der Band-Admin über einen
+einmaligen Bereich in **Verwaltung** das erste separate Plattformkonto anlegen.
+Danach sind `system_admin` und `support_admin` ausschließlich der
+**System-Verwaltung** zugeordnet. Beide Rollen müssen eine TOTP-2FA einrichten
+und sehen dort das Supportpostfach sowie die systemweite Benutzerübersicht.
+Ohne eine serverseitig gültige Tenant-Freigabe erhalten sie keinerlei Zugriff
+auf Banddaten. Eine echte Bandliste, das Deaktivieren ganzer Bands und der
+zeitlich begrenzte Zugriffsworkflow folgen erst zusammen mit der zentralen
+Tenant-Struktur; die aktuelle Single-Band-Version täuscht diese Trennung nicht
+über UI-Schalter vor.
 
 Die Standardwerte in `.env` müssen nicht ergänzt werden. Optional kannst du
 sie anpassen:
@@ -252,7 +274,8 @@ MFA_ISSUER=Protovibe Merch Manager
 
 ### Optionale E-Mail-Benachrichtigung
 
-Neue Issues und Fragen bleiben immer im privaten Admin-Postfach gespeichert.
+Neue Issues und Fragen bleiben immer im privaten Supportpostfach der
+**System-Verwaltung** gespeichert.
 Optional kann die App danach zusätzlich eine E-Mail über den SMTP-Server eines
 bestehenden Mailkontos senden. IMAP und POP3 dienen nur zum Abrufen von E-Mails
 und werden dafür nicht benötigt. Bei vielen Anbietern kostet SMTP mit einem
@@ -278,7 +301,7 @@ genauen Serverdaten liefert der jeweilige Mailanbieter. Nach einem Neustart
 zeigt **Verwaltung → E-Mail bei neuen Nachrichten** nur den sicheren
 Konfigurationsstatus, niemals Benutzername oder Passwort, und bietet einen
 Button zum Senden einer Test-E-Mail. Schlägt SMTP fehl, bleibt die zuvor
-gespeicherte Nachricht trotzdem im Admin-Tab erhalten; technische Details
+gespeicherte Nachricht trotzdem im Supportpostfach erhalten; technische Details
 stehen dann ausschließlich im Container-Log.
 
 `SECRET_KEY` muss dauerhaft unverändert bleiben. Er schützt Sitzungen und
@@ -289,11 +312,12 @@ Einrichtungs-/Entsperrseite eingegeben und liegt bewusst nicht in `.env`. Die
 Uhr der Synology sollte über die DSM-Zeitsynchronisation korrekt laufen, weil
 Authenticator-Codes zeitbasiert sind.
 
-Der Datenreset im Admin-Reiter fordert das aktuelle Passwort, einen 2FA- oder
-Wiederherstellungscode und die exakte Bestätigungsphrase. Vorher schreibt die
-App ein ZIP unter `data/reset-archives/`. Danach werden nur Artikel,
-Buchungen und Rechnungen frisch angelegt; sämtliche Benutzerkonten, Rollen,
-Passwörter und 2FA-Einstellungen bleiben erhalten.
+Der Datenreset im Reiter **Verwaltung** ist Band-Admins vorbehalten und fordert
+das aktuelle Passwort, bei eingerichteter 2FA zusätzlich einen 2FA- oder
+Wiederherstellungscode sowie die exakte Bestätigungsphrase. Vorher schreibt die
+App ein ZIP unter `data/reset-archives/`. Danach werden nur Artikel, Buchungen
+und Rechnungen frisch angelegt; sämtliche Benutzerkonten, Rollen, Passwörter
+und 2FA-Einstellungen bleiben erhalten.
 
 ### Datenbankverschlüsselung und Wiederherstellung
 
@@ -474,11 +498,11 @@ absichtliche Schikane, sondern die Konsequenz daraus, dass auf dem NAS kein
 automatisch lesbarer Hauptschlüssel liegt. Bewahre beide getrennt und offline
 auf.
 
-Solange die Datenbank entsperrt ist, kann der Admin unter **Verwaltung →
-Datenbank-Sicherheit** nach erneuter Passwort- und 2FA-Bestätigung eine neue
-Datenbank-Passphrase setzen oder einen neuen Wiederherstellungsschlüssel
-erzeugen. Beim Erneuern wird der vorherige Wiederherstellungsschlüssel sofort
-ungültig.
+Solange die Datenbank entsperrt ist, kann der Band-Admin unter **Verwaltung →
+Datenbank-Sicherheit** nach erneuter Passwortbestätigung und, sofern
+eingerichtet, zusätzlicher 2FA-Bestätigung eine neue Datenbank-Passphrase setzen
+oder einen neuen Wiederherstellungsschlüssel erzeugen. Beim Erneuern wird der
+vorherige Wiederherstellungsschlüssel sofort ungültig.
 
 Die Verschlüsselung schützt Daten bei einem kopierten Datenträger oder einer
 kopierten `data/`-Freigabe. Sie ersetzt keine Zugangssicherung eines bereits
@@ -498,7 +522,7 @@ eine Anleitung an.
    `data-legacy` ablegen.
 2. Einen neuen, leeren `data/`-Ordner anlegen und die neue App starten.
 3. Verschlüsselung einrichten, Wiederherstellungsschlüssel sichern und als
-   neuer Admin anmelden.
+   neuer Band-Admin anmelden.
 4. Die alten Daten getrennt und geschützt aufbewahren oder löschen, sobald sie
    nicht mehr benötigt werden.
 
@@ -611,8 +635,9 @@ Projektordners empfehlenswert.
 Die Sicherungen enthalten bewusst keine Benutzerdatei. CSV-/ZIP-Exporte sind
 weiterhin möglich, werden aber nur auf ausdrücklichen Download im Browser
 unverschlüsselt erzeugt; behandle sie anschließend wie sensible Dateien. Im
-Admin-Reiter kann ein bestimmter Sicherungspunkt ausgewählt und nach aktuellem
-Passwort plus 2FA wiederhergestellt werden. Vorher legt die App immer
+Reiter **Verwaltung** kann ein Band-Admin einen bestimmten Sicherungspunkt
+auswählen und ihn nach Eingabe des aktuellen Passworts sowie, falls
+eingerichtet, eines 2FA-Codes wiederherstellen. Vorher legt die App immer
 zusätzlich einen neuen Sicherungspunkt des aktuellen Zustands an. Dabei werden
 ausschließlich `merch.sqlite3`, Rechnungsanhänge und Produktfotos ersetzt; `users.sqlite3`
 mit Konten, Rollen und MFA bleibt unverändert. Alte Ein-Datei-Sicherungen, die

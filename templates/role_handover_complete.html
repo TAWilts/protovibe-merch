@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-card setup-code-card" aria-live="polite">
+      <p class="eyebrow">Rollen-Migration abgeschlossen</p>
+      <h1>Band-Admin eingerichtet</h1>
+      <p>Das neue Konto <strong>{{ username }}</strong> übernimmt die Band-Administration. Dein bisheriges Admin-Konto ist jetzt System-Admin und wurde sicher abgemeldet.</p>
+      <h2>Einmaliger Einrichtungscode</h2>
+      <code class="setup-code" data-setup-code>{{ setup_code }}</code>
+      <p>Gib den Code sicher an die Person weiter. Er ist {{ setup_code_days }} Tage gültig und wird nach dem ersten eigenen Passwort ungültig.</p>
+      <p class="notice">Der Code wird nicht gespeichert und nach dem Verlassen dieser Seite nicht erneut angezeigt.</p>
+      <a class="primary-button" href="{{ url_for('login') }}">Als System-Admin neu anmelden</a>
+    </section>
+  </main>
+</body>
+</html>

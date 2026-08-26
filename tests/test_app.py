@@ -45,6 +45,7 @@ from app import (
     store_invoice_bytes,
     sync_variants,
     unlock_encrypted_databases,
+    upgrade_users_schema,
     variant_label_map,
     write_database_encryption_metadata,
 )
@@ -97,6 +98,151 @@ class MerchAppTestCase(unittest.TestCase):
             )
 
         self.assertEqual(local_app.config["APP_VERSION"], "0.0.0")
+
+    def test_fresh_install_bootstraps_the_local_owner_as_band_admin(self) -> None:
+        """A fresh single-band install must not silently create platform staff."""
+
+        with self.app.app_context():
+            connection = get_user_db()
+            owner = connection.execute("SELECT * FROM users WHERE username = 'tester'").fetchone()
+            platform_count = connection.execute(
+                "SELECT COUNT(*) FROM users WHERE role IN ('support_admin', 'system_admin')"
+            ).fetchone()[0]
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+            ).fetchone()["sql"]
+
+        self.assertEqual(owner["role"], "band_admin")
+        self.assertTrue(owner["is_admin"])
+        self.assertEqual(owner["session_version"], 0)
+        self.assertEqual(platform_count, 0)
+        for role in ("seller", "member", "manager", "band_admin", "support_admin", "system_admin"):
+            self.assertIn(f"'{role}'", schema)
+
+        with self.app.app_context():
+            connection = get_user_db()
+            connection.execute(
+                """
+                INSERT INTO users (username, password_hash, is_admin, role, is_active, created_at)
+                VALUES ('fresh-manager', 'unused', 0, 'manager', 1, '2026-08-26T00:00:00+00:00')
+                """
+            )
+            connection.commit()
+        restarted_app = create_app(
+            {
+                "TESTING": True,
+                "SECRET_KEY": "test-secret",
+                "DATABASE": self.app.config["DATABASE"],
+                "USERS_DATABASE": self.app.config["USERS_DATABASE"],
+                "BACKUP_DIR": self.app.config["BACKUP_DIR"],
+                "RESET_ARCHIVE_DIR": self.app.config["RESET_ARCHIVE_DIR"],
+                "INVOICE_UPLOAD_DIR": self.app.config["INVOICE_UPLOAD_DIR"],
+                "VARIANT_PHOTO_UPLOAD_DIR": self.app.config["VARIANT_PHOTO_UPLOAD_DIR"],
+                "ADMIN_USERNAME": "tester",
+                "ADMIN_PASSWORD": "test-password",
+                "APP_VERSION": "v0.3.0",
+                "AUTO_BACKUP": False,
+            }
+        )
+        with restarted_app.app_context():
+            connection = get_user_db()
+            fresh_roles = {
+                row["username"]: row["role"]
+                for row in connection.execute("SELECT username, role FROM users ORDER BY id").fetchall()
+            }
+            migration_state_count = connection.execute(
+                "SELECT COUNT(*) FROM role_migration_state"
+            ).fetchone()[0]
+        self.assertEqual(
+            fresh_roles, {"tester": "band_admin", "fresh-manager": "manager"}
+        )
+        self.assertEqual(migration_state_count, 0)
+
+    def test_intermediate_combined_split_role_marker_is_recovered_once(self) -> None:
+        """A precise old audit marker repairs provenance lost during an earlier split."""
+
+        with self.app.app_context():
+            users_connection = get_user_db()
+            users_connection.execute(
+                """
+                INSERT INTO users (username, password_hash, is_admin, role, is_active, created_at)
+                VALUES ('intermediate-manager', 'unused', 0, 'manager', 1, '2026-08-26T00:00:00+00:00')
+                """
+            )
+            users_connection.commit()
+            operations_connection = get_db()
+            operations_connection.execute(
+                """
+                INSERT INTO audit_log (
+                    created_at, user_id, user_username, action, entity_type, entity_id, details_json
+                ) VALUES (
+                    '2026-08-25T00:00:00+00:00', 1, 'tester', 'migrate_role', 'user', 1, ?
+                )
+                """,
+                (
+                    json.dumps(
+                        {
+                            "previous_role": "admin",
+                            "role": "band_admin",
+                            "reason": "least_privilege",
+                        }
+                    ),
+                ),
+            )
+            operations_connection.commit()
+
+        config = {
+            "TESTING": True,
+            "SECRET_KEY": "test-secret",
+            "DATABASE": self.app.config["DATABASE"],
+            "USERS_DATABASE": self.app.config["USERS_DATABASE"],
+            "BACKUP_DIR": self.app.config["BACKUP_DIR"],
+            "RESET_ARCHIVE_DIR": self.app.config["RESET_ARCHIVE_DIR"],
+            "INVOICE_UPLOAD_DIR": self.app.config["INVOICE_UPLOAD_DIR"],
+            "VARIANT_PHOTO_UPLOAD_DIR": self.app.config["VARIANT_PHOTO_UPLOAD_DIR"],
+            "ADMIN_USERNAME": "tester",
+            "ADMIN_PASSWORD": "test-password",
+            "APP_VERSION": "v0.3.0",
+            "AUTO_BACKUP": False,
+        }
+        migrated_app = create_app(config)
+        with migrated_app.app_context():
+            connection = get_user_db()
+            migrated_users = {
+                row["username"]: (row["role"], row["session_version"])
+                for row in connection.execute(
+                    "SELECT username, role, session_version FROM users ORDER BY id"
+                ).fetchall()
+            }
+            state = connection.execute(
+                "SELECT status, reason FROM role_migration_state WHERE id = 1"
+            ).fetchone()
+            audit_count = connection.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'migrate_role'"
+            ).fetchone()[0]
+        self.assertEqual(
+            migrated_users,
+            {"tester": ("system_admin", 1), "intermediate-manager": ("band_admin", 1)},
+        )
+        self.assertEqual(
+            dict(state), {"status": "completed", "reason": "only_active_manager"}
+        )
+        self.assertEqual(audit_count, 2)
+
+        restarted_app = create_app(config)
+        with restarted_app.app_context():
+            restarted_connection = get_user_db()
+            restarted_users = {
+                row["username"]: (row["role"], row["session_version"])
+                for row in restarted_connection.execute(
+                    "SELECT username, role, session_version FROM users ORDER BY id"
+                ).fetchall()
+            }
+            restarted_audit_count = restarted_connection.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'migrate_role'"
+            ).fetchone()[0]
+        self.assertEqual(restarted_users, migrated_users)
+        self.assertEqual(restarted_audit_count, 2)
 
     def test_encrypted_database_requires_setup_then_unlocks_without_plaintext_files(self) -> None:
         """SQLCipher data stays unreadable to sqlite3 and needs a separate unlock after restart."""
@@ -477,7 +623,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertTrue(legacy_variant_is_offered)
 
     def test_existing_single_admin_table_is_upgraded_to_roles_and_security_columns(self) -> None:
-        """The existing deployed admin becomes the unique Admin without a data reset."""
+        """Without a Manager, the owner stays usable until an explicit handover."""
 
         legacy_database = Path(self.tempdir.name) / "legacy-users.sqlite3"
         connection = sqlite3.connect(legacy_database)
@@ -496,31 +642,41 @@ class MerchAppTestCase(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO users (id, username, password_hash, is_admin, created_at)
-                VALUES (1, 'old-admin', 'unused', 1, '2026-08-14T00:00:00+00:00')
-                """
+                VALUES (1, 'old-admin', ?, 1, '2026-08-14T00:00:00+00:00')
+                """,
+                (generate_password_hash("old-password"),),
             )
             connection.commit()
         finally:
             connection.close()
 
-        legacy_app = create_app(
-            {
-                "TESTING": True,
-                "SECRET_KEY": "test-secret",
-                "DATABASE": str(legacy_database),
-                "USERS_DATABASE": str(Path(self.tempdir.name) / "legacy-user-accounts.sqlite3"),
-                "BACKUP_DIR": str(Path(self.tempdir.name) / "legacy-user-backups"),
-                "RESET_ARCHIVE_DIR": str(Path(self.tempdir.name) / "legacy-user-reset-archives"),
-                "INVOICE_UPLOAD_DIR": str(Path(self.tempdir.name) / "legacy-user-invoices"),
-                "ADMIN_USERNAME": "tester",
-                "ADMIN_PASSWORD": "test-password",
-                "APP_VERSION": "v0.3.0",
-                "AUTO_BACKUP": False,
-            }
-        )
+        config = {
+            "TESTING": True,
+            "SECRET_KEY": "test-secret",
+            "DATABASE": str(legacy_database),
+            "USERS_DATABASE": str(Path(self.tempdir.name) / "legacy-user-accounts.sqlite3"),
+            "BACKUP_DIR": str(Path(self.tempdir.name) / "legacy-user-backups"),
+            "RESET_ARCHIVE_DIR": str(Path(self.tempdir.name) / "legacy-user-reset-archives"),
+            "INVOICE_UPLOAD_DIR": str(Path(self.tempdir.name) / "legacy-user-invoices"),
+            "ADMIN_USERNAME": "tester",
+            "ADMIN_PASSWORD": "test-password",
+            "APP_VERSION": "v0.3.0",
+            "AUTO_BACKUP": False,
+        }
+        legacy_app = create_app(config)
         with legacy_app.app_context():
-            columns = {row["name"] for row in get_user_db().execute("PRAGMA table_info(users)").fetchall()}
-            user = get_user_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            user_connection = get_user_db()
+            columns = {row["name"] for row in user_connection.execute("PRAGMA table_info(users)").fetchall()}
+            user = user_connection.execute("SELECT * FROM users WHERE id = 1").fetchone()
+            schema = user_connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+            ).fetchone()["sql"]
+            migration_state = user_connection.execute(
+                "SELECT * FROM role_migration_state WHERE id = 1"
+            ).fetchone()
+            pending_audit_count = user_connection.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'role_handover_pending'"
+            ).fetchone()[0]
             tables = {row["name"] for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         self.assertTrue(
             {
@@ -536,15 +692,497 @@ class MerchAppTestCase(unittest.TestCase):
                 "show_variant_photos",
             }.issubset(columns)
         )
-        self.assertEqual(user["role"], "admin")
+        self.assertEqual(user["role"], "band_admin")
         self.assertTrue(user["is_admin"])
         self.assertTrue(user["is_active"])
+        self.assertEqual(user["session_version"], 1)
         self.assertEqual(user["ui_theme"], "aurora")
         self.assertEqual(user["ui_language"], "de")
         self.assertFalse(user["show_variant_photos"])
+        self.assertEqual(migration_state["legacy_admin_user_id"], 1)
+        self.assertEqual(migration_state["status"], "pending")
+        self.assertEqual(migration_state["reason"], "no_active_manager")
+        self.assertEqual(pending_audit_count, 1)
+        for role in ("seller", "member", "manager", "band_admin", "support_admin", "system_admin"):
+            self.assertIn(f"'{role}'", schema)
         self.assertIn("sync_events", tables)
         self.assertNotIn("users", tables)
         self.assertTrue(list(Path(legacy_app.config["MIGRATION_ARCHIVE_DIR"]).glob("*.zip")))
+
+        restarted_app = create_app(config)
+        with restarted_app.app_context():
+            restarted_connection = get_user_db()
+            restarted_owner = restarted_connection.execute(
+                "SELECT role, session_version FROM users WHERE id = 1"
+            ).fetchone()
+            restarted_state = restarted_connection.execute(
+                "SELECT status, reason FROM role_migration_state WHERE id = 1"
+            ).fetchone()
+            restarted_pending_audit_count = restarted_connection.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'role_handover_pending'"
+            ).fetchone()[0]
+        self.assertEqual(dict(restarted_owner), {"role": "band_admin", "session_version": 1})
+        self.assertEqual(
+            dict(restarted_state), {"status": "pending", "reason": "no_active_manager"}
+        )
+        self.assertEqual(restarted_pending_audit_count, 1)
+
+        migration_client = restarted_app.test_client()
+        with migration_client.session_transaction() as session:
+            session["user_id"] = 1
+            session["user_session_version"] = 1
+            session["csrf_token"] = "migration-csrf"
+        handover_page = migration_client.get("/verwaltung")
+        self.assertEqual(handover_page.status_code, 200)
+        handover_html = handover_page.get_data(as_text=True)
+        self.assertIn("Band-Administration sicher übergeben", handover_html)
+        self.assertIn("static/legacy-role-handover.js", handover_html)
+        self.assertNotIn("Ersten System-Admin anlegen", handover_html)
+
+        bypass = migration_client.post(
+            "/verwaltung/system-admin/einrichten",
+            data={
+                "csrf_token": "migration-csrf",
+                "username": "bypass-system-admin",
+                "current_password": "old-password",
+            },
+        )
+        self.assertEqual(bypass.status_code, 302)
+        with restarted_app.app_context():
+            self.assertIsNone(
+                get_user_db().execute(
+                    "SELECT id FROM users WHERE username = 'bypass-system-admin'"
+                ).fetchone()
+            )
+
+        completed = migration_client.post(
+            "/verwaltung/rollen-migration/abschliessen",
+            data={
+                "csrf_token": "migration-csrf",
+                "mode": "create_new",
+                "username": "new-band-owner",
+                "current_password": "old-password",
+                "band_admin_confirmation": "confirmed",
+            },
+        )
+        self.assertEqual(completed.status_code, 200)
+        self.assertRegex(completed.get_data(as_text=True), r"data-setup-code>[^<]+</code>")
+        with restarted_app.app_context():
+            completed_connection = get_user_db()
+            completed_owner = completed_connection.execute(
+                "SELECT role, is_admin, session_version FROM users WHERE id = 1"
+            ).fetchone()
+            new_band_owner = completed_connection.execute(
+                "SELECT id, role, is_admin, must_set_password FROM users WHERE username = 'new-band-owner'"
+            ).fetchone()
+            completed_state = completed_connection.execute(
+                "SELECT status, reason, selected_band_admin_user_id FROM role_migration_state WHERE id = 1"
+            ).fetchone()
+        self.assertEqual(
+            dict(completed_owner),
+            {"role": "system_admin", "is_admin": 0, "session_version": 2},
+        )
+        self.assertEqual(
+            {key: new_band_owner[key] for key in ("role", "is_admin", "must_set_password")},
+            {"role": "band_admin", "is_admin": 1, "must_set_password": 1},
+        )
+        self.assertEqual(completed_state["status"], "completed")
+        self.assertEqual(completed_state["reason"], "manual_new_band_admin")
+        self.assertEqual(
+            completed_state["selected_band_admin_user_id"], new_band_owner["id"]
+        )
+        self.assertTrue(migration_client.get("/verwaltung").location.endswith("/login?next=/verwaltung"))
+
+    def test_current_role_schema_keeps_sellers_while_expanding_admin_roles_once(self) -> None:
+        """One active Manager receives Band scope while the owner moves to System scope."""
+
+        root = Path(self.tempdir.name) / "current-role-migration"
+        root.mkdir()
+        users_database = root / "users.sqlite3"
+        connection = sqlite3.connect(users_database)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    role TEXT NOT NULL DEFAULT 'seller'
+                        CHECK(role IN ('seller', 'member', 'manager', 'admin')),
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    session_version INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO users (
+                    id, username, password_hash, is_admin, role, is_active, session_version, created_at
+                ) VALUES
+                    (1, 'current-seller', 'seller-hash', 0, 'seller', 1, 4, '2026-08-14T00:00:00+00:00'),
+                    (2, 'current-member', 'member-hash', 0, 'member', 1, 5, '2026-08-14T00:00:00+00:00'),
+                    (3, 'current-manager', 'manager-hash', 0, 'manager', 1, 6, '2026-08-14T00:00:00+00:00'),
+                    (4, 'current-admin', 'admin-hash', 1, 'admin', 1, 7, '2026-08-14T00:00:00+00:00');
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        config = {
+            "TESTING": True,
+            "SECRET_KEY": "test-secret",
+            "DATABASE": str(root / "merch.sqlite3"),
+            "USERS_DATABASE": str(users_database),
+            "BACKUP_DIR": str(root / "backups"),
+            "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+            "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+            "VARIANT_PHOTO_UPLOAD_DIR": str(root / "variant-photos"),
+            "ADMIN_USERNAME": "tester",
+            "ADMIN_PASSWORD": "test-password",
+            "APP_VERSION": "v0.3.0",
+            "AUTO_BACKUP": False,
+        }
+        migrated_app = create_app(config)
+        with migrated_app.app_context():
+            connection = get_user_db()
+            users = {
+                row["username"]: (row["role"], row["is_admin"], row["session_version"])
+                for row in connection.execute(
+                    "SELECT username, role, is_admin, session_version FROM users ORDER BY id"
+                ).fetchall()
+            }
+            schema = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+            ).fetchone()["sql"]
+            migration_count = connection.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'migrate_role'"
+            ).fetchone()[0]
+            migration_actors = connection.execute(
+                "SELECT user_id, user_username FROM audit_log WHERE action = 'migrate_role'"
+            ).fetchall()
+            migration_state = connection.execute(
+                "SELECT status, reason, legacy_admin_user_id, selected_band_admin_user_id "
+                "FROM role_migration_state WHERE id = 1"
+            ).fetchone()
+
+        self.assertEqual(
+            users,
+            {
+                "current-seller": ("seller", 0, 4),
+                "current-member": ("member", 0, 5),
+                "current-manager": ("band_admin", 1, 7),
+                "current-admin": ("system_admin", 0, 9),
+            },
+        )
+        for role in ("seller", "member", "manager", "band_admin", "support_admin", "system_admin"):
+            self.assertIn(f"'{role}'", schema)
+        self.assertEqual(migration_count, 3)
+        self.assertTrue(
+            all(row["user_id"] is None and row["user_username"] is None for row in migration_actors)
+        )
+        self.assertEqual(
+            dict(migration_state),
+            {
+                "status": "completed",
+                "reason": "only_active_manager",
+                "legacy_admin_user_id": 4,
+                "selected_band_admin_user_id": 3,
+            },
+        )
+
+        restarted_app = create_app(config)
+        with restarted_app.app_context():
+            restarted_connection = get_user_db()
+            restarted = {
+                row["username"]: (row["role"], row["is_admin"], row["session_version"])
+                for row in restarted_connection.execute(
+                    "SELECT username, role, is_admin, session_version FROM users ORDER BY id"
+                ).fetchall()
+            }
+            restarted_migration_count = restarted_connection.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'migrate_role'"
+            ).fetchone()[0]
+        self.assertEqual(restarted, users)
+        self.assertEqual(restarted_migration_count, 3)
+
+        for user_id, old_version, path in ((3, 6, "/verkauf"), (4, 7, "/system-verwaltung")):
+            stale_client = migrated_app.test_client()
+            with stale_client.session_transaction() as session:
+                session["user_id"] = user_id
+                session["user_session_version"] = old_version
+                session["csrf_token"] = "stale-csrf"
+            stale_response = stale_client.get(path)
+            self.assertEqual(stale_response.status_code, 302)
+            self.assertIn("/login", stale_response.location)
+
+    def test_role_table_swap_rolls_back_without_losing_legacy_users(self) -> None:
+        """A failed live table swap keeps the original account table intact."""
+
+        database = Path(self.tempdir.name) / "failed-role-swap.sqlite3"
+        connection = sqlite3.connect(database)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    role TEXT NOT NULL CHECK(role IN ('seller', 'member', 'manager', 'admin')),
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    session_version INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO users (
+                    id, username, password_hash, is_admin, role, is_active,
+                    session_version, created_at
+                ) VALUES (
+                    1, 'rollback-owner', 'unchanged-hash', 1, 'admin', 1, 3,
+                    '2026-08-14T00:00:00+00:00'
+                );
+                """
+            )
+            connection.commit()
+
+            def deny_original_users_drop(
+                action: int,
+                first_argument: str | None,
+                _second_argument: str | None,
+                _database_name: str | None,
+                _trigger_name: str | None,
+            ) -> int:
+                if action == sqlite3.SQLITE_DROP_TABLE and first_argument == "users":
+                    return sqlite3.SQLITE_DENY
+                return sqlite3.SQLITE_OK
+
+            connection.set_authorizer(deny_original_users_drop)
+            with self.assertRaises(sqlite3.DatabaseError):
+                upgrade_users_schema(
+                    connection, self.app, bootstrap_administrator=False
+                )
+            connection.rollback()
+            connection.close()
+            connection = sqlite3.connect(database)
+            connection.row_factory = sqlite3.Row
+            original = connection.execute(
+                "SELECT id, username, password_hash, is_admin, role, session_version FROM users"
+            ).fetchone()
+            replacement_exists = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'users_role_model_replacement'
+                """
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(
+            dict(original),
+            {
+                "id": 1,
+                "username": "rollback-owner",
+                "password_hash": "unchanged-hash",
+                "is_admin": 1,
+                "role": "admin",
+                "session_version": 3,
+            },
+        )
+        self.assertIsNone(replacement_exists)
+
+    def test_multiple_managers_require_an_explicit_atomic_legacy_handover(self) -> None:
+        """No Manager is selected arbitrarily when more than one is eligible."""
+
+        root = Path(self.tempdir.name) / "ambiguous-role-migration"
+        root.mkdir()
+        users_database = root / "users.sqlite3"
+        connection = sqlite3.connect(users_database)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    role TEXT NOT NULL DEFAULT 'seller'
+                        CHECK(role IN ('seller', 'member', 'manager', 'admin')),
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    session_version INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            connection.executemany(
+                """
+                INSERT INTO users (
+                    id, username, password_hash, is_admin, role, is_active,
+                    session_version, created_at
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, '2026-08-14T00:00:00+00:00')
+                """,
+                (
+                    (1, "legacy-owner", generate_password_hash("legacy-password"), 1, "admin", 7),
+                    (2, "manager-one", "manager-one-hash", 0, "manager", 4),
+                    (3, "manager-two", "manager-two-hash", 0, "manager", 5),
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        config = {
+            "TESTING": True,
+            "SECRET_KEY": "test-secret",
+            "DATABASE": str(root / "merch.sqlite3"),
+            "USERS_DATABASE": str(users_database),
+            "BACKUP_DIR": str(root / "backups"),
+            "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+            "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+            "VARIANT_PHOTO_UPLOAD_DIR": str(root / "variant-photos"),
+            "ADMIN_USERNAME": "legacy-owner",
+            "ADMIN_PASSWORD": "unused-bootstrap-password",
+            "APP_VERSION": "v0.3.0",
+            "AUTO_BACKUP": False,
+        }
+        migrated_app = create_app(config)
+        with migrated_app.app_context():
+            connection = get_user_db()
+            staged_users = {
+                row["username"]: (row["role"], row["is_admin"], row["session_version"])
+                for row in connection.execute(
+                    "SELECT username, role, is_admin, session_version FROM users ORDER BY id"
+                ).fetchall()
+            }
+            staged_state = connection.execute(
+                "SELECT status, reason FROM role_migration_state WHERE id = 1"
+            ).fetchone()
+        self.assertEqual(
+            staged_users,
+            {
+                "legacy-owner": ("band_admin", 1, 8),
+                "manager-one": ("manager", 0, 4),
+                "manager-two": ("manager", 0, 5),
+            },
+        )
+        self.assertEqual(
+            dict(staged_state),
+            {"status": "pending", "reason": "multiple_active_managers"},
+        )
+
+        migration_client = migrated_app.test_client()
+        with migration_client.session_transaction() as session:
+            session["user_id"] = 1
+            session["user_session_version"] = 8
+            session["csrf_token"] = "migration-csrf"
+        page = migration_client.get("/verwaltung")
+        self.assertEqual(page.status_code, 200)
+        page_html = page.get_data(as_text=True)
+        self.assertIn("Mehrere aktive Manager kommen infrage", page_html)
+        self.assertIn("manager-one", page_html)
+        self.assertIn("manager-two", page_html)
+        self.assertIn("Bestätigung in 3 Sekunden möglich", page_html)
+        handover_script = (
+            Path(__file__).parents[1] / "static" / "legacy-role-handover.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn("const CONFIRMATION_SECONDS = 3", handover_script)
+        self.assertIn('confirmation.value = "confirmed"', handover_script)
+        self.assertIn("confirmButton.disabled = remainingSeconds > 0", handover_script)
+
+        rejected = migration_client.post(
+            "/verwaltung/rollen-migration/abschliessen",
+            data={
+                "csrf_token": "migration-csrf",
+                "mode": "promote_existing",
+                "candidate_user_id": "2",
+                "current_password": "wrong-password",
+                "band_admin_confirmation": "confirmed",
+            },
+        )
+        self.assertEqual(rejected.status_code, 302)
+        with migrated_app.app_context():
+            connection = get_user_db()
+            unchanged = {
+                row["username"]: (row["role"], row["session_version"])
+                for row in connection.execute(
+                    "SELECT username, role, session_version FROM users ORDER BY id"
+                ).fetchall()
+            }
+            self.assertEqual(
+                connection.execute(
+                    "SELECT status FROM role_migration_state WHERE id = 1"
+                ).fetchone()["status"],
+                "pending",
+            )
+        self.assertEqual(
+            unchanged,
+            {
+                "legacy-owner": ("band_admin", 8),
+                "manager-one": ("manager", 4),
+                "manager-two": ("manager", 5),
+            },
+        )
+
+        completed = migration_client.post(
+            "/verwaltung/rollen-migration/abschliessen",
+            data={
+                "csrf_token": "migration-csrf",
+                "mode": "promote_existing",
+                "candidate_user_id": "2",
+                "current_password": "legacy-password",
+                "band_admin_confirmation": "confirmed",
+            },
+        )
+        self.assertEqual(completed.status_code, 302)
+        self.assertTrue(completed.location.endswith("/login"))
+        with migrated_app.app_context():
+            connection = get_user_db()
+            completed_users = {
+                row["username"]: (row["role"], row["is_admin"], row["session_version"])
+                for row in connection.execute(
+                    "SELECT username, role, is_admin, session_version FROM users ORDER BY id"
+                ).fetchall()
+            }
+            completed_state = connection.execute(
+                "SELECT status, reason, selected_band_admin_user_id FROM role_migration_state WHERE id = 1"
+            ).fetchone()
+            handover_audit = connection.execute(
+                "SELECT details_json FROM audit_log WHERE action = 'complete_role_handover'"
+            ).fetchone()
+        self.assertEqual(
+            completed_users,
+            {
+                "legacy-owner": ("system_admin", 0, 9),
+                "manager-one": ("band_admin", 1, 5),
+                "manager-two": ("manager", 0, 5),
+            },
+        )
+        self.assertEqual(
+            dict(completed_state),
+            {
+                "status": "completed",
+                "reason": "manual_existing_manager",
+                "selected_band_admin_user_id": 2,
+            },
+        )
+        self.assertEqual(json.loads(handover_audit["details_json"])["role"], "band_admin")
+        self.assertTrue(
+            migration_client.get("/system-verwaltung").location.startswith("/login")
+        )
+
+        restarted_app = create_app(config)
+        with restarted_app.app_context():
+            restarted_users = {
+                row["username"]: (row["role"], row["session_version"])
+                for row in get_user_db().execute(
+                    "SELECT username, role, session_version FROM users ORDER BY id"
+                ).fetchall()
+            }
+        self.assertEqual(
+            restarted_users,
+            {
+                "legacy-owner": ("system_admin", 9),
+                "manager-one": ("band_admin", 5),
+                "manager-two": ("manager", 5),
+            },
+        )
 
     def test_existing_seller_accounts_become_members_only_during_role_schema_upgrade(self) -> None:
         """The role CHECK rebuild preserves old rights without changing new Sellers."""
@@ -607,8 +1245,16 @@ class MerchAppTestCase(unittest.TestCase):
                 """
             )
             connection.commit()
-        self.assertEqual(roles, {"old-seller": "member", "old-manager": "manager", "old-admin": "admin"})
-        self.assertIn("'member'", schema)
+        self.assertEqual(
+            roles,
+            {
+                "old-seller": "member",
+                "old-manager": "band_admin",
+                "old-admin": "system_admin",
+            },
+        )
+        for role in ("seller", "member", "manager", "band_admin", "support_admin", "system_admin"):
+            self.assertIn(f"'{role}'", schema)
 
         restarted_app = create_app(config)
         with restarted_app.app_context():
@@ -627,7 +1273,7 @@ class MerchAppTestCase(unittest.TestCase):
             connection.execute(
                 """
                 INSERT INTO users (id, username, password_hash, is_admin, role, is_active, created_at)
-                VALUES (7, 'historic-seller', 'unused', 1, 'admin', 1, '2026-08-14T00:00:00+00:00')
+                VALUES (7, 'historic-seller', 'unused', 1, 'band_admin', 1, '2026-08-14T00:00:00+00:00')
                 """
             )
             connection.execute(
@@ -1308,22 +1954,333 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertTrue(check_password_hash(created["password_hash"], "a-private-password"))
         self.assertIn('value="seller-one"', self.client.get("/verkauf").get_data(as_text=True))
 
-    def test_admin_login_requires_mfa_and_accepts_totp_after_enrolment(self) -> None:
-        """The sole admin cannot complete a password-only login."""
+    def test_band_admin_assignment_requires_warning_confirmation_and_current_password(self) -> None:
+        """A forged role POST cannot bypass the explicit Band-Admin handover."""
+
+        page = self.client.get("/verwaltung").get_data(as_text=True)
+        self.assertIn('id="band-admin-role-dialog"', page)
+        self.assertIn('name="band_admin_confirmation"', page)
+        self.assertIn('data-band-admin-confirm disabled', page)
+        self.assertIn("Bestätigung in 3 Sekunden möglich", page)
+        self.assertIn("sämtliche Betriebsdaten dieser Band zurücksetzen", page)
+        self.assertIn("static/admin-roles.js", page)
+
+        role_script = (Path(__file__).parents[1] / "static" / "admin-roles.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("const CONFIRMATION_SECONDS = 3", role_script)
+        self.assertIn("confirmButton.disabled = remainingSeconds > 0", role_script)
+        self.assertIn("select.value = previousRole", role_script)
+        self.assertIn('confirmation.value = "confirmed"', role_script)
+
+        for payload in (
+            {"username": "new-band-admin", "role": "band_admin"},
+            {
+                "username": "new-band-admin",
+                "role": "band_admin",
+                "band_admin_confirmation": "confirmed",
+                "current_password": "wrong-password",
+            },
+        ):
+            rejected = self.client.post(
+                "/verwaltung/benutzer",
+                data={"csrf_token": "test-csrf", **payload},
+            )
+            self.assertEqual(rejected.status_code, 302)
+            with self.app.app_context():
+                self.assertIsNone(
+                    get_user_db().execute(
+                        "SELECT id FROM users WHERE username = 'new-band-admin'"
+                    ).fetchone()
+                )
+
+        created = self.client.post(
+            "/verwaltung/benutzer",
+            data={
+                "csrf_token": "test-csrf",
+                "username": "new-band-admin",
+                "role": "band_admin",
+                "band_admin_confirmation": "confirmed",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(created.status_code, 200)
+        with self.app.app_context():
+            new_band_admin = get_user_db().execute(
+                "SELECT role, is_admin FROM users WHERE username = 'new-band-admin'"
+            ).fetchone()
+        self.assertEqual(dict(new_band_admin), {"role": "band_admin", "is_admin": 1})
+
+        target_id = self.create_local_user("role-target", "seller")
+        normal_change = self.client.post(
+            f"/verwaltung/benutzer/{target_id}/rolle",
+            data={"csrf_token": "test-csrf", "role": "manager"},
+        )
+        self.assertEqual(normal_change.status_code, 302)
+        with self.app.app_context():
+            target = get_user_db().execute("SELECT * FROM users WHERE id = ?", (target_id,)).fetchone()
+        self.assertEqual(target["role"], "manager")
+        self.assertEqual(target["session_version"], 1)
+
+        for extra_data in (
+            {},
+            {"band_admin_confirmation": "confirmed", "current_password": "wrong-password"},
+        ):
+            rejected = self.client.post(
+                f"/verwaltung/benutzer/{target_id}/rolle",
+                data={"csrf_token": "test-csrf", "role": "band_admin", **extra_data},
+            )
+            self.assertEqual(rejected.status_code, 302)
+            with self.app.app_context():
+                unchanged = get_user_db().execute(
+                    "SELECT role, session_version FROM users WHERE id = ?", (target_id,)
+                ).fetchone()
+            self.assertEqual(dict(unchanged), {"role": "manager", "session_version": 1})
+
+        promoted = self.client.post(
+            f"/verwaltung/benutzer/{target_id}/rolle",
+            data={
+                "csrf_token": "test-csrf",
+                "role": "band_admin",
+                "band_admin_confirmation": "confirmed",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(promoted.status_code, 302)
+        with self.app.app_context():
+            connection = get_user_db()
+            promoted_user = connection.execute(
+                "SELECT role, is_admin, session_version FROM users WHERE id = ?", (target_id,)
+            ).fetchone()
+            audit_row = connection.execute(
+                "SELECT action, entity_id, details_json FROM audit_log "
+                "WHERE action = 'change_role' AND entity_id = ? ORDER BY id DESC LIMIT 1",
+                (target_id,),
+            ).fetchone()
+        self.assertEqual(
+            dict(promoted_user),
+            {"role": "band_admin", "is_admin": 1, "session_version": 2},
+        )
+        self.assertEqual(audit_row["action"], "change_role")
+        self.assertEqual(audit_row["entity_id"], target_id)
+        self.assertEqual(json.loads(audit_row["details_json"])["role"], "band_admin")
+
+    def test_band_admin_can_bootstrap_exactly_one_system_admin(self) -> None:
+        """The first platform owner needs a fresh Band-Admin password confirmation."""
+
+        self.app.config["LOCAL_DEV_MODE"] = True
+        first = self.client.post(
+            "/verwaltung/system-admin/einrichten",
+            data={
+                "csrf_token": "test-csrf",
+                "username": "first-system-admin",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertRegex(first.get_data(as_text=True), r"data-setup-code>[^<]+</code>")
+        with self.app.app_context():
+            connection = get_user_db()
+            platform_owner = connection.execute(
+                "SELECT * FROM users WHERE username = 'first-system-admin'"
+            ).fetchone()
+            audit_row = connection.execute(
+                "SELECT user_id, action, entity_id FROM audit_log "
+                "WHERE action = 'bootstrap_system_admin'"
+            ).fetchone()
+        self.assertEqual(platform_owner["role"], "system_admin")
+        self.assertFalse(platform_owner["is_admin"])
+        self.assertTrue(platform_owner["must_set_password"])
+        self.assertFalse(platform_owner["mfa_enabled"])
+        self.assertEqual(dict(audit_row), {"user_id": 1, "action": "bootstrap_system_admin", "entity_id": platform_owner["id"]})
+        self.assertNotIn("Ersten System-Admin anlegen", first.get_data(as_text=True))
+
+        second = self.client.post(
+            "/verwaltung/system-admin/einrichten",
+            data={
+                "csrf_token": "test-csrf",
+                "username": "second-system-admin",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(second.status_code, 302)
+        with self.app.app_context():
+            connection = get_user_db()
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT id FROM users WHERE username = 'second-system-admin'"
+                ).fetchone()
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM users WHERE role = 'system_admin'").fetchone()[0],
+                1,
+            )
+
+    def test_platform_accounts_are_isolated_from_band_routes_and_share_system_administration(self) -> None:
+        """Support/System identities get no Band data merely by knowing its URLs."""
+
+        self.app.config["LOCAL_DEV_MODE"] = True
+        support_id = self.create_local_user("isolated-support", "support_admin")
+        system_id = self.create_local_user("isolated-system", "system_admin")
+
+        for user_id, role_label in (
+            (support_id, "Support-Admin"),
+            (system_id, "System-Admin"),
+        ):
+            self.become_user(user_id)
+            system_page = self.client.get("/system-verwaltung")
+            self.assertEqual(system_page.status_code, 200)
+            html = system_page.get_data(as_text=True)
+            self.assertIn("System-Verwaltung", html)
+            self.assertIn("Support-Postfach", html)
+            self.assertIn("Aktuelle Einzelinstallation", html)
+            self.assertIn("Mit Tenant-Struktur verfügbar", html)
+            self.assertIn(role_label, html)
+            self.assertIn("Erforderlich", html)
+            self.assertEqual(self.client.get("/verkauf").status_code, 403)
+            self.assertEqual(self.client.get("/api/sale-events").status_code, 403)
+            self.assertEqual(self.client.get("/verwaltung").status_code, 403)
+
+        self.become_user(support_id)
+        support_page = self.client.get("/system-verwaltung").get_data(as_text=True)
+        self.assertNotIn("Plattformkonto anlegen", support_page)
+        self.become_user(system_id)
+        system_page = self.client.get("/system-verwaltung").get_data(as_text=True)
+        self.assertIn("Plattformkonto anlegen", system_page)
+
+    def test_platform_deactivation_enforces_scope_session_invalidation_and_last_admin(self) -> None:
+        """Support may suspend Band users; only System-Admins may suspend platform staff."""
+
+        self.app.config["LOCAL_DEV_MODE"] = True
+        band_user_id = self.create_local_user("suspended-manager", "manager")
+        support_id = self.create_local_user("deactivation-support", "support_admin")
+        system_id = self.create_local_user("deactivation-system", "system_admin")
+        second_system_id = self.create_local_user("second-system", "system_admin")
+
+        self.become_user(support_id)
+        suspended = self.client.post(
+            f"/system-verwaltung/benutzer/{band_user_id}/aktiv",
+            data={
+                "csrf_token": "test-csrf",
+                "active": "0",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(suspended.status_code, 302)
+        with self.app.app_context():
+            connection = get_user_db()
+            suspended_user = connection.execute(
+                "SELECT is_active, session_version FROM users WHERE id = ?", (band_user_id,)
+            ).fetchone()
+            suspension_audit = connection.execute(
+                "SELECT user_id, action, entity_id, details_json FROM audit_log "
+                "WHERE action = 'deactivate_user' AND entity_id = ? ORDER BY id DESC LIMIT 1",
+                (band_user_id,),
+            ).fetchone()
+        self.assertEqual(dict(suspended_user), {"is_active": 0, "session_version": 1})
+        self.assertEqual(suspension_audit["user_id"], support_id)
+        self.assertEqual(suspension_audit["entity_id"], band_user_id)
+        self.assertEqual(json.loads(suspension_audit["details_json"])["source"], "system_administration")
+
+        self.become_user(band_user_id)
+        expired_session = self.client.get("/verkauf")
+        self.assertEqual(expired_session.status_code, 302)
+        self.assertIn("/login", expired_session.location)
+
+        self.become_user(support_id)
+        forbidden = self.client.post(
+            f"/system-verwaltung/benutzer/{system_id}/aktiv",
+            data={
+                "csrf_token": "test-csrf",
+                "active": "0",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(forbidden.status_code, 403)
+        with self.app.app_context():
+            untouched_system = get_user_db().execute(
+                "SELECT is_active, session_version FROM users WHERE id = ?", (system_id,)
+            ).fetchone()
+        self.assertEqual(dict(untouched_system), {"is_active": 1, "session_version": 0})
+
+        self.become_user(system_id)
+        platform_suspended = self.client.post(
+            f"/system-verwaltung/benutzer/{support_id}/aktiv",
+            data={
+                "csrf_token": "test-csrf",
+                "active": "0",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(platform_suspended.status_code, 302)
+        with self.app.app_context():
+            suspended_support = get_user_db().execute(
+                "SELECT is_active, session_version FROM users WHERE id = ?", (support_id,)
+            ).fetchone()
+        self.assertEqual(dict(suspended_support), {"is_active": 0, "session_version": 1})
+
+        second_system_suspended = self.client.post(
+            f"/system-verwaltung/benutzer/{second_system_id}/aktiv",
+            data={
+                "csrf_token": "test-csrf",
+                "active": "0",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(second_system_suspended.status_code, 302)
+        protected_last_system = self.client.post(
+            f"/system-verwaltung/benutzer/{system_id}/aktiv",
+            data={
+                "csrf_token": "test-csrf",
+                "active": "0",
+                "current_password": "test-password",
+            },
+        )
+        self.assertEqual(protected_last_system.status_code, 302)
+        with self.app.app_context():
+            connection = get_user_db()
+            active_systems = connection.execute(
+                "SELECT COUNT(*) FROM users WHERE role = 'system_admin' AND is_active = 1"
+            ).fetchone()[0]
+            remaining_system = connection.execute(
+                "SELECT is_active, session_version FROM users WHERE id = ?", (system_id,)
+            ).fetchone()
+        self.assertEqual(active_systems, 1)
+        self.assertEqual(dict(remaining_system), {"is_active": 1, "session_version": 0})
+
+    def test_platform_admin_login_requires_mfa_while_band_admin_mfa_is_optional(self) -> None:
+        """Platform identities require TOTP without imposing it on Band-Admins."""
 
         with self.client.session_transaction() as session:
             session.clear()
             session["csrf_token"] = "login-token"
-        password_login = self.client.post(
+        band_admin_login = self.client.post(
             "/login",
             data={"csrf_token": "login-token", "username": "tester", "password": "test-password"},
+        )
+        self.assertEqual(band_admin_login.status_code, 302)
+        self.assertTrue(band_admin_login.location.endswith("/verkauf"))
+        self.client.post("/logout", data={"csrf_token": self.csrf_token()})
+
+        system_admin_id = self.create_local_user("mfa-system", "system_admin")
+        with self.client.session_transaction() as session:
+            session["csrf_token"] = "platform-login-token"
+        password_login = self.client.post(
+            "/login",
+            data={
+                "csrf_token": "platform-login-token",
+                "username": "mfa-system",
+                "password": "test-password",
+            },
         )
         self.assertEqual(password_login.status_code, 302)
         self.assertTrue(password_login.location.endswith("/mfa/einrichten"))
         self.assertEqual(self.client.get("/mfa/einrichten").status_code, 200)
 
         with self.app.app_context():
-            enrolled = get_user_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            enrolled = get_user_db().execute(
+                "SELECT * FROM users WHERE id = ?", (system_admin_id,)
+            ).fetchone()
             pending_secret = decrypt_mfa_secret(enrolled["mfa_pending_secret_encrypted"], self.app)
         self.assertIsNotNone(pending_secret)
         activation = self.client.post(
@@ -1333,7 +2290,9 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(activation.status_code, 200)
         self.assertIn("Wiederherstellungscodes", activation.get_data(as_text=True))
         with self.app.app_context():
-            enrolled = get_user_db().execute("SELECT * FROM users WHERE id = 1").fetchone()
+            enrolled = get_user_db().execute(
+                "SELECT * FROM users WHERE id = ?", (system_admin_id,)
+            ).fetchone()
         self.assertTrue(enrolled["mfa_enabled"])
         self.assertEqual(decrypt_mfa_secret(enrolled["mfa_secret_encrypted"], self.app), pending_secret)
 
@@ -1342,7 +2301,7 @@ class MerchAppTestCase(unittest.TestCase):
             session["csrf_token"] = "login-again"
         password_login = self.client.post(
             "/login",
-            data={"csrf_token": "login-again", "username": "tester", "password": "test-password"},
+            data={"csrf_token": "login-again", "username": "mfa-system", "password": "test-password"},
         )
         self.assertEqual(password_login.status_code, 302)
         self.assertTrue(password_login.location.endswith("/mfa/anmelden"))
@@ -1351,7 +2310,7 @@ class MerchAppTestCase(unittest.TestCase):
             data={"csrf_token": self.csrf_token(), "mfa_code": pyotp.TOTP(pending_secret).now()},
         )
         self.assertEqual(second_factor.status_code, 302)
-        self.assertTrue(second_factor.location.endswith("/verkauf"))
+        self.assertTrue(second_factor.location.endswith("/system-verwaltung"))
 
     def test_pre_upgrade_session_is_expired_before_admin_can_bypass_mfa_setup(self) -> None:
         """Old session cookies cannot keep an Admin logged in around the new MFA rule."""
@@ -2211,7 +3170,7 @@ class MerchAppTestCase(unittest.TestCase):
             article_count = get_db().execute("SELECT COUNT(*) FROM articles").fetchone()[0]
         self.assertEqual(len(users), 2)
         self.assertEqual(users[0]["username"], "tester")
-        self.assertEqual(users[0]["role"], "admin")
+        self.assertEqual(users[0]["role"], "band_admin")
         self.assertTrue(users[0]["mfa_enabled"])
         self.assertEqual(decrypt_mfa_secret(users[0]["mfa_secret_encrypted"], self.app), secret)
         self.assertEqual(article_count, 0)

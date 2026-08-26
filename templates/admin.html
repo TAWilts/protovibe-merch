@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-title-row">
-  <div><p class="eyebrow">Nur Admin</p><h1>Verwaltung</h1><p class="page-intro">Benutzerkonten, Rollen und besonders geschützte Systemaktionen.</p></div>
+  <div><p class="eyebrow">Band-Administration</p><h1>Verwaltung</h1><p class="page-intro">Benutzerkonten, Bandrollen und besonders geschützte Betriebsdaten verwalten.</p></div>
 </div>
 
 {% if setup_credential %}
@@ -11,6 +11,108 @@
   <p>Gib diesen einmaligen Code sicher an die Person weiter. Er ist {{ setup_code_days }} Tage gültig und wird nach dem ersten eigenen Passwort nicht mehr funktionieren.</p>
   <code class="setup-code" data-setup-code>{{ setup_credential.code }}</code>
   <p class="notice">Der Code wird nicht gespeichert und nach dem Verlassen dieser Seite nicht erneut angezeigt.</p>
+</section>
+{% endif %}
+
+{% if legacy_role_handover %}
+<section class="table-section legacy-role-handover" aria-labelledby="legacy-role-handover-title">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Einmalige Rollen-Migration</p>
+      <h2 id="legacy-role-handover-title">Band-Administration sicher übergeben</h2>
+      <p>Dein bisheriges Admin-Konto bleibt bis zum erfolgreichen Abschluss als Band-Admin aktiv. Du kannst das Live-System deshalb weiterhin vollständig bedienen.</p>
+      <p>Bei genau einem aktiven Manager erfolgt die Übergabe beim Update normalerweise automatisch. Diese Auswahl ist nur nötig, wenn keine eindeutige automatische Zuordnung möglich war.</p>
+    </div>
+    <span class="status warning">Übergabe ausstehend</span>
+  </div>
+
+  <div class="legacy-role-handover-flow" aria-label="Ablauf der Rollenübergabe">
+    <div><span>Bis zur Übergabe</span><strong>Dieses Konto bleibt Band-Admin</strong></div>
+    <span class="legacy-role-handover-arrow" aria-hidden="true">→</span>
+    <div><span>Nach der Übergabe</span><strong>Dieses Konto wird System-Admin und abgemeldet</strong></div>
+  </div>
+
+  {% if legacy_role_handover.managers|length == 0 %}
+  <p class="notice warning-notice">Es gibt derzeit keinen aktiven Manager, der automatisch Band-Admin werden könnte. Lege deshalb unten ein neues Band-Admin-Konto an.</p>
+  {% elif legacy_role_handover.managers|length > 1 %}
+  <p class="notice warning-notice">Mehrere aktive Manager kommen infrage. Aus Sicherheitsgründen wurde niemand automatisch ausgewählt.</p>
+  {% else %}
+  <p class="notice warning-notice">Die automatische Übergabe konnte nicht abgeschlossen werden. Prüfe den vorgeschlagenen Manager und bestätige die Auswahl ausdrücklich.</p>
+  {% endif %}
+
+  <div class="legacy-role-handover-options">
+    {% if legacy_role_handover.managers %}
+    <article class="legacy-role-handover-option">
+      <div>
+        <p class="eyebrow">Vorhandenes Konto</p>
+        <h3>Manager hochstufen</h3>
+        <p>Das gewählte aktive Manager-Konto übernimmt die Band-Administration. Bestehende Sitzungen dieses Kontos werden aus Sicherheitsgründen beendet.</p>
+      </div>
+      <form action="{{ url_for('complete_legacy_role_handover') }}" method="post" class="stack-form" data-legacy-role-handover-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="mode" value="promote_existing">
+        <input type="hidden" name="band_admin_confirmation" value="" data-legacy-role-handover-confirmation>
+        <label>Aktiven Manager auswählen
+          <select name="candidate_user_id" required>
+            <option value="">Bitte auswählen</option>
+            {% for manager in legacy_role_handover.managers %}<option value="{{ manager.id }}"{% if legacy_role_handover.managers|length == 1 %} selected{% endif %}>{{ manager.username }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Dein aktuelles Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
+        {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+        <button class="primary-button" type="submit">Manager als Band-Admin auswählen</button>
+      </form>
+    </article>
+    {% endif %}
+
+    <article class="legacy-role-handover-option">
+      <div>
+        <p class="eyebrow">Neues Konto</p>
+        <h3>Band-Admin neu anlegen</h3>
+        <p>Ein separates Band-Admin-Konto wird mit einem einmaligen Einrichtungscode angelegt. Der Code muss anschließend sicher weitergegeben werden.</p>
+      </div>
+      <form action="{{ url_for('complete_legacy_role_handover') }}" method="post" class="stack-form" data-legacy-role-handover-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="mode" value="create_new">
+        <input type="hidden" name="band_admin_confirmation" value="" data-legacy-role-handover-confirmation>
+        <label>Benutzername für den neuen Band-Admin<input name="username" autocomplete="username" minlength="3" maxlength="48" required></label>
+        <label>Dein aktuelles Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
+        {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+        <button class="primary-button" type="submit">Neuen Band-Admin anlegen</button>
+      </form>
+    </article>
+  </div>
+  <p class="muted legacy-role-handover-footnote">Die Umstellung erfolgt zusammenhängend: Schlägt ein Schritt fehl, bleiben dein bisheriges Konto und seine Band-Admin-Rechte unverändert.</p>
+</section>
+
+<dialog id="legacy-role-handover-dialog" class="confirmation-dialog legacy-role-handover-dialog" aria-labelledby="legacy-role-handover-dialog-title" aria-describedby="legacy-role-handover-dialog-description legacy-role-handover-countdown">
+  <p class="eyebrow">Weitreichende Berechtigung</p>
+  <h2 id="legacy-role-handover-dialog-title">Band-Admin wirklich übergeben?</h2>
+  <p id="legacy-role-handover-dialog-description">Das ausgewählte oder neu angelegte Konto kann sämtliche Betriebsdaten der Band zurücksetzen und dabei Artikel, Verkäufe, Einkäufe, Bandfinanzen und Anhänge aus dem laufenden Datenbestand entfernen.</p>
+  <p class="notice warning-notice">Benutzerkonten, Rollen, Passwörter und 2FA werden von einem Betriebsdaten-Reset nicht gelöscht. Die Löschung der Betriebsdaten lässt sich in der Anwendung nicht rückgängig machen; eine Wiederherstellung ist nur aus einem zuvor angelegten Archiv möglich.</p>
+  <p>Nach erfolgreicher Übergabe wird dein aktuelles Konto zum System-Admin. Deine laufende Sitzung wird beendet und du musst dich erneut anmelden.</p>
+  <p id="legacy-role-handover-countdown" class="band-admin-role-countdown" role="status" aria-live="polite">Bestätigung in 3 Sekunden möglich.</p>
+  <div class="dialog-actions"><button class="secondary-button" type="button" data-legacy-role-handover-cancel>Abbrechen</button><button class="danger-button" type="button" data-legacy-role-handover-confirm disabled>Band-Admin übergeben (3)</button></div>
+</dialog>
+{% endif %}
+
+{% if can_bootstrap_system_admin %}
+<section class="table-section system-admin-bootstrap">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Einmalige Einrichtung</p>
+      <h2>Ersten System-Admin anlegen</h2>
+      <p>Der System-Admin verwaltet die Plattform getrennt von den Daten dieser Band. Nach der Einrichtung können Plattformrollen nur noch in der System-Verwaltung angelegt werden.</p>
+    </div>
+    <span class="status warning">Noch nicht eingerichtet</span>
+  </div>
+  <form action="{{ url_for('bootstrap_system_admin') }}" method="post" class="system-admin-bootstrap-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Benutzername<input name="username" autocomplete="username" minlength="3" maxlength="48" required></label>
+    <label>Dein aktuelles Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
+    {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+    <button class="primary-button" type="submit">System-Admin sicher anlegen</button>
+  </form>
 </section>
 {% endif %}
 
@@ -62,7 +164,7 @@
     <label class="toggle-label"><input name="clear_password" type="checkbox"><span>Gespeichertes Passwort entfernen</span></label>
     <div class="field-grid two-columns"><label>Absenderadresse<input name="sender_address" type="email" value="{{ email_settings.sender_address }}" maxlength="254"></label><label>Empfängeradresse<input name="recipient_address" type="email" value="{{ email_settings.recipient_address }}" maxlength="254"></label></div>
     <label>Aktuelles Admin-Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
-    {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+    {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
     <div class="dialog-actions"><button class="secondary-button" type="button" data-email-settings-close>Abbrechen</button><button class="primary-button" type="submit">Verschlüsselt speichern</button></div>
   </form>
 </dialog>
@@ -137,7 +239,7 @@
     </div>
     <p class="notice">Der Verwendungszweck wird pro Verkauf automatisch aus Beleg-ID, Menge, Artikel und Variante erzeugt.</p>
     <label>Aktuelles Admin-Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
-    {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+    {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
     <div class="dialog-actions"><button class="secondary-button" type="button" data-payment-qr-settings-close>Abbrechen</button><button class="primary-button" type="submit">Zahlungsdaten speichern</button></div>
   </form>
 </dialog>
@@ -162,11 +264,12 @@
 <section class="admin-grid">
   <article class="table-section admin-create-card">
     <h2>Benutzer anlegen</h2>
-    <p class="muted">Neue Konten beginnen mit einem einmaligen Einrichtungscode. Ein Admin-Konto kann nur beim ersten Start angelegt werden; es bleibt genau eines.</p>
-    <form action="{{ url_for('create_user') }}" method="post" class="stack-form">
+    <p class="muted">Neue Bandkonten beginnen mit einem einmaligen Einrichtungscode. Support- und System-Admins werden getrennt in der System-Verwaltung angelegt.</p>
+    <form action="{{ url_for('create_user') }}" method="post" class="stack-form" data-role-form>
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label>Benutzername<input name="username" autocomplete="username" pattern="[A-Za-z0-9._-]{3,64}" required></label>
-      <label>Rolle<select name="role"><option value="seller">Seller</option><option value="member">Member</option><option value="manager">Manager</option></select></label>
+      <input type="hidden" name="band_admin_confirmation" value="" data-band-admin-confirmation>
+      <label>Benutzername<input name="username" autocomplete="username" minlength="3" maxlength="48" required></label>
+      <label>Rolle<select name="role" data-role-select data-current-role="seller"><option value="seller">Seller</option><option value="member">Member</option><option value="manager">Manager</option><option value="band_admin">Band-Admin</option></select></label>
       <button class="primary-button" type="submit">Benutzer anlegen</button>
     </form>
   </article>
@@ -177,10 +280,22 @@
       <div><dt>Seller</dt><dd>Verkäufe erfassen sowie die Diashow ansehen und abspielen. Eigenes Konto verwalten und Nachrichten an den Admin senden.</dd></div>
       <div><dt>Member</dt><dd>Wie bisher: Verkauf, Historie, offene Vorgänge, Einkäufe, Bandfinanzen, Bilanzen und Diashow nutzen; Einkäufe und Bandfinanzen nur ansehen.</dd></div>
       <div><dt>Manager</dt><dd>Zusätzlich Artikel, Einkaufswarenkörbe inklusive Rechnungen, Bandfinanzen und die Diashow verwalten.</dd></div>
-      <div><dt>Admin</dt><dd>Zusätzlich Benutzer verwalten und die Betriebsdaten mit Archiv zurücksetzen.</dd></div>
+      <div><dt>Band-Admin</dt><dd>Verwaltet Benutzer und Rollen dieser Band sowie Zahlungsdaten, Sicherungen und den Reset der Betriebsdaten. Ein Reset erstellt vorher ein Archiv; Benutzerkonten und 2FA bleiben erhalten.</dd></div>
+      <div><dt>Support-Admin</dt><dd>Bearbeitet Supportnachrichten und erhält Bandzugriff erst nach einer ausdrücklichen, zeitlich begrenzten Freigabe. Diese Plattformrolle wird nicht hier vergeben.</dd></div>
+      <div><dt>System-Admin</dt><dd>Verwaltet die Plattform und Support-Admins. Banddaten sind ohne ausdrückliche Freigabe nicht zugänglich. Diese Plattformrolle wird nicht hier vergeben.</dd></div>
     </dl>
   </article>
 </section>
+
+<dialog id="band-admin-role-dialog" class="confirmation-dialog band-admin-role-dialog" aria-labelledby="band-admin-role-title" aria-describedby="band-admin-role-description band-admin-role-countdown">
+  <p class="eyebrow">Besonders weitreichende Bandrolle</p>
+  <h2 id="band-admin-role-title">Band-Admin zuweisen?</h2>
+  <p id="band-admin-role-description">Ein Band-Admin kann sämtliche Betriebsdaten dieser Band zurücksetzen. Dabei werden unter anderem Artikel, Verkäufe, Einkäufe, Bandfinanzen und Anhänge aus dem laufenden Datenbestand entfernt. Benutzerkonten, Rollen, Passwörter und 2FA bleiben erhalten.</p>
+  <p class="notice warning-notice">Vor dem Zurücksetzen wird ein Archiv angelegt. Die Änderung wirkt sofort und lässt sich nur über eine vorhandene Sicherung wiederherstellen.</p>
+  <label>Dein aktuelles Passwort<input id="band-admin-current-password" type="password" autocomplete="current-password" required data-band-admin-password></label>
+  <p id="band-admin-role-countdown" class="band-admin-role-countdown" role="status" aria-live="polite">Bestätigung in 3 Sekunden möglich.</p>
+  <div class="dialog-actions"><button class="secondary-button" type="button" data-band-admin-cancel>Abbrechen</button><button class="danger-button" type="button" data-band-admin-confirm disabled>Band-Admin zuweisen (3)</button></div>
+</dialog>
 
 {% if database_encryption_active %}
 <section class="table-section database-security-area">
@@ -194,7 +309,7 @@
         <label>Neue Datenbank-Passphrase<input name="database_passphrase" type="password" autocomplete="new-password" minlength="12" required></label>
         <label>Neue Passphrase wiederholen<input name="database_passphrase_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
         <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-        {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+        {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
         <label>Zur Bestätigung <code>DATENBANK-PASSPHRASE ÄNDERN</code><input name="confirmation" autocomplete="off" required></label>
         <button class="danger-button compact-button" type="submit">Passphrase ändern</button>
       </form>
@@ -205,7 +320,7 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <p>Der bisherige Wiederherstellungsschlüssel wird sofort ungültig. Der neue Schlüssel wird einmalig auf der nächsten Seite angezeigt.</p>
         <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-        {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+        {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
         <label>Zur Bestätigung <code>WIEDERHERSTELLUNGSSCHLÜSSEL ERNEUERN</code><input name="confirmation" autocomplete="off" required></label>
         <button class="danger-button compact-button" type="submit">Neuen Schlüssel erzeugen</button>
       </form>
@@ -218,17 +333,27 @@
   <div class="section-heading"><div><h2>Benutzer</h2><p>Änderungen an Rolle, Passwort oder Aktivstatus melden bestehende Sitzungen des jeweiligen Kontos ab.</p></div></div>
   <div class="table-scroll"><table class="users-table"><thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>2FA</th><th>Letzte Anmeldung</th><th>Aktionen</th></tr></thead><tbody>
     {% for user in users %}
-    <tr>
+    <tr class="{{ 'band-admin-user-row' if user.is_band_admin else '' }}">
       <td><strong>{{ user.username }}</strong>{% if user.must_set_password %}<small class="table-subline">Passwort-Einrichtung ausstehend</small>{% endif %}</td>
       <td>
-        {% if user.is_admin %}<span class="status good">Admin</span>
-        {% else %}<form action="{{ url_for('update_user_role', user_id=user.id) }}" method="post" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select name="role" class="status-select" onchange="this.form.requestSubmit()"><option value="seller" {{ 'selected' if user.role == 'seller' else '' }}>Seller</option><option value="member" {{ 'selected' if user.role == 'member' else '' }}>Member</option><option value="manager" {{ 'selected' if user.role == 'manager' else '' }}>Manager</option></select></form>{% endif %}
+        {% if user.can_manage_from_band_admin %}
+        <form action="{{ url_for('update_user_role', user_id=user.id) }}" method="post" class="inline-form" data-role-form data-role-auto-submit>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="band_admin_confirmation" value="" data-band-admin-confirmation>
+          <select name="role" class="status-select" data-role-select data-current-role="{{ user.role }}">
+            <option value="seller" {{ 'selected' if user.role == 'seller' else '' }}>Seller</option>
+            <option value="member" {{ 'selected' if user.role == 'member' else '' }}>Member</option>
+            <option value="manager" {{ 'selected' if user.role == 'manager' else '' }}>Manager</option>
+            <option value="band_admin" {{ 'selected' if user.role == 'band_admin' else '' }}>Band-Admin</option>
+          </select>
+        </form>
+        {% else %}<span class="status {{ 'good' if user.is_band_admin else 'warning' }}">{{ user.role_label }}</span>{% endif %}
       </td>
       <td><span class="status {{ 'good' if user.is_active else 'cancelled' }}">{{ 'Aktiv' if user.is_active else 'Deaktiviert' }}</span></td>
       <td>{% if user.mfa_enabled %}<span class="status good">Aktiv · {{ user.recovery_code_count }} Codes</span>{% else %}<span class="status warning">Nicht aktiv</span>{% endif %}</td>
       <td>{{ user.last_login_at or '—' }}</td>
       <td class="admin-actions">
-        {% if not user.is_admin %}
+        {% if user.can_manage_from_band_admin %}
         <form action="{{ url_for('reset_user_password', user_id=user.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button compact-button" type="submit">Passwort zurücksetzen</button></form>
         <form action="{{ url_for('update_user_active_state', user_id=user.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="active" value="{{ 0 if user.is_active else 1 }}"><button class="{{ 'danger-button' if user.is_active else 'secondary-button' }} compact-button" type="submit">{{ 'Deaktivieren' if user.is_active else 'Aktivieren' }}</button></form>
         {% if user.mfa_enabled %}<form action="{{ url_for('reset_user_mfa', user_id=user.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="secondary-button compact-button" type="submit">2FA zurücksetzen</button></form>{% endif %}
@@ -238,12 +363,12 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <p>Das Konto kann sich danach nicht mehr anmelden. Historische Buchungen von {{ user.username }} bleiben erhalten.</p>
             <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-            {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+            {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
             <label>Zur Bestätigung <code>BENUTZER LÖSCHEN</code><input name="confirmation" autocomplete="off" required></label>
             <button class="danger-button compact-button" type="submit">Konto löschen</button>
           </form>
         </details>
-        {% else %}<span class="muted">Eigenes Profil verwenden</span>{% endif %}
+        {% else %}<span class="muted">Nicht in der Band-Verwaltung änderbar</span>{% endif %}
       </td>
     </tr>
     {% endfor %}
@@ -269,7 +394,7 @@
             <input type="hidden" name="backup_name" value="{{ backup.name }}">
             <p>Artikel, Buchungen, Rechnungen und Produktfotos werden durch diesen Stand ersetzt. Aktuelle Benutzerkonten bleiben unverändert.</p>
             <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-            {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+            {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
             <label>Zur Bestätigung <code>SICHERUNG WIEDERHERSTELLEN</code><input name="confirmation" autocomplete="off" required></label>
             <button class="danger-button compact-button" type="submit">Diesen Stand laden</button>
           </form>
@@ -288,9 +413,13 @@
   <form action="{{ url_for('reset_application_data') }}" method="post" class="reset-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-    {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+    {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
     <label>Zur Bestätigung exakt <code>DATEN ZURÜCKSETZEN</code> eingeben<input name="confirmation" autocomplete="off" required></label>
     <button class="danger-button" type="submit">Archiv erstellen und Betriebsdaten zurücksetzen</button>
   </form>
 </section>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='admin-roles.js') }}" defer></script>
+{% if legacy_role_handover %}<script src="{{ url_for('static', filename='legacy-role-handover.js') }}" defer></script>{% endif %}
 {% endblock %}

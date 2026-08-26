@@ -11,11 +11,13 @@
 <body>
   {% if current_user %}
   <header class="app-header">
-    <a class="brand" href="{{ url_for('sales_page') }}" aria-label="{{ ui_text.get('nav.sales') }}">
+    {% set platform_only = current_user.can_access_system_administration and not current_user.can_access_band_workflows %}
+    <a class="brand" href="{{ url_for('system_administration_page') if platform_only else url_for('sales_page') }}" aria-label="{{ ui_text.get('nav.system_administration', 'System-Verwaltung') if platform_only else ui_text.get('nav.sales') }}">
       <span class="brand-mark">P</span>
       <span>Merch Manager</span>
     </a>
     <nav class="main-nav" aria-label="{{ ui_text.get('nav.label') }}">
+      {% if current_user.can_access_band_workflows %}
       <a href="{{ url_for('sales_page') }}" class="{{ 'active' if request.endpoint == 'sales_page' else '' }}">{{ ui_text.get('nav.sales') }}</a>
       {% if current_user.can_access_member_workflows %}
       <a href="{{ url_for('history_page') }}" class="{{ 'active' if request.endpoint == 'history_page' else '' }}">{{ ui_text.get('nav.history') }}</a>
@@ -34,25 +36,34 @@
         {% else %}<a href="{{ url_for('band_finances_page') }}" class="{{ 'active' if request.endpoint in ['band_finances_page', 'band_transaction_attachment'] else '' }}">{{ ui_text.get('nav.band_finances') }}</a>{% endif %}
         {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.balances') }}</span>
         {% else %}<a href="{{ url_for('balances_page') }}" class="{{ 'active' if request.endpoint == 'balances_page' else '' }}">{{ ui_text.get('nav.balances') }}</a>{% endif %}
-        {% if current_user.is_admin %}
+        {% if current_user.can_access_band_administration %}
           {% if pos_mode %}<span class="pos-restricted-nav" aria-disabled="true">{{ ui_text.get('nav.administration') }}</span>
           {% else %}<a href="{{ url_for('administration_page') }}" class="{{ 'active' if request.endpoint in ['administration_page', 'create_user', 'reset_user_password', 'update_user_role', 'update_user_active_state', 'reset_user_mfa', 'delete_user', 'reset_application_data', 'restore_application_backup', 'update_database_passphrase', 'renew_database_recovery_key'] else '' }}">{{ ui_text.get('nav.administration') }}</a>{% endif %}
         {% endif %}
       {% endif %}
+      {% endif %}
+      {% if current_user.can_access_system_administration %}
+        {% if current_user.can_access_band_workflows %}<span class="main-nav-divider" aria-hidden="true"></span>{% endif %}
+        <a href="{{ url_for('system_administration_page') }}" class="{{ 'active' if request.endpoint in ['system_administration_page', 'create_platform_user', 'update_user_active_state_from_system'] else '' }}">{{ ui_text.get('nav.system_administration', 'System-Verwaltung') }}</a>
+      {% endif %}
     </nav>
     <div class="user-menu">
+      {% if current_user.can_access_band_workflows %}
       <form action="{{ url_for('toggle_pos_mode') }}" method="post" class="pos-mode-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="next" value="{{ request.full_path }}">
         <button class="pos-mode-button {{ 'is-active' if pos_mode else '' }}" type="submit" aria-pressed="{{ 'true' if pos_mode else 'false' }}">POS Mode</button>
       </form>
       <button class="user-message-button" type="button" data-admin-message-open title="{{ ui_text.get('message.button_title') }}" aria-label="{{ ui_text.get('message.button_title') }}"><span aria-hidden="true">✉</span><span class="user-message-button-label">{{ ui_text.get('message.button') }}</span></button>
+      {% endif %}
       <span class="user-identity">
         <a class="user-profile-link" href="{{ url_for('profile_reauth', next=url_for('profile_page')) }}" title="{{ ui_text.get('profile.link_title') }}">{{ current_user.username }} · {{ current_user.role_label }}</a>
+        {% if current_user.can_access_band_workflows %}
         <span id="offline-sync-panel" class="offline-sync-status" data-connection="online" role="status" aria-live="polite">
           <span id="offline-sync-title">Synchronisierung wird vorbereitet …</span>
           <span id="offline-sync-detail" class="visually-hidden">Die lokale Verkaufswarteschlange wird geprüft.</span>
         </span>
+        {% endif %}
       </span>
       <form action="{{ url_for('logout') }}" method="post" data-offline-logout>
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -62,7 +73,7 @@
   </header>
   {% endif %}
 
-  {% if current_user %}
+  {% if current_user and current_user.can_access_band_workflows %}
   <dialog id="admin-message-dialog" class="confirmation-dialog user-message-dialog">
     <form action="{{ url_for('send_admin_message') }}" method="post" class="stack-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -132,12 +143,12 @@
       }|tojson }}
     };
   </script>
-  {% if current_user %}
+  {% if current_user and current_user.can_access_band_workflows %}
   <script src="{{ url_for('static', filename='pwa.js') }}" defer></script>
   <script src="{{ url_for('static', filename='offline-sales.js') }}"></script>
   <script src="{{ url_for('static', filename='admin-messages.js') }}" defer></script>
   {% endif %}
-  {% if current_user and current_user.is_admin %}
+  {% if current_user and current_user.can_manage_updates %}
   <script src="{{ url_for('static', filename='updates.js') }}" defer></script>
   {% endif %}
   {% block scripts %}{% endblock %}

@@ -83,17 +83,17 @@ except ImportError:  # pragma: no cover - deployment configuration, not business
     sqlcipher = None
 
 
-USERS_SCHEMA_SQL = """
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS users (
+USERS_TABLE_DEFINITION_SQL = """(
     id INTEGER PRIMARY KEY,
     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,
     -- ``is_admin`` remains for safe upgrades from the first single-admin
-    -- release.  New authorization decisions use the explicit role below.
+    -- release. It mirrors ``band_admin`` only; authorization decisions use
+    -- the explicit role and capability helpers below.
     is_admin INTEGER NOT NULL DEFAULT 0,
-    role TEXT NOT NULL DEFAULT 'seller' CHECK(role IN ('seller', 'member', 'manager', 'admin')),
+    role TEXT NOT NULL DEFAULT 'seller' CHECK(role IN (
+        'seller', 'member', 'manager', 'band_admin', 'support_admin', 'system_admin'
+    )),
     is_active INTEGER NOT NULL DEFAULT 1,
     must_set_password INTEGER NOT NULL DEFAULT 0,
     setup_code_hash TEXT,
@@ -114,7 +114,13 @@ CREATE TABLE IF NOT EXISTS users (
     ui_language TEXT NOT NULL DEFAULT 'de',
     show_variant_photos INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
-);
+)"""
+
+
+USERS_SCHEMA_SQL = f"""
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS users {USERS_TABLE_DEFINITION_SQL};
 
 -- Account-related audit entries deliberately live with the accounts.  This
 -- keeps password/MFA/user-administration history available when an admin
@@ -127,7 +133,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     action TEXT NOT NULL,
     entity_type TEXT NOT NULL,
     entity_id INTEGER,
-    details_json TEXT NOT NULL DEFAULT '{}'
+    details_json TEXT NOT NULL DEFAULT '{{}}'
 );
 
 -- Messages belong to the account side of the application. They survive an
@@ -164,6 +170,19 @@ CREATE TABLE IF NOT EXISTS smtp_notification_settings (
     updated_at TEXT,
     updated_by_user_id INTEGER,
     updated_by_username TEXT
+);
+
+-- This single-row marker distinguishes a genuine legacy-owner migration from
+-- an intentionally created Band-Admin.  It also makes a partially completed
+-- live upgrade safe to resume after a restart or the combined-database split.
+CREATE TABLE IF NOT EXISTS role_migration_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    legacy_admin_user_id INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'completed')),
+    reason TEXT NOT NULL,
+    selected_band_admin_user_id INTEGER,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
 );
 
 """
@@ -540,18 +559,28 @@ POS_MODE_RESTRICTED_PATH_PREFIXES = (
     "/band-finanzen",
     "/bilanzen",
     "/verwaltung",
+    "/system-verwaltung",
     "/updates",
     "/export",
 )
 POS_MODE_RESTRICTED_API_PATHS = frozenset({"/api/purchases", "/api/update-status"})
 
-# Roles are cumulative.  ``member`` preserves the former Seller workflow,
-# while the new, deliberately restricted Seller role is for the sales stand.
-# Keeping the hierarchy as a tiny mapping makes every server-side
-# authorization decision explicit and easy to audit.
-ROLE_LEVELS = {"seller": 1, "member": 2, "manager": 3, "admin": 4}
-ROLE_LABELS = {"seller": "Seller", "member": "Member", "manager": "Manager", "admin": "Admin"}
-MANAGED_USER_ROLES = ("seller", "member", "manager")
+# Band roles are cumulative. Platform staff deliberately stay outside this
+# hierarchy: without a later, explicitly approved tenant grant they must not
+# inherit even Seller access to the band's operational data.
+BAND_ROLE_LEVELS = {"seller": 1, "member": 2, "manager": 3, "band_admin": 4}
+ROLE_LABELS = {
+    "seller": "Seller",
+    "member": "Member",
+    "manager": "Manager",
+    "band_admin": "Band-Admin",
+    "support_admin": "Support-Admin",
+    "system_admin": "System-Admin",
+}
+MANAGED_USER_ROLES = ("seller", "member", "manager", "band_admin")
+PLATFORM_STAFF_ROLES = frozenset({"support_admin", "system_admin"})
+MFA_REQUIRED_ROLES = PLATFORM_STAFF_ROLES
+SYSTEM_ADMIN_MANAGED_ROLES = ("support_admin", "system_admin")
 SETUP_CODE_ALPHABET = string.ascii_uppercase + string.digits
 SYNC_EVENT_METADATA_FIELDS = frozenset(
     {"client_event_id", "client_device_id", "client_actor_id", "client_created_at"}
@@ -651,6 +680,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.articles": "Artikelverwaltung",
         "nav.slideshow": "Diashow",
         "nav.administration": "Verwaltung",
+        "nav.system_administration": "System-Verwaltung",
         "profile.link_title": "Profil und Sicherheitseinstellungen öffnen",
         "message.button": "Nachricht",
         "message.button_title": "Issue oder Frage an den Admin senden",
@@ -689,7 +719,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "profile.mfa_disable": "2FA deaktivieren",
         "profile.mfa_intro": "Mit 2FA benötigst du zusätzlich zum Passwort einen zeitbasierten Code aus einer kostenlosen Authenticator-App.",
         "profile.mfa_setup": "2FA einrichten",
-        "profile.mfa_admin_notice": "Für den Admin ist 2FA verpflichtend und kann hier nicht deaktiviert werden.",
+        "profile.mfa_admin_notice": "Für Support- und System-Admins ist 2FA verpflichtend und kann hier nicht deaktiviert werden.",
         "profile.username_title": "Benutzername ändern",
         "profile.username_intro": "Der neue Name wird beim nächsten Anmelden verwendet und erscheint künftig automatisch bei „Verkauft von“.",
         "profile.new_username": "Neuer Benutzername",
@@ -779,6 +809,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "nav.articles": "Catalogue",
         "nav.slideshow": "Slideshow",
         "nav.administration": "Administration",
+        "nav.system_administration": "System administration",
         "profile.link_title": "Open profile and security settings",
         "message.button": "Message",
         "message.button_title": "Send an issue or question to the administrator",
@@ -817,7 +848,7 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
         "profile.mfa_disable": "Disable 2FA",
         "profile.mfa_intro": "With 2FA, you need a time-based code from a free authenticator app in addition to your password.",
         "profile.mfa_setup": "Set up 2FA",
-        "profile.mfa_admin_notice": "2FA is mandatory for the administrator and cannot be disabled here.",
+        "profile.mfa_admin_notice": "2FA is mandatory for support and system administrators and cannot be disabled here.",
         "profile.username_title": "Change username",
         "profile.username_intro": "The new name will be used at your next sign-in and will automatically appear under “Sold by”.",
         "profile.new_username": "New username",
@@ -1341,19 +1372,34 @@ def normalized_role(user: dict[str, Any] | sqlite3.Row | None) -> str:
     """Return a safe role for current and pre-role database rows."""
 
     if user is None:
-        return "seller"
+        return "invalid"
     role = str(user["role"] or "").strip().lower() if "role" in user.keys() else ""
-    if role in ROLE_LEVELS:
+    if role in ROLE_LABELS:
         return role
-    # A record without a role predates the restricted Seller account.  Preserve
-    # its former Seller rights until the startup migration stores ``member``.
-    return "admin" if bool(user["is_admin"]) else "member"
+    # Startup migrations resolve legacy ``is_admin`` rows before a request can
+    # authenticate. Any unknown live value therefore fails closed.
+    return "invalid"
 
 
 def has_role(user: dict[str, Any] | sqlite3.Row | None, required_role: str) -> bool:
-    """Check a cumulative role without trusting a client-side navigation hint."""
+    """Check a cumulative band role without granting platform staff band data."""
 
-    return ROLE_LEVELS.get(normalized_role(user), 0) >= ROLE_LEVELS[required_role]
+    required_level = BAND_ROLE_LEVELS.get(required_role)
+    if required_level is None:
+        return False
+    return BAND_ROLE_LEVELS.get(normalized_role(user), 0) >= required_level
+
+
+def has_exact_role(user: dict[str, Any] | sqlite3.Row | None, *roles: str) -> bool:
+    """Check non-cumulative roles such as platform staff capabilities."""
+
+    return normalized_role(user) in roles
+
+
+def role_requires_mfa(user: dict[str, Any] | sqlite3.Row | None) -> bool:
+    """Platform identities always require MFA; Band-Admin MFA remains optional."""
+
+    return normalized_role(user) in MFA_REQUIRED_ROLES
 
 
 def effective_mfa_enabled(user: dict[str, Any] | sqlite3.Row | None, app: Flask | None = None) -> bool:
@@ -1416,14 +1462,28 @@ def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     role = normalized_role(user)
     user["role"] = role
-    user["role_label"] = ROLE_LABELS[role]
-    user["is_admin"] = role == "admin"
+    user["role_label"] = ROLE_LABELS.get(role, "Unbekannte Rolle")
+    user["is_admin"] = role == "band_admin"
+    user["is_band_admin"] = role == "band_admin"
+    user["is_support_admin"] = role == "support_admin"
+    user["is_system_admin"] = role == "system_admin"
+    user["is_platform_staff"] = role in PLATFORM_STAFF_ROLES
+    user["can_access_band_workflows"] = role in BAND_ROLE_LEVELS
     user["can_access_member_workflows"] = has_role(user, "member")
     user["can_manage_purchases"] = has_role(user, "manager")
     user["can_manage_band_finances"] = has_role(user, "manager")
     user["can_manage_articles"] = has_role(user, "manager")
     user["can_manage_slideshow"] = has_role(user, "manager")
+    user["can_access_band_administration"] = role == "band_admin"
+    user["can_access_system_administration"] = role in PLATFORM_STAFF_ROLES
+    user["can_manage_platform_staff"] = role == "system_admin"
+    # Until the system-operation split is specified, the migrated local owner
+    # retains the existing update workflow. Platform roles gain no implicit
+    # access to this band's data or deployment controls.
+    user["can_manage_updates"] = role == "band_admin"
+    user["mfa_required"] = role_requires_mfa(user)
     user["mfa_enabled"] = int(effective_mfa_enabled(user))
+    user["sensitive_action_mfa_required"] = bool(user["mfa_required"] or user["mfa_enabled"])
     user["ui_theme"] = user_ui_theme(user)
     user["ui_language"] = user_ui_language(user)
     user["show_variant_photos"] = int(user_shows_variant_photos(user))
@@ -1641,6 +1701,23 @@ def safe_next_url(value: Any, *, fallback: str = "/verkauf") -> str:
     return candidate if candidate.startswith("/") and not candidate.startswith("//") else fallback
 
 
+def authenticated_home_url(user: dict[str, Any] | sqlite3.Row | None) -> str:
+    """Keep platform identities outside band pages even directly after login."""
+
+    return "/system-verwaltung" if normalized_role(user) in PLATFORM_STAFF_ROLES else "/verkauf"
+
+
+def post_login_destination(user: dict[str, Any] | sqlite3.Row, requested: Any = None) -> str:
+    """Resolve a safe role-appropriate destination for password/MFA flows."""
+
+    fallback = authenticated_home_url(user)
+    if normalized_role(user) in PLATFORM_STAFF_ROLES:
+        # A copied Band URL must not turn an otherwise valid platform login
+        # into a transient Band-data request before the request guard runs.
+        return fallback
+    return safe_next_url(requested, fallback=fallback)
+
+
 def establish_authenticated_session(user: sqlite3.Row | dict[str, Any]) -> None:
     """Start a fresh session after password and, if configured, MFA checks."""
 
@@ -1674,14 +1751,23 @@ def has_profile_reauth(user: dict[str, Any] | None) -> bool:
 def verify_admin_sensitive_action(
     connection: sqlite3.Connection, *, password: Any, mfa_code: Any, context: str
 ) -> sqlite3.Row:
-    """Require the current admin password and MFA for destructive actions."""
+    """Require a fresh password and MFA whenever that account uses MFA.
+
+    Platform staff must enrol MFA before login. Band-Admins may choose it, but
+    once enabled the second factor also protects every sensitive action.
+    """
 
     admin = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
     if admin is None or not check_password_hash(admin["password_hash"], str(password or "")):
         raise ValueError("Das Passwort ist nicht korrekt. Es wurden keine Daten verändert.")
-    mfa_method = "local_dev" if current_app.config.get("LOCAL_DEV_MODE") else verify_mfa_code(connection, admin, mfa_code)
-    if mfa_method is None:
-        raise ValueError("Der Zwei-Faktor-Code ist nicht gültig. Es wurden keine Daten verändert.")
+    mfa_method = None
+    mfa_is_required = bool(role_requires_mfa(admin) or effective_mfa_enabled(admin))
+    if current_app.config.get("LOCAL_DEV_MODE"):
+        mfa_method = "local_dev"
+    elif mfa_is_required:
+        mfa_method = verify_mfa_code(connection, admin, mfa_code)
+        if mfa_method is None:
+            raise ValueError("Der Zwei-Faktor-Code ist nicht gültig. Es wurden keine Daten verändert.")
     if mfa_method == "recovery":
         audit(
             connection,
@@ -3495,34 +3581,90 @@ def upgrade_band_transactions_schema(connection: sqlite3.Connection) -> None:
             connection.execute(f"ALTER TABLE band_transactions ADD COLUMN {column_name} {column_definition}")
 
 
-def users_table_needs_member_role_migration(connection: sqlite3.Connection) -> bool:
-    """Return whether an older SQLite CHECK constraint still excludes Member."""
+def users_role_table_definition(connection: sqlite3.Connection) -> str:
+    """Return the lowercase users-table SQL used to inspect legacy CHECKs."""
 
     row = connection.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
     ).fetchone()
     if row is None:
+        return ""
+    return str(row["sql"] if isinstance(row, sqlite3.Row) else row[0]).lower()
+
+
+def users_table_needs_role_model_migration(connection: sqlite3.Connection) -> bool:
+    """Return whether SQLite still enforces an older role vocabulary."""
+
+    definition = users_role_table_definition(connection)
+    if not definition:
         return False
-    definition = str(row["sql"] if isinstance(row, sqlite3.Row) else row[0]).lower()
-    return "'member'" not in definition and '"member"' not in definition
+    return any(
+        f"'{role}'" not in definition and f'"{role}"' not in definition
+        for role in ROLE_LABELS
+        if role != "invalid"
+    )
 
 
-def rebuild_users_for_member_role(connection: sqlite3.Connection) -> None:
-    """Replace the legacy role constraint and preserve former Seller rights.
+def role_migration_audit(
+    connection: sqlite3.Connection,
+    action: str,
+    entity_id: int,
+    details: dict[str, Any],
+) -> None:
+    """Record an automatic startup migration without inventing a human actor."""
 
-    SQLite cannot add a value to an existing CHECK constraint.  Renaming and
-    copying the small account table is atomic with the surrounding startup
-    transaction, preserves every account field, and gives old ``seller`` rows
-    their new ``member`` identity exactly once.
-    """
-
-    if not users_table_needs_member_role_migration(connection):
-        return
-    connection.execute("ALTER TABLE users RENAME TO users_before_member_role")
-    connection.executescript(USERS_SCHEMA_SQL)
     connection.execute(
         """
-        INSERT INTO users (
+        INSERT INTO audit_log (
+            created_at, user_id, user_username, action, entity_type, entity_id, details_json
+        ) VALUES (?, NULL, NULL, ?, 'user', ?, ?)
+        """,
+        (utc_now(), action, entity_id, json.dumps(details, ensure_ascii=False, sort_keys=True)),
+    )
+
+
+def rebuild_users_for_role_model(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Expand the role constraint with a recoverable, transactional table swap.
+
+    Legacy Admins are staged as Band-Admins first.  A separate persistent
+    handover then moves exactly one unambiguous legacy owner to System-Admin;
+    this keeps a live installation operable if no successor can be selected
+    safely during startup.
+    """
+
+    definition = users_role_table_definition(connection)
+    if not users_table_needs_role_model_migration(connection):
+        return []
+    legacy_seller_role = (
+        "member"
+        if "'member'" not in definition and '"member"' not in definition
+        else "seller"
+    )
+    migrated_administrators = connection.execute(
+        """
+        SELECT id, username, is_active FROM users
+        WHERE lower(coalesce(role, '')) = 'admin'
+           OR (
+               is_admin = 1
+               AND lower(coalesce(role, '')) NOT IN (
+                   'seller', 'member', 'manager', 'band_admin', 'support_admin', 'system_admin'
+               )
+           )
+        ORDER BY id
+        """
+    ).fetchall()
+    if table_exists(connection, "users_role_model_replacement"):
+        raise RuntimeError(
+            "Eine unvollständige Rollen-Migration wurde erkannt. Die Benutzertabelle wurde nicht verändert."
+        )
+    if not bool(getattr(connection, "in_transaction", False)):
+        connection.execute("BEGIN IMMEDIATE")
+    connection.execute(
+        f"CREATE TABLE users_role_model_replacement {USERS_TABLE_DEFINITION_SQL}"
+    )
+    connection.execute(
+        """
+        INSERT INTO users_role_model_replacement (
             id, username, password_hash, is_admin, role, is_active,
             must_set_password, setup_code_hash, setup_code_expires_at,
             mfa_secret_encrypted, mfa_pending_secret_encrypted,
@@ -3531,23 +3673,285 @@ def rebuild_users_for_member_role(connection: sqlite3.Connection) -> None:
             show_variant_photos, created_at
         )
         SELECT
-            id, username, password_hash, is_admin,
+            id, username, password_hash,
             CASE
-                WHEN role = 'admin' THEN 'admin'
-                WHEN role = 'manager' THEN 'manager'
-                WHEN role = 'member' THEN 'member'
-                WHEN is_admin = 1 THEN 'admin'
-                ELSE 'member'
+                WHEN lower(coalesce(role, '')) IN ('admin', 'band_admin') THEN 1
+                WHEN is_admin = 1 AND lower(coalesce(role, '')) NOT IN (
+                    'seller', 'member', 'manager', 'support_admin', 'system_admin'
+                ) THEN 1
+                ELSE 0
+            END,
+            CASE
+                WHEN lower(coalesce(role, '')) = 'system_admin' THEN 'system_admin'
+                WHEN lower(coalesce(role, '')) = 'support_admin' THEN 'support_admin'
+                WHEN lower(coalesce(role, '')) IN ('admin', 'band_admin') THEN 'band_admin'
+                WHEN lower(coalesce(role, '')) = 'manager' THEN 'manager'
+                WHEN lower(coalesce(role, '')) = 'member' THEN 'member'
+                WHEN lower(coalesce(role, '')) = 'seller' THEN ?
+                WHEN is_admin = 1 THEN 'band_admin'
+                ELSE 'seller'
             END,
             is_active, must_set_password, setup_code_hash,
             setup_code_expires_at, mfa_secret_encrypted,
             mfa_pending_secret_encrypted, mfa_recovery_code_hashes_json,
-            mfa_enabled, mfa_enrolled_at, session_version, last_login_at,
-            ui_theme, ui_language, show_variant_photos, created_at
-        FROM users_before_member_role
-        """
+            mfa_enabled, mfa_enrolled_at,
+            session_version + CASE
+                WHEN lower(coalesce(role, '')) = 'admin'
+                     OR (
+                         is_admin = 1
+                         AND lower(coalesce(role, '')) NOT IN (
+                             'seller', 'member', 'manager', 'band_admin', 'support_admin', 'system_admin'
+                         )
+                     )
+                THEN 1 ELSE 0
+            END,
+            last_login_at, ui_theme, ui_language, show_variant_photos, created_at
+        FROM users
+        """,
+        (legacy_seller_role,),
     )
-    connection.execute("DROP TABLE users_before_member_role")
+    source_count = int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+    replacement_count = int(
+        connection.execute("SELECT COUNT(*) FROM users_role_model_replacement").fetchone()[0]
+    )
+    if source_count != replacement_count:
+        raise RuntimeError("Die Rollen-Migration konnte nicht vollständig kopiert werden.")
+    connection.execute("DROP TABLE users")
+    connection.execute("ALTER TABLE users_role_model_replacement RENAME TO users")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role, is_active)")
+    for migrated_user in migrated_administrators:
+        role_migration_audit(
+            connection,
+            "migrate_role",
+            int(migrated_user["id"]),
+            {
+                "previous_role": "admin",
+                "role": "band_admin",
+                "reason": "live_handover_staged",
+                "source": "migration",
+            },
+        )
+    return [dict(row) for row in migrated_administrators]
+
+
+def intermediate_legacy_owner_candidates(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Find only accounts changed by the earlier unreleased Admin migration."""
+
+    if connection.execute("SELECT 1 FROM role_migration_state LIMIT 1").fetchone() is not None:
+        return []
+    candidates: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    rows = connection.execute(
+        """
+        SELECT a.entity_id, a.details_json, u.username, u.is_active
+        FROM audit_log AS a
+        JOIN users AS u ON u.id = a.entity_id
+        WHERE a.action = 'migrate_role'
+          AND a.entity_type = 'user'
+          AND u.role = 'band_admin'
+        ORDER BY a.id
+        """
+    ).fetchall()
+    for row in rows:
+        try:
+            details = json.loads(str(row["details_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if (
+            details.get("previous_role") != "admin"
+            or details.get("role") != "band_admin"
+            or details.get("reason") not in {"least_privilege", "live_handover_staged"}
+        ):
+            continue
+        user_id = int(row["entity_id"])
+        if user_id in seen_ids:
+            continue
+        seen_ids.add(user_id)
+        candidates.append(
+            {
+                "id": user_id,
+                "username": str(row["username"]),
+                "is_active": int(row["is_active"]),
+            }
+        )
+    return candidates
+
+
+def select_legacy_platform_owner(
+    candidates: list[dict[str, Any]], *, preferred_username: str
+) -> dict[str, Any] | None:
+    """Choose an owner only from explicit configuration or one sole account."""
+
+    active_candidates = [candidate for candidate in candidates if bool(candidate.get("is_active"))]
+    preferred = preferred_username.strip().casefold()
+    configured_matches = [
+        candidate
+        for candidate in active_candidates
+        if preferred and str(candidate["username"]).casefold() == preferred
+    ]
+    if len(configured_matches) == 1:
+        return configured_matches[0]
+    if len(active_candidates) == 1:
+        return active_candidates[0]
+    return None
+
+
+def stage_legacy_role_handover(
+    connection: sqlite3.Connection,
+    candidates: list[dict[str, Any]],
+    *,
+    preferred_username: str,
+) -> sqlite3.Row | None:
+    """Persist provenance before any legacy owner receives platform scope."""
+
+    existing = connection.execute("SELECT * FROM role_migration_state WHERE id = 1").fetchone()
+    if existing is not None:
+        return existing
+    owner = select_legacy_platform_owner(candidates, preferred_username=preferred_username)
+    if owner is None:
+        return None
+    connection.execute(
+        """
+        INSERT INTO role_migration_state (
+            id, legacy_admin_user_id, status, reason, created_at
+        ) VALUES (1, ?, 'pending', 'awaiting_evaluation', ?)
+        """,
+        (owner["id"], utc_now()),
+    )
+    return connection.execute("SELECT * FROM role_migration_state WHERE id = 1").fetchone()
+
+
+def ensure_pending_role_handover_audit(
+    connection: sqlite3.Connection, *, owner_id: int, reason: str
+) -> None:
+    if connection.execute(
+        """
+        SELECT 1 FROM audit_log
+        WHERE action = 'role_handover_pending' AND entity_type = 'user' AND entity_id = ?
+        LIMIT 1
+        """,
+        (owner_id,),
+    ).fetchone() is None:
+        role_migration_audit(
+            connection,
+            "role_handover_pending",
+            owner_id,
+            {"reason": reason, "source": "migration"},
+        )
+
+
+def complete_unambiguous_legacy_role_handover(
+    connection: sqlite3.Connection,
+) -> dict[str, Any] | None:
+    """Complete the initial handover only when its Band-Admin target is safe."""
+
+    state = connection.execute(
+        "SELECT * FROM role_migration_state WHERE id = 1 AND status = 'pending'"
+    ).fetchone()
+    if state is None or str(state["reason"]) != "awaiting_evaluation":
+        return None
+    owner_id = int(state["legacy_admin_user_id"])
+    owner = connection.execute(
+        "SELECT * FROM users WHERE id = ? AND role = 'band_admin' AND is_active = 1",
+        (owner_id,),
+    ).fetchone()
+    if owner is None:
+        reason = "legacy_owner_unavailable"
+        connection.execute("UPDATE role_migration_state SET reason = ? WHERE id = 1", (reason,))
+        ensure_pending_role_handover_audit(connection, owner_id=owner_id, reason=reason)
+        return None
+
+    other_band_admins = connection.execute(
+        """
+        SELECT id, username FROM users
+        WHERE role = 'band_admin' AND is_active = 1 AND id != ?
+        ORDER BY id
+        """,
+        (owner_id,),
+    ).fetchall()
+    selected_band_admin: dict[str, Any] | None = None
+    completion_reason = "active_band_admin_available"
+    if other_band_admins:
+        selected_band_admin = dict(other_band_admins[0])
+    else:
+        managers = connection.execute(
+            """
+            SELECT id, username FROM users
+            WHERE role = 'manager' AND is_active = 1
+            ORDER BY id
+            """
+        ).fetchall()
+        if len(managers) != 1:
+            pending_reason = "no_active_manager" if not managers else "multiple_active_managers"
+            connection.execute(
+                "UPDATE role_migration_state SET reason = ? WHERE id = 1",
+                (pending_reason,),
+            )
+            ensure_pending_role_handover_audit(
+                connection, owner_id=owner_id, reason=pending_reason
+            )
+            return None
+        selected_band_admin = dict(managers[0])
+        completion_reason = "only_active_manager"
+        connection.execute(
+            """
+            UPDATE users
+            SET role = 'band_admin', is_admin = 1,
+                session_version = session_version + 1
+            WHERE id = ? AND role = 'manager' AND is_active = 1
+            """,
+            (selected_band_admin["id"],),
+        )
+        role_migration_audit(
+            connection,
+            "migrate_role",
+            int(selected_band_admin["id"]),
+            {
+                "username": selected_band_admin["username"],
+                "previous_role": "manager",
+                "role": "band_admin",
+                "reason": completion_reason,
+                "automatic": True,
+                "source": "migration",
+            },
+        )
+
+    connection.execute(
+        """
+        UPDATE users
+        SET role = 'system_admin', is_admin = 0,
+            session_version = session_version + 1
+        WHERE id = ? AND role = 'band_admin' AND is_active = 1
+        """,
+        (owner_id,),
+    )
+    completed_at = utc_now()
+    connection.execute(
+        """
+        UPDATE role_migration_state
+        SET status = 'completed', reason = ?, selected_band_admin_user_id = ?, completed_at = ?
+        WHERE id = 1 AND status = 'pending'
+        """,
+        (completion_reason, selected_band_admin["id"], completed_at),
+    )
+    role_migration_audit(
+        connection,
+        "migrate_role",
+        owner_id,
+        {
+            "previous_role": "band_admin",
+            "original_role": "admin",
+            "role": "system_admin",
+            "reason": "legacy_platform_owner",
+            "handover_reason": completion_reason,
+            "source": "migration",
+        },
+    )
+    return {
+        "legacy_admin_user_id": owner_id,
+        "band_admin_user_id": int(selected_band_admin["id"]),
+        "reason": completion_reason,
+    }
 
 
 def upgrade_legacy_combined_database(app: Flask) -> None:
@@ -3709,10 +4113,9 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
             connection.execute("ALTER TABLE sync_events ADD COLUMN actor_username TEXT")
         seed_sale_events_from_legacy_sales(connection)
 
-        # Upgrade the former single-admin account table in place.  Existing
-        # administrator rows become the one admin account; any unexpected
-        # extra legacy admins are conservatively downgraded to managers rather
-        # than silently leaving several all-powerful accounts behind.
+        # Upgrade the former single-admin account table in place. The owner is
+        # staged as Band-Admin first so a crash during the following database
+        # split cannot leave the live installation without a Band-Admin.
         user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()}
         user_column_migrations = (
             ("role", "TEXT NOT NULL DEFAULT 'seller'"),
@@ -3744,25 +4147,22 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
             connection.execute(
                 "UPDATE users SET role = CASE WHEN is_admin = 1 THEN 'admin' ELSE 'seller' END"
             )
-        connection.execute(
-            "UPDATE users SET role = 'seller' WHERE role NOT IN ('seller', 'member', 'manager', 'admin') OR role IS NULL"
+        migrated_administrators = rebuild_users_for_role_model(connection)
+        if not migrated_administrators:
+            migrated_administrators = intermediate_legacy_owner_candidates(connection)
+        stage_legacy_role_handover(
+            connection,
+            migrated_administrators,
+            preferred_username=str(app.config.get("ADMIN_USERNAME", "")),
         )
-        rebuild_users_for_member_role(connection)
-        admin_rows = connection.execute(
-            "SELECT id FROM users WHERE role = 'admin' ORDER BY id"
-        ).fetchall()
-        if len(admin_rows) > 1:
-            connection.executemany(
-                "UPDATE users SET role = 'manager' WHERE id = ?",
-                [(row["id"],) for row in admin_rows[1:]],
-            )
-        elif not admin_rows:
-            legacy_admin = connection.execute(
-                "SELECT id FROM users WHERE is_admin = 1 ORDER BY id LIMIT 1"
-            ).fetchone()
-            if legacy_admin is not None:
-                connection.execute("UPDATE users SET role = 'admin' WHERE id = ?", (legacy_admin["id"],))
-        connection.execute("UPDATE users SET is_admin = CASE WHEN role = 'admin' THEN 1 ELSE 0 END")
+        connection.execute(
+            """
+            UPDATE users SET role = 'seller'
+            WHERE role NOT IN ('seller', 'member', 'manager', 'band_admin', 'support_admin', 'system_admin')
+               OR role IS NULL
+            """
+        )
+        connection.execute("UPDATE users SET is_admin = CASE WHEN role = 'band_admin' THEN 1 ELSE 0 END")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role, is_active)")
 
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -3776,7 +4176,7 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
             connection.execute(
                 """
                 INSERT INTO users (username, password_hash, is_admin, role, is_active, created_at)
-                VALUES (?, ?, 1, 'admin', 1, ?)
+                VALUES (?, ?, 1, 'band_admin', 1, ?)
                 """,
                 (username, generate_password_hash(password), utc_now()),
             )
@@ -4475,7 +4875,7 @@ def upgrade_admin_messages_schema(connection: sqlite3.Connection) -> None:
 def upgrade_users_schema(
     connection: sqlite3.Connection, app: Flask, *, bootstrap_administrator: bool = True
 ) -> None:
-    """Create/upgrade the account database and enforce the one-admin rule."""
+    """Create/upgrade accounts without granting legacy users platform scope."""
 
     connection.executescript(USERS_SCHEMA_SQL)
     upgrade_admin_messages_schema(connection)
@@ -4506,22 +4906,23 @@ def upgrade_users_schema(
         connection.execute("ALTER TABLE audit_log ADD COLUMN user_username TEXT")
     if added_role_column:
         connection.execute("UPDATE users SET role = CASE WHEN is_admin = 1 THEN 'admin' ELSE 'seller' END")
-    connection.execute(
-        "UPDATE users SET role = 'seller' WHERE role NOT IN ('seller', 'member', 'manager', 'admin') OR role IS NULL"
+    migrated_administrators = rebuild_users_for_role_model(connection)
+    if not migrated_administrators:
+        migrated_administrators = intermediate_legacy_owner_candidates(connection)
+    stage_legacy_role_handover(
+        connection,
+        migrated_administrators,
+        preferred_username=str(app.config.get("ADMIN_USERNAME", "")),
     )
-    rebuild_users_for_member_role(connection)
-    admin_rows = connection.execute("SELECT id FROM users WHERE role = 'admin' ORDER BY id").fetchall()
-    if len(admin_rows) > 1:
-        connection.executemany(
-            "UPDATE users SET role = 'manager' WHERE id = ?", [(row["id"],) for row in admin_rows[1:]]
-        )
-    elif not admin_rows:
-        legacy_admin = connection.execute(
-            "SELECT id FROM users WHERE is_admin = 1 ORDER BY id LIMIT 1"
-        ).fetchone()
-        if legacy_admin is not None:
-            connection.execute("UPDATE users SET role = 'admin' WHERE id = ?", (legacy_admin["id"],))
-    connection.execute("UPDATE users SET is_admin = CASE WHEN role = 'admin' THEN 1 ELSE 0 END")
+    complete_unambiguous_legacy_role_handover(connection)
+    connection.execute(
+        """
+        UPDATE users SET role = 'seller'
+        WHERE role NOT IN ('seller', 'member', 'manager', 'band_admin', 'support_admin', 'system_admin')
+           OR role IS NULL
+        """
+    )
+    connection.execute("UPDATE users SET is_admin = CASE WHEN role = 'band_admin' THEN 1 ELSE 0 END")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role, is_active)")
 
     user_count = int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
@@ -4535,7 +4936,7 @@ def upgrade_users_schema(
         connection.execute(
             """
             INSERT INTO users (username, password_hash, is_admin, role, is_active, created_at)
-            VALUES (?, ?, 1, 'admin', 1, ?)
+            VALUES (?, ?, 1, 'band_admin', 1, ?)
             """,
             (username, generate_password_hash(password), utc_now()),
         )
@@ -4659,6 +5060,22 @@ def copy_users_to_separate_database(
             target.executemany(
                 f"INSERT INTO users ({', '.join(columns)}) VALUES ({placeholders})",
                 [tuple(row[column] for column in columns) for row in source_rows],
+            )
+    source_migration_state = source.execute(
+        "SELECT * FROM role_migration_state WHERE id = 1"
+    ).fetchone()
+    target_migration_state = target.execute(
+        "SELECT * FROM role_migration_state WHERE id = 1"
+    ).fetchone()
+    if source_migration_state is not None:
+        if target_migration_state is None:
+            copy_matching_table_rows(source, target, "role_migration_state")
+        elif int(target_migration_state["legacy_admin_user_id"]) != int(
+            source_migration_state["legacy_admin_user_id"]
+        ):
+            raise RuntimeError(
+                "users.sqlite3 enthält einen anderen Rollen-Migrationsstand. "
+                "Die automatische Migration wurde zur Sicherheit nicht fortgesetzt."
             )
     if copy_audit_log and not target.execute("SELECT 1 FROM audit_log LIMIT 1").fetchone():
         copy_matching_table_rows(source, target, "audit_log")
@@ -4787,6 +5204,75 @@ def initialise_users_database(app: Flask) -> None:
         connection.close()
 
 
+def recover_intermediate_role_handover_from_operational_audit(app: Flask) -> None:
+    """Recover provenance lost by an older combined-to-split development build.
+
+    That unreleased path copied its role audit into the operational database
+    but not into ``users.sqlite3``.  Only the exact historic migration marker
+    is accepted; ordinary Band-Admins are never inferred from their role.
+    """
+
+    users_connection = db_connect(Path(app.config["USERS_DATABASE"]), app=app)
+    operations_connection = db_connect(Path(app.config["DATABASE"]), app=app)
+    try:
+        if users_connection.execute(
+            "SELECT 1 FROM role_migration_state WHERE id = 1"
+        ).fetchone() is not None:
+            return
+        candidates: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for row in operations_connection.execute(
+            """
+            SELECT entity_id, details_json FROM audit_log
+            WHERE action = 'migrate_role' AND entity_type = 'user'
+            ORDER BY id
+            """
+        ).fetchall():
+            try:
+                details = json.loads(str(row["details_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if (
+                details.get("previous_role") != "admin"
+                or details.get("role") != "band_admin"
+                or details.get("reason") not in {"least_privilege", "live_handover_staged"}
+                or row["entity_id"] is None
+            ):
+                continue
+            user_id = int(row["entity_id"])
+            if user_id in seen_ids:
+                continue
+            user = users_connection.execute(
+                "SELECT id, username, is_active FROM users WHERE id = ? AND role = 'band_admin'",
+                (user_id,),
+            ).fetchone()
+            if user is None:
+                continue
+            seen_ids.add(user_id)
+            candidates.append(dict(user))
+        if not candidates:
+            return
+        users_connection.execute("BEGIN IMMEDIATE")
+        if users_connection.execute(
+            "SELECT 1 FROM role_migration_state WHERE id = 1"
+        ).fetchone() is not None:
+            users_connection.rollback()
+            return
+        stage_legacy_role_handover(
+            users_connection,
+            candidates,
+            preferred_username=str(app.config.get("ADMIN_USERNAME", "")),
+        )
+        complete_unambiguous_legacy_role_handover(users_connection)
+        users_connection.commit()
+    except Exception:
+        users_connection.rollback()
+        raise
+    finally:
+        operations_connection.close()
+        users_connection.close()
+
+
 def initialise_database(app: Flask) -> None:
     """Initialise separate operational and account files, migrating safely."""
 
@@ -4800,6 +5286,7 @@ def initialise_database(app: Flask) -> None:
         migrate_combined_database(app)
     initialise_operations_database(app)
     initialise_users_database(app)
+    recover_intermediate_role_handover_from_operational_audit(app)
 
 
 def configured_bootstrap_admin(app: Flask) -> tuple[str, str]:
@@ -4971,12 +5458,29 @@ def login_required(view):
 
 
 def role_required(required_role: str):
-    """Return a decorator for a cumulative, server-enforced role check."""
+    """Return a decorator for a cumulative, server-enforced band-role check."""
 
     def decorator(view):
         @wraps(view)
         def wrapped(*args, **kwargs):
             if g.get("user") is None or not has_role(g.user, required_role):
+                abort(403)
+            return view(*args, **kwargs)
+
+        return wrapped
+
+    return decorator
+
+
+def exact_role_required(*allowed_roles: str):
+    """Return a decorator for non-cumulative platform capabilities."""
+
+    allowed = frozenset(allowed_roles)
+
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            if g.get("user") is None or normalized_role(g.user) not in allowed:
                 abort(403)
             return view(*args, **kwargs)
 
@@ -4998,9 +5502,33 @@ def member_required(view):
 
 
 def admin_required(view):
-    """Restrict system and account administration to the single Admin role."""
+    """Backward-compatible name for band-local administration routes."""
 
-    return role_required("admin")(view)
+    return role_required("band_admin")(view)
+
+
+def band_admin_required(view):
+    """Restrict band accounts, configuration and data reset to Band-Admins."""
+
+    return role_required("band_admin")(view)
+
+
+def platform_staff_required(view):
+    """Permit the isolated System-Verwaltung to Support/System staff."""
+
+    return exact_role_required("support_admin", "system_admin")(view)
+
+
+def system_admin_required(view):
+    """Restrict platform staff provisioning to System-Admins."""
+
+    return exact_role_required("system_admin")(view)
+
+
+def administration_staff_required(view):
+    """Permit the shared support inbox to Band- and platform administrators."""
+
+    return exact_role_required("band_admin", "support_admin", "system_admin")(view)
 
 
 def profile_reauth_required(view):
@@ -7476,6 +8004,32 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 g.user = user_capabilities(user)
 
     @app.before_request
+    def enforce_platform_staff_boundary() -> None:
+        """Fail closed until a real, approved tenant-access session exists.
+
+        Support/System accounts are central identities. Merely knowing a Band
+        URL must never grant them Band data; the later tenant project will add
+        a narrowly scoped grant to this boundary instead of shadow accounts.
+        """
+
+        if g.get("user") is None or normalized_role(g.user) not in PLATFORM_STAFF_ROLES:
+            return None
+        allowed_paths = (
+            "/system-verwaltung",
+            "/profil",
+            "/mfa",
+            "/konto",
+            "/logout",
+            "/static/",
+            "/service-worker.js",
+        )
+        if any(request.path == prefix or request.path.startswith(prefix + "/") for prefix in allowed_paths):
+            return None
+        if request.path.startswith("/static/"):
+            return None
+        abort(403)
+
+    @app.before_request
     def enforce_pos_mode_restrictions() -> None:
         """Keep management/accounting pages closed while POS mode is active."""
 
@@ -7503,6 +8057,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "profile_reauth",
             "profile_page",
             "administration_page",
+            "system_administration_page",
             "encryption_setup",
             "encryption_unlock",
             "encryption_recovery",
@@ -7754,23 +8309,32 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 ):
                     flash("Benutzername oder Passwort ist nicht korrekt.", "error")
                 else:
-                    begin_auth_challenge("password_setup", user, request.args.get("next"))
+                    begin_auth_challenge(
+                        "password_setup", user, post_login_destination(user, request.args.get("next"))
+                    )
                     return redirect(url_for("account_setup"))
             elif not check_password_hash(user["password_hash"], password_or_setup_code):
                 flash("Benutzername oder Passwort ist nicht korrekt.", "error")
             else:
-                # Admin access is deliberately impossible before its TOTP
-                # device has been enrolled.  Other roles can opt into it in
-                # their profile later.
-                if not current_app.config.get("LOCAL_DEV_MODE") and normalized_role(user) == "admin" and not effective_mfa_enabled(user):
-                    begin_auth_challenge("mfa_enrollment", user, request.args.get("next"))
+                # Platform access is deliberately impossible before TOTP has
+                # been enrolled. Band roles, including Band-Admin, may opt in.
+                if (
+                    not current_app.config.get("LOCAL_DEV_MODE")
+                    and role_requires_mfa(user)
+                    and not effective_mfa_enabled(user)
+                ):
+                    begin_auth_challenge(
+                        "mfa_enrollment", user, post_login_destination(user, request.args.get("next"))
+                    )
                     return redirect(url_for("mfa_enroll"))
                 if effective_mfa_enabled(user):
-                    begin_auth_challenge("mfa_login", user, request.args.get("next"))
+                    begin_auth_challenge(
+                        "mfa_login", user, post_login_destination(user, request.args.get("next"))
+                    )
                     return redirect(url_for("mfa_login"))
                 get_user_db().execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), user["id"]))
                 get_user_db().commit()
-                next_url = safe_next_url(request.args.get("next"), fallback=url_for("sales_page"))
+                next_url = post_login_destination(user, request.args.get("next"))
                 establish_authenticated_session(user)
                 return redirect(next_url)
         return render_template("login.html", title="Anmelden")
@@ -7808,7 +8372,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 connection.commit()
                 refreshed_user = connection.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
                 next_url = take_post_auth_next()
-                if not current_app.config.get("LOCAL_DEV_MODE") and normalized_role(refreshed_user) == "admin" and not effective_mfa_enabled(refreshed_user):
+                if (
+                    not current_app.config.get("LOCAL_DEV_MODE")
+                    and role_requires_mfa(refreshed_user)
+                    and not effective_mfa_enabled(refreshed_user)
+                ):
                     begin_auth_challenge("mfa_enrollment", refreshed_user, next_url)
                     return redirect(url_for("mfa_enroll"))
                 if effective_mfa_enabled(refreshed_user):
@@ -7877,7 +8445,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         if not user_id:
             return None, False
         user = get_user_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        if user is None or not bool(user["is_active"]) or normalized_role(user) != "admin":
+        if user is None or not bool(user["is_active"]) or not role_requires_mfa(user):
             return None, False
         return user, True
 
@@ -7958,7 +8526,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             username=user["username"],
             manual_secret=pending_secret,
             provisioning_uri=provisioning_uri,
-            is_required=normalized_role(user) == "admin",
+            is_required=role_requires_mfa(user),
             is_pre_auth=is_pre_auth,
         )
 
@@ -8157,8 +8725,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @profile_reauth_required
     def disable_own_mfa():
-        if normalized_role(g.user) == "admin":
-            flash("Für den Admin ist die Zwei-Faktor-Authentifizierung verpflichtend.", "error")
+        if role_requires_mfa(g.user):
+            flash("Für Support- und System-Admins ist die Zwei-Faktor-Authentifizierung verpflichtend.", "error")
             return redirect(url_for("profile_page"))
         connection = get_user_db()
         connection.execute(
@@ -8298,19 +8866,53 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return redirect(destination)
 
     def administration_users() -> list[dict[str, Any]]:
-        """Return safe, display-ready user records for the admin screen."""
+        """Return only band-bound accounts for the Band-Admin screen."""
 
         rows = get_user_db().execute(
             """
             SELECT * FROM users
-            ORDER BY CASE role WHEN 'admin' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END,
-                     username COLLATE NOCASE
+            WHERE role IN ('seller', 'member', 'manager', 'band_admin')
+            ORDER BY CASE role
+                         WHEN 'band_admin' THEN 0 WHEN 'manager' THEN 1
+                         WHEN 'member' THEN 2 ELSE 3
+                     END, username COLLATE NOCASE
             """
         ).fetchall()
         users = []
         for row in rows:
             user = user_capabilities(dict(row))
             user["recovery_code_count"] = len(recovery_code_hashes(row))
+            user["can_manage_from_band_admin"] = int(user["id"]) != int(g.user["id"])
+            users.append(user)
+        return users
+
+    def platform_administration_users(*, band_accounts: bool) -> list[dict[str, Any]]:
+        """Return display-ready Band or platform identities for System-Verwaltung."""
+
+        roles = tuple(BAND_ROLE_LEVELS) if band_accounts else tuple(PLATFORM_STAFF_ROLES)
+        placeholders = ", ".join("?" for _ in roles)
+        rows = get_user_db().execute(
+            f"""
+            SELECT * FROM users WHERE role IN ({placeholders})
+            ORDER BY CASE role
+                         WHEN 'system_admin' THEN 0 WHEN 'support_admin' THEN 1
+                         WHEN 'band_admin' THEN 2 WHEN 'manager' THEN 3
+                         WHEN 'member' THEN 4 ELSE 5
+                     END, username COLLATE NOCASE
+            """,
+            roles,
+        ).fetchall()
+        users = []
+        for row in rows:
+            user = user_capabilities(dict(row))
+            user["recovery_code_count"] = len(recovery_code_hashes(row))
+            user["can_change_active_from_system"] = (
+                int(user["id"]) != int(g.user["id"])
+                and (
+                    normalized_role(user) in BAND_ROLE_LEVELS
+                    or normalized_role(g.user) == "system_admin"
+                )
+            )
             users.append(user)
         return users
 
@@ -8334,7 +8936,32 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         setup_credential: dict[str, str] | None = None,
         reset_archive_name: str | None = None,
     ):
-        notification_config = smtp_notification_config(get_user_db(), app)
+        users_connection = get_user_db()
+        notification_config = smtp_notification_config(users_connection, app)
+        pending_migration_state = users_connection.execute(
+            "SELECT * FROM role_migration_state WHERE id = 1 AND status = 'pending'"
+        ).fetchone()
+        migration_state = (
+            pending_migration_state
+            if pending_migration_state is not None
+            and int(pending_migration_state["legacy_admin_user_id"]) == int(g.user["id"])
+            else None
+        )
+        legacy_role_handover = None
+        if migration_state is not None:
+            legacy_role_handover = {
+                **dict(migration_state),
+                "managers": [
+                    dict(row)
+                    for row in users_connection.execute(
+                        """
+                        SELECT id, username FROM users
+                        WHERE role = 'manager' AND is_active = 1
+                        ORDER BY username COLLATE NOCASE, id
+                        """
+                    ).fetchall()
+                ],
+            }
         return render_template(
             "admin.html",
             title="Verwaltung",
@@ -8348,6 +8975,29 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             email_notification=smtp_notification_status(notification_config),
             email_settings=smtp_notification_settings_public(notification_config),
             payment_qr_settings=payment_qr_settings_for_administration(get_db()),
+            legacy_role_handover=legacy_role_handover,
+            can_bootstrap_system_admin=(
+                pending_migration_state is None
+                and users_connection.execute(
+                    "SELECT 1 FROM users WHERE role = 'system_admin' LIMIT 1"
+                ).fetchone()
+                is None
+            ),
+            sensitive_action_mfa_required=bool(g.user["sensitive_action_mfa_required"]),
+        )
+
+    def render_system_administration(
+        *, setup_credential: dict[str, str] | None = None
+    ):
+        return render_template(
+            "system_admin.html",
+            title="System-Verwaltung",
+            band_users=platform_administration_users(band_accounts=True),
+            platform_users=platform_administration_users(band_accounts=False),
+            admin_messages=administration_messages(),
+            setup_credential=setup_credential,
+            setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
+            sensitive_action_mfa_required=bool(g.user["sensitive_action_mfa_required"]),
         )
 
     @app.get("/verwaltung")
@@ -8355,6 +9005,337 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @admin_required
     def administration_page():
         return render_administration()
+
+    @app.get("/system-verwaltung")
+    @login_required
+    @platform_staff_required
+    def system_administration_page():
+        return render_system_administration()
+
+    def create_setup_account(
+        connection: sqlite3.Connection, *, username: str, role: str
+    ) -> tuple[int, str]:
+        """Create an inactive-password account with a short-lived setup code."""
+
+        setup_code = generate_setup_code()
+        cursor = connection.execute(
+            """
+            INSERT INTO users (
+                username, password_hash, is_admin, role, is_active, must_set_password,
+                setup_code_hash, setup_code_expires_at, created_at
+            ) VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?)
+            """,
+            (
+                username,
+                generate_password_hash(secrets.token_urlsafe(48)),
+                int(role == "band_admin"),
+                role,
+                generate_password_hash(setup_code),
+                setup_code_expiry(int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"])),
+                utc_now(),
+            ),
+        )
+        return int(cursor.lastrowid), setup_code
+
+    @app.post("/verwaltung/rollen-migration/abschliessen")
+    @login_required
+    @band_admin_required
+    def complete_legacy_role_handover():
+        """Explicitly finish an ambiguous live Admin-to-System-Admin migration."""
+
+        connection = get_user_db()
+        setup_code: str | None = None
+        target_username = ""
+        try:
+            if request.form.get("band_admin_confirmation") != "confirmed":
+                raise ValueError("Die Band-Admin-Warnung wurde nicht bestätigt.")
+            mode = str(request.form.get("mode") or "").strip().lower()
+            candidate_id: int | None = None
+            new_username: str | None = None
+            if mode == "promote_existing":
+                try:
+                    candidate_id = int(request.form.get("candidate_user_id") or 0)
+                except (TypeError, ValueError):
+                    candidate_id = 0
+                if candidate_id <= 0:
+                    raise ValueError("Bitte wähle einen aktiven Manager aus.")
+                preliminary_candidate = connection.execute(
+                    "SELECT id FROM users WHERE id = ? AND role = 'manager' AND is_active = 1",
+                    (candidate_id,),
+                ).fetchone()
+                if preliminary_candidate is None:
+                    raise ValueError("Der ausgewählte Manager ist nicht mehr verfügbar.")
+            elif mode == "create_new":
+                new_username = valid_username(request.form.get("username"))
+            else:
+                raise ValueError("Die Art der Rollenübergabe ist ungültig.")
+
+            actor = verify_admin_sensitive_action(
+                connection,
+                password=request.form.get("current_password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="complete_legacy_role_handover",
+            )
+            connection.execute("BEGIN IMMEDIATE")
+            migration_state = connection.execute(
+                "SELECT * FROM role_migration_state WHERE id = 1 AND status = 'pending'"
+            ).fetchone()
+            if (
+                migration_state is None
+                or int(migration_state["legacy_admin_user_id"]) != int(actor["id"])
+            ):
+                raise ValueError("Für dieses Konto ist keine Rollenübergabe mehr ausstehend.")
+            current_owner = connection.execute(
+                "SELECT * FROM users WHERE id = ? AND role = 'band_admin' AND is_active = 1",
+                (actor["id"],),
+            ).fetchone()
+            if current_owner is None:
+                raise ValueError("Das bisherige Admin-Konto kann nicht sicher umgestellt werden.")
+
+            previous_target_role = "new_account"
+            if mode == "promote_existing":
+                target = connection.execute(
+                    "SELECT * FROM users WHERE id = ? AND role = 'manager' AND is_active = 1",
+                    (candidate_id,),
+                ).fetchone()
+                if target is None or int(target["id"]) == int(actor["id"]):
+                    raise ValueError("Der ausgewählte Manager ist nicht mehr verfügbar.")
+                target_id = int(target["id"])
+                target_username = str(target["username"])
+                previous_target_role = "manager"
+                updated = connection.execute(
+                    """
+                    UPDATE users
+                    SET role = 'band_admin', is_admin = 1,
+                        session_version = session_version + 1
+                    WHERE id = ? AND role = 'manager' AND is_active = 1
+                    """,
+                    (target_id,),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("Der ausgewählte Manager wurde zwischenzeitlich verändert.")
+            else:
+                target_username = str(new_username)
+                target_id, setup_code = create_setup_account(
+                    connection, username=target_username, role="band_admin"
+                )
+
+            owner_update = connection.execute(
+                """
+                UPDATE users
+                SET role = 'system_admin', is_admin = 0,
+                    session_version = session_version + 1
+                WHERE id = ? AND role = 'band_admin' AND is_active = 1
+                """,
+                (actor["id"],),
+            )
+            if owner_update.rowcount != 1:
+                raise ValueError("Das bisherige Admin-Konto wurde zwischenzeitlich verändert.")
+            completion_reason = (
+                "manual_existing_manager" if mode == "promote_existing" else "manual_new_band_admin"
+            )
+            completed_at = utc_now()
+            state_update = connection.execute(
+                """
+                UPDATE role_migration_state
+                SET status = 'completed', reason = ?, selected_band_admin_user_id = ?, completed_at = ?
+                WHERE id = 1 AND status = 'pending' AND legacy_admin_user_id = ?
+                """,
+                (completion_reason, target_id, completed_at, actor["id"]),
+            )
+            if state_update.rowcount != 1:
+                raise ValueError("Die Rollenübergabe wurde bereits in einer anderen Sitzung abgeschlossen.")
+            audit(
+                connection,
+                "complete_role_handover",
+                "user",
+                target_id,
+                {
+                    "username": target_username,
+                    "previous_role": previous_target_role,
+                    "role": "band_admin",
+                    "reason": completion_reason,
+                },
+                user_id=actor["id"],
+            )
+            audit(
+                connection,
+                "migrate_role",
+                "user",
+                int(actor["id"]),
+                {
+                    "previous_role": "band_admin",
+                    "original_role": "admin",
+                    "role": "system_admin",
+                    "reason": "legacy_platform_owner",
+                    "handover_reason": completion_reason,
+                },
+                user_id=actor["id"],
+            )
+            connection.commit()
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            connection.rollback()
+            flash("Die Rollenübergabe konnte nicht abgeschlossen werden: " + str(exc), "error")
+            return redirect(url_for("administration_page"))
+
+        session.clear()
+        g.user = None
+        if setup_code is not None:
+            return render_template(
+                "role_handover_complete.html",
+                title="Rollenübergabe abgeschlossen",
+                username=target_username,
+                setup_code=setup_code,
+                setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
+            )
+        flash(
+            "Die Rollenübergabe wurde abgeschlossen. Melde dich jetzt als System-Admin erneut an.",
+            "success",
+        )
+        return redirect(url_for("login"))
+
+    @app.post("/verwaltung/system-admin/einrichten")
+    @login_required
+    @band_admin_required
+    def bootstrap_system_admin():
+        """Perform the one-time, explicit handover to a separate platform identity."""
+
+        connection = get_user_db()
+        try:
+            username = valid_username(request.form.get("username"))
+            actor = verify_admin_sensitive_action(
+                connection,
+                password=request.form.get("current_password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="bootstrap_system_admin",
+            )
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM role_migration_state WHERE id = 1 AND status = 'pending'"
+            ).fetchone() is not None:
+                raise ValueError(
+                    "Schließe zuerst die angezeigte Rollen-Migration ab; sie ersetzt diese Ersteinrichtung."
+                )
+            if connection.execute(
+                "SELECT 1 FROM users WHERE role = 'system_admin' LIMIT 1"
+            ).fetchone() is not None:
+                raise ValueError("Der erste System-Admin wurde bereits eingerichtet.")
+            user_id, setup_code = create_setup_account(
+                connection, username=username, role="system_admin"
+            )
+            audit(
+                connection,
+                "bootstrap_system_admin",
+                "user",
+                user_id,
+                {"username": username, "role": "system_admin"},
+                user_id=actor["id"],
+            )
+            connection.commit()
+            return render_administration(
+                setup_credential={"username": username, "code": setup_code, "purpose": "new"}
+            )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            connection.rollback()
+            flash("Der System-Admin konnte nicht eingerichtet werden: " + str(exc), "error")
+            return redirect(url_for("administration_page"))
+
+    @app.post("/system-verwaltung/benutzer")
+    @login_required
+    @system_admin_required
+    def create_platform_user():
+        """Let an existing System-Admin provision Support/System identities."""
+
+        connection = get_user_db()
+        try:
+            username = valid_username(request.form.get("username"))
+            role = str(request.form.get("role", "support_admin")).strip().lower()
+            if role not in SYSTEM_ADMIN_MANAGED_ROLES:
+                raise ValueError("Hier sind nur Support-Admin und System-Admin zulässig.")
+            actor = verify_admin_sensitive_action(
+                connection,
+                password=request.form.get("current_password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="create_platform_user",
+            )
+            connection.execute("BEGIN IMMEDIATE")
+            user_id, setup_code = create_setup_account(connection, username=username, role=role)
+            audit(
+                connection,
+                "create_platform_user",
+                "user",
+                user_id,
+                {"username": username, "role": role},
+                user_id=actor["id"],
+            )
+            connection.commit()
+            return render_system_administration(
+                setup_credential={"username": username, "code": setup_code, "purpose": "new"}
+            )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            connection.rollback()
+            flash("Das Plattformkonto konnte nicht angelegt werden: " + str(exc), "error")
+            return redirect(url_for("system_administration_page"))
+
+    @app.post("/system-verwaltung/benutzer/<int:user_id>/aktiv")
+    @login_required
+    @platform_staff_required
+    def update_user_active_state_from_system(user_id: int):
+        """Deactivate Band accounts or, for System-Admins, platform staff."""
+
+        connection = get_user_db()
+        try:
+            actor = verify_admin_sensitive_action(
+                connection,
+                password=request.form.get("current_password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="update_user_active_state_from_system",
+            )
+            connection.execute("BEGIN IMMEDIATE")
+            user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if user is None:
+                abort(404)
+            target_role = normalized_role(user)
+            if target_role not in BAND_ROLE_LEVELS and target_role not in PLATFORM_STAFF_ROLES:
+                raise ValueError("Dieses Konto hat keine verwaltbare Rolle.")
+            if int(user["id"]) == int(g.user["id"]):
+                raise ValueError("Das eigene Plattformkonto kann hier nicht deaktiviert werden.")
+            if target_role in PLATFORM_STAFF_ROLES and normalized_role(g.user) != "system_admin":
+                abort(403)
+            active = request.form.get("active") == "1"
+            if (
+                not active
+                and target_role == "system_admin"
+                and int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM users WHERE role = 'system_admin' AND is_active = 1"
+                    ).fetchone()[0]
+                ) <= 1
+            ):
+                raise ValueError("Der letzte aktive System-Admin kann nicht deaktiviert werden.")
+            connection.execute(
+                "UPDATE users SET is_active = ?, session_version = session_version + 1 WHERE id = ?",
+                (int(active), user_id),
+            )
+            audit(
+                connection,
+                "activate_user" if active else "deactivate_user",
+                "user",
+                user_id,
+                {
+                    "username": user["username"],
+                    "role": target_role,
+                    "is_active": active,
+                    "source": "system_administration",
+                },
+                user_id=actor["id"],
+            )
+            connection.commit()
+            flash("Der Benutzer wurde {}.".format("aktiviert" if active else "deaktiviert"), "success")
+        except ValueError as exc:
+            connection.rollback()
+            flash(str(exc), "error")
+        return redirect(url_for("system_administration_page"))
 
     @app.post("/verwaltung/email/test")
     @login_required
@@ -8393,8 +9374,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return redirect(url_for("administration_page"))
 
     @app.post("/verwaltung/nachrichten/<int:message_id>/status")
+    @app.post("/system-verwaltung/nachrichten/<int:message_id>/status")
     @login_required
-    @admin_required
+    @administration_staff_required
     def update_admin_message_resolution(message_id: int):
         """Mark a private inbox item done or reopen it without deleting it."""
 
@@ -8436,7 +9418,12 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash("Der Nachrichtenstatus konnte nicht gespeichert werden.", "error")
         else:
             flash("Nachricht als erledigt markiert." if is_resolved else "Nachricht wieder geöffnet.", "success")
-        return redirect(url_for("administration_page"))
+        destination = (
+            "system_administration_page"
+            if normalized_role(g.user) in PLATFORM_STAFF_ROLES
+            else "administration_page"
+        )
+        return redirect(url_for(destination))
 
     @app.post("/verwaltung/email/einstellungen")
     @login_required
@@ -8583,36 +9570,35 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @admin_required
     def create_user():
+        connection = get_user_db()
         try:
             username = valid_username(request.form.get("username"))
             role = str(request.form.get("role", "seller")).strip().lower()
             if role not in MANAGED_USER_ROLES:
-                raise ValueError("Neue Benutzer können nur die Rollen Seller, Member oder Manager erhalten.")
-            setup_code = generate_setup_code()
-            connection = get_user_db()
-            connection.execute(
-                """
-                INSERT INTO users (
-                    username, password_hash, is_admin, role, is_active, must_set_password,
-                    setup_code_hash, setup_code_expires_at, created_at
-                ) VALUES (?, ?, 0, ?, 1, 1, ?, ?, ?)
-                """,
-                (
-                    username,
-                    generate_password_hash(secrets.token_urlsafe(48)),
-                    role,
-                    generate_password_hash(setup_code),
-                    setup_code_expiry(int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"])),
-                    utc_now(),
-                ),
-            )
-            user_id = connection.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()[0]
+                raise ValueError("Neue Bandkonten können nur Seller, Member, Manager oder Band-Admin sein.")
+            if role == "band_admin":
+                if connection.execute(
+                    "SELECT 1 FROM role_migration_state WHERE id = 1 AND status = 'pending'"
+                ).fetchone() is not None:
+                    raise ValueError(
+                        "Nutze für den ersten Band-Admin die Rollenübergabe oben auf dieser Seite."
+                    )
+                if request.form.get("band_admin_confirmation") != "confirmed":
+                    raise ValueError("Die Band-Admin-Warnung wurde nicht bestätigt.")
+                actor = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+                if actor is None or not check_password_hash(
+                    actor["password_hash"], str(request.form.get("current_password") or "")
+                ):
+                    raise ValueError("Das aktuelle Passwort ist nicht korrekt.")
+            connection.execute("BEGIN IMMEDIATE")
+            user_id, setup_code = create_setup_account(connection, username=username, role=role)
             audit(connection, "create", "user", user_id, {"username": username, "role": role})
             connection.commit()
             return render_administration(
                 setup_credential={"username": username, "code": setup_code, "purpose": "new"}
             )
         except (ValueError, sqlite3.IntegrityError) as exc:
+            connection.rollback()
             flash("Dieser Benutzer konnte nicht angelegt werden: " + str(exc), "error")
             return redirect(url_for("administration_page"))
 
@@ -8624,8 +9610,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             abort(404)
-        if normalized_role(user) == "admin":
-            flash("Das Admin-Passwort wird ausschließlich im eigenen Profil geändert.", "error")
+        if normalized_role(user) not in BAND_ROLE_LEVELS:
+            abort(403)
+        if int(user["id"]) == int(g.user["id"]):
+            flash("Das eigene Passwort wird ausschließlich im Profil geändert.", "error")
             return redirect(url_for("administration_page"))
         setup_code = generate_setup_code()
         connection.execute(
@@ -8654,21 +9642,68 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def update_user_role(user_id: int):
         role = str(request.form.get("role", "")).strip().lower()
         if role not in MANAGED_USER_ROLES:
-            flash("Es sind nur die Rollen Seller, Member und Manager auswählbar.", "error")
+            flash("Es sind nur Seller, Member, Manager und Band-Admin auswählbar.", "error")
             return redirect(url_for("administration_page"))
         connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             abort(404)
-        if normalized_role(user) == "admin":
-            flash("Die einzige Admin-Rolle kann nicht geändert werden.", "error")
+        previous_role = normalized_role(user)
+        if previous_role not in BAND_ROLE_LEVELS:
+            abort(403)
+        if int(user["id"]) == int(g.user["id"]):
+            flash("Die eigene Rolle kann nicht geändert werden.", "error")
             return redirect(url_for("administration_page"))
-        connection.execute(
-            "UPDATE users SET role = ?, is_admin = 0, session_version = session_version + 1 WHERE id = ?",
-            (role, user_id),
-        )
-        audit(connection, "change_role", "user", user_id, {"username": user["username"], "role": role})
-        connection.commit()
+        if role == previous_role:
+            flash("Die Rolle wurde nicht verändert.", "success")
+            return redirect(url_for("administration_page"))
+        try:
+            if role == "band_admin":
+                if connection.execute(
+                    "SELECT 1 FROM role_migration_state WHERE id = 1 AND status = 'pending'"
+                ).fetchone() is not None:
+                    raise ValueError(
+                        "Nutze für den ersten Band-Admin die Rollenübergabe oben auf dieser Seite."
+                    )
+                if request.form.get("band_admin_confirmation") != "confirmed":
+                    raise ValueError("Die Band-Admin-Warnung wurde nicht bestätigt.")
+                actor = connection.execute("SELECT * FROM users WHERE id = ?", (g.user["id"],)).fetchone()
+                if actor is None or not check_password_hash(
+                    actor["password_hash"], str(request.form.get("current_password") or "")
+                ):
+                    raise ValueError("Das aktuelle Passwort ist nicht korrekt.")
+            connection.execute("BEGIN IMMEDIATE")
+            if (
+                previous_role == "band_admin"
+                and role != "band_admin"
+                and bool(user["is_active"])
+                and int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM users WHERE role = 'band_admin' AND is_active = 1"
+                    ).fetchone()[0]
+                ) <= 1
+            ):
+                raise ValueError("Der letzte aktive Band-Admin kann nicht herabgestuft werden.")
+            connection.execute(
+                """
+                UPDATE users
+                SET role = ?, is_admin = ?, session_version = session_version + 1
+                WHERE id = ?
+                """,
+                (role, int(role == "band_admin"), user_id),
+            )
+            audit(
+                connection,
+                "change_role",
+                "user",
+                user_id,
+                {"username": user["username"], "previous_role": previous_role, "role": role},
+            )
+            connection.commit()
+        except ValueError as exc:
+            connection.rollback()
+            flash(str(exc), "error")
+            return redirect(url_for("administration_page"))
         flash("Die Rolle von „{}“ wurde geändert.".format(user["username"]), "success")
         return redirect(url_for("administration_page"))
 
@@ -8680,10 +9715,25 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             abort(404)
-        if normalized_role(user) == "admin":
-            flash("Der einzige Admin kann nicht deaktiviert werden.", "error")
+        target_role = normalized_role(user)
+        if target_role not in BAND_ROLE_LEVELS:
+            abort(403)
+        if int(user["id"]) == int(g.user["id"]):
+            flash("Das eigene Konto kann hier nicht deaktiviert werden.", "error")
             return redirect(url_for("administration_page"))
         active = request.form.get("active") == "1"
+        if (
+            not active
+            and target_role == "band_admin"
+            and bool(user["is_active"])
+            and int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM users WHERE role = 'band_admin' AND is_active = 1"
+                ).fetchone()[0]
+            ) <= 1
+        ):
+            flash("Der letzte aktive Band-Admin kann nicht deaktiviert werden.", "error")
+            return redirect(url_for("administration_page"))
         connection.execute(
             "UPDATE users SET is_active = ?, session_version = session_version + 1 WHERE id = ?",
             (int(active), user_id),
@@ -8693,7 +9743,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "activate_user" if active else "deactivate_user",
             "user",
             user_id,
-            {"username": user["username"], "is_active": active},
+            {"username": user["username"], "role": target_role, "is_active": active},
         )
         connection.commit()
         flash("Der Benutzer wurde {}.".format("aktiviert" if active else "deaktiviert"), "success")
@@ -8707,8 +9757,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             abort(404)
-        if normalized_role(user) == "admin":
-            flash("Die verpflichtende Admin-2FA kann nur durch die Wiederherstellungscodes des Admins ersetzt werden.", "error")
+        if normalized_role(user) not in BAND_ROLE_LEVELS:
+            abort(403)
+        if int(user["id"]) == int(g.user["id"]):
+            flash("Die eigene 2FA wird ausschließlich im Profil verwaltet.", "error")
             return redirect(url_for("administration_page"))
         connection.execute(
             """
@@ -8729,7 +9781,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     @login_required
     @admin_required
     def delete_user(user_id: int):
-        """Remove a non-admin account without changing historic bookings."""
+        """Remove another Band account without changing historic bookings."""
 
         if request.form.get("confirmation", "").strip() != "BENUTZER LÖSCHEN":
             flash("Bitte die Bestätigung exakt als „BENUTZER LÖSCHEN“ eingeben.", "error")
@@ -8738,8 +9790,22 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
             abort(404)
-        if int(user["id"]) == int(g.user["id"]) or normalized_role(user) == "admin":
-            flash("Das eigene oder das einzige Admin-Konto kann nicht gelöscht werden.", "error")
+        target_role = normalized_role(user)
+        if target_role not in BAND_ROLE_LEVELS:
+            abort(403)
+        if int(user["id"]) == int(g.user["id"]):
+            flash("Das eigene Band-Admin-Konto kann nicht gelöscht werden.", "error")
+            return redirect(url_for("administration_page"))
+        if (
+            target_role == "band_admin"
+            and bool(user["is_active"])
+            and int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM users WHERE role = 'band_admin' AND is_active = 1"
+                ).fetchone()[0]
+            ) <= 1
+        ):
+            flash("Der letzte aktive Band-Admin kann nicht gelöscht werden.", "error")
             return redirect(url_for("administration_page"))
         try:
             admin = verify_admin_sensitive_action(

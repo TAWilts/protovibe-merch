@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block page_class %}system-administration-page{% endblock %}
+
+{% macro active_state_control(user, can_manage=true) -%}
+  {% if can_manage and user.id != current_user.id %}
+  <details class="admin-danger-confirmation system-user-state-confirmation">
+    <summary>{{ 'Deaktivieren' if user.is_active else 'Aktivieren' }}</summary>
+    <form action="{{ url_for('update_user_active_state_from_system', user_id=user.id) }}" method="post" class="admin-sensitive-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="active" value="{{ 0 if user.is_active else 1 }}">
+      <p>{% if user.is_active %}Das Konto wird sofort abgemeldet und kann sich nicht mehr anmelden.{% else %}Das Konto kann sich nach der Aktivierung wieder anmelden.{% endif %}</p>
+      <label>Dein aktuelles Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
+      {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+      <button class="{{ 'danger-button' if user.is_active else 'secondary-button' }} compact-button" type="submit">{{ 'Konto deaktivieren' if user.is_active else 'Konto aktivieren' }}</button>
+    </form>
+  </details>
+  {% elif user.id == current_user.id %}<span class="muted">Eigenes Konto</span>
+  {% else %}<span class="muted">Nur durch System-Admin änderbar</span>{% endif %}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-title-row">
+  <div><p class="eyebrow">Support und Plattform</p><h1>System-Verwaltung</h1><p class="page-intro">Supportnachrichten, Plattformkonten und der künftige Zugriff auf einzelne Bands.</p></div>
+  <span class="status good">{{ current_user.role_label }}</span>
+</div>
+
+{% if setup_credential %}
+<section class="setup-code-card" aria-live="polite">
+  <p class="eyebrow">Plattformkonto angelegt</p>
+  <h2>Einrichtungscode für {{ setup_credential.username }}</h2>
+  <p>Gib diesen einmaligen Code sicher an die Person weiter. Er ist {{ setup_code_days }} Tage gültig und wird nach dem ersten eigenen Passwort nicht mehr funktionieren.</p>
+  <code class="setup-code" data-setup-code>{{ setup_credential.code }}</code>
+  <p class="notice">Der Code wird nicht gespeichert und nach dem Verlassen dieser Seite nicht erneut angezeigt.</p>
+</section>
+{% endif %}
+
+<section class="system-overview-grid" aria-label="Systemstatus">
+  <article class="table-section system-overview-card">
+    <p class="eyebrow">Betriebsart</p>
+    <h2>Aktuelle Einzelinstallation</h2>
+    <p>Noch ohne Tenant- oder Band-ID. Die Trennung in mehrere Bands wird mit der Tenant-Struktur ergänzt.</p>
+    <span class="status warning">Single-Tenant-Übergang</span>
+  </article>
+  <article class="table-section system-overview-card">
+    <p class="eyebrow">Zugriffsprinzip</p>
+    <h2>Kein Bandzugriff ohne Freigabe</h2>
+    <p>Support- und System-Admins erhalten Bandrechte künftig erst nach Zustimmung eines Band-Admins und erneuter 2FA für genau diesen Zugriff.</p>
+    <span class="status good">Standardmäßig gesperrt</span>
+  </article>
+</section>
+
+<section class="table-section admin-message-inbox system-support-inbox">
+  <div class="section-heading"><div><p class="eyebrow">Support-Postfach</p><h2>Nachrichten an den Admin</h2><p>{{ admin_messages|length }} Nachricht(en), {{ admin_messages|rejectattr('is_resolved')|list|length }} offen.</p></div></div>
+  {% if admin_messages %}
+  <div class="admin-message-list">
+    {% for message in admin_messages %}
+    <details class="admin-message-card {{ 'is-resolved' if message.is_resolved else '' }}"{% if not message.is_resolved %} open{% endif %}>
+      <summary><span class="status {{ 'cancelled' if message.is_resolved else ('warning' if message.message_type == 'issue' else 'good') }}">{{ 'Erledigt' if message.is_resolved else ('Issue / Problem' if message.message_type == 'issue' else 'Frage') }}</span><strong>{{ message.subject }}</strong><time datetime="{{ message.created_at }}">{{ message.created_at }}</time></summary>
+      <div class="admin-message-card-content"><p class="admin-message-sender">Von <strong>{{ message.sender_username }}</strong> · <a href="mailto:{{ message.sender_email }}">{{ message.sender_email or 'Keine E-Mail angegeben' }}</a></p><div class="admin-message-body">{{ message.body }}</div>
+      <form action="{{ url_for('update_admin_message_resolution', message_id=message.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path }}"><input type="hidden" name="is_resolved" value="{{ 0 if message.is_resolved else 1 }}"><button class="secondary-button compact-button" type="submit">{{ 'Wieder öffnen' if message.is_resolved else 'Als erledigt markieren' }}</button>{% if message.is_resolved %}<small>Erledigt von {{ message.resolved_by_username or 'Admin' }}.</small>{% endif %}</form></div>
+    </details>
+    {% endfor %}
+  </div>
+  {% else %}<p class="muted">Noch keine Issues oder Fragen eingegangen.</p>{% endif %}
+</section>
+
+<section class="table-section system-band-overview">
+  <div class="section-heading"><div><p class="eyebrow">Bands und Mitglieder</p><h2>Installationen</h2><p>Bis zur Tenant-Migration wird die aktuelle Einzelinstallation transparent als Übergangsbestand angezeigt.</p></div></div>
+  <details class="system-band-card" open>
+    <summary><span><strong>Aktuelle Einzelinstallation</strong><small>Noch keine Band-ID</small></span><span class="status warning">{{ band_users|length }} Bandkonto/-konten</span></summary>
+    <div class="system-band-card-content">
+      {% if band_users %}
+      <div class="table-scroll"><table class="system-users-table"><caption class="visually-hidden">Bandkonten der aktuellen Einzelinstallation</caption><thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>2FA</th><th>Letzte Anmeldung</th><th>Aktion</th></tr></thead><tbody>
+        {% for user in band_users %}<tr><td><strong>{{ user.username }}</strong></td><td>{{ user.role_label }}</td><td><span class="status {{ 'good' if user.is_active else 'cancelled' }}">{{ 'Aktiv' if user.is_active else 'Deaktiviert' }}</span></td><td>{{ 'Aktiv' if user.mfa_enabled else 'Nicht aktiv' }}</td><td>{{ user.last_login_at or '—' }}</td><td class="admin-actions">{{ active_state_control(user, user.can_change_active_from_system) }}</td></tr>{% endfor %}
+      </tbody></table></div>
+      {% else %}<p class="muted">Keine Bandkonten vorhanden.</p>{% endif %}
+      <div class="system-unavailable-actions" aria-describedby="tenant-actions-unavailable">
+        <button class="danger-button compact-button" type="button" disabled>Band deaktivieren</button>
+        <button class="secondary-button compact-button" type="button" disabled>Zugriff anfordern</button>
+        <p id="tenant-actions-unavailable" class="muted">Mit Tenant-Struktur verfügbar. Bis dahin wird keine Bandfreigabe vorgetäuscht oder automatisch erteilt.</p>
+      </div>
+    </div>
+  </details>
+</section>
+
+<section class="table-section system-platform-users">
+  <div class="section-heading"><div><p class="eyebrow">Control Plane</p><h2>Support- und System-Admins</h2><p>Plattformkonten sind nicht automatisch Mitglied einer Band.</p></div></div>
+  {% if platform_users %}
+  <div class="table-scroll"><table class="system-users-table"><caption class="visually-hidden">Plattformkonten</caption><thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>2FA</th><th>Letzte Anmeldung</th><th>Aktion</th></tr></thead><tbody>
+    {% for user in platform_users %}<tr><td><strong>{{ user.username }}</strong></td><td>{{ user.role_label }}</td><td><span class="status {{ 'good' if user.is_active else 'cancelled' }}">{{ 'Aktiv' if user.is_active else 'Deaktiviert' }}</span></td><td><span class="status {{ 'good' if user.mfa_enabled else 'warning' }}">{{ 'Aktiv' if user.mfa_enabled else 'Erforderlich' }}</span></td><td>{{ user.last_login_at or '—' }}</td><td class="admin-actions">{{ active_state_control(user, user.can_change_active_from_system) }}</td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}<p class="muted">Keine Plattformkonten vorhanden.</p>{% endif %}
+</section>
+
+{% if current_user.can_manage_platform_staff %}
+<section class="table-section system-platform-create">
+  <div class="section-heading"><div><p class="eyebrow">Nur System-Admin</p><h2>Plattformkonto anlegen</h2><p>Das neue Konto erhält einen einmaligen Einrichtungscode und muss 2FA einrichten.</p></div></div>
+  <form action="{{ url_for('create_platform_user') }}" method="post" class="system-platform-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Benutzername<input name="username" autocomplete="username" minlength="3" maxlength="48" required></label>
+    <label>Rolle<select name="role" required><option value="support_admin">Support-Admin</option><option value="system_admin">System-Admin</option></select></label>
+    <label>Dein aktuelles Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
+    {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+    <button class="primary-button" type="submit">Plattformkonto anlegen</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="table-section system-access-preview">
+  <div class="section-heading"><div><p class="eyebrow">Geplanter Supportzugriff</p><h2>Freigabe für einen einzelnen Zugriff</h2><p>Der sichere Ablauf wird mit der Tenant-Struktur umgesetzt.</p></div><span class="status warning">Noch nicht verfügbar</span></div>
+  <ol class="system-access-flow"><li>Zugriff für eine konkrete Band anfordern.</li><li>Ein eingeloggter Band-Admin genehmigt oder lehnt ab.</li><li>Support-/System-Admin bestätigt erneut mit 2FA.</li><li>Der zeitlich begrenzte Bandzugriff startet mit sichtbarem Hinweis und vollständigem Audit.</li></ol>
+  <button class="secondary-button" type="button" disabled>Zugriff anfordern · Mit Tenant-Struktur verfügbar</button>
+</section>
+{% endblock %}
