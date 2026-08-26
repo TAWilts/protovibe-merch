@@ -10,6 +10,10 @@
   if (!root) return;
 
   const articles = JSON.parse(document.getElementById("articles-data").textContent);
+  const paymentQrAvailabilityData = document.getElementById("payment-qr-availability-data");
+  const paymentQrAvailability = paymentQrAvailabilityData
+    ? JSON.parse(paymentQrAvailabilityData.textContent)
+    : {};
   const $ = (id) => document.getElementById(id);
   const photoStrings = window.MERCH_APP?.photoStrings || {
     caption: "Produktfoto dieser Variante",
@@ -49,6 +53,7 @@
     amountDue: $("amount-due"),
     amountGiven: $("amount-given"),
     donation: $("donation-preview"),
+    paymentInputs: $("payment-inputs"),
     addCart: $("add-cart-item"),
     cartItems: $("cart-items"),
     cartItemCount: $("cart-item-count"),
@@ -58,14 +63,37 @@
     dialog: $("success-dialog"),
     dialogReceipt: $("success-receipt"),
     dialogMessage: $("success-message"),
+    paymentQrSetupHint: $("payment-qr-setup-hint"),
     closeDialog: $("close-success"),
+    paymentQrDialog: $("payment-qr-dialog"),
+    paymentQrImage: $("payment-qr-image"),
+    paymentQrMethod: $("payment-qr-method"),
+    paymentQrAmount: $("payment-qr-amount"),
+    paymentQrDetails: $("payment-qr-details"),
+    paymentQrError: $("payment-qr-error"),
+    cancelPaymentQr: $("cancel-payment-qr"),
+    confirmPaymentQr: $("confirm-payment-qr"),
   };
   let currentVariant = null;
   const cartItems = [];
+  const qrPaymentMethods = new Set(["PayPal", "Überweisung"]);
   const mobileCollapsedDetails = Array.from(root.querySelectorAll("[data-mobile-collapsed]"));
   let selectedSaleEventValue = ui.saleEvent?.value || "";
   let saleEventBusy = false;
   let saleEventRefreshPromise = null;
+  let saleSubmissionBusy = false;
+  let paymentQrBusy = false;
+  let paymentQrDraft = null;
+  let paymentQrConfirmationPending = false;
+
+  function paymentQrConfigured(paymentMethod) {
+    return (paymentMethod === "PayPal" && Boolean(paymentQrAvailability.paypal))
+      || (paymentMethod === "Überweisung" && Boolean(paymentQrAvailability.bank_transfer));
+  }
+
+  function paymentQrSetupIsMissing(paymentMethod) {
+    return qrPaymentMethods.has(paymentMethod) && !paymentQrConfigured(paymentMethod);
+  }
 
   function initializeResponsiveDetails() {
     const isMobile = window.matchMedia("(max-width: 760px)").matches;
@@ -179,10 +207,32 @@
     ui.saleEvent.dataset.currentEventId = body.current_event_id ?? "";
   }
 
+  function paymentRequiresQrPreview() {
+    // A dynamic server QR cannot safely be shown from the PWA's cached shell.
+    // Keep the established offline ledger flow usable instead of exposing a
+    // stale recipient or blocking a real counter sale.
+    return paymentQrConfigured(ui.method.value) && !window.MerchOffline?.isOffline();
+  }
+
+  function paymentUsesExactQrAmount() {
+    return qrPaymentMethods.has(ui.method.value);
+  }
+
+  function confirmButtonText() {
+    if (saleSubmissionBusy) return "Speichert …";
+    if (paymentQrBusy) return "QR-Code wird geladen …";
+    return paymentRequiresQrPreview() ? "QR-Code anzeigen" : "Kauf bestätigen";
+  }
+
+  function syncConfirmButtonState() {
+    ui.confirm.disabled = saleEventBusy || saleSubmissionBusy || paymentQrBusy || cartItems.length === 0;
+    ui.confirm.textContent = confirmButtonText();
+  }
+
   function setSaleEventBusy(busy) {
     saleEventBusy = busy;
     if (ui.saleEvent) ui.saleEvent.disabled = busy;
-    ui.confirm.disabled = busy || cartItems.length === 0;
+    syncConfirmButtonState();
   }
 
   async function saleEventApi(url, options = {}) {
@@ -301,8 +351,10 @@
   }
 
   function updatePaidFields() {
-    ui.amountGiven.disabled = !ui.paid.checked;
-    if (!ui.paid.checked) ui.amountGiven.value = "";
+    const usesExactQrAmount = paymentUsesExactQrAmount();
+    ui.paymentInputs.hidden = usesExactQrAmount;
+    ui.amountGiven.disabled = !ui.paid.checked || usesExactQrAmount;
+    if (!ui.paid.checked || usesExactQrAmount) ui.amountGiven.value = "";
   }
 
   function cartTotalCents() {
@@ -367,11 +419,13 @@
     const dueCents = cartTotalCents();
     const unitPriceCents = window.MerchTransaction.moneyInputToCents(ui.unitPrice.value);
     const givenCents = window.MerchTransaction.inputToCents(ui.amountGiven.value);
-    const donationCents = ui.paid.checked ? Math.max(0, givenCents - dueCents) : 0;
+    const donationCents = ui.paid.checked && !paymentUsesExactQrAmount()
+      ? Math.max(0, givenCents - dueCents)
+      : 0;
     ui.amountDue.textContent = window.MerchTransaction.centsToEuro(dueCents);
     ui.donation.textContent = window.MerchTransaction.centsToEuro(donationCents);
     ui.addCart.disabled = !currentVariant || unitPriceCents === null;
-    ui.confirm.disabled = saleEventBusy || cartItems.length === 0;
+    syncConfirmButtonState();
     updateStockWarning();
     if (!ui.error.dataset.serverError) showError("");
     return { dueCents, unitPriceCents };
@@ -505,7 +559,7 @@
     applySaleStockUpdate({ items: updates });
   }
 
-  function showConfirmedSale(receiptId, message) {
+  function showConfirmedSale(receiptId, message, { showPaymentQrSetupHint = false } = {}) {
     ui.dialogReceipt.textContent = receiptId;
     ui.dialogMessage.replaceChildren(
       document.createTextNode(message),
@@ -513,33 +567,27 @@
       ui.dialogReceipt,
       document.createTextNode(".")
     );
+    if (ui.paymentQrSetupHint) ui.paymentQrSetupHint.hidden = !showPaymentQrSetupHint;
     ui.dialog.showModal();
   }
 
-  async function confirmSale() {
-    if (saleEventBusy) return;
-    const offline = window.MerchOffline;
-    if (!offline?.isOffline()) {
-      // Fetch immediately before saving, so a tab that stayed open while a
-      // colleague selected another event cannot silently book to an old one.
-      ui.confirm.disabled = true;
-      await refreshSaleEvents();
-    }
+  function salePayloadFromForm() {
     const { dueCents } = updateSummary();
-    if (!cartItems.length) return showError("Bitte mindestens einen Artikel zum Warenkorb hinzufügen.");
+    if (!cartItems.length) {
+      showError("Bitte mindestens einen Artikel zum Warenkorb hinzufügen.");
+      return null;
+    }
     if ((!ui.received.checked || !ui.paid.checked) && (!ui.customerName.value.trim() || !ui.customerAddress.value.trim())) {
-      return showError("Bei nicht bezahlten oder noch nicht erhaltenen Artikeln sind Name und Adresse erforderlich.");
+      showError("Bei nicht bezahlten oder noch nicht erhaltenen Artikeln sind Name und Adresse erforderlich.");
+      return null;
     }
     const givenCents = window.MerchTransaction.inputToCents(ui.amountGiven.value);
-    if (ui.paid.checked && ui.amountGiven.value.trim() && givenCents < dueCents) {
-      return showError("Der gegebene Betrag ist kleiner als der Verkaufspreis. Bitte „Bezahlt“ entfernen oder Betrag korrigieren.");
+    if (!paymentUsesExactQrAmount() && ui.paid.checked && ui.amountGiven.value.trim() && givenCents < dueCents) {
+      showError("Der gegebene Betrag ist kleiner als der Verkaufspreis. Bitte „Bezahlt“ entfernen oder Betrag korrigieren.");
+      return null;
     }
-    showError("");
-    ui.error.dataset.serverError = "";
-    ui.confirm.disabled = true;
-    ui.confirm.textContent = "Speichert …";
     const selectedEvent = selectedSaleEventPayload();
-    const salePayload = {
+    return {
       receipt_id: ui.receipt.textContent,
       items: cartItems.map((item) => ({
         variant_id: item.variantId,
@@ -550,55 +598,254 @@
       is_received: ui.received.checked,
       payment_method: ui.method.value,
       sold_on: ui.soldOn.value,
-      amount_given: ui.amountGiven.value.trim(),
+      // QR payment methods always settle the exact displayed amount. Do not
+      // carry a cash amount from a previous payment-method selection forward.
+      amount_given: paymentUsesExactQrAmount() ? "" : ui.amountGiven.value.trim(),
       customer_name: ui.customerName.value.trim(),
       customer_address: ui.customerAddress.value.trim(),
       event_id: selectedEvent.event_id,
-      // Keep the former free-text field in the request.  Queued clients from
+      // Keep the former free-text field in the request. Queued clients from
       // before the dropdown and a restored browser outbox remain compatible.
       event_name: selectedEvent.event_name,
       sold_by: ui.soldBy.value.trim(),
       comment: ui.comment.value.trim(),
     };
-    let requestPayload = salePayload;
-    let responseReceived = false;
+  }
+
+  function showPaymentQrError(message) {
+    if (!ui.paymentQrError) return;
+    ui.paymentQrError.textContent = message;
+    ui.paymentQrError.hidden = !message;
+  }
+
+  function appendPaymentQrDetail(label, value) {
+    if (!value || !ui.paymentQrDetails) return;
+    const row = document.createElement("div");
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = value;
+    row.append(term, description);
+    ui.paymentQrDetails.append(row);
+  }
+
+  function renderPaymentQr(preview) {
+    const details = preview.details || {};
+    ui.paymentQrImage.src = preview.qr_data_uri;
+    ui.paymentQrImage.hidden = false;
+    ui.paymentQrMethod.textContent = preview.payment_method || "Zahlung";
+    ui.paymentQrAmount.textContent = preview.amount_display || "";
+    ui.paymentQrDetails.replaceChildren();
+    appendPaymentQrDetail("Beleg-ID", preview.receipt_id);
+    if (details.kind === "paypal") {
+      appendPaymentQrDetail("PayPal.Me", details.payment_url);
+    } else {
+      appendPaymentQrDetail("Empfänger", details.bank_account_holder);
+      appendPaymentQrDetail("IBAN", details.bank_iban);
+      appendPaymentQrDetail("BIC", details.bank_bic);
+      appendPaymentQrDetail("Verwendungszweck", details.bank_remittance_text);
+    }
+    ui.cancelPaymentQr.disabled = false;
+    ui.confirmPaymentQr.disabled = false;
+    showPaymentQrError("");
+  }
+
+  function clearPaymentQr() {
+    const intentToken = paymentQrDraft?.payment_qr_intent_token;
+    const shouldCancelIntent = intentToken && !paymentQrConfirmationPending;
+    paymentQrDraft = null;
+    paymentQrConfirmationPending = false;
+    if (shouldCancelIntent) void cancelPaymentQrIntent(intentToken);
+    if (ui.paymentQrImage) {
+      ui.paymentQrImage.removeAttribute("src");
+      ui.paymentQrImage.hidden = true;
+    }
+    ui.paymentQrMethod.textContent = "";
+    ui.paymentQrAmount.textContent = "";
+    ui.paymentQrDetails.replaceChildren();
+    ui.cancelPaymentQr.disabled = false;
+    ui.confirmPaymentQr.disabled = false;
+    showPaymentQrError("");
+  }
+
+  async function requestPaymentQr(draft) {
+    const response = await fetch("/api/sales/payment-qr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
+      body: JSON.stringify(draft),
+    });
+    const body = await response.json();
+    if (!response.ok || !body.ok) throw new Error(body.error || "Der Zahlungs-QR-Code konnte nicht erzeugt werden.");
+    return body;
+  }
+
+  async function cancelPaymentQrIntent(intentToken) {
     try {
-      if (offline) requestPayload = await offline.prepareSale(salePayload);
-      const response = await fetch("/api/sales", {
+      await fetch(`/api/sales/payment-qr/${encodeURIComponent(intentToken)}/cancel`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
-        body: JSON.stringify(requestPayload),
+        headers: { "X-CSRF-Token": window.MERCH_APP.csrfToken },
       });
-      responseReceived = true;
-      const body = await response.json();
-      if (!response.ok || !body.ok) throw new Error(body.error || "Der Kauf konnte nicht gespeichert werden.");
-      if (offline) await offline.acknowledgeSale(requestPayload.client_event_id);
-      applySaleStockUpdate(body);
-      showConfirmedSale(body.receipt_id, body.duplicate ? "Offline-Verkauf bereits synchronisiert als" : "Der Verkauf wurde mit der Beleg-ID");
-    } catch (error) {
-      // Only a missing/ambiguous response is queued. A clear 4xx/5xx response
-      // remains visible as an error instead of silently turning a rejected
-      // sale into an offline booking.
-      const ambiguousResponse = !responseReceived || error instanceof SyntaxError;
-      if (offline && ambiguousResponse && requestPayload.client_event_id) {
-        try {
-          await offline.queueSale(requestPayload);
-          localOfflineStockUpdate(requestPayload);
-          showConfirmedSale(
-            `Offline-${requestPayload.client_event_id.slice(0, 8)}`,
-            "Der Verkauf wurde lokal vorgemerkt und erhält beim Synchronisieren seine Beleg-ID"
-          );
-          return;
-        } catch (queueError) {
-          error = queueError;
-        }
+    } catch {
+      // The server keeps an unconfirmed intent only temporarily. A lost cancel
+      // request must not turn an explicit UI abort into an error for the seller.
+    }
+  }
+
+  async function openPaymentQr() {
+    if (saleEventBusy || saleSubmissionBusy || paymentQrBusy) return;
+    if (window.MerchOffline?.isOffline()) {
+      await confirmSale();
+      return;
+    }
+    paymentQrBusy = true;
+    syncConfirmButtonState();
+    try {
+      // The QR dialog represents a payment taking place now. Its positive
+      // confirmation must never leave an accidentally unchecked payment flag
+      // behind as an open follow-up transaction.
+      if (!ui.paid.checked) {
+        ui.paid.checked = true;
+        updatePaidFields();
+        updateContactFields();
       }
+      // Use the current shared event before freezing the sale draft shown to
+      // the customer. Once the modal is open, its payload is never rebuilt.
+      await refreshSaleEvents();
+      const draft = salePayloadFromForm();
+      if (!draft) return;
+      const preview = await requestPaymentQr(draft);
+      if (!preview.intent_token || !preview.receipt_id) {
+        throw new Error("Der Zahlungs-QR-Code enthält keine gültige Beleg-ID.");
+      }
+      paymentQrDraft = {
+        ...draft,
+        receipt_id: preview.receipt_id,
+        payment_qr_intent_token: preview.intent_token,
+      };
+      ui.receipt.textContent = preview.receipt_id;
+      renderPaymentQr(preview);
+      ui.paymentQrDialog.showModal();
+      ui.confirmPaymentQr.focus();
+    } catch (error) {
       ui.error.dataset.serverError = "1";
-      showError(error.message);
-      updateSummary();
+      showError(error instanceof Error ? error.message : "Der Zahlungs-QR-Code konnte nicht erzeugt werden.");
     } finally {
-      ui.confirm.textContent = "Kauf bestätigen";
+      paymentQrBusy = false;
+      syncConfirmButtonState();
+    }
+  }
+
+  async function confirmPaymentQr() {
+    const frozenDraft = paymentQrDraft && {
+      ...paymentQrDraft,
+      is_paid: true,
+      amount_given: "",
+    };
+    if (!frozenDraft || saleSubmissionBusy) return;
+    paymentQrConfirmationPending = true;
+    ui.cancelPaymentQr.disabled = true;
+    ui.confirmPaymentQr.disabled = true;
+    const confirmation = await confirmSale(frozenDraft, { showConfirmation: false });
+    if (confirmation) {
+      ui.paymentQrDialog.close();
+      const duplicateMessage = confirmation.duplicate
+        ? "QR-Zahlung bereits bestätigt als"
+        : "Der Verkauf wurde mit der Beleg-ID";
+      showConfirmedSale(confirmation.receipt_id, duplicateMessage);
+      return;
+    }
+
+    // Keep the exact intent token and frozen draft visible after an ambiguous
+    // network response. Repeating the request is safe because the server
+    // returns its stored confirmation instead of creating another sale.
+    paymentQrConfirmationPending = false;
+    ui.cancelPaymentQr.disabled = false;
+    ui.confirmPaymentQr.disabled = false;
+    showPaymentQrError("Die Bestätigung konnte nicht gespeichert werden. Bitte erneut auf „Bestätigt“ tippen.");
+    ui.confirmPaymentQr.focus();
+  }
+
+  async function confirmSale(frozenSalePayload = null, { showConfirmation = true } = {}) {
+    if (saleEventBusy || saleSubmissionBusy) return;
+    const offline = window.MerchOffline;
+    saleSubmissionBusy = true;
+    syncConfirmButtonState();
+    let salePayload = frozenSalePayload;
+    try {
+      if (!salePayload) {
+        if (!offline?.isOffline()) {
+          // Fetch immediately before saving, so a tab that stayed open while a
+          // colleague selected another event cannot silently book to an old one.
+          await refreshSaleEvents();
+        }
+        salePayload = salePayloadFromForm();
+        if (!salePayload) return;
+      }
+      showError("");
+      ui.error.dataset.serverError = "";
+      let requestPayload = salePayload;
+      let responseReceived = false;
+      try {
+        if (offline && !salePayload.payment_qr_intent_token) {
+          requestPayload = await offline.prepareSale(salePayload);
+        }
+        const response = await fetch("/api/sales", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": window.MERCH_APP.csrfToken },
+          body: JSON.stringify(requestPayload),
+        });
+        responseReceived = true;
+        const body = await response.json();
+        if (!response.ok || !body.ok) throw new Error(body.error || "Der Kauf konnte nicht gespeichert werden.");
+        // QR intents are deliberately not added to the offline outbox: their
+        // short-lived, server-owned receipt reservation must be confirmed
+        // online. Do not ask IndexedDB to delete an undefined event ID.
+        if (offline && requestPayload.client_event_id) {
+          await offline.acknowledgeSale(requestPayload.client_event_id);
+        }
+        applySaleStockUpdate(body);
+        if (showConfirmation) {
+          const duplicateMessage = salePayload.payment_qr_intent_token
+            ? "QR-Zahlung bereits bestätigt als"
+            : "Offline-Verkauf bereits synchronisiert als";
+          showConfirmedSale(
+            body.receipt_id,
+            body.duplicate ? duplicateMessage : "Der Verkauf wurde mit der Beleg-ID",
+            { showPaymentQrSetupHint: !salePayload.payment_qr_intent_token && paymentQrSetupIsMissing(salePayload.payment_method) }
+          );
+        }
+        return body;
+      } catch (error) {
+        // Only a missing/ambiguous response is queued. A clear 4xx/5xx response
+        // remains visible as an error instead of silently turning a rejected
+        // sale into an offline booking.
+        const ambiguousResponse = !responseReceived || error instanceof SyntaxError;
+        if (offline && ambiguousResponse && requestPayload.client_event_id) {
+          try {
+            await offline.queueSale(requestPayload);
+            localOfflineStockUpdate(requestPayload);
+            showConfirmedSale(
+              `Offline-${requestPayload.client_event_id.slice(0, 8)}`,
+              "Der Verkauf wurde lokal vorgemerkt und erhält beim Synchronisieren seine Beleg-ID",
+              { showPaymentQrSetupHint: paymentQrSetupIsMissing(requestPayload.payment_method) }
+            );
+            return;
+          } catch (queueError) {
+            error = queueError;
+          }
+        }
+        ui.error.dataset.serverError = "1";
+        showError(error instanceof Error ? error.message : "Der Kauf konnte nicht gespeichert werden.");
+        return null;
+      }
+    } catch (error) {
+      ui.error.dataset.serverError = "1";
+      showError(error instanceof Error ? error.message : "Der Kauf konnte nicht gespeichert werden.");
+      return null;
+    } finally {
+      saleSubmissionBusy = false;
       if (!ui.dialog.open) updateSummary();
+      else syncConfirmButtonState();
     }
   }
 
@@ -632,6 +879,7 @@
   ui.amountGiven.addEventListener("input", updateSummary);
   ui.paid.addEventListener("change", () => { updatePaidFields(); updateContactFields(); updateSummary(); });
   ui.received.addEventListener("change", () => { updateContactFields(); updateSummary(); });
+  ui.method.addEventListener("change", () => { updatePaidFields(); updateSummary(); });
   ui.saleEvent?.addEventListener("change", changeSaleEvent);
   ui.saleEventForm?.addEventListener("submit", saveSaleEvent);
   ui.cancelSaleEvent?.addEventListener("click", closeSaleEventDialog);
@@ -648,7 +896,16 @@
     ui.error.dataset.serverError = "";
     renderCart();
   });
-  ui.confirm.addEventListener("click", confirmSale);
+  ui.confirm.addEventListener("click", () => {
+    if (paymentRequiresQrPreview()) void openPaymentQr();
+    else void confirmSale();
+  });
+  ui.cancelPaymentQr?.addEventListener("click", () => ui.paymentQrDialog.close());
+  ui.confirmPaymentQr?.addEventListener("click", confirmPaymentQr);
+  ui.paymentQrDialog?.addEventListener("cancel", (event) => {
+    if (paymentQrConfirmationPending) event.preventDefault();
+  });
+  ui.paymentQrDialog?.addEventListener("close", clearPaymentQr);
   ui.closeDialog.addEventListener("click", () => ui.dialog.close());
   ui.dialog.addEventListener("close", resetSaleForm);
   const refreshVisibleSaleEvents = () => {

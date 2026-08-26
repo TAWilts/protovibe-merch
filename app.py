@@ -46,6 +46,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -73,6 +74,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 import pyotp
 import qrcode
+from segno import helpers as segno_helpers
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 try:
@@ -268,6 +270,37 @@ CREATE TABLE IF NOT EXISTS slideshow_settings (
     collage_show_prices INTEGER NOT NULL DEFAULT 1
 );
 
+-- Payment destinations belong to the band's operational setup rather than to
+-- a person's account. A later tenant boundary can therefore scope this
+-- one-row configuration to the active band without moving it out of the
+-- operational store.
+CREATE TABLE IF NOT EXISTS payment_qr_settings (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    paypal_me_url TEXT NOT NULL DEFAULT '',
+    bank_account_holder TEXT NOT NULL DEFAULT '',
+    bank_iban TEXT NOT NULL DEFAULT '',
+    bank_bic TEXT NOT NULL DEFAULT '',
+    bank_remittance_text TEXT NOT NULL DEFAULT 'Merch-Kauf',
+    updated_at TEXT,
+    updated_by_user_id INTEGER,
+    updated_by_username TEXT
+);
+
+-- A QR payment must retain its quoted amount and receipt ID until the seller
+-- either confirms or cancels it.  This is deliberately not a sale: no stock
+-- or ledger record changes merely because a code was shown.
+CREATE TABLE IF NOT EXISTS payment_qr_intents (
+    token TEXT PRIMARY KEY,
+    receipt_id TEXT NOT NULL UNIQUE,
+    sale_payload_json TEXT NOT NULL,
+    created_by_user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    cancelled_at TEXT,
+    consumed_at TEXT,
+    response_json TEXT
+);
+
 CREATE TABLE IF NOT EXISTS purchases (
     id INTEGER PRIMARY KEY,
     -- One purchase receipt can contain several independently editable ledger
@@ -433,6 +466,8 @@ CREATE INDEX IF NOT EXISTS idx_sales_variant ON sales(variant_id, sold_on);
 CREATE INDEX IF NOT EXISTS idx_sales_sold_on ON sales(sold_on);
 CREATE INDEX IF NOT EXISTS idx_sale_events_last_selected ON sale_events(last_selected_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_events_actor_created ON sync_events(actor_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_payment_qr_intents_created_by_expiry
+    ON payment_qr_intents(created_by_user_id, expires_at);
 """
 
 # This schema is only used to make a deployed pre-split database current
@@ -448,6 +483,8 @@ OPERATION_TABLES = (
     "variant_photos",
     "slideshow_extra_photos",
     "slideshow_settings",
+    "payment_qr_settings",
+    "payment_qr_intents",
     "purchases",
     "purchase_receipt_attachments",
     "band_transactions",
@@ -460,6 +497,17 @@ OPERATION_TABLES = (
 )
 
 PAYMENT_METHODS = ["Bar", "PayPal", "Überweisung", "Karte", "Sonstiges"]
+QR_PAYMENT_METHODS = frozenset({"PayPal", "Überweisung"})
+PAYMENT_QR_PREVIEW_AMOUNT_CENTS = 100
+PAYMENT_QR_DEFAULT_REMITTANCE_TEXT = "Merch-Kauf"
+PAYMENT_QR_REMITTANCE_PREFIX = "Protovibe Merch"
+PAYMENT_QR_INTENT_TTL_SECONDS = 20 * 60
+PAYMENT_QR_ADMIN_PREVIEW_RECEIPT_ID = "V-BEISPIEL-001"
+PAYMENT_QR_ADMIN_PREVIEW_ITEMS = ("1x Beispiel-Shirt M", "2x Cap")
+MAX_PAYPAL_ME_URL_LENGTH = 500
+MAX_PAYPAL_ME_USERNAME_LENGTH = MAX_PAYPAL_ME_URL_LENGTH - len("https://paypal.me/")
+MAX_PAYMENT_QR_ACCOUNT_HOLDER_LENGTH = 70
+MAX_PAYMENT_QR_REMITTANCE_LENGTH = 140
 
 TRANSACTION_CSV_HEADERS = {
     "purchases": ["Anzahl", "Artikel", "Optionen", "Einkaufspreis", "Gekauft von"],
@@ -1703,6 +1751,215 @@ def cents_to_money(cents: int | None, *, language: str = DEFAULT_UI_LANGUAGE) ->
         return f"{sign}€{euros:,}.{remainder:02d}"
     grouped = f"{euros:,}".replace(",", ".")
     return f"{sign}{grouped},{remainder:02d} €"
+
+
+def normalise_payment_qr_text(
+    value: Any, *, field_name: str, max_length: int, required: bool = False
+) -> str:
+    """Return one EPC-safe, displayable text field without line separators."""
+
+    text = " ".join(str(value or "").split())
+    if required and not text:
+        raise ValueError(f"{field_name} darf nicht leer sein.")
+    if len(text) > max_length:
+        raise ValueError(f"{field_name} darf höchstens {max_length} Zeichen lang sein.")
+    return text
+
+
+def normalise_paypal_me_url(value: Any) -> str:
+    """Accept only a base PayPal.Me profile URL, never an arbitrary payment target."""
+
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) > MAX_PAYPAL_ME_URL_LENGTH:
+        raise ValueError("Der PayPal.Me-Link darf höchstens 500 Zeichen lang sein.")
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Der PayPal.Me-Link ist ungültig.") from exc
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme.lower() != "https"
+        or not host
+        or parsed.username
+        or parsed.password
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Bitte einen vollständigen HTTPS-PayPal.Me-Link ohne Zusatzparameter eingeben.")
+
+    path = parsed.path.rstrip("/")
+    if host in {"paypal.me", "www.paypal.me"}:
+        is_profile_path = bool(re.fullmatch(r"/[A-Za-z0-9._-]+", path))
+    elif host in {"paypal.com", "www.paypal.com"}:
+        is_profile_path = bool(re.fullmatch(r"/paypalme/[A-Za-z0-9._-]+", path, flags=re.IGNORECASE))
+    else:
+        is_profile_path = False
+    if not is_profile_path:
+        raise ValueError("Bitte einen PayPal.Me-Profil-Link eingeben, zum Beispiel https://paypal.me/deinname.")
+    return urlunsplit(("https", parsed.netloc.lower(), path, "", ""))
+
+
+def normalise_paypal_me_username(value: Any) -> str:
+    """Build the canonical PayPal.Me profile URL from the editable profile name."""
+
+    username = str(value or "").strip()
+    if not username:
+        return ""
+    if len(username) > MAX_PAYPAL_ME_USERNAME_LENGTH:
+        raise ValueError("Der PayPal.Me-Profilname ist zu lang.")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", username):
+        raise ValueError("Bitte nur den PayPal.Me-Profilnamen ohne Link oder Schrägstrich eingeben.")
+    return normalise_paypal_me_url(f"https://paypal.me/{username}")
+
+
+def paypal_me_username_from_url(value: Any) -> str:
+    """Extract a prefillable profile name from a validated legacy URL."""
+
+    normalised = normalise_paypal_me_url(value)
+    if not normalised:
+        return ""
+    return urlsplit(normalised).path.rsplit("/", 1)[-1]
+
+
+def normalise_iban(value: Any) -> str:
+    """Validate an IBAN checksum before it can become an EPC payment target."""
+
+    iban = "".join(str(value or "").upper().split())
+    if not iban:
+        return ""
+    if not re.fullmatch(r"[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}", iban):
+        raise ValueError("Bitte eine gültige IBAN eingeben.")
+    remainder = 0
+    for character in iban[4:] + iban[:4]:
+        digits = character if character.isdigit() else str(ord(character) - ord("A") + 10)
+        for digit in digits:
+            remainder = (remainder * 10 + int(digit)) % 97
+    if remainder != 1:
+        raise ValueError("Die IBAN-Prüfsumme ist nicht gültig.")
+    return iban
+
+
+def normalise_bic(value: Any) -> str:
+    """Normalise the optional BIC used for non-EEA EPC transfers."""
+
+    bic = "".join(str(value or "").upper().split())
+    if bic and not re.fullmatch(r"[A-Z]{6}[A-Z0-9]{2}(?:[A-Z0-9]{3})?", bic):
+        raise ValueError("Der BIC muss aus 8 oder 11 Zeichen bestehen.")
+    return bic
+
+
+def payment_qr_settings_from_form(form: Any) -> dict[str, str]:
+    """Validate the admin-owned payment destinations before storing them."""
+
+    # ``paypal_me_url`` is accepted only for a tab that still has the old
+    # full-link form cached. The current form deliberately accepts the safer,
+    # less error-prone profile-name part only.
+    paypal_me_username = form.get("paypal_me_username")
+    paypal_me_url = (
+        normalise_paypal_me_url(form.get("paypal_me_url"))
+        if paypal_me_username is None
+        else normalise_paypal_me_username(paypal_me_username)
+    )
+    account_holder = normalise_payment_qr_text(
+        form.get("bank_account_holder"),
+        field_name="Kontoinhaber",
+        max_length=MAX_PAYMENT_QR_ACCOUNT_HOLDER_LENGTH,
+    )
+    iban = normalise_iban(form.get("bank_iban"))
+    bic = normalise_bic(form.get("bank_bic"))
+    has_bank_details = bool(account_holder or iban or bic)
+    if has_bank_details and (not account_holder or not iban):
+        raise ValueError("Für Überweisungen sind Kontoinhaber und IBAN erforderlich.")
+    return {
+        "paypal_me_url": paypal_me_url,
+        "bank_account_holder": account_holder,
+        "bank_iban": iban,
+        "bank_bic": bic,
+        # Kept only as an additive legacy column. Every new EPC reference is
+        # generated from the final receipt and basket below.
+        "bank_remittance_text": PAYMENT_QR_DEFAULT_REMITTANCE_TEXT,
+    }
+
+
+def paypal_me_payment_url(paypal_me_url: Any, amount_cents: int) -> str:
+    """Append an exact EUR amount to a validated PayPal.Me profile URL."""
+
+    base_url = normalise_paypal_me_url(paypal_me_url)
+    if not base_url:
+        raise ValueError("Für PayPal ist noch kein PayPal.Me-Link hinterlegt.")
+    if amount_cents <= 0:
+        raise ValueError("Ein Zahlungs-QR-Code benötigt einen Betrag größer als null.")
+    parsed = urlsplit(base_url)
+    amount = f"{amount_cents // 100}.{amount_cents % 100:02d}EUR"
+    return urlunsplit((parsed.scheme, parsed.netloc, f"{parsed.path}/{amount}", "", ""))
+
+
+def generic_qr_png_data_uri(content: str) -> str:
+    """Render arbitrary, server-owned QR payload as an in-memory PNG data URI."""
+
+    image = qrcode.make(content)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def shortened_epc_remittance_text(value: str) -> str:
+    """Shorten only basket details while preserving the payment reference."""
+
+    prefix, separator, details = value.partition(": ")
+    if separator and details:
+        shortened_details = details.rstrip()
+        if shortened_details.endswith("..."):
+            shortened_details = shortened_details[:-3].rstrip()
+        if shortened_details:
+            shortened_details = shortened_details[:-1].rstrip()
+            return f"{prefix}: {shortened_details}..." if shortened_details else prefix
+        return prefix
+    # The bare prefix contains the receipt ID. It is the non-negotiable link
+    # between an incoming transfer and its sale, so it must never be shortened
+    # merely to compensate for overly long account data.
+    return value
+
+
+def epc_qr_png_data_uri(settings: dict[str, str], amount_cents: int) -> str:
+    """Render an EPC QR and trim only the optional item list if bytes require it."""
+
+    if amount_cents <= 0:
+        raise ValueError("Ein Zahlungs-QR-Code benötigt einen Betrag größer als null.")
+    remittance_text = normalise_payment_qr_text(
+        settings["bank_remittance_text"],
+        field_name="Verwendungszweck",
+        max_length=MAX_PAYMENT_QR_REMITTANCE_LENGTH,
+        required=True,
+    )
+    while True:
+        try:
+            qr_code = segno_helpers.make_epc_qr(
+                name=settings["bank_account_holder"],
+                iban=settings["bank_iban"],
+                amount=Decimal(amount_cents) / Decimal(100),
+                text=remittance_text,
+                bic=settings["bank_bic"] or None,
+                encoding="utf-8",
+            )
+        except ValueError as exc:
+            shortened = shortened_epc_remittance_text(remittance_text)
+            if "Payload is too big" not in str(exc):
+                raise ValueError("Der EPC-QR-Code konnte nicht erzeugt werden.") from exc
+            if not shortened or shortened == remittance_text:
+                raise ValueError(
+                    "Der EPC-QR-Code ist mit dieser Bankverbindung zu lang. "
+                    "Bitte Kontoinhaber kürzen oder den optionalen BIC entfernen."
+                ) from exc
+            remittance_text = shortened
+            continue
+        settings["bank_remittance_text"] = remittance_text
+        return qr_code.png_data_uri(scale=6, border=4)
 
 
 def parse_positive_int(value: Any, *, field_name: str = "Anzahl") -> int:
@@ -3559,6 +3816,391 @@ def normalise_sale_event_name(value: Any, *, max_length: int | None = None) -> s
     return name
 
 
+def payment_qr_settings(connection: sqlite3.Connection) -> dict[str, str]:
+    """Return the current band's payment destinations with harmless empty defaults."""
+
+    defaults = {
+        "paypal_me_url": "",
+        "bank_account_holder": "",
+        "bank_iban": "",
+        "bank_bic": "",
+        "bank_remittance_text": PAYMENT_QR_DEFAULT_REMITTANCE_TEXT,
+    }
+    if not table_exists(connection, "payment_qr_settings"):
+        return defaults
+    row = connection.execute("SELECT * FROM payment_qr_settings WHERE id = 1").fetchone()
+    if row is None:
+        return defaults
+    return {
+        **defaults,
+        **{key: str(row[key] or "") for key in defaults},
+    }
+
+
+def validated_bank_payment_qr_settings(settings: dict[str, str]) -> dict[str, str]:
+    """Validate persisted values again before using them as a transfer target."""
+
+    if not settings.get("bank_account_holder") or not settings.get("bank_iban"):
+        raise ValueError("Für Überweisungen ist noch keine vollständige Bankverbindung hinterlegt.")
+    try:
+        account_holder = normalise_payment_qr_text(
+            settings.get("bank_account_holder"),
+            field_name="Kontoinhaber",
+            max_length=MAX_PAYMENT_QR_ACCOUNT_HOLDER_LENGTH,
+            required=True,
+        )
+        iban = normalise_iban(settings.get("bank_iban"))
+        bic = normalise_bic(settings.get("bank_bic"))
+    except ValueError as exc:
+        raise ValueError(
+            "Die gespeicherte Bankverbindung ist ungültig. Bitte einen Admin um Prüfung bitten."
+        ) from exc
+    if not iban:
+        raise ValueError("Die gespeicherte Bankverbindung ist unvollständig. Bitte einen Admin um Prüfung bitten.")
+    return {
+        "bank_account_holder": account_holder,
+        "bank_iban": iban,
+        "bank_bic": bic,
+        # Do not let an obsolete free-text setting influence an automatically
+        # generated payment reference or make a valid bank account unusable.
+        "bank_remittance_text": PAYMENT_QR_DEFAULT_REMITTANCE_TEXT,
+    }
+
+
+def payment_qr_availability(connection: sqlite3.Connection) -> dict[str, bool]:
+    """Return which QR payment methods have a usable server-side target.
+
+    The browser receives only these booleans, never payment destinations. The
+    QR endpoint still validates its settings before it creates an intent. In a
+    later multi-tenant context this helper resolves the active band's targets.
+    """
+
+    settings = payment_qr_settings(connection)
+    paypal_ready = False
+    bank_transfer_ready = False
+    try:
+        paypal_me_payment_url(settings["paypal_me_url"], PAYMENT_QR_PREVIEW_AMOUNT_CENTS)
+        paypal_ready = True
+    except ValueError:
+        pass
+    try:
+        validated_bank_payment_qr_settings(settings)
+        bank_transfer_ready = True
+    except ValueError:
+        pass
+    return {"paypal": paypal_ready, "bank_transfer": bank_transfer_ready}
+
+
+def sale_basket_items_from_payload(
+    connection: sqlite3.Connection, payload: Any
+) -> list[dict[str, Any]]:
+    """Validate a sale draft and calculate its authoritative basket line amounts."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("Ungültige Verkaufsdaten.")
+    raw_items = payload.get("items")
+    if raw_items is None:
+        raw_items = [{"variant_id": payload.get("variant_id"), "quantity": payload.get("quantity")}]
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValueError("Der Warenkorb enthält noch keine Artikel.")
+
+    basket_items: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            raise ValueError("Ungültiger Artikel im Warenkorb.")
+        variant_id = int(raw_item.get("variant_id"))
+        quantity = parse_positive_int(raw_item.get("quantity"))
+        variant = connection.execute(
+            """
+            SELECT v.*
+            FROM variants v
+            JOIN articles a ON a.id = v.article_id
+            WHERE v.id = ?
+              AND v.is_active = 1 AND v.is_offered = 1
+              AND a.is_active = 1 AND a.is_offered = 1
+            """,
+            (variant_id,),
+        ).fetchone()
+        if variant is None:
+            raise ValueError("Diese Artikelvariante wird nicht mehr angeboten.")
+        raw_unit_price = raw_item.get("unit_price")
+        unit_price_cents = (
+            int(variant["sale_price_cents"])
+            if raw_unit_price is None or not str(raw_unit_price).strip()
+            else money_to_cents(raw_unit_price, field_name="Preis pro Stück")
+        )
+        amount_due_cents = quantity * unit_price_cents
+        basket_items.append(
+            {
+                "variant_id": variant_id,
+                "quantity": quantity,
+                "unit_price_cents": unit_price_cents,
+                "amount_due_cents": amount_due_cents,
+            }
+        )
+    return basket_items
+
+
+def payment_qr_item_descriptions(
+    connection: sqlite3.Connection, basket_items: Iterable[dict[str, Any]]
+) -> list[str]:
+    """Build compact, server-owned labels for one transfer reference."""
+
+    quantities: dict[int, int] = {}
+    for item in basket_items:
+        variant_id = int(item["variant_id"])
+        quantities[variant_id] = quantities.get(variant_id, 0) + int(item["quantity"])
+    labels = variant_label_map(connection, quantities)
+    descriptions: list[str] = []
+    for variant_id, quantity in quantities.items():
+        label = labels.get(variant_id)
+        if label is None:
+            raise ValueError("Die Artikelvariante für den Zahlungs-QR-Code wurde nicht gefunden.")
+        article_name = " ".join(str(label["article_name"] or "").split())
+        option_values = [
+            " ".join(str(option.get("value") or "").split())
+            for option in label.get("options", [])
+            if str(option.get("value") or "").strip()
+        ]
+        variant_text = "/".join(option_values)
+        descriptions.append(
+            f"{quantity}x {article_name}" + (f" {variant_text}" if variant_text else "")
+        )
+    return descriptions
+
+
+def payment_qr_remittance_from_descriptions(receipt_id: str, descriptions: Iterable[str]) -> str:
+    """Fit receipt and as many whole basket labels as possible into EPC's 140 chars."""
+
+    receipt = str(receipt_id or "").strip()
+    if not receipt:
+        raise ValueError("Für den Zahlungs-QR-Code fehlt die Beleg-ID.")
+    result = f"{PAYMENT_QR_REMITTANCE_PREFIX} {receipt}"
+    for raw_description in descriptions:
+        description = " ".join(str(raw_description or "").split())
+        if not description:
+            continue
+        separator = ": " if result == f"{PAYMENT_QR_REMITTANCE_PREFIX} {receipt}" else ", "
+        candidate = f"{result}{separator}{description}"
+        if len(candidate) <= MAX_PAYMENT_QR_REMITTANCE_LENGTH:
+            result = candidate
+            continue
+        if result == f"{PAYMENT_QR_REMITTANCE_PREFIX} {receipt}":
+            remaining = MAX_PAYMENT_QR_REMITTANCE_LENGTH - len(result) - len(separator)
+            if remaining > 3:
+                return f"{result}{separator}{description[:remaining - 3].rstrip()}..."
+            return result
+        if len(result) + 4 <= MAX_PAYMENT_QR_REMITTANCE_LENGTH:
+            return f"{result} ..."
+        return result
+    return result
+
+
+def payment_qr_remittance_text(
+    connection: sqlite3.Connection, basket_items: Iterable[dict[str, Any]], receipt_id: str
+) -> str:
+    """Generate an EPC-compatible reference from the final receipt and item variants."""
+
+    return payment_qr_remittance_from_descriptions(
+        receipt_id, payment_qr_item_descriptions(connection, basket_items)
+    )
+
+
+def payment_qr_preview_from_sale_payload(
+    connection: sqlite3.Connection, payload: Any, *, user_id: int
+) -> dict[str, Any]:
+    """Create a QR payment intent with a reserved receipt and server-owned draft."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("Ungültige Verkaufsdaten.")
+    payment_method = str(payload.get("payment_method", "")).strip()
+    if payment_method not in QR_PAYMENT_METHODS:
+        raise ValueError("Ein Zahlungs-QR-Code ist nur für PayPal oder Überweisung verfügbar.")
+    basket_items = sale_basket_items_from_payload(connection, payload)
+    amount_cents = sum(item["amount_due_cents"] for item in basket_items)
+    if amount_cents <= 0:
+        raise ValueError("Ein Zahlungs-QR-Code benötigt einen Betrag größer als null.")
+
+    is_received = bool(payload.get("is_received", True))
+    customer_name = str(payload.get("customer_name") or "").strip()
+    customer_address = str(payload.get("customer_address") or "").strip()
+    if not is_received and (not customer_name or not customer_address):
+        raise ValueError("Bei noch nicht erhaltenen Artikeln sind Name und Adresse Pflicht.")
+    sold_on = str(payload.get("sold_on") or today_iso())
+    date.fromisoformat(sold_on)
+
+    # A displayed QR must never use a browser-selected receipt number. Reserve
+    # the next server-issued number under the write lock and consume exactly
+    # this frozen draft on confirmation.
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        connection.execute(
+            """
+            UPDATE payment_qr_intents
+            SET cancelled_at = COALESCE(cancelled_at, ?), sale_payload_json = '{}'
+            WHERE consumed_at IS NULL AND cancelled_at IS NULL AND expires_at <= ?
+            """,
+            (now.isoformat(), now.isoformat()),
+        )
+        receipt_id = next_receipt_id(connection, "V", sold_on)
+        canonical_payload = {
+            "receipt_id": receipt_id,
+            "items": [
+                {
+                    "variant_id": item["variant_id"],
+                    "quantity": item["quantity"],
+                    "unit_price": f"{item['unit_price_cents'] // 100}.{item['unit_price_cents'] % 100:02d}",
+                }
+                for item in basket_items
+            ],
+            "is_paid": True,
+            "is_received": is_received,
+            "payment_method": payment_method,
+            "sold_on": sold_on,
+            "amount_given": "",
+            "customer_name": customer_name,
+            "customer_address": customer_address,
+            "event_id": payload.get("event_id"),
+            "event_name": str(payload.get("event_name") or "").strip(),
+            "sold_by": str(payload.get("sold_by") or "").strip(),
+            "comment": str(payload.get("comment") or "").strip(),
+        }
+        token = secrets.token_urlsafe(32)
+        expires_at = now + timedelta(seconds=PAYMENT_QR_INTENT_TTL_SECONDS)
+        settings = payment_qr_settings(connection)
+        response: dict[str, Any] = {
+            "ok": True,
+            "intent_token": token,
+            "receipt_id": receipt_id,
+            "payment_method": payment_method,
+            "amount_cents": amount_cents,
+            "amount_display": cents_to_money(amount_cents),
+        }
+        if payment_method == "PayPal":
+            payment_url = paypal_me_payment_url(settings["paypal_me_url"], amount_cents)
+            response.update(
+                {
+                    "qr_data_uri": generic_qr_png_data_uri(payment_url),
+                    "details": {"kind": "paypal", "payment_url": payment_url},
+                }
+            )
+        else:
+            bank_settings = validated_bank_payment_qr_settings(settings)
+            bank_settings["bank_remittance_text"] = payment_qr_remittance_text(
+                connection, basket_items, receipt_id
+            )
+            response.update(
+                {
+                    "qr_data_uri": epc_qr_png_data_uri(bank_settings, amount_cents),
+                    "details": {"kind": "bank_transfer", **bank_settings},
+                }
+            )
+        connection.execute(
+            """
+            INSERT INTO payment_qr_intents (
+                token, receipt_id, sale_payload_json, created_by_user_id,
+                created_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                token,
+                receipt_id,
+                json.dumps(canonical_payload, ensure_ascii=False, separators=(",", ":")),
+                user_id,
+                now.isoformat(),
+                expires_at.isoformat(),
+            ),
+        )
+        connection.commit()
+        return response
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def payment_qr_intent_for_confirmation(
+    connection: sqlite3.Connection, token: Any, *, user_id: int
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Load one caller-owned QR intent under a write lock or its saved retry result."""
+
+    intent_token = str(token or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", intent_token):
+        raise ValueError("Der Zahlungs-QR-Code ist ungültig. Bitte neu anzeigen.")
+    row = connection.execute(
+        "SELECT * FROM payment_qr_intents WHERE token = ?", (intent_token,)
+    ).fetchone()
+    if row is None or int(row["created_by_user_id"]) != int(user_id):
+        raise ValueError("Der Zahlungs-QR-Code ist nicht mehr verfügbar. Bitte neu anzeigen.")
+    if row["consumed_at"]:
+        try:
+            response = json.loads(row["response_json"] or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Die Zahlungs-QR-Bestätigung ist beschädigt.") from exc
+        if not isinstance(response, dict) or not response.get("ok"):
+            raise RuntimeError("Die Zahlungs-QR-Bestätigung ist beschädigt.")
+        response["duplicate"] = True
+        response["message"] = "Diese QR-Zahlung wurde bereits bestätigt."
+        return None, response
+    if row["cancelled_at"] or str(row["expires_at"]) <= utc_now():
+        raise ValueError("Der Zahlungs-QR-Code ist abgelaufen oder wurde abgebrochen. Bitte neu anzeigen.")
+    try:
+        payload = json.loads(row["sale_payload_json"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Der Zahlungs-QR-Code ist beschädigt.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Der Zahlungs-QR-Code ist beschädigt.")
+    return payload, None
+
+
+def payment_qr_settings_for_administration(connection: sqlite3.Connection) -> dict[str, Any]:
+    """Build the admin-only, scan-ready configuration previews without persisting drafts."""
+
+    settings: dict[str, Any] = payment_qr_settings(connection)
+    settings.update(
+        {
+            "paypal_me_username": "",
+            "paypal_ready": bool(settings["paypal_me_url"]),
+            "bank_transfer_ready": bool(settings["bank_account_holder"] and settings["bank_iban"]),
+            "paypal_preview": None,
+            "bank_transfer_preview": None,
+            "paypal_preview_error": None,
+            "bank_transfer_preview_error": None,
+        }
+    )
+    if settings["paypal_me_url"]:
+        try:
+            settings["paypal_me_username"] = paypal_me_username_from_url(settings["paypal_me_url"])
+        except ValueError:
+            # Keep the stored full link visible together with the validation
+            # error below; never place an invalid value into the handle input.
+            pass
+    if settings["paypal_ready"]:
+        try:
+            payment_url = paypal_me_payment_url(
+                settings["paypal_me_url"], PAYMENT_QR_PREVIEW_AMOUNT_CENTS
+            )
+            settings["paypal_preview"] = {
+                "payment_url": payment_url,
+                "qr_data_uri": generic_qr_png_data_uri(payment_url),
+            }
+        except ValueError as exc:
+            settings["paypal_preview_error"] = str(exc)
+    if settings["bank_transfer_ready"]:
+        try:
+            bank_settings = validated_bank_payment_qr_settings(settings)
+            bank_settings["bank_remittance_text"] = payment_qr_remittance_from_descriptions(
+                PAYMENT_QR_ADMIN_PREVIEW_RECEIPT_ID, PAYMENT_QR_ADMIN_PREVIEW_ITEMS
+            )
+            settings["bank_transfer_preview"] = {
+                **bank_settings,
+                "qr_data_uri": epc_qr_png_data_uri(bank_settings, PAYMENT_QR_PREVIEW_AMOUNT_CENTS),
+            }
+        except ValueError as exc:
+            settings["bank_transfer_preview_error"] = str(exc)
+    return settings
+
+
 def sale_event_catalogue(connection: sqlite3.Connection) -> dict[str, Any]:
     """Return the globally selected event plus the catalogue for the sales UI."""
 
@@ -5252,8 +5894,9 @@ def stock_for_variant(connection: sqlite3.Connection, variant_id: int) -> int:
 def next_receipt_id(connection: sqlite3.Connection, prefix: str, on_date: str | None = None) -> str:
     """Return a readable ID such as ``V-20260814-003``.
 
-    The ID is previewed before confirmation.  A concurrent sale can consume that
-    preview, so write routes check uniqueness and generate a new ID if needed.
+    Regular client-side previews may race with another sale. Payment-QR
+    reservations are included in the sequence, so an already displayed QR
+    receipt can never later be assigned to a different sale.
     """
 
     day = (on_date or today_iso()).replace("-", "")
@@ -5262,6 +5905,10 @@ def next_receipt_id(connection: sqlite3.Connection, prefix: str, on_date: str | 
     rows = connection.execute(
         f"SELECT receipt_id FROM {table} WHERE receipt_id LIKE ?", (pattern,)
     ).fetchall()
+    if prefix == "V" and table_exists(connection, "payment_qr_intents"):
+        rows += connection.execute(
+            "SELECT receipt_id FROM payment_qr_intents WHERE receipt_id LIKE ?", (pattern,)
+        ).fetchall()
     highest = 0
     for row in rows:
         match = re.search(r"-(\d+)$", row["receipt_id"])
@@ -5271,7 +5918,12 @@ def next_receipt_id(connection: sqlite3.Connection, prefix: str, on_date: str | 
 
 
 def unique_receipt_id(
-    connection: sqlite3.Connection, prefix: str, supplied: str | None, on_date: str
+    connection: sqlite3.Connection,
+    prefix: str,
+    supplied: str | None,
+    on_date: str,
+    *,
+    payment_qr_intent_token: str | None = None,
 ) -> str:
     """Use a valid preview if still free; otherwise create a new sequential ID."""
 
@@ -5282,7 +5934,16 @@ def unique_receipt_id(
             f"SELECT 1 FROM {table} WHERE receipt_id = ?", (supplied,)
         ).fetchone()
         if exists is None:
-            return supplied
+            if prefix != "V" or not table_exists(connection, "payment_qr_intents"):
+                return supplied
+            intent = connection.execute(
+                "SELECT token FROM payment_qr_intents WHERE receipt_id = ?", (supplied,)
+            ).fetchone()
+            if intent is None or (
+                payment_qr_intent_token is not None
+                and secrets.compare_digest(str(intent["token"]), payment_qr_intent_token)
+            ):
+                return supplied
     return next_receipt_id(connection, prefix, on_date)
 
 
@@ -6830,7 +7491,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def prevent_sensitive_page_caching(response: Response) -> Response:
         """Keep passwords, QR codes and one-time recovery codes out of caches."""
 
-        if request.endpoint in {
+        if request.endpoint == "sale_payment_qr_preview":
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Pragma"] = "no-cache"
+        elif request.endpoint in {
             "account_setup",
             "mfa_login",
             "mfa_enroll",
@@ -6838,6 +7502,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "regenerate_recovery_codes",
             "profile_reauth",
             "profile_page",
+            "administration_page",
             "encryption_setup",
             "encryption_unlock",
             "encryption_recovery",
@@ -7682,6 +8347,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             database_encryption_active=database_encryption_enabled(app),
             email_notification=smtp_notification_status(notification_config),
             email_settings=smtp_notification_settings_public(notification_config),
+            payment_qr_settings=payment_qr_settings_for_administration(get_db()),
         )
 
     @app.get("/verwaltung")
@@ -7847,6 +8513,70 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash("E-Mail-Einstellungen konnten nicht gespeichert werden: " + str(exc), "error")
         else:
             flash("E-Mail-Einstellungen wurden verschlüsselt gespeichert.", "success")
+        return redirect(url_for("administration_page"))
+
+    @app.post("/verwaltung/zahlungs-qr/einstellungen")
+    @login_required
+    @admin_required
+    def save_payment_qr_settings():
+        """Save the band's payment targets after a fresh admin confirmation."""
+
+        operations_connection = get_db()
+        try:
+            settings = payment_qr_settings_from_form(request.form)
+            verify_admin_sensitive_action(
+                get_user_db(),
+                password=request.form.get("current_password"),
+                mfa_code=request.form.get("mfa_code"),
+                context="save_payment_qr_settings",
+            )
+            operations_connection.execute("BEGIN IMMEDIATE")
+            operations_connection.execute(
+                """
+                INSERT INTO payment_qr_settings (
+                    id, paypal_me_url, bank_account_holder, bank_iban, bank_bic, bank_remittance_text,
+                    updated_at, updated_by_user_id, updated_by_username
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    paypal_me_url = excluded.paypal_me_url,
+                    bank_account_holder = excluded.bank_account_holder,
+                    bank_iban = excluded.bank_iban,
+                    bank_bic = excluded.bank_bic,
+                    bank_remittance_text = excluded.bank_remittance_text,
+                    updated_at = excluded.updated_at,
+                    updated_by_user_id = excluded.updated_by_user_id,
+                    updated_by_username = excluded.updated_by_username
+                """,
+                (
+                    settings["paypal_me_url"],
+                    settings["bank_account_holder"],
+                    settings["bank_iban"],
+                    settings["bank_bic"],
+                    settings["bank_remittance_text"],
+                    utc_now(),
+                    g.user["id"],
+                    g.user["username"],
+                ),
+            )
+            audit(
+                operations_connection,
+                "save_payment_qr_settings",
+                "payment_qr_settings",
+                1,
+                {
+                    "paypal_configured": bool(settings["paypal_me_url"]),
+                    "bank_transfer_configured": bool(
+                        settings["bank_account_holder"] and settings["bank_iban"]
+                    ),
+                },
+            )
+            operations_connection.commit()
+        except (ValueError, sqlite3.DatabaseError) as exc:
+            operations_connection.rollback()
+            flash("Zahlungs-QR-Einstellungen konnten nicht gespeichert werden: " + str(exc), "error")
+        else:
+            backup_after_commit()
+            flash("Zahlungs-QR-Einstellungen wurden gespeichert.", "success")
         return redirect(url_for("administration_page"))
 
     @app.post("/verwaltung/benutzer")
@@ -8170,6 +8900,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         connection = get_db()
         show_variant_photos = user_shows_variant_photos(g.user)
         event_catalogue = sale_event_catalogue(connection)
+        qr_availability = payment_qr_availability(connection)
         return render_template(
             "sales.html",
             title="Verkauf",
@@ -8179,6 +8910,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             show_variant_photos=show_variant_photos,
             sale_events=event_catalogue["events"],
             current_sale_event_id=event_catalogue["current_event_id"],
+            payment_qr_availability=qr_availability,
             today=today_iso(),
         )
 
@@ -8246,6 +8978,63 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         prefix = "V" if kind == "sale" else "E"
         return jsonify({"ok": True, "receipt_id": next_receipt_id(get_db(), prefix)})
 
+    @app.post("/api/sales/payment-qr")
+    @login_required
+    def sale_payment_qr_preview():
+        """Return a server-derived QR code and reserve its final receipt ID."""
+
+        try:
+            preview = payment_qr_preview_from_sale_payload(
+                get_db(), request.get_json(silent=True) or {}, user_id=int(g.user["id"])
+            )
+            response = jsonify(preview)
+        except (TypeError, ValueError) as exc:
+            response = jsonify({"ok": False, "error": str(exc)})
+            response.status_code = 400
+        except Exception:
+            current_app.logger.exception("Could not generate payment QR preview")
+            response = jsonify({"ok": False, "error": "Der Zahlungs-QR-Code konnte nicht erzeugt werden."})
+            response.status_code = 500
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+    @app.post("/api/sales/payment-qr/<intent_token>/cancel")
+    @login_required
+    def cancel_sale_payment_qr(intent_token: str):
+        """Cancel a shown QR intent without creating any sale or changing stock."""
+
+        connection = get_db()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            intent = connection.execute(
+                "SELECT * FROM payment_qr_intents WHERE token = ?", (intent_token,)
+            ).fetchone()
+            if intent is None or int(intent["created_by_user_id"]) != int(g.user["id"]):
+                connection.rollback()
+                return jsonify({"ok": False, "error": "Der Zahlungs-QR-Code wurde nicht gefunden."}), 404
+            if intent["consumed_at"]:
+                connection.rollback()
+                return jsonify({"ok": False, "error": "Der Zahlungs-QR-Code wurde bereits bestätigt."}), 409
+            connection.execute(
+                """
+                UPDATE payment_qr_intents
+                SET cancelled_at = COALESCE(cancelled_at, ?), sale_payload_json = '{}'
+                WHERE token = ?
+                """,
+                (utc_now(), intent_token),
+            )
+            connection.commit()
+            response = jsonify({"ok": True})
+        except sqlite3.DatabaseError:
+            connection.rollback()
+            current_app.logger.exception("Could not cancel payment QR intent")
+            response = jsonify({"ok": False, "error": "Der Zahlungs-QR-Code konnte nicht abgebrochen werden."})
+            response.status_code = 500
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
     @app.post("/api/sales")
     @login_required
     def create_sale():
@@ -8258,60 +9047,41 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         update cannot lose a sale.
         """
 
-        payload = request.get_json(silent=True) or {}
+        raw_payload = request.get_json(silent=True) or {}
         connection = get_db()
+        payment_qr_intent_token = ""
+        payment_qr_intent_active = False
         try:
+            payment_qr_intent_token = (
+                str(raw_payload.get("payment_qr_intent_token") or "").strip()
+                if isinstance(raw_payload, dict)
+                else ""
+            )
+            payment_qr_intent_active = bool(payment_qr_intent_token)
+            if payment_qr_intent_active:
+                connection.execute("BEGIN IMMEDIATE")
+                payload, duplicate_response = payment_qr_intent_for_confirmation(
+                    connection, payment_qr_intent_token, user_id=int(g.user["id"])
+                )
+                if duplicate_response is not None:
+                    connection.rollback()
+                    return jsonify(duplicate_response)
+                if payload is None:  # Defensive: the helper returns one of both values.
+                    raise RuntimeError("Der Zahlungs-QR-Code ist beschädigt.")
+            else:
+                payload = raw_payload
             sync_event = offline_sync_event(payload, int(g.user["id"]))
             # A duplicate must be recognized before current article rules are
             # evaluated: a valid historic offline sale remains idempotent even
             # if somebody withdrew its variant before the browser retried.
             # The lock also closes the race between two simultaneous retries.
-            if sync_event is not None:
+            if sync_event is not None and not payment_qr_intent_active:
                 connection.execute("BEGIN IMMEDIATE")
                 duplicate_response = duplicate_sync_event_response(connection, sync_event)
                 if duplicate_response is not None:
                     connection.rollback()
                     return jsonify(duplicate_response)
-            raw_items = payload.get("items")
-            if raw_items is None:
-                raw_items = [{"variant_id": payload.get("variant_id"), "quantity": payload.get("quantity")}]
-            if not isinstance(raw_items, list) or not raw_items:
-                raise ValueError("Der Warenkorb enthält noch keine Artikel.")
-
-            basket_items: list[dict[str, Any]] = []
-            for raw_item in raw_items:
-                if not isinstance(raw_item, dict):
-                    raise ValueError("Ungültiger Artikel im Warenkorb.")
-                variant_id = int(raw_item.get("variant_id"))
-                quantity = parse_positive_int(raw_item.get("quantity"))
-                variant = connection.execute(
-                    """
-                    SELECT v.*
-                    FROM variants v
-                    JOIN articles a ON a.id = v.article_id
-                    WHERE v.id = ?
-                      AND v.is_active = 1 AND v.is_offered = 1
-                      AND a.is_active = 1 AND a.is_offered = 1
-                    """,
-                    (variant_id,),
-                ).fetchone()
-                if variant is None:
-                    raise ValueError("Diese Artikelvariante wird nicht mehr angeboten.")
-                raw_unit_price = raw_item.get("unit_price")
-                unit_price_cents = (
-                    int(variant["sale_price_cents"])
-                    if raw_unit_price is None or not str(raw_unit_price).strip()
-                    else money_to_cents(raw_unit_price, field_name="Preis pro Stück")
-                )
-                amount_due = quantity * unit_price_cents
-                basket_items.append(
-                    {
-                        "variant_id": variant_id,
-                        "quantity": quantity,
-                        "unit_price_cents": unit_price_cents,
-                        "amount_due_cents": amount_due,
-                    }
-                )
+            basket_items = sale_basket_items_from_payload(connection, payload)
 
             is_paid = bool(payload.get("is_paid", True))
             is_received = bool(payload.get("is_received", True))
@@ -8330,14 +9100,20 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             payment_follow_up = int(not is_paid)
 
             amount_due = sum(item["amount_due_cents"] for item in basket_items)
-            given_raw = payload.get("amount_given")
-            amount_given = (
-                None
-                if given_raw is None or not str(given_raw).strip()
-                else money_to_cents(given_raw, field_name="Gegeben")
-            )
-            if is_paid and amount_given is not None and amount_given < amount_due:
-                raise ValueError("Wenn „Bezahlt“ markiert ist, darf „Gegeben“ nicht kleiner als der Betrag sein.")
+            # A PayPal or EPC QR encodes exactly the calculated basket amount.
+            # Ignore any client-side cash field for these methods so changing
+            # payment methods cannot turn a stale amount into a donation.
+            if payment_method in QR_PAYMENT_METHODS:
+                amount_given = amount_due if is_paid else None
+            else:
+                given_raw = payload.get("amount_given")
+                amount_given = (
+                    None
+                    if given_raw is None or not str(given_raw).strip()
+                    else money_to_cents(given_raw, field_name="Gegeben")
+                )
+                if is_paid and amount_given is not None and amount_given < amount_due:
+                    raise ValueError("Wenn „Bezahlt“ markiert ist, darf „Gegeben“ nicht kleiner als der Betrag sein.")
             # An unpaid booking must never accidentally count as a donation just
             # because a stale browser field was sent with it.
             if not is_paid:
@@ -8356,7 +9132,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             date.fromisoformat(sold_on)
             comment = str(payload.get("comment", "")).strip() or None
 
-            if sync_event is None:
+            if sync_event is None and not payment_qr_intent_active:
                 connection.execute("BEGIN IMMEDIATE")
             event_name = event_name_for_sale_payload(connection, payload)
             # The inventory is a ledger, not a hard sales lock: a missed
@@ -8364,7 +9140,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             # stand from recording a real sale.  Holding the write lock gives
             # the response authoritative post-sale stock values for every
             # basket line.
-            receipt_id = unique_receipt_id(connection, "V", payload.get("receipt_id"), sold_on)
+            receipt_id = unique_receipt_id(
+                connection,
+                "V",
+                payload.get("receipt_id"),
+                sold_on,
+                payment_qr_intent_token=payment_qr_intent_token or None,
+            )
             created_at = utc_now()
             for item in basket_items:
                 cursor = connection.execute(
@@ -8417,6 +9199,21 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 "items": basket_items,
                 "message": "Kauf erfolgreich erfasst.",
             }
+            if payment_qr_intent_active:
+                consumed = connection.execute(
+                    """
+                    UPDATE payment_qr_intents
+                    SET consumed_at = ?, sale_payload_json = '{}', response_json = ?
+                    WHERE token = ? AND cancelled_at IS NULL AND consumed_at IS NULL
+                    """,
+                    (
+                        utc_now(),
+                        json.dumps(response_payload, ensure_ascii=False, separators=(",", ":")),
+                        payment_qr_intent_token,
+                    ),
+                )
+                if consumed.rowcount != 1:
+                    raise RuntimeError("Der Zahlungs-QR-Code konnte nicht bestätigt werden.")
             if sync_event is not None:
                 connection.execute(
                     """
@@ -8445,6 +9242,27 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             return jsonify({"ok": False, "error": str(exc)}), 409
         except (ValueError, TypeError) as exc:
             connection.rollback()
+            # A failed confirmation rolls its original read transaction back.
+            # Clear the temporary customer data separately, but only for an
+            # intent that has genuinely expired or was explicitly cancelled;
+            # other validation errors must leave a still-valid QR retryable.
+            if payment_qr_intent_active:
+                try:
+                    now = utc_now()
+                    connection.execute("BEGIN IMMEDIATE")
+                    connection.execute(
+                        """
+                        UPDATE payment_qr_intents
+                        SET cancelled_at = COALESCE(cancelled_at, ?), sale_payload_json = '{}'
+                        WHERE token = ? AND created_by_user_id = ? AND consumed_at IS NULL
+                          AND (cancelled_at IS NOT NULL OR expires_at <= ?)
+                        """,
+                        (now, payment_qr_intent_token, int(g.user["id"]), now),
+                    )
+                    connection.commit()
+                except sqlite3.DatabaseError:
+                    connection.rollback()
+                    current_app.logger.warning("Could not clear expired payment QR intent")
             return jsonify({"ok": False, "error": str(exc)}), 400
         except Exception:
             connection.rollback()

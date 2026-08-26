@@ -115,7 +115,7 @@
       </div>
     </details>
 
-    <div class="field-grid two-columns payment-inputs">
+    <div id="payment-inputs" class="field-grid two-columns payment-inputs">
       <label>Gegeben <input id="amount-given" inputmode="decimal" placeholder="Optional"></label>
       <div class="donation-box"><span>Spende</span><strong id="donation-preview">0,00 €</strong></div>
     </div>
@@ -129,7 +129,24 @@
   <div class="success-icon">✓</div>
   <h2>Kauf erfolgreich</h2>
   <p id="success-message">Der Verkauf wurde mit der Beleg-ID <strong id="success-receipt"></strong> gespeichert.</p>
+  <p id="payment-qr-setup-hint" class="notice success-qr-setup-hint" hidden>Im Adminbereich können PayPal.Me-Link und Bankverbindung eingetragen werden, um QR-Codes für die Bezahlung einzurichten.</p>
   <button id="close-success" class="primary-button" type="button">Neuen Kauf erfassen</button>
+</dialog>
+
+<dialog id="payment-qr-dialog" class="confirmation-dialog payment-qr-dialog" aria-labelledby="payment-qr-dialog-title">
+  <div>
+    <p class="eyebrow">Zahlung</p>
+    <h2 id="payment-qr-dialog-title">QR-Code zeigen</h2>
+    <p id="payment-qr-intro">Bitte den Code mit der Zahlungs-App scannen.</p>
+    <div class="payment-qr-image-wrap"><img id="payment-qr-image" alt="Zahlungs-QR-Code" hidden></div>
+    <div class="payment-qr-summary"><span id="payment-qr-method"></span><strong id="payment-qr-amount"></strong></div>
+    <dl id="payment-qr-details" class="payment-qr-details" aria-live="polite"></dl>
+    <p id="payment-qr-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions payment-qr-actions">
+      <button id="cancel-payment-qr" class="payment-qr-cancel" type="button">Abbruch</button>
+      <button id="confirm-payment-qr" class="payment-qr-confirm" type="button">Bestätigt</button>
+    </div>
+  </div>
 </dialog>
 
 <dialog id="sale-event-dialog" class="confirmation-dialog sale-event-dialog" aria-labelledby="sale-event-dialog-title">
@@ -148,5 +165,6 @@
 </dialog>
 
 <script id="articles-data" type="application/json">{{ articles|tojson }}</script>
+<script id="payment-qr-availability-data" type="application/json">{{ payment_qr_availability|tojson }}</script>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='transaction.js') }}"></script><script src="{{ url_for('static', filename='sales.js') }}"></script>{% endblock %}

@@ -38,6 +38,7 @@ from app import (
     scheduled_restart_unlock_pass_path,
     setup_encrypted_databases,
     send_smtp_notification,
+    shortened_epc_remittance_text,
     slideshow_settings_payload,
     smtp_notification_config,
     smtp_notification_status,
@@ -1102,6 +1103,8 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("idx_variant_photos_slideshow", indexes)
         self.assertIn("slideshow_extra_photos", tables)
         self.assertIn("slideshow_settings", tables)
+        self.assertIn("payment_qr_settings", tables)
+        self.assertIn("payment_qr_intents", tables)
 
     def seed_variant(self, article_name: str = "Test Shirt") -> int:
         """Create an article with generic Farbe/Größe options and one variant."""
@@ -1136,6 +1139,19 @@ class MerchAppTestCase(unittest.TestCase):
             json=payload,
             headers={"X-CSRF-Token": "test-csrf"},
         )
+
+    def save_payment_qr_settings(self, **overrides):
+        self.app.config["LOCAL_DEV_MODE"] = True
+        payload = {
+            "csrf_token": "test-csrf",
+            "paypal_me_username": "protovibe",
+            "bank_account_holder": "Protovibe e.V.",
+            "bank_iban": "DE89370400440532013000",
+            "bank_bic": "COBADEFFXXX",
+            "current_password": "test-password",
+        }
+        payload.update(overrides)
+        return self.client.post("/verwaltung/zahlungs-qr/einstellungen", data=payload)
 
     def post_csv_import(self, import_kind: str, content: str, filename: str = "import.csv"):
         return self.client.post(
@@ -1782,6 +1798,301 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertNotIn("verschl\u00c3\u00bcsselt in der App gespeichert", page)
         self.assertNotIn("stored-private-password", page)
 
+    def test_admin_can_configure_payment_qr_targets_and_only_admin_can_change_them(self) -> None:
+        saved = self.save_payment_qr_settings()
+        self.assertEqual(saved.status_code, 302)
+        with self.app.app_context():
+            settings = get_db().execute("SELECT * FROM payment_qr_settings WHERE id = 1").fetchone()
+        self.assertEqual(settings["paypal_me_url"], "https://paypal.me/protovibe")
+        self.assertEqual(settings["bank_account_holder"], "Protovibe e.V.")
+        self.assertEqual(settings["bank_iban"], "DE89370400440532013000")
+        self.assertEqual(settings["bank_bic"], "COBADEFFXXX")
+
+        page_response = self.client.get("/verwaltung")
+        page = page_response.get_data(as_text=True)
+        self.assertEqual(page_response.headers["Cache-Control"], "no-store, max-age=0")
+        self.assertIn("Zahlungs-QR-Codes", page)
+        self.assertIn("https://paypal.me/protovibe/1.00EUR", page)
+        self.assertIn("Protovibe e.V.", page)
+        self.assertIn("data:image/png;base64,", page)
+        self.assertIn('name="paypal_me_username"', page)
+        self.assertIn('<span aria-hidden="true">https://paypal.me/</span>', page)
+        self.assertNotIn('name="bank_remittance_text"', page)
+        self.assertIn("Protovibe Merch V-BEISPIEL-001: 1x Beispiel-Shirt M, 2x Cap", page)
+
+        rejected = self.save_payment_qr_settings(paypal_me_username="not/a/profile")
+        self.assertEqual(rejected.status_code, 302)
+        with self.app.app_context():
+            unchanged = get_db().execute(
+                "SELECT paypal_me_url FROM payment_qr_settings WHERE id = 1"
+            ).fetchone()
+        self.assertEqual(unchanged["paypal_me_url"], "https://paypal.me/protovibe")
+
+        rejected_iban = self.save_payment_qr_settings(bank_iban="DE001234")
+        self.assertEqual(rejected_iban.status_code, 302)
+        with self.app.app_context():
+            unchanged_bank = get_db().execute(
+                "SELECT bank_iban FROM payment_qr_settings WHERE id = 1"
+            ).fetchone()
+        self.assertEqual(unchanged_bank["bank_iban"], "DE89370400440532013000")
+
+        seller_id = self.create_local_user("payment-qr-seller", "seller")
+        self.become_user(seller_id)
+        self.assertEqual(
+            self.client.post(
+                "/verwaltung/zahlungs-qr/einstellungen",
+                data={"csrf_token": "test-csrf", "current_password": "test-password"},
+            ).status_code,
+            403,
+        )
+
+    def test_sales_page_uses_qr_only_for_configured_payment_destinations(self) -> None:
+        """A missing target keeps the familiar direct-sale confirmation path."""
+
+        def page_availability() -> tuple[dict, str]:
+            page = self.client.get("/verkauf").get_data(as_text=True)
+            match = re.search(
+                r'<script id="payment-qr-availability-data" type="application/json">(.*?)</script>',
+                page,
+            )
+            self.assertIsNotNone(match)
+            return json.loads(match.group(1)), page
+
+        availability, page = page_availability()
+        self.assertEqual(availability, {"bank_transfer": False, "paypal": False})
+        self.assertIn('id="payment-qr-setup-hint"', page)
+        self.assertIn("Im Adminbereich können PayPal.Me-Link und Bankverbindung eingetragen werden", page)
+        self.assertIn('class="notice success-qr-setup-hint" hidden', page)
+
+        self.assertEqual(
+            self.save_payment_qr_settings(
+                bank_account_holder="", bank_iban="", bank_bic=""
+            ).status_code,
+            302,
+        )
+        availability, _ = page_availability()
+        self.assertEqual(availability, {"bank_transfer": False, "paypal": True})
+
+        self.assertEqual(self.save_payment_qr_settings(paypal_me_username="").status_code, 302)
+        availability, _ = page_availability()
+        self.assertEqual(availability, {"bank_transfer": True, "paypal": False})
+
+        self.assertEqual(self.save_payment_qr_settings().status_code, 302)
+        availability, _ = page_availability()
+        self.assertEqual(availability, {"bank_transfer": True, "paypal": True})
+
+    def test_payment_qr_preview_uses_server_owned_destinations_without_creating_a_sale(self) -> None:
+        self.assertEqual(self.save_payment_qr_settings().status_code, 302)
+        variant_id = self.seed_variant("QR Shirt")
+        draft = {
+            "items": [{"variant_id": variant_id, "quantity": 2, "unit_price": "17,50"}],
+            "payment_method": "PayPal",
+            "sold_on": "2026-08-21",
+            # A browser must never be allowed to redirect money by adding its
+            # own fields to an otherwise valid sale draft.
+            "paypal_me_url": "https://paypal.me/not-the-band",
+            "bank_iban": "DE44500105175407324931",
+            "bank_remittance_text": "Vom Browser vorgegebener Text",
+        }
+        paypal_preview = self.api_post("/api/sales/payment-qr", draft)
+        self.assertEqual(paypal_preview.status_code, 200)
+        self.assertEqual(paypal_preview.headers["Cache-Control"], "private, no-store")
+        self.assertEqual(paypal_preview.json["amount_cents"], 3500)
+        self.assertEqual(paypal_preview.json["receipt_id"], "V-20260821-001")
+        self.assertTrue(paypal_preview.json["intent_token"])
+        self.assertEqual(paypal_preview.json["details"]["kind"], "paypal")
+        self.assertEqual(
+            paypal_preview.json["details"]["payment_url"], "https://paypal.me/protovibe/35.00EUR"
+        )
+        self.assertTrue(paypal_preview.json["qr_data_uri"].startswith("data:image/png;base64,"))
+
+        transfer_preview = self.api_post(
+            "/api/sales/payment-qr", {**draft, "payment_method": "Überweisung"}
+        )
+        self.assertEqual(transfer_preview.status_code, 200)
+        self.assertEqual(transfer_preview.json["amount_cents"], 3500)
+        self.assertEqual(transfer_preview.json["receipt_id"], "V-20260821-002")
+        self.assertEqual(transfer_preview.json["details"]["kind"], "bank_transfer")
+        self.assertEqual(transfer_preview.json["details"]["bank_account_holder"], "Protovibe e.V.")
+        self.assertEqual(transfer_preview.json["details"]["bank_iban"], "DE89370400440532013000")
+        self.assertEqual(
+            transfer_preview.json["details"]["bank_remittance_text"],
+            "Protovibe Merch V-20260821-002: 2x QR Shirt schwarz/M",
+        )
+        self.assertTrue(transfer_preview.json["qr_data_uri"].startswith("data:image/png;base64,"))
+        with self.app.app_context():
+            sale_count = get_db().execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            intent_count = get_db().execute("SELECT COUNT(*) FROM payment_qr_intents").fetchone()[0]
+        self.assertEqual(sale_count, 0)
+        self.assertEqual(intent_count, 2)
+
+        seller_id = self.create_local_user("qr-preview-seller", "seller")
+        self.become_user(seller_id)
+        seller_preview = self.api_post("/api/sales/payment-qr", draft)
+        self.assertEqual(seller_preview.status_code, 200)
+
+    def test_payment_qr_intent_confirms_the_frozen_sale_and_cancel_creates_no_sale(self) -> None:
+        """A QR code has one reserved receipt, and an abort cannot book a sale."""
+
+        self.assertEqual(self.save_payment_qr_settings().status_code, 302)
+        variant_id = self.seed_variant("QR reserviert")
+        draft = {
+            "items": [{"variant_id": variant_id, "quantity": 2, "unit_price": "17,50"}],
+            "payment_method": "Überweisung",
+            "sold_on": "2026-08-21",
+            "comment": "ursprünglicher Warenkorb",
+        }
+        preview = self.api_post("/api/sales/payment-qr", draft)
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json["receipt_id"], "V-20260821-001")
+        intent_token = preview.json["intent_token"]
+
+        # The confirmation trusts only the server-owned reservation, not the
+        # mutable fields a browser sends back after showing the code.
+        confirmed = self.api_post(
+            "/api/sales",
+            {
+                "payment_qr_intent_token": intent_token,
+                "receipt_id": "V-20260821-999",
+                "items": [{"variant_id": variant_id, "quantity": 99, "unit_price": "0,01"}],
+                "payment_method": "Bar",
+                "is_paid": False,
+                "comment": "manipuliert",
+            },
+        )
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(confirmed.json["receipt_id"], preview.json["receipt_id"])
+        self.assertEqual(confirmed.json["amount_due_cents"], 3500)
+        with self.app.app_context():
+            sales = get_db().execute(
+                "SELECT receipt_id, quantity, amount_due_cents, payment_method, comment FROM sales"
+            ).fetchall()
+            intent = get_db().execute(
+                "SELECT consumed_at, sale_payload_json FROM payment_qr_intents WHERE token = ?",
+                (intent_token,),
+            ).fetchone()
+        self.assertEqual(len(sales), 1)
+        self.assertEqual(dict(sales[0]), {
+            "receipt_id": "V-20260821-001",
+            "quantity": 2,
+            "amount_due_cents": 3500,
+            "payment_method": "Überweisung",
+            "comment": "ursprünglicher Warenkorb",
+        })
+        self.assertIsNotNone(intent["consumed_at"])
+        self.assertEqual(intent["sale_payload_json"], "{}")
+
+        retry = self.api_post("/api/sales", {"payment_qr_intent_token": intent_token})
+        self.assertEqual(retry.status_code, 200)
+        self.assertTrue(retry.json["duplicate"])
+        self.assertEqual(retry.json["receipt_id"], preview.json["receipt_id"])
+
+        aborted = self.api_post("/api/sales/payment-qr", {**draft, "payment_method": "PayPal"})
+        self.assertEqual(aborted.status_code, 200)
+        other_seller_id = self.create_local_user("qr-intent-other-seller", "seller")
+        self.become_user(other_seller_id)
+        foreign_confirmation = self.api_post(
+            "/api/sales", {"payment_qr_intent_token": aborted.json["intent_token"]}
+        )
+        self.assertEqual(foreign_confirmation.status_code, 400)
+        foreign_cancellation = self.api_post(
+            f"/api/sales/payment-qr/{aborted.json['intent_token']}/cancel", {}
+        )
+        self.assertEqual(foreign_cancellation.status_code, 404)
+
+        self.become_user(1)
+        cancellation = self.api_post(
+            f"/api/sales/payment-qr/{aborted.json['intent_token']}/cancel", {}
+        )
+        self.assertEqual(cancellation.status_code, 200)
+        self.assertEqual(cancellation.headers["Cache-Control"], "private, no-store")
+        rejected = self.api_post(
+            "/api/sales", {"payment_qr_intent_token": aborted.json["intent_token"]}
+        )
+        self.assertEqual(rejected.status_code, 400)
+        with self.app.app_context():
+            sale_count = get_db().execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+            aborted_intent = get_db().execute(
+                "SELECT cancelled_at, sale_payload_json FROM payment_qr_intents WHERE token = ?",
+                (aborted.json["intent_token"],),
+            ).fetchone()
+        self.assertEqual(sale_count, 1)
+        self.assertIsNotNone(aborted_intent["cancelled_at"])
+        self.assertEqual(aborted_intent["sale_payload_json"], "{}")
+
+        expired = self.api_post("/api/sales/payment-qr", {**draft, "payment_method": "PayPal"})
+        self.assertEqual(expired.status_code, 200)
+        with self.app.app_context():
+            connection = get_db()
+            connection.execute(
+                "UPDATE payment_qr_intents SET expires_at = ? WHERE token = ?",
+                ("2000-01-01T00:00:00+00:00", expired.json["intent_token"]),
+            )
+            connection.commit()
+        expired_confirmation = self.api_post(
+            "/api/sales", {"payment_qr_intent_token": expired.json["intent_token"]}
+        )
+        self.assertEqual(expired_confirmation.status_code, 400)
+        with self.app.app_context():
+            expired_intent = get_db().execute(
+                "SELECT cancelled_at, sale_payload_json FROM payment_qr_intents WHERE token = ?",
+                (expired.json["intent_token"],),
+            ).fetchone()
+        self.assertIsNotNone(expired_intent["cancelled_at"])
+        self.assertEqual(expired_intent["sale_payload_json"], "{}")
+
+    def test_epc_qr_trims_utf8_article_text_without_losing_the_receipt(self) -> None:
+        """The EPC byte cap trims only item text, never the payment reference."""
+
+        self.assertEqual(self.save_payment_qr_settings().status_code, 302)
+        variant_id = self.seed_variant("💥" * 100)
+        preview = self.api_post(
+            "/api/sales/payment-qr",
+            {
+                "items": [{"variant_id": variant_id, "quantity": 1}],
+                "payment_method": "Überweisung",
+                "sold_on": "2026-08-21",
+            },
+        )
+        self.assertEqual(preview.status_code, 200)
+        reference = preview.json["details"]["bank_remittance_text"]
+        self.assertTrue(reference.startswith("Protovibe Merch V-20260821-001"))
+        self.assertLessEqual(len(reference), 140)
+        self.assertTrue(reference.endswith("..."))
+        self.assertTrue(preview.json["qr_data_uri"].startswith("data:image/png;base64,"))
+        bare_reference = "Protovibe Merch V-20260821-001"
+        self.assertEqual(shortened_epc_remittance_text(bare_reference), bare_reference)
+
+    def test_qr_payment_methods_always_record_the_exact_due_amount(self) -> None:
+        """A stale cash field cannot become a donation after switching to QR payment."""
+
+        variant_id = self.seed_variant("QR exact amount")
+        for payment_method in ("PayPal", "Überweisung"):
+            sale = self.api_post(
+                "/api/sales",
+                {
+                    "items": [{"variant_id": variant_id, "quantity": 1}],
+                    "is_paid": True,
+                    "is_received": True,
+                    "payment_method": payment_method,
+                    # This is deliberately higher than the due amount and
+                    # simulates a field left over from a preceding cash sale.
+                    "amount_given": "50,00",
+                },
+            )
+            self.assertEqual(sale.status_code, 200)
+            self.assertEqual(sale.json["donation_cents"], 0)
+            with self.app.app_context():
+                row = get_db().execute(
+                    """
+                    SELECT amount_due_cents, amount_given_cents, donation_cents
+                    FROM sales WHERE receipt_id = ?
+                    """,
+                    (sale.json["receipt_id"],),
+                ).fetchone()
+            self.assertEqual(row["amount_given_cents"], row["amount_due_cents"])
+            self.assertEqual(row["donation_cents"], 0)
+
     def test_admin_message_email_is_optional_and_smtp_failure_keeps_the_message(self) -> None:
         self.app.config.update(
             EMAIL_NOTIFICATIONS_ENABLED=True,
@@ -2367,6 +2678,12 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn('class="field-grid two-columns sale-payment-date"', sales_html)
         self.assertIn('id="sale-event"', sales_html)
         self.assertIn('id="sale-event-dialog"', sales_html)
+        self.assertIn('id="payment-qr-dialog"', sales_html)
+        self.assertIn('id="confirm-payment-qr"', sales_html)
+        self.assertIn('id="cancel-payment-qr"', sales_html)
+        self.assertIn('id="payment-qr-availability-data"', sales_html)
+        self.assertIn('id="payment-qr-setup-hint"', sales_html)
+        self.assertIn('id="payment-inputs"', sales_html)
         self.assertIn("Neue Veranstaltung", sales_html)
         self.assertEqual(sales_html.count("data-mobile-collapsed"), 2)
         self.assertNotIn("Nach Auswahl wird der Standard-Verkaufspreis übernommen", sales_html)
@@ -2384,8 +2701,19 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("const confirmedValue = selectedSaleEventValue", sales_script)
         self.assertIn("refreshSaleEvents", sales_script)
         self.assertIn("window.setInterval(refreshVisibleSaleEvents, 15000)", sales_script)
+        self.assertIn("paymentRequiresQrPreview", sales_script)
+        self.assertIn("paymentQrConfigured", sales_script)
+        self.assertIn("paymentQrSetupIsMissing", sales_script)
+        self.assertIn("paymentUsesExactQrAmount", sales_script)
+        self.assertIn("/api/sales/payment-qr", sales_script)
+        self.assertIn("confirmPaymentQr", sales_script)
+        self.assertIn("payment_qr_intent_token", sales_script)
+        self.assertIn("/cancel", sales_script)
+        self.assertIn("showConfirmation = true", sales_script)
+        self.assertIn('amount_given: ""', sales_script)
         self.assertIn(".sale-payment-date { grid-template-columns: repeat(2, minmax(0, 1fr));", stylesheet)
         self.assertIn(".option-groups { min-height: 0; }", stylesheet)
+        self.assertIn(".payment-qr-confirm", stylesheet)
 
     def test_pos_mode_reorders_navigation_and_blocks_management_until_reauthentication(self) -> None:
         """The counter workflow is session-only and cannot be bypassed by a copied URL."""

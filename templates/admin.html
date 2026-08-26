@@ -67,6 +67,81 @@
   </form>
 </dialog>
 
+<section class="table-section admin-payment-qr-settings">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Zahlungen</p>
+      <h2>Zahlungs-QR-Codes</h2>
+      <p>PayPal und Überweisung werden beim Verkauf aus diesen bandweiten, nur für Admins sichtbaren Empfängerdaten erzeugt.</p>
+    </div>
+    <button class="secondary-button compact-button" type="button" data-payment-qr-settings-open>Zahlungsdaten bearbeiten</button>
+  </div>
+  <div class="admin-payment-qr-grid">
+    <article class="admin-payment-qr-card">
+      <div class="admin-payment-qr-card-heading">
+        <h3>PayPal</h3>
+        {% if payment_qr_settings.paypal_preview %}<span class="status good">Bereit</span>{% elif payment_qr_settings.paypal_ready %}<span class="status warning">Prüfen</span>{% else %}<span class="status cancelled">Nicht eingerichtet</span>{% endif %}
+      </div>
+      {% if payment_qr_settings.paypal_preview %}
+      <figure class="admin-payment-qr-preview">
+        <img src="{{ payment_qr_settings.paypal_preview.qr_data_uri }}" alt="PayPal-QR-Code für eine Beispielzahlung von 1,00 Euro">
+        <figcaption>Vorschau für 1,00 € mit Beispielbeleg</figcaption>
+      </figure>
+      <dl class="admin-payment-details">
+        <div><dt>PayPal.Me-Link</dt><dd><code>{{ payment_qr_settings.paypal_me_url }}</code></dd></div>
+        <div><dt>QR-Ziel</dt><dd><code>{{ payment_qr_settings.paypal_preview.payment_url }}</code></dd></div>
+      </dl>
+      {% elif payment_qr_settings.paypal_preview_error %}
+      <p class="form-error">{{ payment_qr_settings.paypal_preview_error }}</p>
+      {% else %}
+      <p class="muted">Noch kein PayPal.Me-Link hinterlegt.</p>
+      {% endif %}
+    </article>
+    <article class="admin-payment-qr-card">
+      <div class="admin-payment-qr-card-heading">
+        <h3>Überweisung</h3>
+        {% if payment_qr_settings.bank_transfer_preview %}<span class="status good">Bereit</span>{% elif payment_qr_settings.bank_transfer_ready %}<span class="status warning">Prüfen</span>{% else %}<span class="status cancelled">Nicht eingerichtet</span>{% endif %}
+      </div>
+      {% if payment_qr_settings.bank_transfer_preview %}
+      <figure class="admin-payment-qr-preview">
+        <img src="{{ payment_qr_settings.bank_transfer_preview.qr_data_uri }}" alt="EPC-Überweisungs-QR-Code für eine Beispielzahlung von 1,00 Euro">
+        <figcaption>Vorschau für 1,00 €</figcaption>
+      </figure>
+      <dl class="admin-payment-details">
+        <div><dt>Empfänger</dt><dd>{{ payment_qr_settings.bank_transfer_preview.bank_account_holder }}</dd></div>
+        <div><dt>IBAN</dt><dd><code>{{ payment_qr_settings.bank_transfer_preview.bank_iban }}</code></dd></div>
+        {% if payment_qr_settings.bank_transfer_preview.bank_bic %}<div><dt>BIC</dt><dd><code>{{ payment_qr_settings.bank_transfer_preview.bank_bic }}</code></dd></div>{% endif %}
+        <div><dt>Verwendungszweck (Beispiel)</dt><dd>{{ payment_qr_settings.bank_transfer_preview.bank_remittance_text }}</dd></div>
+      </dl>
+      {% elif payment_qr_settings.bank_transfer_preview_error %}
+      <p class="form-error">{{ payment_qr_settings.bank_transfer_preview_error }}</p>
+      {% else %}
+      <p class="muted">Noch keine vollständige Bankverbindung hinterlegt.</p>
+      {% endif %}
+    </article>
+  </div>
+</section>
+
+<dialog id="payment-qr-settings-dialog" class="confirmation-dialog payment-qr-settings-dialog" aria-labelledby="payment-qr-settings-dialog-title">
+  <form action="{{ url_for('save_payment_qr_settings') }}" method="post" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div><p class="eyebrow">Admin</p><h2 id="payment-qr-settings-dialog-title">Zahlungsdaten für QR-Codes</h2><p>Änderungen an Zahlungsempfängern benötigen zur Sicherheit dein aktuelles Admin-Passwort und 2FA.</p></div>
+    <label>PayPal.Me-Profil
+      <span class="paypal-me-input"><span aria-hidden="true">https://paypal.me/</span><input name="paypal_me_username" value="{{ payment_qr_settings.paypal_me_username }}" maxlength="482" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="deinname"></span>
+      <small>Bitte nur den Namen hinter <code>https://paypal.me/</code> eintragen.</small>
+    </label>
+    <div class="field-grid two-columns">
+      <label>Kontoinhaber<input name="bank_account_holder" value="{{ payment_qr_settings.bank_account_holder }}" maxlength="70" autocomplete="organization"></label>
+      <label>IBAN<input name="bank_iban" value="{{ payment_qr_settings.bank_iban }}" maxlength="42" inputmode="text" autocomplete="off" placeholder="DE00 0000 0000 0000 0000 00"></label>
+      <label>BIC <small>Optional innerhalb des EWR</small><input name="bank_bic" value="{{ payment_qr_settings.bank_bic }}" maxlength="11" inputmode="text" autocomplete="off"></label>
+    </div>
+    <p class="notice">Der Verwendungszweck wird pro Verkauf automatisch aus Beleg-ID, Menge, Artikel und Variante erzeugt.</p>
+    <label>Aktuelles Admin-Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
+    {% if not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+    <div class="dialog-actions"><button class="secondary-button" type="button" data-payment-qr-settings-close>Abbrechen</button><button class="primary-button" type="submit">Zahlungsdaten speichern</button></div>
+  </form>
+</dialog>
+
 <section class="table-section admin-message-inbox">
   <div class="section-heading"><div><p class="eyebrow">Privates Postfach</p><h2>Nachrichten an den Admin</h2><p>{{ admin_messages|length }} Nachricht(en), {{ admin_messages|rejectattr('is_resolved')|list|length }} offen.</p></div></div>
   {% if admin_messages %}
