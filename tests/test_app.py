@@ -731,6 +731,10 @@ class MerchAppTestCase(unittest.TestCase):
             pending_audit_count = user_connection.execute(
                 "SELECT COUNT(*) FROM audit_log WHERE action = 'role_handover_pending'"
             ).fetchone()[0]
+            user_tables = {
+                row["name"]
+                for row in user_connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            }
             tables = {row["name"] for row in get_db().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         self.assertTrue(
             {
@@ -738,6 +742,7 @@ class MerchAppTestCase(unittest.TestCase):
                 "is_active",
                 "must_set_password",
                 "setup_code_hash",
+                "contact_email",
                 "mfa_secret_encrypted",
                 "mfa_enabled",
                 "session_version",
@@ -760,6 +765,7 @@ class MerchAppTestCase(unittest.TestCase):
         for role in ("seller", "member", "manager", "band_admin", "support_admin", "system_admin"):
             self.assertIn(f"'{role}'", schema)
         self.assertIn("sync_events", tables)
+        self.assertIn("password_reset_challenges", user_tables)
         self.assertNotIn("users", tables)
         self.assertTrue(list(Path(legacy_app.config["MIGRATION_ARCHIVE_DIR"]).glob("*.zip")))
 
@@ -2384,8 +2390,8 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response.location)
 
-    def test_platform_contact_email_is_private_and_band_admin_cannot_use_support_mail_features(self) -> None:
-        """Only platform identities can store their own reset/contact address."""
+    def test_platform_contact_email_is_private_and_band_admin_can_only_send_support_messages(self) -> None:
+        """Band-Admins may send a message, but cannot use platform mail features."""
 
         self.app.config["LOCAL_DEV_MODE"] = True
         support_id = self.create_local_user("contact-support", "support_admin")
@@ -2398,6 +2404,8 @@ class MerchAppTestCase(unittest.TestCase):
         )
         band_profile = self.client.get("/profil").get_data(as_text=True)
         self.assertNotIn("E-Mail für Support und Passwort-Reset", band_profile)
+        band_administration = self.client.get("/verwaltung").get_data(as_text=True)
+        self.assertIn("data-admin-message-open", band_administration)
         self.assertEqual(
             self.client.post(
                 "/profil/kontakt-email",
@@ -2411,6 +2419,29 @@ class MerchAppTestCase(unittest.TestCase):
             "/system-verwaltung/nachrichten/1/status",
         ):
             self.assertEqual(self.client.post(path, data={"csrf_token": "test-csrf"}).status_code, 403, path)
+        self.assertEqual(
+            self.client.post(
+                "/admin-nachricht",
+                data={
+                    "csrf_token": "test-csrf",
+                    "message_type": "question",
+                    "sender_email": "band-reply@example.test",
+                    "subject": "Band-Admin-Frage",
+                    "body": "Bitte das System-Team kontaktieren.",
+                },
+                follow_redirects=True,
+            ).status_code,
+            200,
+        )
+        with self.app.app_context():
+            message = get_user_db().execute(
+                "SELECT sender_email FROM admin_messages WHERE sender_username = ?",
+                ("tester",),
+            ).fetchone()
+            self.assertEqual(message["sender_email"], "band-reply@example.test")
+            self.assertIsNone(
+                get_user_db().execute("SELECT contact_email FROM users WHERE id = 1").fetchone()[0]
+            )
 
         for user_id, address in (
             (support_id, "support@example.test"),
@@ -2465,6 +2496,9 @@ class MerchAppTestCase(unittest.TestCase):
             "/profil/kontakt-email",
             data={"csrf_token": "test-csrf", "contact_email": "reset-system@example.test"},
         )
+        system_page = self.client.get("/system-verwaltung").get_data(as_text=True)
+        self.assertIn("Der SMTP-Transport ist bereit", system_page)
+        self.assertNotIn("Test-E-Mail senden", system_page)
 
         with self.client.session_transaction() as session:
             session.clear()
@@ -2840,6 +2874,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(dict(resolved_message), {"is_resolved": 1, "resolved_by_username": "message-system"})
 
     def test_invalid_admin_message_is_not_persisted(self) -> None:
+        self.become_user(self.create_local_user("invalid-message-seller", "seller"))
         response = self.client.post(
             "/admin-nachricht",
             data={

@@ -1175,7 +1175,7 @@ def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
     status = smtp_notification_status(config)
     if not status["ready"]:
         details = [*status["missing"], *status["errors"]]
-        raise ValueError("SMTP notification is not fully configured: " + ", ".join(details))
+        raise ValueError("SMTP-Benachrichtigung ist nicht vollständig konfiguriert: " + ", ".join(details))
     send_smtp_email(config, recipient=status["recipient"], subject=subject, body=body)
 
 
@@ -1514,6 +1514,10 @@ def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
     user["can_access_band_administration"] = role == "band_admin"
     user["can_access_system_administration"] = role in PLATFORM_STAFF_ROLES
     user["can_manage_platform_staff"] = role == "system_admin"
+    # Every band role may contact the platform team, including Band-Admins.
+    # The capability only exposes the outgoing message form; it never grants
+    # access to the platform inbox, SMTP configuration or profile email.
+    user["can_contact_support"] = role in {"seller", "member", "manager", "band_admin"}
     # Until the system-operation split is specified, the migrated local owner
     # retains the existing update workflow. Platform roles gain no implicit
     # access to this band's data or deployment controls.
@@ -4409,6 +4413,7 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
             ("must_set_password", "INTEGER NOT NULL DEFAULT 0"),
             ("setup_code_hash", "TEXT"),
             ("setup_code_expires_at", "TEXT"),
+            ("contact_email", "TEXT"),
             ("mfa_secret_encrypted", "TEXT"),
             ("mfa_pending_secret_encrypted", "TEXT"),
             ("mfa_recovery_code_hashes_json", "TEXT NOT NULL DEFAULT '[]'"),
@@ -8741,6 +8746,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 "UPDATE users SET contact_email = ? WHERE id = ?",
                 (contact_email, g.user["id"]),
             )
+            connection.execute(
+                "DELETE FROM password_reset_challenges WHERE user_id = ?",
+                (g.user["id"],),
+            )
             audit(
                 connection,
                 "update_contact_email",
@@ -8888,6 +8897,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.post("/admin-nachricht")
     @login_required
+    @exact_role_required("seller", "member", "manager", "band_admin")
     def send_admin_message():
         """Persist an authenticated user's issue or question for the admin."""
 
@@ -9094,7 +9104,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             band_users=platform_administration_users(band_accounts=True),
             platform_users=platform_administration_users(band_accounts=False),
             admin_messages=administration_messages(),
-            email_notification=smtp_notification_status(notification_config),
+            email_notification=smtp_notification_status(
+                notification_config, require_notification_recipient=False
+            ),
             email_settings=smtp_notification_settings_public(notification_config),
             setup_credential=setup_credential,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
@@ -9453,7 +9465,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 + (", ".join(details) if details else "E-Mail-Benachrichtigungen sind deaktiviert."),
                 "error",
             )
-            return redirect(url_for("administration_page"))
+            return redirect(url_for("system_administration_page"))
         try:
             send_smtp_notification(
                 notification_config,
@@ -9472,7 +9484,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             )
         else:
             flash(f"Test-E-Mail an {status['recipient']} wurde gesendet.", "success")
-        return redirect(url_for("administration_page"))
+        return redirect(url_for("system_administration_page"))
 
     @app.post("/system-verwaltung/nachrichten/<int:message_id>/status")
     @login_required
@@ -9709,7 +9721,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             abort(403)
         if int(user["id"]) == int(g.user["id"]):
             flash("Das eigene Passwort wird ausschließlich im Profil geändert.", "error")
-            return redirect(url_for("system_administration_page"))
+            return redirect(url_for("administration_page"))
         setup_code = generate_setup_code()
         connection.execute(
             """
@@ -9738,7 +9750,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         role = str(request.form.get("role", "")).strip().lower()
         if role not in MANAGED_USER_ROLES:
             flash("Es sind nur Seller, Member, Manager und Band-Admin auswählbar.", "error")
-            return redirect(url_for("system_administration_page"))
+            return redirect(url_for("administration_page"))
         connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
@@ -9800,7 +9812,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash(str(exc), "error")
             return redirect(url_for("administration_page"))
         flash("Die Rolle von „{}“ wurde geändert.".format(user["username"]), "success")
-        return redirect(url_for("system_administration_page"))
+        return redirect(url_for("administration_page"))
 
     @app.post("/verwaltung/benutzer/<int:user_id>/aktiv")
     @login_required
@@ -9842,7 +9854,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         )
         connection.commit()
         flash("Der Benutzer wurde {}.".format("aktiviert" if active else "deaktiviert"), "success")
-        return redirect(url_for("system_administration_page"))
+        return redirect(url_for("administration_page"))
 
     @app.post("/verwaltung/benutzer/<int:user_id>/2fa-zuruecksetzen")
     @login_required

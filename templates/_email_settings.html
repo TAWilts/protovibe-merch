@@ -15,11 +15,12 @@
   </div>
   {% if email_notification.ready %}
   <div class="admin-email-status-row">
-    <p>Versand über <strong>{{ email_notification.host }}:{{ email_notification.port }}</strong> ({{ email_notification.security }}) an das zusätzliche Support-Postfach <strong>{{ email_notification.recipient }}</strong>.</p>
+    {% if email_notification.recipient %}<p>Versand über <strong>{{ email_notification.host }}:{{ email_notification.port }}</strong> ({{ email_notification.security }}) an das zusätzliche Support-Postfach <strong>{{ email_notification.recipient }}</strong>.</p>
     <form action="{{ url_for('test_admin_email_notification') }}" method="post">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="secondary-button compact-button" type="submit">Test-E-Mail senden</button>
     </form>
+    {% else %}<p>Der SMTP-Transport ist bereit. Passwort-Reset-Codes gehen an persönliche System-Admin-Kontaktadressen; ein zusätzliches Support-Postfach ist optional.</p>{% endif %}
   </div>
   {% elif email_notification.enabled %}
   <p class="notice warning-notice">Die Benachrichtigung ist aktiviert, aber noch nicht einsatzbereit.{% if email_notification.missing %} Fehlend: <code>{{ email_notification.missing|join(', ') }}</code>.{% endif %}{% if email_notification.errors %} {{ email_notification.errors|join('. ') }}.{% endif %}</p>

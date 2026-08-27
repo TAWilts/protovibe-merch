@@ -54,7 +54,7 @@
         <input type="hidden" name="next" value="{{ request.full_path }}">
         <button class="pos-mode-button {{ 'is-active' if pos_mode else '' }}" type="submit" aria-pressed="{{ 'true' if pos_mode else 'false' }}">POS Mode</button>
       </form>
-      <button class="user-message-button" type="button" data-admin-message-open title="{{ ui_text.get('message.button_title') }}" aria-label="{{ ui_text.get('message.button_title') }}"><span aria-hidden="true">✉</span><span class="user-message-button-label">{{ ui_text.get('message.button') }}</span></button>
+      {% if current_user.can_contact_support %}<button class="user-message-button" type="button" data-admin-message-open title="{{ ui_text.get('message.button_title') }}" aria-label="{{ ui_text.get('message.button_title') }}"><span aria-hidden="true">✉</span><span class="user-message-button-label">{{ ui_text.get('message.button') }}</span></button>{% endif %}
       {% endif %}
       <span class="user-identity">
         <a class="user-profile-link" href="{{ url_for('profile_reauth', next=url_for('profile_page')) }}" title="{{ ui_text.get('profile.link_title') }}">{{ current_user.username }} · {{ current_user.role_label }}</a>
@@ -73,7 +73,7 @@
   </header>
   {% endif %}
 
-  {% if current_user and current_user.can_access_band_workflows %}
+  {% if current_user and current_user.can_contact_support %}
   <dialog id="admin-message-dialog" class="confirmation-dialog user-message-dialog">
     <form action="{{ url_for('send_admin_message') }}" method="post" class="stack-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
