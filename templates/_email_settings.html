@@ -1,0 +1,45 @@
+<section class="table-section admin-email-settings">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Support und Passwort-Reset</p>
+      <h2>E-Mail-Versand</h2>
+      <p>Nur Support- und System-Admins verwalten den SMTP-Versand. Passwort-Reset-Codes gehen an die persönliche Kontaktadresse des jeweiligen System-Admins.</p>
+    </div>
+    {% if email_notification.ready %}<span class="status good">Aktiv</span>
+    {% elif email_notification.enabled %}<span class="status warning">Unvollständig</span>
+    {% else %}<span class="status cancelled">Deaktiviert</span>{% endif %}
+  </div>
+  <div class="admin-email-status-row">
+    <p>{% if email_settings.source == 'stored' %}Die Zugangsdaten sind verschlüsselt in der App gespeichert.{% else %}Die derzeitigen Werte stammen aus der Server-Konfiguration.{% endif %}</p>
+    <button class="secondary-button compact-button" type="button" data-email-settings-open>E-Mail-Zugangsdaten</button>
+  </div>
+  {% if email_notification.ready %}
+  <div class="admin-email-status-row">
+    <p>Versand über <strong>{{ email_notification.host }}:{{ email_notification.port }}</strong> ({{ email_notification.security }}) an das zusätzliche Support-Postfach <strong>{{ email_notification.recipient }}</strong>.</p>
+    <form action="{{ url_for('test_admin_email_notification') }}" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="secondary-button compact-button" type="submit">Test-E-Mail senden</button>
+    </form>
+  </div>
+  {% elif email_notification.enabled %}
+  <p class="notice warning-notice">Die Benachrichtigung ist aktiviert, aber noch nicht einsatzbereit.{% if email_notification.missing %} Fehlend: <code>{{ email_notification.missing|join(', ') }}</code>.{% endif %}{% if email_notification.errors %} {{ email_notification.errors|join('. ') }}.{% endif %}</p>
+  {% else %}
+  <p class="muted">Aktiviere den SMTP-Versand und hinterlege die Zugangsdaten, damit Nachrichten und Passwort-Reset-Codes per E-Mail zugestellt werden können.</p>
+  {% endif %}
+</section>
+
+<dialog id="email-settings-dialog" class="confirmation-dialog email-settings-dialog" aria-labelledby="email-settings-dialog-title">
+  <form action="{{ url_for('save_admin_email_notification_settings') }}" method="post" class="stack-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div><p class="eyebrow">Plattform</p><h2 id="email-settings-dialog-title">E-Mail-Zugangsdaten</h2><p>Das SMTP-Passwort wird nicht erneut angezeigt und vor dem Speichern verschlüsselt.</p></div>
+    <label class="toggle-label"><input name="enabled" type="checkbox"{% if email_settings.enabled %} checked{% endif %}><span>Benachrichtigungen und Passwort-Reset aktivieren</span></label>
+    <div class="field-grid two-columns"><label>SMTP-Server<input name="host" value="{{ email_settings.host }}" maxlength="255"></label><label>Port<input name="port" type="number" min="1" max="65535" value="{{ email_settings.port }}" required></label><label>Sicherheit<select name="security"><option value="ssl"{% if email_settings.security == 'ssl' %} selected{% endif %}>SSL/TLS</option><option value="starttls"{% if email_settings.security == 'starttls' %} selected{% endif %}>STARTTLS</option></select></label><label>Zeitlimit (Sekunden)<input name="timeout_seconds" type="number" min="1" max="60" step="1" value="{{ email_settings.timeout_seconds }}" required></label></div>
+    <label>Benutzername<input name="username" value="{{ email_settings.username }}" maxlength="254" autocomplete="username"></label>
+    <label>SMTP-Passwort <small>{% if email_settings.password_configured %}Ein Passwort ist gespeichert. Leer lassen, um es beizubehalten.{% else %}Noch kein Passwort gespeichert.{% endif %}</small><input name="password" type="password" maxlength="2000" autocomplete="new-password"></label>
+    <label class="toggle-label"><input name="clear_password" type="checkbox"><span>Gespeichertes Passwort entfernen</span></label>
+    <div class="field-grid two-columns"><label>Absenderadresse<input name="sender_address" type="email" value="{{ email_settings.sender_address }}" maxlength="254"></label><label>Zusätzliches Support-Postfach<input name="recipient_address" type="email" value="{{ email_settings.recipient_address }}" maxlength="254"></label></div>
+    <label>Aktuelles Admin-Passwort<input name="current_password" type="password" autocomplete="current-password" required></label>
+    {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
+    <div class="dialog-actions"><button class="secondary-button" type="button" data-email-settings-close>Abbrechen</button><button class="primary-button" type="submit">Verschlüsselt speichern</button></div>
+  </form>
+</dialog>

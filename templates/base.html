@@ -146,6 +146,8 @@
   {% if current_user and current_user.can_access_band_workflows %}
   <script src="{{ url_for('static', filename='pwa.js') }}" defer></script>
   <script src="{{ url_for('static', filename='offline-sales.js') }}"></script>
+  {% endif %}
+  {% if current_user and (current_user.can_access_band_workflows or current_user.can_access_system_administration) %}
   <script src="{{ url_for('static', filename='admin-messages.js') }}" defer></script>
   {% endif %}
   {% if current_user and current_user.can_manage_updates %}

@@ -145,11 +145,19 @@ class MerchAppTestCase(unittest.TestCase):
             schema = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
             ).fetchone()["sql"]
+            contact_email_column = connection.execute(
+                "SELECT 1 FROM pragma_table_info('users') WHERE name = 'contact_email'"
+            ).fetchone()
+            reset_challenge_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'password_reset_challenges'"
+            ).fetchone()
 
         self.assertEqual(owner["role"], "band_admin")
         self.assertTrue(owner["is_admin"])
         self.assertEqual(owner["session_version"], 0)
         self.assertEqual(platform_count, 0)
+        self.assertIsNotNone(contact_email_column)
+        self.assertIsNotNone(reset_challenge_table)
         for role in ("seller", "member", "manager", "band_admin", "support_admin", "system_admin"):
             self.assertIn(f"'{role}'", schema)
 
@@ -2376,6 +2384,158 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login", response.location)
 
+    def test_platform_contact_email_is_private_and_band_admin_cannot_use_support_mail_features(self) -> None:
+        """Only platform identities can store their own reset/contact address."""
+
+        self.app.config["LOCAL_DEV_MODE"] = True
+        support_id = self.create_local_user("contact-support", "support_admin")
+        system_id = self.create_local_user("contact-system", "system_admin")
+
+        self.become_user(1)
+        self.client.post(
+            "/profil/zugriff?next=/profil",
+            data={"csrf_token": "test-csrf", "password": "test-password"},
+        )
+        band_profile = self.client.get("/profil").get_data(as_text=True)
+        self.assertNotIn("E-Mail für Support und Passwort-Reset", band_profile)
+        self.assertEqual(
+            self.client.post(
+                "/profil/kontakt-email",
+                data={"csrf_token": "test-csrf", "contact_email": "band@example.test"},
+            ).status_code,
+            403,
+        )
+        for path in (
+            "/system-verwaltung/email/test",
+            "/system-verwaltung/email/einstellungen",
+            "/system-verwaltung/nachrichten/1/status",
+        ):
+            self.assertEqual(self.client.post(path, data={"csrf_token": "test-csrf"}).status_code, 403, path)
+
+        for user_id, address in (
+            (support_id, "support@example.test"),
+            (system_id, "system@example.test"),
+        ):
+            self.become_user(user_id)
+            self.assertEqual(
+                self.client.post(
+                    "/profil/zugriff?next=/profil",
+                    data={"csrf_token": "test-csrf", "password": "test-password"},
+                ).status_code,
+                302,
+            )
+            saved = self.client.post(
+                "/profil/kontakt-email",
+                data={"csrf_token": "test-csrf", "contact_email": address},
+            )
+            self.assertEqual(saved.status_code, 302)
+            self.assertIn(
+                "E-Mail für Support und Passwort-Reset", self.client.get("/profil").get_data(as_text=True)
+            )
+        with self.app.app_context():
+            emails = {
+                row["username"]: row["contact_email"]
+                for row in get_user_db()
+                .execute("SELECT username, contact_email FROM users WHERE id IN (?, ?)", (support_id, system_id))
+                .fetchall()
+            }
+        self.assertEqual(emails, {"contact-support": "support@example.test", "contact-system": "system@example.test"})
+
+    def test_system_admin_password_reset_uses_one_time_email_code_without_locking_current_password(self) -> None:
+        """A reset code is short-lived, hashed, single-use and does not expose a password by mail."""
+
+        self.app.config.update(
+            LOCAL_DEV_MODE=True,
+            EMAIL_NOTIFICATIONS_ENABLED=True,
+            SMTP_HOST="smtp.example.test",
+            SMTP_PORT=465,
+            SMTP_SECURITY="ssl",
+            SMTP_USERNAME="notifier@example.test",
+            SMTP_PASSWORD="private-app-password",
+            SMTP_FROM="notifier@example.test",
+            SMTP_TIMEOUT_SECONDS=4,
+        )
+        system_id = self.create_local_user("reset-system", "system_admin")
+        self.become_user(system_id)
+        self.client.post(
+            "/profil/zugriff?next=/profil",
+            data={"csrf_token": "test-csrf", "password": "test-password"},
+        )
+        self.client.post(
+            "/profil/kontakt-email",
+            data={"csrf_token": "test-csrf", "contact_email": "reset-system@example.test"},
+        )
+
+        with self.client.session_transaction() as session:
+            session.clear()
+            session["csrf_token"] = "reset-login-token"
+        failed_login = self.client.post(
+            "/login",
+            data={
+                "csrf_token": "reset-login-token",
+                "username": "reset-system",
+                "password": "wrong-password",
+            },
+        )
+        self.assertEqual(failed_login.status_code, 200)
+        self.assertIn("Einmalcode per E-Mail anfordern", failed_login.get_data(as_text=True))
+
+        with patch("app.send_system_admin_password_reset_email") as send_reset_email:
+            requested = self.client.post(
+                "/login/system-admin/passwort-zuruecksetzen",
+                data={"csrf_token": "reset-login-token", "username": "reset-system"},
+            )
+        self.assertEqual(requested.status_code, 302)
+        self.assertTrue(requested.location.endswith("/login/system-admin/passwort-zuruecksetzen/bestaetigen"))
+        send_reset_email.assert_called_once()
+        self.assertEqual(send_reset_email.call_args.kwargs["recipient"], "reset-system@example.test")
+        reset_code = send_reset_email.call_args.kwargs["reset_code"]
+
+        with self.app.app_context():
+            connection = get_user_db()
+            user_before = connection.execute("SELECT password_hash, session_version FROM users WHERE id = ?", (system_id,)).fetchone()
+            challenge = connection.execute(
+                "SELECT code_hash, failed_attempts FROM password_reset_challenges WHERE user_id = ?", (system_id,)
+            ).fetchone()
+        self.assertTrue(check_password_hash(user_before["password_hash"], "test-password"))
+        self.assertNotEqual(challenge["code_hash"], reset_code)
+        self.assertTrue(check_password_hash(challenge["code_hash"], reset_code))
+        self.assertEqual(challenge["failed_attempts"], 0)
+
+        completed = self.client.post(
+            "/login/system-admin/passwort-zuruecksetzen/bestaetigen",
+            data={
+                "csrf_token": self.csrf_token(),
+                "reset_code": reset_code,
+                "password": "reset-private-password",
+                "password_confirmation": "reset-private-password",
+            },
+        )
+        self.assertEqual(completed.status_code, 302)
+        self.assertTrue(completed.location.endswith("/login"))
+        with self.app.app_context():
+            connection = get_user_db()
+            user_after = connection.execute("SELECT password_hash, session_version FROM users WHERE id = ?", (system_id,)).fetchone()
+            challenge = connection.execute(
+                "SELECT 1 FROM password_reset_challenges WHERE user_id = ?", (system_id,)
+            ).fetchone()
+        self.assertTrue(check_password_hash(user_after["password_hash"], "reset-private-password"))
+        self.assertEqual(user_after["session_version"], 1)
+        self.assertIsNone(challenge)
+
+        with self.client.session_transaction() as session:
+            session["csrf_token"] = "new-password-login-token"
+        new_login = self.client.post(
+            "/login",
+            data={
+                "csrf_token": "new-password-login-token",
+                "username": "reset-system",
+                "password": "reset-private-password",
+            },
+        )
+        self.assertEqual(new_login.status_code, 302)
+        self.assertTrue(new_login.location.endswith("/system-verwaltung"))
+
     def test_profile_requires_fresh_password_confirmation_before_view_or_password_change(self) -> None:
         blocked = self.client.get("/profil")
         self.assertEqual(blocked.status_code, 302)
@@ -2615,9 +2775,10 @@ class MerchAppTestCase(unittest.TestCase):
         )
 
     def test_every_user_can_message_the_admin_but_only_admin_can_view_the_inbox(self) -> None:
-        """Messages retain their sender snapshot and are rendered escaped in the private admin tab."""
+        """Band accounts send support requests; only platform staff see the inbox."""
 
         seller_id = self.create_local_user("message-seller", "seller")
+        system_id = self.create_local_user("message-system", "system_admin")
         self.become_user(seller_id)
         sales_page = self.client.get("/verkauf").get_data(as_text=True)
         self.assertIn('data-admin-message-open', sales_page)
@@ -2654,7 +2815,12 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(audit_row["entity_id"], message["id"])
 
         self.become_user(1)
-        admin_page = self.client.get("/verwaltung").get_data(as_text=True)
+        band_page = self.client.get("/verwaltung").get_data(as_text=True)
+        self.assertNotIn("admin-message-inbox", band_page)
+        self.assertNotIn("E-Mail-Zugangsdaten", band_page)
+
+        self.become_user(system_id)
+        admin_page = self.client.get("/system-verwaltung").get_data(as_text=True)
         self.assertIn("Nachrichten an den Admin", admin_page)
         self.assertIn("message-seller", admin_page)
         self.assertIn("seller@example.test", admin_page)
@@ -2663,7 +2829,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertIn("Der Scanner verliert die Verbindung.", admin_page)
         self.assertIn("Als erledigt markieren", admin_page)
         resolved = self.client.post(
-            f"/verwaltung/nachrichten/{message['id']}/status",
+            f"/system-verwaltung/nachrichten/{message['id']}/status",
             data={"csrf_token": "test-csrf", "is_resolved": "1"},
         )
         self.assertEqual(resolved.status_code, 302)
@@ -2671,7 +2837,7 @@ class MerchAppTestCase(unittest.TestCase):
             resolved_message = get_user_db().execute(
                 "SELECT is_resolved, resolved_by_username FROM admin_messages WHERE id = ?", (message["id"],)
             ).fetchone()
-        self.assertEqual(dict(resolved_message), {"is_resolved": 1, "resolved_by_username": "tester"})
+        self.assertEqual(dict(resolved_message), {"is_resolved": 1, "resolved_by_username": "message-system"})
 
     def test_invalid_admin_message_is_not_persisted(self) -> None:
         response = self.client.post(
@@ -2780,8 +2946,10 @@ class MerchAppTestCase(unittest.TestCase):
 
     def test_admin_can_store_encrypted_smtp_settings_without_rendering_the_password(self) -> None:
         self.app.config["LOCAL_DEV_MODE"] = True
+        system_id = self.create_local_user("smtp-system", "system_admin")
+        self.become_user(system_id)
         saved = self.client.post(
-            "/verwaltung/email/einstellungen",
+            "/system-verwaltung/email/einstellungen",
             data={
                 "csrf_token": "test-csrf",
                 "enabled": "on",
@@ -2804,7 +2972,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertTrue(row["password_encrypted"])
         self.assertNotEqual(row["password_encrypted"], "stored-private-password")
         self.assertEqual(active_config["SMTP_PASSWORD"], "stored-private-password")
-        page = self.client.get("/verwaltung").get_data(as_text=True)
+        page = self.client.get("/system-verwaltung").get_data(as_text=True)
         self.assertIn("E-Mail-Zugangsdaten", page)
         self.assertIn("verschlüsselt in der App gespeichert", page)
         self.assertNotIn("verschl\u00c3\u00bcsselt in der App gespeichert", page)
@@ -3118,6 +3286,7 @@ class MerchAppTestCase(unittest.TestCase):
             SMTP_TIMEOUT_SECONDS=4,
         )
         seller_id = self.create_local_user("email-seller", "seller")
+        system_id = self.create_local_user("email-system", "system_admin")
         self.become_user(seller_id)
 
         with patch("app.send_smtp_notification") as send_email:
@@ -3155,15 +3324,15 @@ class MerchAppTestCase(unittest.TestCase):
             ).fetchall()
         self.assertEqual([row["subject"] for row in messages], ["Erste Frage", "Zweite Nachricht"])
 
-        self.become_user(1)
-        admin_page = self.client.get("/verwaltung").get_data(as_text=True)
-        self.assertIn("E-Mail bei neuen Nachrichten", admin_page)
+        self.become_user(system_id)
+        admin_page = self.client.get("/system-verwaltung").get_data(as_text=True)
+        self.assertIn("E-Mail-Versand", admin_page)
         self.assertIn("admin@example.test", admin_page)
         self.assertIn("Test-E-Mail senden", admin_page)
         self.assertNotIn("private-app-password", admin_page)
         with patch("app.send_smtp_notification") as test_email:
             test_response = self.client.post(
-                "/verwaltung/email/test",
+                "/system-verwaltung/email/test",
                 data={"csrf_token": "test-csrf"},
             )
         self.assertEqual(test_response.status_code, 302)
@@ -3172,7 +3341,7 @@ class MerchAppTestCase(unittest.TestCase):
         self.become_user(seller_id)
         self.assertEqual(
             self.client.post(
-                "/verwaltung/email/test",
+                "/system-verwaltung/email/test",
                 data={"csrf_token": "test-csrf"},
             ).status_code,
             403,

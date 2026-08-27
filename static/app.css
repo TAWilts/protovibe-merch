@@ -617,6 +617,9 @@ body.product-slideshow-running { overflow: hidden; }
 .brand-login { margin-bottom: 32px; }
 .login-card h1 { margin: 0 0 7px; letter-spacing: -.04em; }
 .login-card > p { margin: 0 0 24px; color: var(--muted); }
+.login-reset-option { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+.login-reset-option h2 { margin: 0 0 6px; font-size: 1rem; }
+.login-reset-option p { margin: 0 0 12px; color: var(--muted); font-size: .9rem; }
 .stack-form { display: flex; flex-direction: column; gap: 15px; }
 
 .auth-page { min-height: calc(100vh - 66px); display: grid; place-items: center; padding-top: 18px; padding-bottom: 28px; }

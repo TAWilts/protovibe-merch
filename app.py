@@ -102,6 +102,10 @@ USERS_TABLE_DEFINITION_SQL = """(
     must_set_password INTEGER NOT NULL DEFAULT 0,
     setup_code_hash TEXT,
     setup_code_expires_at TEXT,
+    -- Only platform accounts may maintain this address. It is used for the
+    -- self-service password reset of a System-Admin, never rendered to Band
+    -- accounts and never copied into the audit log.
+    contact_email TEXT,
     -- TOTP secrets are encrypted with a key derived from SECRET_KEY.  Recovery
     -- codes are one-way hashes because they only need to be compared once.
     mfa_secret_encrypted TEXT,
@@ -174,6 +178,17 @@ CREATE TABLE IF NOT EXISTS smtp_notification_settings (
     updated_at TEXT,
     updated_by_user_id INTEGER,
     updated_by_username TEXT
+);
+
+-- Password reset codes are independent from account setup codes. Requesting
+-- one must never invalidate an existing System-Admin password or session.
+CREATE TABLE IF NOT EXISTS password_reset_challenges (
+    user_id INTEGER PRIMARY KEY,
+    code_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    failed_attempts INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- This single-row marker distinguishes a genuine legacy-owner migration from
@@ -586,6 +601,9 @@ PLATFORM_STAFF_ROLES = frozenset({"support_admin", "system_admin"})
 MFA_REQUIRED_ROLES = PLATFORM_STAFF_ROLES
 SYSTEM_ADMIN_MANAGED_ROLES = ("support_admin", "system_admin")
 SETUP_CODE_ALPHABET = string.ascii_uppercase + string.digits
+SYSTEM_ADMIN_PASSWORD_RESET_CODE_TTL_SECONDS = 20 * 60
+SYSTEM_ADMIN_PASSWORD_RESET_COOLDOWN_SECONDS = 15 * 60
+SYSTEM_ADMIN_PASSWORD_RESET_MAX_ATTEMPTS = 5
 SYNC_EVENT_METADATA_FIELDS = frozenset(
     {"client_event_id", "client_device_id", "client_actor_id", "client_created_at"}
 )
@@ -987,7 +1005,9 @@ def environment_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def smtp_notification_status(config: Any) -> dict[str, Any]:
+def smtp_notification_status(
+    config: Any, *, require_notification_recipient: bool = True
+) -> dict[str, Any]:
     """Return display-safe SMTP readiness without exposing credentials."""
 
     enabled = bool(config.get("EMAIL_NOTIFICATIONS_ENABLED", False))
@@ -997,8 +1017,10 @@ def smtp_notification_status(config: Any) -> dict[str, Any]:
         "SMTP_USERNAME": str(config.get("SMTP_USERNAME", "") or "").strip(),
         "SMTP_PASSWORD": str(config.get("SMTP_PASSWORD", "") or "").strip(),
         "SMTP_FROM": str(config.get("SMTP_FROM", "") or "").strip(),
-        "ADMIN_NOTIFICATION_EMAIL": str(config.get("ADMIN_NOTIFICATION_EMAIL", "") or "").strip(),
     }
+    notification_recipient = str(config.get("ADMIN_NOTIFICATION_EMAIL", "") or "").strip()
+    if require_notification_recipient:
+        required["ADMIN_NOTIFICATION_EMAIL"] = notification_recipient
     missing = [name for name, value in required.items() if not value]
     errors: list[str] = []
     if security not in {"ssl", "starttls"}:
@@ -1025,7 +1047,7 @@ def smtp_notification_status(config: Any) -> dict[str, Any]:
         "host": required["SMTP_HOST"],
         "port": port,
         "security": security,
-        "recipient": required["ADMIN_NOTIFICATION_EMAIL"],
+        "recipient": notification_recipient,
         "timeout_seconds": timeout_seconds,
         "source": str(config.get("_smtp_source", "environment")),
         "password_configured": bool(config.get("_smtp_password_configured", required["SMTP_PASSWORD"])),
@@ -1115,10 +1137,11 @@ def smtp_notification_settings_public(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
+def send_smtp_email(config: Any, *, recipient: str, subject: str, body: str) -> None:
     """Send one plain-text admin notification through configured TLS SMTP."""
 
-    status = smtp_notification_status(config)
+    recipient = valid_email_address(recipient, field_name="Empfängeradresse")
+    status = smtp_notification_status(config, require_notification_recipient=False)
     if not status["ready"]:
         details = [*status["missing"], *status["errors"]]
         raise ValueError("SMTP-Benachrichtigung ist nicht vollständig konfiguriert: " + ", ".join(details))
@@ -1126,7 +1149,7 @@ def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
     password = str(config["SMTP_PASSWORD"])
     message = EmailMessage()
     message["From"] = str(config["SMTP_FROM"]).strip()
-    message["To"] = str(config["ADMIN_NOTIFICATION_EMAIL"]).strip()
+    message["To"] = recipient
     message["Subject"] = " ".join(str(subject).splitlines()).strip()
     message.set_content(str(body))
 
@@ -1146,6 +1169,16 @@ def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
         client.send_message(message)
 
 
+def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
+    """Send one plain-text notification to the configured shared inbox."""
+
+    status = smtp_notification_status(config)
+    if not status["ready"]:
+        details = [*status["missing"], *status["errors"]]
+        raise ValueError("SMTP notification is not fully configured: " + ", ".join(details))
+    send_smtp_email(config, recipient=status["recipient"], subject=subject, body=body)
+
+
 def send_admin_message_email(config: Any, message: dict[str, Any]) -> None:
     """Format a persisted internal message as a concise email notification."""
 
@@ -1162,6 +1195,31 @@ def send_admin_message_email(config: Any, message: dict[str, Any]) -> None:
             f"Betreff: {message['subject']}\n\n"
             f"{message['body']}\n\n"
             "Die Nachricht bleibt zusätzlich dauerhaft im Admin-Tab des Merch Managers erhalten."
+        ),
+    )
+
+
+def send_system_admin_password_reset_email(
+    config: Any,
+    *,
+    recipient: str,
+    username: str,
+    reset_code: str,
+    expires_at: str,
+) -> None:
+    """Deliver a one-time reset code without ever mailing a lasting password."""
+
+    send_smtp_email(
+        config,
+        recipient=recipient,
+        subject="[Merch Manager] Passwort zurücksetzen",
+        body=(
+            f"Für das System-Admin-Konto {username} wurde ein Passwort-Reset angefordert.\n\n"
+            "Einmalcode:\n"
+            f"{reset_code}\n\n"
+            f"Der Code ist bis {expires_at} gültig und kann nur einmal verwendet werden. "
+            "Danach legst du selbst ein neues Passwort fest. Falls du den Reset nicht angefordert hast, "
+            "kannst du diese E-Mail ignorieren; dein bisheriges Passwort bleibt unverändert."
         ),
     )
 
@@ -1604,6 +1662,44 @@ def is_setup_code_current(user: sqlite3.Row | dict[str, Any]) -> bool:
     return expiry > datetime.now(timezone.utc)
 
 
+def utc_timestamp_is_current(value: Any) -> bool:
+    """Return whether an ISO timestamp is still in the future."""
+
+    if not value:
+        return False
+    try:
+        expiry = datetime.fromisoformat(str(value))
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    return expiry > datetime.now(timezone.utc)
+
+
+def password_reset_challenge_is_current(challenge: sqlite3.Row | dict[str, Any]) -> bool:
+    return utc_timestamp_is_current(challenge["expires_at"])
+
+
+def password_reset_challenge_is_cooling_down(challenge: sqlite3.Row | dict[str, Any]) -> bool:
+    """Throttle repeat delivery without retaining client IP addresses."""
+
+    try:
+        requested_at = datetime.fromisoformat(str(challenge["requested_at"]))
+    except (TypeError, ValueError):
+        return False
+    if requested_at.tzinfo is None:
+        requested_at = requested_at.replace(tzinfo=timezone.utc)
+    return requested_at > datetime.now(timezone.utc) - timedelta(
+        seconds=SYSTEM_ADMIN_PASSWORD_RESET_COOLDOWN_SECONDS
+    )
+
+
+def password_reset_challenge_expiry() -> str:
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=SYSTEM_ADMIN_PASSWORD_RESET_CODE_TTL_SECONDS)
+    ).replace(microsecond=0).isoformat()
+
+
 def mfa_fernet_for_secret(secret_key: str) -> Fernet:
     """Derive a Fernet instance for one application secret."""
 
@@ -1929,6 +2025,8 @@ def payment_qr_settings_from_form(form: Any) -> dict[str, str]:
         if paypal_me_username is None
         else normalise_paypal_me_username(paypal_me_username)
     )
+
+
     account_holder = normalise_payment_qr_text(
         form.get("bank_account_holder"),
         field_name="Kontoinhaber",
@@ -3854,6 +3952,7 @@ def rebuild_users_for_role_model(connection: sqlite3.Connection) -> list[dict[st
         INSERT INTO users_role_model_replacement (
             id, username, password_hash, is_admin, role, is_active,
             must_set_password, setup_code_hash, setup_code_expires_at,
+            contact_email,
             mfa_secret_encrypted, mfa_pending_secret_encrypted,
             mfa_recovery_code_hashes_json, mfa_enabled, mfa_enrolled_at,
             session_version, last_login_at, ui_theme, ui_language,
@@ -3879,7 +3978,7 @@ def rebuild_users_for_role_model(connection: sqlite3.Connection) -> list[dict[st
                 ELSE 'seller'
             END,
             is_active, must_set_password, setup_code_hash,
-            setup_code_expires_at, mfa_secret_encrypted,
+            setup_code_expires_at, contact_email, mfa_secret_encrypted,
             mfa_pending_secret_encrypted, mfa_recovery_code_hashes_json,
             mfa_enabled, mfa_enrolled_at,
             session_version + CASE
@@ -5073,6 +5172,7 @@ def upgrade_users_schema(
         ("must_set_password", "INTEGER NOT NULL DEFAULT 0"),
         ("setup_code_hash", "TEXT"),
         ("setup_code_expires_at", "TEXT"),
+        ("contact_email", "TEXT"),
         ("mfa_secret_encrypted", "TEXT"),
         ("mfa_pending_secret_encrypted", "TEXT"),
         ("mfa_recovery_code_hashes_json", "TEXT NOT NULL DEFAULT '[]'"),
@@ -5554,12 +5654,6 @@ def system_admin_required(view):
     """Restrict platform staff provisioning to System-Admins."""
 
     return exact_role_required("system_admin")(view)
-
-
-def administration_staff_required(view):
-    """Permit the shared support inbox to Band- and platform administrators."""
-
-    return exact_role_required("band_admin", "support_admin", "system_admin")(view)
 
 
 def profile_reauth_required(view):
@@ -8023,6 +8117,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "profile_page",
             "administration_page",
             "system_administration_page",
+            "confirm_system_admin_password_reset",
             "legacy_database_migration",
         }:
             response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -8085,12 +8180,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
+        password_reset_available = False
+        password_reset_username = ""
         if request.method == "POST":
             username = request.form.get("username", "").strip()
             password_or_setup_code = request.form.get("password", "")
             user = get_user_db().execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
             if user is None or not bool(user["is_active"]):
                 flash("Benutzername oder Passwort ist nicht korrekt.", "error")
+                password_reset_available = True
+                password_reset_username = username
             elif bool(user["must_set_password"]):
                 if (
                     not user["setup_code_hash"]
@@ -8098,6 +8197,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     or not check_password_hash(user["setup_code_hash"], password_or_setup_code)
                 ):
                     flash("Benutzername oder Passwort ist nicht korrekt.", "error")
+                    password_reset_available = True
+                    password_reset_username = username
                 else:
                     begin_auth_challenge(
                         "password_setup", user, post_login_destination(user, request.args.get("next"))
@@ -8105,6 +8206,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     return redirect(url_for("account_setup"))
             elif not check_password_hash(user["password_hash"], password_or_setup_code):
                 flash("Benutzername oder Passwort ist nicht korrekt.", "error")
+                password_reset_available = True
+                password_reset_username = username
             else:
                 # Platform access is deliberately impossible before TOTP has
                 # been enrolled. Band roles, including Band-Admin, may opt in.
@@ -8127,7 +8230,189 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 next_url = post_login_destination(user, request.args.get("next"))
                 establish_authenticated_session(user)
                 return redirect(next_url)
-        return render_template("login.html", title="Anmelden")
+        return render_template(
+            "login.html",
+            title="Anmelden",
+            password_reset_available=password_reset_available,
+            password_reset_username=password_reset_username,
+        )
+
+    @app.post("/login/system-admin/passwort-zuruecksetzen")
+    def request_system_admin_password_reset():
+        """Issue a code only for an active System-Admin with a private address.
+
+        The response intentionally stays identical for unknown, inactive and
+        non-platform accounts. A request merely creates a short-lived code;
+        it does not alter the current password or invalidate any session.
+        """
+
+        username = str(request.form.get("username", "")).strip()
+        session["system_admin_password_reset_username"] = username
+        connection = get_user_db()
+        user = connection.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        if (
+            user is not None
+            and bool(user["is_active"])
+            and normalized_role(user) == "system_admin"
+            and str(user["contact_email"] or "").strip()
+        ):
+            try:
+                recipient = valid_email_address(user["contact_email"])
+                notification_config = smtp_notification_config(connection, app)
+                smtp_ready = smtp_notification_status(
+                    notification_config, require_notification_recipient=False
+                )["ready"]
+                existing = connection.execute(
+                    "SELECT * FROM password_reset_challenges WHERE user_id = ?", (user["id"],)
+                ).fetchone()
+                if smtp_ready and not (
+                    existing is not None and password_reset_challenge_is_cooling_down(existing)
+                ):
+                    reset_code = generate_setup_code()
+                    code_hash = generate_password_hash(reset_code)
+                    expires_at = password_reset_challenge_expiry()
+                    connection.execute("BEGIN IMMEDIATE")
+                    connection.execute(
+                        """
+                        INSERT INTO password_reset_challenges (
+                            user_id, code_hash, expires_at, requested_at, failed_attempts
+                        ) VALUES (?, ?, ?, ?, 0)
+                        ON CONFLICT(user_id) DO UPDATE SET
+                            code_hash = excluded.code_hash,
+                            expires_at = excluded.expires_at,
+                            requested_at = excluded.requested_at,
+                            failed_attempts = 0
+                        """,
+                        (user["id"], code_hash, expires_at, utc_now()),
+                    )
+                    audit(
+                        connection,
+                        "request_system_admin_password_reset",
+                        "user",
+                        user["id"],
+                        {"delivery": "pending"},
+                    )
+                    connection.commit()
+                    try:
+                        send_system_admin_password_reset_email(
+                            notification_config,
+                            recipient=recipient,
+                            username=str(user["username"]),
+                            reset_code=reset_code,
+                            expires_at=expires_at,
+                        )
+                    except (ValueError, OSError, smtplib.SMTPException):
+                        current_app.logger.exception("Could not send System-Admin password-reset email")
+                        connection.execute("BEGIN IMMEDIATE")
+                        connection.execute(
+                            "DELETE FROM password_reset_challenges WHERE user_id = ? AND code_hash = ?",
+                            (user["id"], code_hash),
+                        )
+                        audit(
+                            connection,
+                            "system_admin_password_reset_delivery_failed",
+                            "user",
+                            user["id"],
+                            {},
+                        )
+                        connection.commit()
+            except (ValueError, sqlite3.DatabaseError):
+                connection.rollback()
+                current_app.logger.exception("Could not create System-Admin password-reset challenge")
+        flash(
+            "Falls ein passendes System-Admin-Konto mit eingerichteter E-Mail-Adresse existiert, "
+            "wurde ein Einmalcode versandt.",
+            "success",
+        )
+        return redirect(url_for("confirm_system_admin_password_reset"))
+
+    @app.route("/login/system-admin/passwort-zuruecksetzen/bestaetigen", methods=["GET", "POST"])
+    def confirm_system_admin_password_reset():
+        """Consume a mail-delivered code and let its owner choose a new password."""
+
+        username = str(session.get("system_admin_password_reset_username", "")).strip()
+        if not username:
+            return redirect(url_for("login"))
+        if request.method == "POST":
+            connection = get_user_db()
+            reset_code = str(request.form.get("reset_code", "")).strip()
+            try:
+                password = validate_new_password(
+                    request.form.get("password"), request.form.get("password_confirmation")
+                )
+                connection.execute("BEGIN IMMEDIATE")
+                user = connection.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+                challenge = (
+                    connection.execute(
+                        "SELECT * FROM password_reset_challenges WHERE user_id = ?", (user["id"],)
+                    ).fetchone()
+                    if user is not None
+                    else None
+                )
+                valid_target = (
+                    user is not None
+                    and bool(user["is_active"])
+                    and normalized_role(user) == "system_admin"
+                    and challenge is not None
+                    and password_reset_challenge_is_current(challenge)
+                    and int(challenge["failed_attempts"] or 0) < SYSTEM_ADMIN_PASSWORD_RESET_MAX_ATTEMPTS
+                )
+                if not valid_target:
+                    if challenge is not None:
+                        connection.execute(
+                            "DELETE FROM password_reset_challenges WHERE user_id = ?", (user["id"],)
+                        )
+                    connection.commit()
+                    raise ValueError("Der Einmalcode ist ungültig oder abgelaufen. Bitte fordere einen neuen an.")
+                if len(reset_code) > 128 or not check_password_hash(challenge["code_hash"], reset_code):
+                    failed_attempts = int(challenge["failed_attempts"] or 0) + 1
+                    if failed_attempts >= SYSTEM_ADMIN_PASSWORD_RESET_MAX_ATTEMPTS:
+                        connection.execute(
+                            "DELETE FROM password_reset_challenges WHERE user_id = ?", (user["id"],)
+                        )
+                    else:
+                        connection.execute(
+                            "UPDATE password_reset_challenges SET failed_attempts = ? WHERE user_id = ?",
+                            (failed_attempts, user["id"]),
+                        )
+                    connection.commit()
+                    raise ValueError("Der Einmalcode ist ungültig oder abgelaufen. Bitte fordere einen neuen an.")
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET password_hash = ?, must_set_password = 0,
+                        setup_code_hash = NULL, setup_code_expires_at = NULL,
+                        session_version = session_version + 1
+                    WHERE id = ?
+                    """,
+                    (generate_password_hash(password), user["id"]),
+                )
+                connection.execute("DELETE FROM password_reset_challenges WHERE user_id = ?", (user["id"],))
+                audit(
+                    connection,
+                    "complete_system_admin_password_reset",
+                    "user",
+                    user["id"],
+                    {},
+                )
+                connection.commit()
+            except ValueError as exc:
+                if connection.in_transaction:
+                    connection.rollback()
+                flash(str(exc), "error")
+            except sqlite3.DatabaseError:
+                connection.rollback()
+                current_app.logger.exception("Could not complete System-Admin password reset")
+                flash("Der Einmalcode konnte nicht verarbeitet werden. Bitte versuche es erneut.", "error")
+            else:
+                session.pop("system_admin_password_reset_username", None)
+                flash("Dein Passwort wurde geändert. Melde dich jetzt mit dem neuen Passwort an.", "success")
+                return redirect(url_for("login"))
+        return render_template(
+            "system_admin_password_reset.html",
+            title="Passwort zurücksetzen",
+            username=username,
+        )
 
     @app.route("/konto/einrichten", methods=["GET", "POST"])
     def account_setup():
@@ -8442,6 +8727,34 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash(str(exc), "error")
         return redirect(url_for("profile_page"))
 
+    @app.post("/profil/kontakt-email")
+    @login_required
+    @platform_staff_required
+    @profile_reauth_required
+    def update_own_contact_email():
+        """Store the reset/contact address only for the caller's platform account."""
+
+        connection = get_user_db()
+        try:
+            contact_email = valid_email_address(request.form.get("contact_email"))
+            connection.execute(
+                "UPDATE users SET contact_email = ? WHERE id = ?",
+                (contact_email, g.user["id"]),
+            )
+            audit(
+                connection,
+                "update_contact_email",
+                "user",
+                g.user["id"],
+                {"configured": True},
+            )
+            connection.commit()
+            flash("Die E-Mail-Adresse für Support und Passwort-Reset wurde gespeichert.", "success")
+        except ValueError as exc:
+            connection.rollback()
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page"))
+
     @app.post("/profil/passwort")
     @login_required
     @profile_reauth_required
@@ -8727,7 +9040,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         reset_archive_name: str | None = None,
     ):
         users_connection = get_user_db()
-        notification_config = smtp_notification_config(users_connection, app)
         pending_migration_state = users_connection.execute(
             "SELECT * FROM role_migration_state WHERE id = 1 AND status = 'pending'"
         ).fetchone()
@@ -8756,13 +9068,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "admin.html",
             title="Verwaltung",
             users=administration_users(),
-            admin_messages=administration_messages(),
             backups=operational_backup_points(app),
             setup_credential=setup_credential,
             reset_archive_name=reset_archive_name,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
-            email_notification=smtp_notification_status(notification_config),
-            email_settings=smtp_notification_settings_public(notification_config),
             payment_qr_settings=payment_qr_settings_for_administration(get_db()),
             legacy_role_handover=legacy_role_handover,
             can_bootstrap_system_admin=(
@@ -8778,12 +9087,15 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def render_system_administration(
         *, setup_credential: dict[str, str] | None = None
     ):
+        notification_config = smtp_notification_config(get_user_db(), app)
         return render_template(
             "system_admin.html",
             title="System-Verwaltung",
             band_users=platform_administration_users(band_accounts=True),
             platform_users=platform_administration_users(band_accounts=False),
             admin_messages=administration_messages(),
+            email_notification=smtp_notification_status(notification_config),
+            email_settings=smtp_notification_settings_public(notification_config),
             setup_credential=setup_credential,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
             sensitive_action_mfa_required=bool(g.user["sensitive_action_mfa_required"]),
@@ -8965,7 +9277,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         except (ValueError, sqlite3.IntegrityError) as exc:
             connection.rollback()
             flash("Die Rollenübergabe konnte nicht abgeschlossen werden: " + str(exc), "error")
-            return redirect(url_for("administration_page"))
+            return redirect(url_for("system_administration_page"))
 
         session.clear()
         g.user = None
@@ -9126,9 +9438,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash(str(exc), "error")
         return redirect(url_for("system_administration_page"))
 
-    @app.post("/verwaltung/email/test")
+    @app.post("/system-verwaltung/email/test")
     @login_required
-    @admin_required
+    @platform_staff_required
     def test_admin_email_notification():
         """Let the admin verify SMTP without exposing account credentials."""
 
@@ -9162,10 +9474,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash(f"Test-E-Mail an {status['recipient']} wurde gesendet.", "success")
         return redirect(url_for("administration_page"))
 
-    @app.post("/verwaltung/nachrichten/<int:message_id>/status")
     @app.post("/system-verwaltung/nachrichten/<int:message_id>/status")
     @login_required
-    @administration_staff_required
+    @platform_staff_required
     def update_admin_message_resolution(message_id: int):
         """Mark a private inbox item done or reopen it without deleting it."""
 
@@ -9207,16 +9518,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash("Der Nachrichtenstatus konnte nicht gespeichert werden.", "error")
         else:
             flash("Nachricht als erledigt markiert." if is_resolved else "Nachricht wieder geöffnet.", "success")
-        destination = (
-            "system_administration_page"
-            if normalized_role(g.user) in PLATFORM_STAFF_ROLES
-            else "administration_page"
-        )
-        return redirect(url_for(destination))
+        return redirect(url_for("system_administration_page"))
 
-    @app.post("/verwaltung/email/einstellungen")
+    @app.post("/system-verwaltung/email/einstellungen")
     @login_required
-    @admin_required
+    @platform_staff_required
     def save_admin_email_notification_settings():
         """Persist SMTP credentials encrypted after a fresh admin confirmation."""
 
@@ -9289,7 +9595,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash("E-Mail-Einstellungen konnten nicht gespeichert werden: " + str(exc), "error")
         else:
             flash("E-Mail-Einstellungen wurden verschlüsselt gespeichert.", "success")
-        return redirect(url_for("administration_page"))
+        return redirect(url_for("system_administration_page"))
 
     @app.post("/verwaltung/zahlungs-qr/einstellungen")
     @login_required
@@ -9403,7 +9709,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             abort(403)
         if int(user["id"]) == int(g.user["id"]):
             flash("Das eigene Passwort wird ausschließlich im Profil geändert.", "error")
-            return redirect(url_for("administration_page"))
+            return redirect(url_for("system_administration_page"))
         setup_code = generate_setup_code()
         connection.execute(
             """
@@ -9432,7 +9738,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         role = str(request.form.get("role", "")).strip().lower()
         if role not in MANAGED_USER_ROLES:
             flash("Es sind nur Seller, Member, Manager und Band-Admin auswählbar.", "error")
-            return redirect(url_for("administration_page"))
+            return redirect(url_for("system_administration_page"))
         connection = get_user_db()
         user = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if user is None:
@@ -9494,7 +9800,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash(str(exc), "error")
             return redirect(url_for("administration_page"))
         flash("Die Rolle von „{}“ wurde geändert.".format(user["username"]), "success")
-        return redirect(url_for("administration_page"))
+        return redirect(url_for("system_administration_page"))
 
     @app.post("/verwaltung/benutzer/<int:user_id>/aktiv")
     @login_required
@@ -9536,7 +9842,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         )
         connection.commit()
         flash("Der Benutzer wurde {}.".format("aktiviert" if active else "deaktiviert"), "success")
-        return redirect(url_for("administration_page"))
+        return redirect(url_for("system_administration_page"))
 
     @app.post("/verwaltung/benutzer/<int:user_id>/2fa-zuruecksetzen")
     @login_required

@@ -293,11 +293,25 @@ SMTP_TIMEOUT_SECONDS=8
 
 Alternativ wird häufig Port `587` mit `SMTP_SECURITY=starttls` verwendet. Die
 genauen Serverdaten liefert der jeweilige Mailanbieter. Nach einem Neustart
-zeigt **Verwaltung → E-Mail bei neuen Nachrichten** nur den sicheren
+zeigt **System-Verwaltung → E-Mail-Versand** nur den sicheren
 Konfigurationsstatus, niemals Benutzername oder Passwort, und bietet einen
 Button zum Senden einer Test-E-Mail. Schlägt SMTP fehl, bleibt die zuvor
 gespeicherte Nachricht trotzdem im Supportpostfach erhalten; technische Details
 stehen dann ausschließlich im Container-Log.
+
+### System-Admin-Passwort zurücksetzen
+
+Ein System-Admin hinterlegt nach einer frischen Profilbestätigung unter
+**Profil → E-Mail für Support und Passwort-Reset** seine persönliche
+Kontaktadresse. Band-Admins sehen dieses Feld nicht und können weder das
+Support-Postfach noch die SMTP-Einstellungen aufrufen.
+
+Nach einer fehlgeschlagenen Anmeldung kann ein System-Admin einen Einmalcode
+anfordern. Der Code ist kurz gültig, wird in SQLite nur gehasht gespeichert
+und kann nur einmal verwendet werden, um selbst ein neues Passwort festzulegen.
+Die Anfrage verändert weder das bisherige Passwort noch bestehende Sitzungen.
+SMTP muss dafür aktiviert sein; der Code geht an die persönliche
+Kontaktadresse und nicht an `ADMIN_NOTIFICATION_EMAIL`.
 
 `SECRET_KEY` muss dauerhaft unverändert bleiben. Er schützt Sitzungen und
 verschlüsselt die lokal gespeicherten TOTP- und SMTP-Geheimnisse; die
