@@ -2169,6 +2169,13 @@ class MerchAppTestCase(unittest.TestCase):
         support_id = self.create_local_user("isolated-support", "support_admin")
         system_id = self.create_local_user("isolated-system", "system_admin")
 
+        self.become_user(1)
+        band_administration = self.client.get("/verwaltung")
+        self.assertEqual(band_administration.status_code, 200)
+        band_html = band_administration.get_data(as_text=True)
+        for hidden_value in ("isolated-support", "isolated-system", "Support-Admin", "System-Admin"):
+            self.assertNotIn(hidden_value, band_html)
+
         for user_id, role_label in (
             (support_id, "Support-Admin"),
             (system_id, "System-Admin"),

@@ -264,7 +264,7 @@
 <section class="admin-grid">
   <article class="table-section admin-create-card">
     <h2>Benutzer anlegen</h2>
-    <p class="muted">Neue Bandkonten beginnen mit einem einmaligen Einrichtungscode. Support- und System-Admins werden getrennt in der System-Verwaltung angelegt.</p>
+    <p class="muted">Neue Bandkonten beginnen mit einem einmaligen Einrichtungscode.</p>
     <form action="{{ url_for('create_user') }}" method="post" class="stack-form" data-role-form>
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="band_admin_confirmation" value="" data-band-admin-confirmation>
@@ -281,8 +281,6 @@
       <div><dt>Member</dt><dd>Wie bisher: Verkauf, Historie, offene Vorgänge, Einkäufe, Bandfinanzen, Bilanzen und Diashow nutzen; Einkäufe und Bandfinanzen nur ansehen.</dd></div>
       <div><dt>Manager</dt><dd>Zusätzlich Artikel, Einkaufswarenkörbe inklusive Rechnungen, Bandfinanzen und die Diashow verwalten.</dd></div>
       <div><dt>Band-Admin</dt><dd>Verwaltet Benutzer und Rollen dieser Band sowie Zahlungsdaten, Sicherungen und den Reset der Betriebsdaten. Ein Reset erstellt vorher ein Archiv; Benutzerkonten und 2FA bleiben erhalten.</dd></div>
-      <div><dt>Support-Admin</dt><dd>Bearbeitet Supportnachrichten und erhält Bandzugriff erst nach einer ausdrücklichen, zeitlich begrenzten Freigabe. Diese Plattformrolle wird nicht hier vergeben.</dd></div>
-      <div><dt>System-Admin</dt><dd>Verwaltet die Plattform und Support-Admins. Banddaten sind ohne ausdrückliche Freigabe nicht zugänglich. Diese Plattformrolle wird nicht hier vergeben.</dd></div>
     </dl>
   </article>
 </section>
