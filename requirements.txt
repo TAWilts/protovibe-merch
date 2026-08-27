@@ -5,6 +5,7 @@ PyOTP>=2.9,<3
 Pillow>=10,<12
 qrcode[pil]>=8,<9
 segno>=1.6,<2
-# SQLCipher is required in production. It encrypts both SQLite databases at
-# rest; app.py deliberately refuses to fall back to normal sqlite3.
+# Transitional dependency only: the first plaintext release uses SQLCipher to
+# read an existing encrypted installation exactly once and convert all durable
+# data to ordinary SQLite/files. Remove this after the migration window.
 sqlcipher3>=0.6.2,<0.7

@@ -46,6 +46,7 @@ jobs:
             type=raw,value=${{ github.ref_name }}
             type=semver,pattern={{version}}
             type=raw,value=stable
+            type=raw,value=latest
 
       - name: Build and publish DS225+ image
         uses: docker/build-push-action@v6

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import base64
+import hashlib
 import json
 import re
 import sqlite3
@@ -13,30 +15,26 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pyotp
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from PIL import Image
+from sqlcipher3 import dbapi2 as legacy_sqlcipher
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app import (
     LEGACY_COMBINED_SCHEMA_SQL,
+    _export_legacy_database_to_plaintext,
     apply_option_configuration,
     article_payload,
     balance_payload,
-    change_database_passphrase,
     create_backup,
     csv_rows,
     create_app,
-    database_encryption_state,
     decrypt_mfa_secret,
     encrypt_mfa_secret,
-    generate_database_recovery_key,
-    generate_scheduled_restart_unlock_secret,
     get_db,
     get_user_db,
-    new_database_encryption_metadata,
     read_invoice_bytes,
-    regenerate_database_recovery_key,
-    scheduled_restart_unlock_pass_path,
-    setup_encrypted_databases,
     send_smtp_notification,
     shortened_epc_remittance_text,
     slideshow_settings_payload,
@@ -44,11 +42,47 @@ from app import (
     smtp_notification_status,
     store_invoice_bytes,
     sync_variants,
-    unlock_encrypted_databases,
     upgrade_users_schema,
     variant_label_map,
-    write_database_encryption_metadata,
 )
+
+
+def legacy_key_envelope(secret: str, database_key: bytes, salt_byte: int) -> dict[str, object]:
+    """Build the exact key envelope written by the former encrypted release."""
+
+    salt = bytes([salt_byte]) * 16
+    wrapping_key = base64.urlsafe_b64encode(
+        Scrypt(salt=salt, length=32, n=2**15, r=8, p=1).derive(secret.encode("utf-8"))
+    )
+    return {
+        "kdf": "scrypt",
+        "n": 2**15,
+        "r": 8,
+        "p": 1,
+        "salt": base64.urlsafe_b64encode(salt).decode("ascii"),
+        "wrapped_key": Fernet(wrapping_key).encrypt(database_key).decode("ascii"),
+    }
+
+
+def write_legacy_sqlcipher_database(path: Path, database_key: bytes, marker: str) -> None:
+    """Create a small genuine SQLCipher-4 file for migration regression tests."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = legacy_sqlcipher.connect(path)
+    try:
+        connection.execute("PRAGMA cipher_compatibility = 4")
+        connection.execute(f"PRAGMA key = \"x'{database_key.hex()}'\"")
+        connection.execute("CREATE TABLE legacy_marker (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO legacy_marker (value) VALUES (?)", (marker,))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def legacy_attachment_cipher(database_key: bytes, *, photo: bool) -> Fernet:
+    purpose = b"variant-photo-files:" if photo else b"invoice-files:"
+    key = base64.urlsafe_b64encode(hashlib.sha256(b"protovibe-merch:" + purpose + database_key).digest())
+    return Fernet(key)
 
 
 class MerchAppTestCase(unittest.TestCase):
@@ -244,10 +278,10 @@ class MerchAppTestCase(unittest.TestCase):
         self.assertEqual(restarted_users, migrated_users)
         self.assertEqual(restarted_audit_count, 2)
 
-    def test_encrypted_database_requires_setup_then_unlocks_without_plaintext_files(self) -> None:
-        """SQLCipher data stays unreadable to sqlite3 and needs a separate unlock after restart."""
+    def test_plain_sqlite_install_restarts_without_database_passphrase(self) -> None:
+        """Production storage is readable SQLite and never calls SQLCipher on normal startup."""
 
-        root = Path(self.tempdir.name) / "encrypted-installation"
+        root = Path(self.tempdir.name) / "plaintext-installation"
         config = {
             "TESTING": True,
             "SECRET_KEY": "test-secret",
@@ -255,227 +289,290 @@ class MerchAppTestCase(unittest.TestCase):
             "USERS_DATABASE": str(root / "users.sqlite3"),
             "BACKUP_DIR": str(root / "backups"),
             "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+            "MIGRATION_ARCHIVE_DIR": str(root / "migration-archives"),
             "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+            "VARIANT_PHOTO_UPLOAD_DIR": str(root / "variant-photos"),
+            # An obsolete deployment value must not reactivate encryption.
             "DATABASE_ENCRYPTION_ENABLED": True,
-            "ADMIN_USERNAME": "encrypted-admin",
+            "ADMIN_USERNAME": "plaintext-admin",
             "ADMIN_PASSWORD": "bootstrap-admin-password",
             "APP_VERSION": "v0.3.0",
             "AUTO_BACKUP": False,
         }
-        encrypted_app = create_app(config)
-        encrypted_client = encrypted_app.test_client()
-        first = encrypted_client.get("/verkauf")
-        self.assertTrue(first.location.endswith("/system/verschluesselung/einrichten"))
+        with patch("app._sqlcipher_dbapi") as sqlcipher_mock:
+            plaintext_app = create_app(config)
+        sqlcipher_mock.assert_not_called()
 
-        setup_page = encrypted_client.get("/system/verschluesselung/einrichten")
-        self.assertEqual(setup_page.status_code, 200)
-        with encrypted_client.session_transaction() as session:
-            setup_csrf = session["csrf_token"]
-        setup = encrypted_client.post(
-            "/system/verschluesselung/einrichten",
-            data={
-                "csrf_token": setup_csrf,
-                "bootstrap_password": "bootstrap-admin-password",
-                "database_passphrase": "a local database passphrase",
-                "database_passphrase_confirmation": "a local database passphrase",
-            },
-        )
-        self.assertTrue(setup.location.endswith("/system/verschluesselung/recovery"))
-        recovery_page = encrypted_client.get("/system/verschluesselung/recovery")
-        recovery_match = re.search(r"PVM-RK1-[A-Z0-9-]+", recovery_page.get_data(as_text=True))
-        self.assertIsNotNone(recovery_match)
-        recovery_key = recovery_match.group(0)
-        with encrypted_client.session_transaction() as session:
-            recovery_csrf = session["csrf_token"]
-        complete = encrypted_client.post(
-            "/system/verschluesselung/recovery",
-            data={"csrf_token": recovery_csrf},
-        )
-        self.assertTrue(complete.location.endswith("/login"))
-        self.assertEqual(database_encryption_state(encrypted_app), "unlocked")
+        for database_name in ("merch.sqlite3", "users.sqlite3"):
+            database_path = root / database_name
+            self.assertEqual(database_path.read_bytes()[:16], b"SQLite format 3\x00")
+            connection = sqlite3.connect(database_path)
+            try:
+                self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            finally:
+                connection.close()
 
-        with encrypted_app.app_context():
-            encrypted_invoice = store_invoice_bytes("private.pdf", b"%PDF-private invoice")
-            self.assertTrue(encrypted_invoice.name.endswith(".pdf.enc"))
-            self.assertNotIn(b"private invoice", encrypted_invoice.read_bytes())
-            self.assertEqual(read_invoice_bytes("private.pdf"), b"%PDF-private invoice")
-            encrypted_backup = create_backup(encrypted_app, force=True)
-        self.assertIsNotNone(encrypted_backup)
-        self.assertFalse((encrypted_backup / "verkaeufe.csv").exists())
-        self.assertTrue((encrypted_backup / "invoices" / "private.pdf.enc").is_file())
-        self.assertTrue((encrypted_backup / "encryption.json").is_file())
+        with plaintext_app.app_context():
+            invoice = store_invoice_bytes("private.pdf", b"%PDF-private invoice")
+            backup = create_backup(plaintext_app, force=True)
+        self.assertEqual(invoice.name, "private.pdf")
+        self.assertEqual(invoice.read_bytes(), b"%PDF-private invoice")
+        self.assertIsNotNone(backup)
+        self.assertEqual((backup / "merch.sqlite3").read_bytes()[:16], b"SQLite format 3\x00")
+        self.assertEqual((backup / "invoices" / "private.pdf").read_bytes(), b"%PDF-private invoice")
+        self.assertTrue((backup / "verkaeufe.csv").is_file())
+        self.assertFalse((backup / "encryption.json").exists())
+        self.assertFalse(any(root.rglob("*.enc")))
 
-        plaintext_attempt = sqlite3.connect(root / "merch.sqlite3")
+        routes = {rule.rule for rule in plaintext_app.url_map.iter_rules()}
+        self.assertIn("/system/datenbankmigration", routes)
+        self.assertFalse(any(route.startswith("/system/verschluesselung/") for route in routes))
+        self.assertNotIn("/verwaltung/verschluesselung/passphrase", routes)
+        self.assertNotIn("/verwaltung/verschluesselung/wiederherstellungsschluessel", routes)
+
+        with patch("app._sqlcipher_dbapi") as restarted_sqlcipher_mock:
+            restarted_app = create_app(config)
+        restarted_sqlcipher_mock.assert_not_called()
+        response = restarted_app.test_client().get("/verkauf")
+        self.assertNotIn("/system/datenbankmigration", response.location or "")
+
+    def test_plaintext_migration_retry_includes_committed_wal_rows(self) -> None:
+        """A partially converted retry must snapshot committed WAL pages too."""
+
+        root = Path(self.tempdir.name) / "plaintext-wal-retry"
+        root.mkdir()
+        source_path = root / "source.sqlite3"
+        target_path = root / "target.sqlite3"
+        connection = sqlite3.connect(source_path)
         try:
-            with self.assertRaises(sqlite3.DatabaseError):
-                plaintext_attempt.execute("SELECT name FROM sqlite_master").fetchall()
+            self.assertEqual(connection.execute("PRAGMA journal_mode = WAL").fetchone()[0], "wal")
+            connection.execute("PRAGMA wal_autocheckpoint = 0")
+            connection.execute("CREATE TABLE retry_marker (value TEXT NOT NULL)")
+            connection.commit()
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            connection.execute("INSERT INTO retry_marker (value) VALUES ('committed-in-wal')")
+            connection.commit()
+            self.assertTrue(Path(f"{source_path}-wal").is_file())
+
+            _export_legacy_database_to_plaintext(source_path, target_path, bytes(32))
         finally:
-            plaintext_attempt.close()
-        self.assertNotIn(b"encrypted-admin", (root / "users.sqlite3").read_bytes())
+            connection.close()
 
-        restarted_app = create_app(config)
-        restarted_client = restarted_app.test_client()
-        self.assertEqual(database_encryption_state(restarted_app), "locked")
-        locked = restarted_client.get("/verkauf")
-        self.assertTrue(locked.location.endswith("/system/verschluesselung/entsperren"))
-        unlock_page = restarted_client.get("/system/verschluesselung/entsperren")
-        with restarted_client.session_transaction() as session:
-            unlock_csrf = session["csrf_token"]
-        unlocked = restarted_client.post(
-            "/system/verschluesselung/entsperren",
-            data={"csrf_token": unlock_csrf, "recovery_key": recovery_key},
+        copied = sqlite3.connect(target_path)
+        try:
+            self.assertEqual(
+                copied.execute("SELECT value FROM retry_marker").fetchone()[0],
+                "committed-in-wal",
+            )
+        finally:
+            copied.close()
+
+    def test_legacy_installation_can_be_converted_with_recovery_key(self) -> None:
+        """The documented recovery-key alternative completes the one-time migration."""
+
+        root = Path(self.tempdir.name) / "legacy-recovery-key-installation"
+        root.mkdir()
+        database_key = bytes(reversed(range(32)))
+        recovery_token = base64.b32encode(bytes(range(30))).decode("ascii").rstrip("=")
+        normalised_recovery_key = f"PVMRK1{recovery_token}"
+        displayed_recovery_key = "PVM-RK1-" + "-".join(
+            recovery_token[index:index + 6] for index in range(0, len(recovery_token), 6)
         )
-        self.assertTrue(unlocked.location.endswith("/login"))
-        self.assertEqual(database_encryption_state(restarted_app), "unlocked")
-        with restarted_app.app_context():
-            self.assertEqual(get_user_db().execute("SELECT username FROM users").fetchone()[0], "encrypted-admin")
-
-    def test_scheduled_release_unlock_pass_is_authorized_version_bound_and_one_time(self) -> None:
-        """A DSM update grant must not turn ordinary restarts into automatic unlocks."""
-
-        root = Path(self.tempdir.name) / "scheduled-update-unlock"
-        secrets_directory = root / "scheduler-secrets"
-        secrets_directory.mkdir(parents=True)
-        authorization_token = "scheduler-authorisation-token-" + "x" * 32
-        authorization_file = secrets_directory / "authorisation-token"
-        one_time_secret_file = secrets_directory / "one-time-unlock-secret"
-        authorization_file.write_text(authorization_token, encoding="utf-8")
-        authorization_file.chmod(0o600)
+        metadata = {
+            "version": 1,
+            "cipher": "sqlcipher-4",
+            "created_at": "2026-08-01T00:00:00+00:00",
+            "databases_ready": True,
+            "passphrase": legacy_key_envelope("unused passphrase", database_key, 7),
+            "recovery": legacy_key_envelope(normalised_recovery_key, database_key, 19),
+        }
+        (root / "encryption.json").write_text(json.dumps(metadata), encoding="utf-8")
         config = {
             "TESTING": True,
             "SECRET_KEY": "test-secret",
-            "DATABASE": str(root / "data" / "merch.sqlite3"),
-            "USERS_DATABASE": str(root / "data" / "users.sqlite3"),
-            "BACKUP_DIR": str(root / "data" / "backups"),
-            "RESET_ARCHIVE_DIR": str(root / "data" / "reset-archives"),
-            "INVOICE_UPLOAD_DIR": str(root / "data" / "invoices"),
-            "DATABASE_ENCRYPTION_ENABLED": True,
-            "ADMIN_USERNAME": "encrypted-admin",
-            "ADMIN_PASSWORD": "bootstrap-admin-password",
-            "APP_VERSION": "v0.3.0",
+            "DATABASE": str(root / "merch.sqlite3"),
+            "USERS_DATABASE": str(root / "users.sqlite3"),
+            "BACKUP_DIR": str(root / "backups"),
+            "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+            "MIGRATION_ARCHIVE_DIR": str(root / "migration-archives"),
+            "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+            "VARIANT_PHOTO_UPLOAD_DIR": str(root / "variant-photos"),
+            "ADMIN_USERNAME": "recovery-admin",
+            "ADMIN_PASSWORD": "recovery-admin-password",
+            "APP_VERSION": "v0.4.0",
             "AUTO_BACKUP": False,
-            "SCHEDULED_RESTART_AUTH_TOKEN_FILE": str(authorization_file),
-            "SCHEDULED_RESTART_UNLOCK_SECRET_FILE": str(one_time_secret_file),
-            "SCHEDULED_RESTART_UNLOCK_TTL_SECONDS": 1200,
         }
+        app = create_app(config)
+        client = app.test_client()
+        page = client.get("/system/datenbankmigration")
+        self.assertEqual(page.status_code, 200)
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+
+        converted = client.post(
+            "/system/datenbankmigration",
+            data={"csrf_token": csrf, "recovery_key": displayed_recovery_key.lower()},
+        )
+
+        self.assertEqual(converted.status_code, 302, converted.get_data(as_text=True))
+        self.assertTrue(converted.location.endswith("/login"))
+        self.assertFalse((root / "encryption.json").exists())
+        for database_path in (root / "merch.sqlite3", root / "users.sqlite3"):
+            self.assertEqual(database_path.read_bytes()[:16], b"SQLite format 3\x00")
+
+    def test_legacy_sqlcipher_installation_is_converted_once_with_backups_and_archives(self) -> None:
+        """The one-time converter preserves every durable SQLCipher-era data class."""
+
+        root = Path(self.tempdir.name) / "legacy-sqlcipher-installation"
         database_key = bytes(range(32))
-        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database"):
-            issuing_app = create_app(config)
-        metadata = new_database_encryption_metadata(
-            "a strong local database passphrase",
-            generate_database_recovery_key(),
-            database_key,
-        )
-        metadata["databases_ready"] = True
-        write_database_encryption_metadata(issuing_app, metadata)
-        issuing_app.extensions["database_encryption_key"] = database_key
-        issuing_client = issuing_app.test_client()
-        endpoint = "/system/verschluesselung/geplanter-neustart-pass"
-        target_headers = {"X-Planned-Restart-Target-Version": "v0.3.1"}
+        passphrase = "the former database passphrase"
+        invoice_cipher = legacy_attachment_cipher(database_key, photo=False)
+        photo_cipher = legacy_attachment_cipher(database_key, photo=True)
 
-        # The machine route deliberately has no browser CSRF token, but is
-        # undiscoverable without its separate mounted scheduler token.
-        self.assertEqual(issuing_client.post(endpoint, headers=target_headers).status_code, 404)
-        self.assertEqual(
-            issuing_client.post(
-                endpoint,
-                headers={**target_headers, "Authorization": "Bearer wrong-token"},
-            ).status_code,
-            404,
-        )
-        self.assertEqual(
-            issuing_client.post(
-                endpoint,
-                headers={
-                    "Authorization": f"Bearer {authorization_token}",
-                    "X-Planned-Restart-Target-Version": "v0.3.0",
-                },
-            ).status_code,
-            400,
-        )
+        write_legacy_sqlcipher_database(root / "merch.sqlite3", database_key, "live-merch")
+        write_legacy_sqlcipher_database(root / "users.sqlite3", database_key, "live-users")
+        invoice_dir = root / "invoices"
+        photo_dir = root / "variant-photos"
+        invoice_dir.mkdir(parents=True)
+        photo_dir.mkdir()
+        (invoice_dir / "live.pdf.enc").write_bytes(invoice_cipher.encrypt(b"%PDF-live invoice"))
+        (photo_dir / "live.jpg.enc").write_bytes(photo_cipher.encrypt(b"\xff\xd8\xfflive photo"))
 
-        issued = issuing_client.post(
-            endpoint,
-            headers={**target_headers, "Authorization": f"Bearer {authorization_token}"},
+        metadata = {
+            "version": 1,
+            "cipher": "sqlcipher-4",
+            "created_at": "2026-08-01T00:00:00+00:00",
+            "databases_ready": True,
+            "passphrase": legacy_key_envelope(passphrase, database_key, 11),
+            "recovery": legacy_key_envelope("unused recovery secret", database_key, 29),
+        }
+        (root / "encryption.json").write_text(json.dumps(metadata), encoding="utf-8")
+        (root / "scheduled-restart-unlock.json").write_text("obsolete", encoding="utf-8")
+
+        backup = root / "backups" / "2026-08-01_12-00-00"
+        (backup / "invoices").mkdir(parents=True)
+        (backup / "variant-photos").mkdir()
+        write_legacy_sqlcipher_database(backup / "merch.sqlite3", database_key, "backup-merch")
+        (backup / "invoices" / "backup.pdf.enc").write_bytes(
+            invoice_cipher.encrypt(b"%PDF-backup invoice")
         )
-        self.assertEqual(issued.status_code, 201)
-        one_time_secret = issued.get_data(as_text=True).strip()
-        self.assertTrue(one_time_secret.startswith("PVM-UP1-"))
-        pass_path = scheduled_restart_unlock_pass_path(issuing_app)
-        pass_contents = pass_path.read_text(encoding="utf-8")
-        self.assertNotIn(one_time_secret, pass_contents)
-        self.assertNotIn(authorization_token, pass_contents)
-        self.assertEqual(json.loads(pass_contents)["target_app_version"], "v0.3.1")
-        one_time_secret_file.write_text(f"{one_time_secret}\n", encoding="utf-8")
-        one_time_secret_file.chmod(0o600)
+        (backup / "variant-photos" / "backup.jpg.enc").write_bytes(
+            photo_cipher.encrypt(b"\xff\xd8\xffbackup photo")
+        )
+        (backup / "encryption.json").write_text(json.dumps(metadata), encoding="utf-8")
 
-        # Restarting the old image leaves the grant pending and the database
-        # locked, even though the temporary secret is still mounted.
-        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database") as initialise_mock:
-            old_image_restart = create_app(config)
-        self.assertEqual(database_encryption_state(old_image_restart), "locked")
-        self.assertTrue(pass_path.is_file())
-        initialise_mock.assert_not_called()
+        reset_dir = root / "reset-archives"
+        reset_dir.mkdir()
+        reset_database = root / "reset-source.sqlite3"
+        write_legacy_sqlcipher_database(reset_database, database_key, "reset-merch")
+        with ZipFile(reset_dir / "merch-reset-before-2026-08-01.zip", "w") as archive:
+            archive.writestr("data/merch.sqlite3", reset_database.read_bytes())
+            archive.writestr(
+                "data/invoices/reset.pdf.enc", invoice_cipher.encrypt(b"%PDF-reset invoice")
+            )
+            archive.writestr(
+                "data/variant-photos/reset.jpg.enc", photo_cipher.encrypt(b"\xff\xd8\xffreset photo")
+            )
+        reset_database.unlink()
 
-        updated_config = {**config, "APP_VERSION": "v0.3.1"}
-        with (
-            patch("app._sqlcipher_dbapi"),
-            patch("app.initialise_database") as initialise_mock,
-            patch("app.invalidate_all_user_sessions_after_scheduled_restart_unlock") as invalidate_mock,
+        config = {
+            "TESTING": True,
+            "SECRET_KEY": "test-secret",
+            "DATABASE": str(root / "merch.sqlite3"),
+            "USERS_DATABASE": str(root / "users.sqlite3"),
+            "BACKUP_DIR": str(root / "backups"),
+            "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
+            "MIGRATION_ARCHIVE_DIR": str(root / "migration-archives"),
+            "INVOICE_UPLOAD_DIR": str(root / "invoices"),
+            "VARIANT_PHOTO_UPLOAD_DIR": str(root / "variant-photos"),
+            "ADMIN_USERNAME": "converted-admin",
+            "ADMIN_PASSWORD": "converted-admin-password",
+            "APP_VERSION": "v0.4.0",
+            "AUTO_BACKUP": False,
+        }
+        migrating_app = create_app(config)
+        client = migrating_app.test_client()
+        redirected = client.get("/verkauf")
+        self.assertTrue(redirected.location.endswith("/system/datenbankmigration"))
+        page = client.get("/system/datenbankmigration")
+        self.assertEqual(page.status_code, 200)
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+
+        originals = {
+            path: path.read_bytes()
+            for path in (
+                root / "merch.sqlite3",
+                root / "users.sqlite3",
+                root / "invoices" / "live.pdf.enc",
+                backup / "merch.sqlite3",
+            )
+        }
+        rejected = client.post(
+            "/system/datenbankmigration",
+            data={"csrf_token": csrf, "database_passphrase": "wrong former passphrase"},
+        )
+        self.assertEqual(rejected.status_code, 200)
+        for path, content in originals.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertTrue((root / "encryption.json").is_file())
+
+        converted = client.post(
+            "/system/datenbankmigration",
+            data={"csrf_token": csrf, "database_passphrase": passphrase},
+        )
+        self.assertEqual(converted.status_code, 302, converted.get_data(as_text=True))
+        self.assertTrue(converted.location.endswith("/login"))
+        self.assertFalse((root / "encryption.json").exists())
+        self.assertFalse((root / "scheduled-restart-unlock.json").exists())
+        self.assertFalse(any(root.rglob("*.enc")))
+
+        for database_path, marker in (
+            (root / "merch.sqlite3", "live-merch"),
+            (root / "users.sqlite3", "live-users"),
+            (backup / "merch.sqlite3", "backup-merch"),
         ):
-            updated_image = create_app(updated_config)
-        self.assertEqual(database_encryption_state(updated_image), "unlocked")
-        self.assertEqual(updated_image.extensions["database_encryption_key"], database_key)
-        initialise_mock.assert_called_once_with(updated_image)
-        invalidate_mock.assert_called_once_with(updated_image, target_version="v0.3.1")
-        self.assertFalse(pass_path.exists())
+            self.assertEqual(database_path.read_bytes()[:16], b"SQLite format 3\x00")
+            connection = sqlite3.connect(database_path)
+            try:
+                self.assertEqual(connection.execute("SELECT value FROM legacy_marker").fetchone()[0], marker)
+                self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            finally:
+                connection.close()
 
-        # A pass is gone after successful use; the same release cannot replay
-        # it on a second restart.
-        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database") as initialise_mock:
-            replayed_restart = create_app(updated_config)
-        self.assertEqual(database_encryption_state(replayed_restart), "locked")
-        initialise_mock.assert_not_called()
+        self.assertEqual((invoice_dir / "live.pdf").read_bytes(), b"%PDF-live invoice")
+        self.assertEqual((photo_dir / "live.jpg").read_bytes(), b"\xff\xd8\xfflive photo")
+        self.assertEqual((backup / "invoices" / "backup.pdf").read_bytes(), b"%PDF-backup invoice")
         self.assertEqual(
-            replayed_restart.test_client().post(
-                endpoint,
-                headers={**target_headers, "Authorization": f"Bearer {authorization_token}"},
-            ).status_code,
-            423,
+            (backup / "variant-photos" / "backup.jpg").read_bytes(), b"\xff\xd8\xffbackup photo"
         )
+        self.assertFalse((backup / "encryption.json").exists())
 
-        # A valid-looking but wrong per-update secret consumes the matching
-        # pass and fails closed rather than permitting retry attacks.
-        issued_again = issuing_client.post(
-            endpoint,
-            headers={**target_headers, "Authorization": f"Bearer {authorization_token}"},
-        )
-        self.assertEqual(issued_again.status_code, 201)
-        one_time_secret_file.write_text(generate_scheduled_restart_unlock_secret(), encoding="utf-8")
-        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database") as initialise_mock:
-            wrong_secret_restart = create_app(updated_config)
-        self.assertEqual(database_encryption_state(wrong_secret_restart), "locked")
-        self.assertFalse(pass_path.exists())
-        initialise_mock.assert_not_called()
+        reset_archive = reset_dir / "merch-reset-before-2026-08-01.zip"
+        with ZipFile(reset_archive) as archive:
+            names = set(archive.namelist())
+            self.assertIn("data/invoices/reset.pdf", names)
+            self.assertIn("data/variant-photos/reset.jpg", names)
+            self.assertNotIn("data/invoices/reset.pdf.enc", names)
+            self.assertEqual(archive.read("data/invoices/reset.pdf"), b"%PDF-reset invoice")
+            reset_plain_database = root / "reset-plain-check.sqlite3"
+            reset_plain_database.write_bytes(archive.read("data/merch.sqlite3"))
+        connection = sqlite3.connect(reset_plain_database)
+        try:
+            self.assertEqual(connection.execute("SELECT value FROM legacy_marker").fetchone()[0], "reset-merch")
+        finally:
+            connection.close()
+        reset_plain_database.unlink()
 
-        # Expiry is enforced before any schema migration, even if the genuine
-        # one-time secret is still available to the matching image.
-        issued_expiring = issuing_client.post(
-            endpoint,
-            headers={**target_headers, "Authorization": f"Bearer {authorization_token}"},
-        )
-        self.assertEqual(issued_expiring.status_code, 201)
-        expiring_secret = issued_expiring.get_data(as_text=True).strip()
-        expired_payload = json.loads(pass_path.read_text(encoding="utf-8"))
-        expired_payload["issued_at"] = "1999-12-31T00:00:00+00:00"
-        expired_payload["expires_at"] = "2000-01-01T00:00:00+00:00"
-        pass_path.write_text(json.dumps(expired_payload), encoding="utf-8")
-        one_time_secret_file.write_text(expiring_secret, encoding="utf-8")
-        with patch("app._sqlcipher_dbapi"), patch("app.initialise_database") as initialise_mock:
-            expired_restart = create_app(updated_config)
-        self.assertEqual(database_encryption_state(expired_restart), "locked")
-        self.assertFalse(pass_path.exists())
-        initialise_mock.assert_not_called()
+        migration_archives = list((root / "migration-archives").glob("plaintext-conversion-*.zip"))
+        self.assertEqual(len(migration_archives), 1)
+        with ZipFile(migration_archives[0]) as archive:
+            self.assertIn("data/merch.sqlite3", archive.namelist())
+            self.assertIn("data/users.sqlite3", archive.namelist())
+
+        restarted = create_app(config)
+        restarted_response = restarted.test_client().get("/verkauf")
+        self.assertNotIn("/system/datenbankmigration", restarted_response.location or "")
 
     def test_plaintext_legacy_import_is_not_available(self) -> None:
         """Plaintext stores cannot be uploaded into the active installation."""
@@ -492,57 +589,6 @@ class MerchAppTestCase(unittest.TestCase):
             ).status_code,
             404,
         )
-    def test_database_passphrase_and_recovery_key_can_be_rotated_after_unlock(self) -> None:
-        """A recovery unlock can be made durable again by replacing the normal passphrase."""
-
-        root = Path(self.tempdir.name) / "encrypted-key-rotation"
-        config = {
-            "TESTING": True,
-            "SECRET_KEY": "test-secret",
-            "DATABASE": str(root / "merch.sqlite3"),
-            "USERS_DATABASE": str(root / "users.sqlite3"),
-            "BACKUP_DIR": str(root / "backups"),
-            "RESET_ARCHIVE_DIR": str(root / "reset-archives"),
-            "INVOICE_UPLOAD_DIR": str(root / "invoices"),
-            "DATABASE_ENCRYPTION_ENABLED": True,
-            "ADMIN_USERNAME": "rotation-admin",
-            "ADMIN_PASSWORD": "rotation-bootstrap-password",
-            "APP_VERSION": "v0.3.0",
-            "AUTO_BACKUP": False,
-        }
-        configured_app = create_app(config)
-        with configured_app.app_context():
-            _, old_recovery_key = setup_encrypted_databases(
-                configured_app,
-                bootstrap_password="rotation-bootstrap-password",
-                database_passphrase="first database passphrase",
-                confirmation="first database passphrase",
-            )
-            change_database_passphrase(
-                configured_app,
-                passphrase="second database passphrase",
-                confirmation="second database passphrase",
-            )
-            _, new_recovery_key = regenerate_database_recovery_key(configured_app)
-
-        restarted = create_app(config)
-        with restarted.app_context():
-            with self.assertRaises(ValueError):
-                unlock_encrypted_databases(restarted, database_passphrase="first database passphrase")
-            self.assertEqual(
-                unlock_encrypted_databases(restarted, database_passphrase="second database passphrase"),
-                "passphrase",
-            )
-
-        restarted_again = create_app(config)
-        with restarted_again.app_context():
-            with self.assertRaises(ValueError):
-                unlock_encrypted_databases(restarted_again, recovery_key=old_recovery_key)
-            self.assertEqual(
-                unlock_encrypted_databases(restarted_again, recovery_key=new_recovery_key),
-                "recovery",
-            )
-
     def test_existing_database_gets_minimum_stock_and_offered_columns(self) -> None:
         """An update must not require manually recreating the merch database."""
 

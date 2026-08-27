@@ -297,38 +297,6 @@
   <div class="dialog-actions"><button class="secondary-button" type="button" data-band-admin-cancel>Abbrechen</button><button class="danger-button" type="button" data-band-admin-confirm disabled>Band-Admin zuweisen (3)</button></div>
 </dialog>
 
-{% if database_encryption_active %}
-<section class="table-section database-security-area">
-  <div class="section-heading"><div><p class="eyebrow">Verschlüsselung</p><h2>Datenbank-Sicherheit</h2><p>Die Datenbanken und Rechnungsanhänge sind verschlüsselt. Nach normalen oder ungeplanten Neustarts benötigt die Anwendung die separate Datenbank-Passphrase oder den Wiederherstellungsschlüssel.</p></div></div>
-  <div class="database-security-actions">
-    <details class="admin-danger-confirmation">
-      <summary>Datenbank-Passphrase ändern</summary>
-      <form action="{{ url_for('update_database_passphrase') }}" method="post" class="admin-sensitive-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <p>Die aktuelle Passphrase ist danach sofort ungültig. Der bestehende Wiederherstellungsschlüssel bleibt gültig.</p>
-        <label>Neue Datenbank-Passphrase<input name="database_passphrase" type="password" autocomplete="new-password" minlength="12" required></label>
-        <label>Neue Passphrase wiederholen<input name="database_passphrase_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
-        <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-        {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
-        <label>Zur Bestätigung <code>DATENBANK-PASSPHRASE ÄNDERN</code><input name="confirmation" autocomplete="off" required></label>
-        <button class="danger-button compact-button" type="submit">Passphrase ändern</button>
-      </form>
-    </details>
-    <details class="admin-danger-confirmation">
-      <summary>Wiederherstellungsschlüssel erneuern</summary>
-      <form action="{{ url_for('renew_database_recovery_key') }}" method="post" class="admin-sensitive-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <p>Der bisherige Wiederherstellungsschlüssel wird sofort ungültig. Der neue Schlüssel wird einmalig auf der nächsten Seite angezeigt.</p>
-        <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-        {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
-        <label>Zur Bestätigung <code>WIEDERHERSTELLUNGSSCHLÜSSEL ERNEUERN</code><input name="confirmation" autocomplete="off" required></label>
-        <button class="danger-button compact-button" type="submit">Neuen Schlüssel erzeugen</button>
-      </form>
-    </details>
-  </div>
-</section>
-{% endif %}
-
 <section class="table-section">
   <div class="section-heading"><div><h2>Benutzer</h2><p>Änderungen an Rolle, Passwort oder Aktivstatus melden bestehende Sitzungen des jeweiligen Kontos ab.</p></div></div>
   <div class="table-scroll"><table class="users-table"><thead><tr><th>Benutzer</th><th>Rolle</th><th>Status</th><th>2FA</th><th>Letzte Anmeldung</th><th>Aktionen</th></tr></thead><tbody>

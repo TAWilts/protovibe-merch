@@ -85,7 +85,7 @@ Bestand, Bilanz und CSV-Export.
   Sie bleiben nachvollziehbar, werden aber aus Bestand, Bilanzen und offenen
   Vorgängen herausgerechnet.
 - **Export & Sicherung:** Download als CSV/ZIP auf ausdrückliche Anforderung
-  sowie automatische, verschlüsselte Sicherung nach jeder erfolgreichen
+  sowie automatische Sicherung nach jeder erfolgreichen
   Änderung, einschließlich Versand- und Zahlungsstatus. Hochgeladene
   Rechnungen und Produktfotos gehören zum jeweiligen Sicherungspunkt dazu.
 - **Konten, Rollen & Schutz:** Band-Admins können Seller, Member, Manager und
@@ -96,8 +96,8 @@ Bestand, Bilanz und CSV-Export.
   Bandfinanzen und Bilanzen. Manager verwalten zusätzlich Artikel und
   Einkaufswarenkörbe; Band-Admins verwalten die Konten ihrer Band und dürfen
   deren Betriebsdaten zurücksetzen. Konten, Passwörter und 2FA liegen
-  unabhängig von Artikeln und Buchungen in einer eigenen, verschlüsselten
-  SQLite-Datei. Konten lassen sich nach einer erneuten Sicherheitsbestätigung
+  unabhängig von Artikeln und Buchungen in einer eigenen SQLite-Datei. Konten
+  lassen sich nach einer erneuten Sicherheitsbestätigung
   löschen, ohne ihre historischen Buchungen zu entfernen.
   Jede Person kann ihren eigenen Benutzernamen, Sprache, Farbthema und die
   Anzeige von Variantenfotos nach einer frischen Sicherheitsbestätigung ändern.
@@ -187,7 +187,7 @@ Die folgenden Schritte sind bewusst ohne SSH-Zwang beschrieben.
    SECRET_KEY=<lange-zufällige-Zeichenfolge>
    ADMIN_USERNAME=<dein-admin-name>
    ADMIN_PASSWORD=<langes-eigenes-passwort>
-   HOST_PORT=8088
+   HOST_PORT=8089
    BACKUP_RETENTION_DAYS=90
    ```
 
@@ -200,30 +200,25 @@ Die folgenden Schritte sind bewusst ohne SSH-Zwang beschrieben.
 4. Öffne DSM → **Container Manager** → **Projekt** → **Erstellen**.
 5. Wähle als Projektpfad den entpackten Projektordner und als Quelle die dort
    liegende `docker-compose.yml`.  Starte anschließend den Build.
-6. Öffne im Heimnetz `http://<IP-der-Synology>:8088`. Beim allerersten Start
-   erscheint die Einrichtung der Datenbankverschlüsselung. Bestätige dort
-   einmalig das `ADMIN_PASSWORD` aus der `.env`, wähle eine **separate
-   Datenbank-Passphrase** und speichere den angezeigten
-   Wiederherstellungsschlüssel offline.
-7. Melde dich danach mit `ADMIN_USERNAME` und `ADMIN_PASSWORD` als erster
+6. Öffne im Heimnetz `http://<IP-der-Synology>:8089`. Eine neue Installation
+   legt gewöhnliche SQLite-Dateien an und benötigt keine Datenbank-Passphrase.
+   Nur wenn ein bestehender verschlüsselter Datenordner erkannt wird, erscheint
+   einmalig die unten beschriebene Konvertierung.
+7. Melde dich mit `ADMIN_USERNAME` und `ADMIN_PASSWORD` als erster
    Band-Admin an. Die 2FA kannst du im Profil aktivieren. Den ersten getrennten
    System-Admin legst du anschließend einmalig unter **Verwaltung** an; dieses
    Plattformkonto muss beim ersten Login 2FA einrichten.
 
 Alle dauerhaften Daten liegen ausschließlich in `data/`:
 
-- `merch.sqlite3` enthält ausschließlich Artikel, Varianten, Verkäufe,
-  Einkäufe, Rechnungsbezüge und die betriebliche Historie – vollständig mit
-  SQLCipher verschlüsselt;
-- `users.sqlite3` enthält Benutzerkonten, Rollen, Passwort-Hashes und 2FA –
-  ebenfalls vollständig verschlüsselt;
-- `encryption.json` enthält nur die verschlüsselten Umschläge des zufällig
-  erzeugten Datenbankschlüssels, niemals die Passphrase oder den Klartext-Key.
+- `merch.sqlite3` enthält als gewöhnliche SQLite-Datei Artikel, Varianten,
+  Verkäufe, Einkäufe, Rechnungsbezüge und die betriebliche Historie;
+- `users.sqlite3` enthält als gewöhnliche SQLite-Datei Benutzerkonten, Rollen,
+  Passwort-Hashes und 2FA.
 
-Rechnungen liegen als verschlüsselte Dateien unter `data/invoices/`.
-Produktfotos liegen separat unter `data/variant-photos/`; in einer normalen
-verschlüsselten Installation werden auch diese Dateien verschlüsselt, im
-bewusst unverschlüsselten `LOCAL_DEV_MODE` als optimierte JPEGs abgelegt.
+Rechnungen liegen unverschlüsselt unter `data/invoices/`. Produktfotos liegen
+als optimierte JPEGs separat unter `data/variant-photos/`. Deshalb muss der
+Zugriff auf den gesamten Ordner `data/` über DSM-Dateirechte beschränkt werden.
 Bereits gebuchte Verkäufe und Einkäufe behalten zusätzlich den damaligen
 Benutzernamen als Historien-Schnappschuss, sodass das Löschen eines Kontos
 keine Buchung unlesbar macht.
@@ -305,12 +300,12 @@ gespeicherte Nachricht trotzdem im Supportpostfach erhalten; technische Details
 stehen dann ausschließlich im Container-Log.
 
 `SECRET_KEY` muss dauerhaft unverändert bleiben. Er schützt Sitzungen und
-verschlüsselt die lokal gespeicherten TOTP-Geheimnisse; er ist **nicht** der
-Schlüssel für die SQLite-Dateien. Ein Wechsel würde eingerichtete 2FA-Geräte
-ungültig machen. Die Datenbank-Passphrase wird ausschließlich in der
-Einrichtungs-/Entsperrseite eingegeben und liegt bewusst nicht in `.env`. Die
-Uhr der Synology sollte über die DSM-Zeitsynchronisation korrekt laufen, weil
-Authenticator-Codes zeitbasiert sind.
+verschlüsselt die lokal gespeicherten TOTP- und SMTP-Geheimnisse; die
+SQLite-Dateien selbst liegen unverschlüsselt vor. Ein Wechsel würde
+eingerichtete 2FA-Geräte ungültig machen. Eine Datenbank-Passphrase gibt es nach
+der einmaligen Bestandskonvertierung nicht mehr. Die Uhr der Synology sollte
+über die DSM-Zeitsynchronisation korrekt laufen, weil Authenticator-Codes
+zeitbasiert sind.
 
 Der Datenreset im Reiter **Verwaltung** ist Band-Admins vorbehalten und fordert
 das aktuelle Passwort, bei eingerichteter 2FA zusätzlich einen 2FA- oder
@@ -319,217 +314,154 @@ App ein ZIP unter `data/reset-archives/`. Danach werden nur Artikel, Buchungen
 und Rechnungen frisch angelegt; sämtliche Benutzerkonten, Rollen, Passwörter
 und 2FA-Einstellungen bleiben erhalten.
 
-### Datenbankverschlüsselung und Wiederherstellung
+### Unverschlüsselte Datenhaltung und einmalige Bestandskonvertierung
 
-Die App erzeugt bei der ersten Einrichtung einen zufälligen 256-Bit-
-Datenbankschlüssel. Dieser Schlüssel existiert nur im Arbeitsspeicher des
-laufenden Prozesses. In `data/encryption.json` wird er ausschließlich in zwei
-verschlüsselten Umschlägen gespeichert:
+Neue Installationen verwenden gewöhnliche SQLite-Dateien und unverschlüsselte
+Rechnungs- sowie Bilddateien. Nach einem Container-, NAS- oder App-Neustart
+steht deshalb direkt die normale Anmeldung bereit; eine Datenbank-Passphrase
+oder eine Entsperrseite gibt es nicht.
 
-- einer wird mit der von dir gewählten Datenbank-Passphrase geöffnet;
-- der andere mit dem einmalig angezeigten Wiederherstellungsschlüssel.
+Dieses Übergangsrelease behält `sqlcipher3` und die dafür benötigten
+Docker-Buildwerkzeuge **ausschließlich als einmaligen Legacy-Konverter**.
+Neue Daten werden nicht mehr mit SQLCipher geschrieben. Nach dem vorgesehenen
+Migrationszeitraum können Abhängigkeit und Buildwerkzeuge entfernt werden.
 
-Nach einem Container-, NAS- oder App-Neustart zeigt die App daher zuerst
-**Datenbank entsperren**. Erst danach ist die normale Anmeldung mit Benutzer-
-Passwort und 2FA möglich. Weder die Datenbank-Passphrase noch der
-Wiederherstellungsschlüssel gehören in `.env`, ein Git-Repository oder einen
-Shell-Befehl.
+Findet die App beim ersten Start einen bisherigen verschlüsselten Datenordner
+mit `encryption.json`, fordert sie genau einmal entweder die bisherige
+Datenbank-Passphrase oder den bisherigen Wiederherstellungsschlüssel an. Der
+Wert wird nur für diesen Konvertierungslauf verwendet und weder in `.env` noch
+dauerhaft auf dem NAS gespeichert. Ohne einen dieser beiden bisherigen
+Schlüssel lassen sich vorhandene verschlüsselte Daten technisch nicht in
+Klartext überführen.
 
-### Optionaler Einmal-Entsperrpass für geplante Image-Updates
+Die einmalige Konvertierung umfasst den gesamten dauerhaften Bestand:
 
-Standardmäßig bleibt die vorherige Regel unverändert: Nach einem ungeplanten
-Neustart, einem NAS-Neustart oder einem erneuten Start **derselben** Image-
-Version bleibt die Datenbank gesperrt. Optional kann ein DSM-Aufgabenplaner
-für genau ein bereits geprüftes, anderes Release-Image einen Einmalpass
-anfordern. Das ist ausdrücklich kein allgemeines `GEPLANTER_NEUSTART=1`-
-Flag und auch keine dauerhaft hinterlegte Datenbank-Passphrase.
+- die Live-Datenbanken `merch.sqlite3` und `users.sqlite3`;
+- Rechnungen unter `data/invoices/`;
+- Produktfotos unter `data/variant-photos/`;
+- alle Sicherungspunkte unter `data/backups/`;
+- alle vorhandenen ZIP-Dateien unter `data/reset-archives/`.
 
-Während die alte App noch entsperrt läuft, authentifiziert sich die
-root-ausgeführte DSM-Aufgabe mit einem separaten, zufälligen Token. Die App
-erstellt daraufhin einen zusätzlichen Schlüsselumschlag, der nur für die
-angegebene Zielversion (zum Beispiel `v0.3.1`) und standardmäßig 20 Minuten
-gilt (bewusst begrenzt auf 1 bis 60 Minuten).
-Die Aufgabe erhält dazu einen frischen zweiten Einmalcode. Erst die Kombination
-aus diesem kurzlebigen Umschlag in `data/` und dem Einmalcode öffnet beim Start
-des **exakt passenden** neuen Images die Datenbank. Der Umschlag wird atomar
-verbraucht und der Einmalcode danach vom NAS gelöscht. Das dauerhafte
-Task-Token allein kann weder eine kopierte Datenbank noch ein Backup öffnen.
+Die App schreibt die Klartextfassungen zunächst in einen temporären
+Migrationsbereich, prüft Datenbanken und Archive und ersetzt den bisherigen
+Bestand erst danach. Wird der Vorgang unterbrochen oder schlägt eine Prüfung
+fehl, bleibt die Migration offen und darf mit demselben bisherigen Schlüssel
+erneut gestartet werden. `encryption.json` wird erst nach vollständig
+erfolgreicher Konvertierung überflüssig.
 
-Bei einer falschen Zielversion, einem abgelaufenen Pass, einem fehlerhaften
-Einmalcode oder einer fehlgeschlagenen Migration bleibt die Datenbank gesperrt;
-die normale Entsperrseite mit Passphrase oder Wiederherstellungsschlüssel bleibt
-der sichere Notfallweg. Beim automatischen Entsperren werden außerdem alle
-Browser-Sitzungen abgemeldet, damit ein alter Sitzungs-Cookie nie eine Anmeldung
-überspringt.
+Für den Umstieg:
 
-Die Funktion ist ab Werk ausgeschaltet. Für die erste Aktualisierung auf eine
-Version, die diese Funktion enthält, ist deshalb noch eine manuelle
-Entsperrung nötig.
+1. Vor dem Image-Wechsel einen Synology-Snapshot oder ein Hyper Backup des
+   vollständigen Projektordners anlegen und die alte Version nicht löschen.
+2. Das Übergangsrelease einmal bewusst starten und die Seite zur
+   Bestandskonvertierung im Browser öffnen.
+3. Einmalig die alte Passphrase **oder** den alten Wiederherstellungsschlüssel
+   eingeben und warten, bis die App den Abschluss bestätigt.
+4. Danach Anmeldung, aktuelle Buchungen, Rechnungen, Produktfotos, mindestens
+   einen Sicherungspunkt und ein Reset-Archiv prüfen.
+5. Erst nach dieser Prüfung alte verschlüsselte externe Kopien oder
+   Schlüsseldateien entfernen. Für alle weiteren Starts ist keine
+   Datenbank-Passphrase mehr nötig.
 
-1. Lege außerhalb von Projekt-, `data/`- und Backup-Ordnern ein nur für `root`
-   zugängliches Verzeichnis an, zum Beispiel
-   `/volume1/docker/protovibe-merch-secrets`. Die DSM-Aufgabe muss als `root`
-   laufen. Verzeichnisrechte sind `0700`, Dateirechte `0600`:
+Die SQLite-Dateien, Anhänge, Sicherungen und Reset-Archive liegen anschließend
+im Klartext vor. Wer den Ordner `data/` kopieren kann, kann diese Inhalte
+lesen. Restriktive DSM-Dateirechte, ein geschütztes Administratorkonto, VPN
+statt öffentlicher Portfreigabe sowie bei Bedarf die Verschlüsselung von
+Synology-Snapshots oder Hyper Backup bleiben daher wichtig.
 
-   ```sh
-   umask 077
-   mkdir -p /volume1/docker/protovibe-merch-secrets
-   openssl rand -base64 48 > /volume1/docker/protovibe-merch-secrets/authorisation-token
-   chmod 700 /volume1/docker/protovibe-merch-secrets
-   chmod 600 /volume1/docker/protovibe-merch-secrets/authorisation-token
-   ```
+### Automatische `latest`-Updates auf der Synology
 
-   Die Datei `authorisation-token` ist ein dauerhaftes **Task**-Geheimnis,
-   nicht die Datenbank-Passphrase. Die Datei
-   `one-time-unlock-secret` erzeugt die Aufgabe nur kurzfristig und löscht sie
-   wieder. Beide Dateien dürfen nicht in `.env`, Git, `data/`, Backups oder
-   einen Docker-Command gelangen.
+Nach der Bestandskonvertierung ist für Neustarts kein Entsperrpass mehr nötig.
+Die bisherige Autorisierungsdatei, der Einmalcode, der Secret-Mount und der
+HTTP-Aufruf zum geplanten Entsperren entfallen vollständig. In der `.env` des
+Synology-Projekts bleibt lediglich die Image-Auswahl:
 
-2. Ergänze in der Projekt-`.env` nur den Pfad (keinen Geheimwert):
+```dotenv
+MERCH_IMAGE_TAG=latest
+```
 
-   ```dotenv
-   SCHEDULED_RESTART_SECRETS_DIR=/volume1/docker/protovibe-merch-secrets
-   SCHEDULED_RESTART_UNLOCK_TTL_SECONDS=1200
-   ```
+Der DSM-Aufgabenplaner soll zuerst `latest` laden, anschließend die im
+laufenden Container und im geladenen Image eingebetteten `APP_VERSION`-Werte
+vergleichen und den Container nur bei einer Änderung neu erstellen. Lege das
+folgende Skript beispielsweise root-geschützt unter
+`/volume1/docker/protovibe-merch-admin/scheduled-update.sh` ab und führe es im
+Aufgabenplaner als `root` aus:
 
-   Starte das Synology-Projekt danach einmal neu, damit der schreibgeschützte
-   Mount unter `/run/protovibe-scheduled-restart` aktiv wird. Die App akzeptiert
-   keine Geheimdatei innerhalb des dauerhaften Datenordners.
+```sh
+#!/bin/sh
+set -eu
 
-3. Lege die folgende Aufgabe als **benutzerdefiniertes Skript** im
-   Synology-Aufgabenplaner an. Sie erwartet den geprüften Release-Tag als erstes
-   Argument, zum Beispiel `v0.3.1`. Setze `PROJECT_NAME` auf den tatsächlichen
-   Namen des bestehenden Container-Manager-Projekts; ein abweichender Name
-   könnte einen zweiten Compose-Stack erzeugen. Lege die aktiv ausgeführte
-   Skriptdatei selbst in einem root-geschützten Verwaltungsordner ab, nicht in
-   einem für normale NAS-Nutzer beschreibbaren Checkout. Beispiel: Speichere
-   sie als `/volume1/docker/protovibe-merch-admin/scheduled-update.sh` mit
-   Recht `0700`; im DSM-Aufgabenplaner lautet der eigentliche Befehl dann
-   `/bin/sh /volume1/docker/protovibe-merch-admin/scheduled-update.sh v0.3.1`.
-   Für einen anderen Release-Tag wird genau dieses letzte Argument geändert.
+PROJECT_DIR=/volume1/docker/dockerPOSTest
+APP_URL=http://127.0.0.1:8089
+TARGET_IMAGE=ghcr.io/tawilts/protovibe-merch:latest
 
-   ```sh
-   #!/bin/sh
-   set -eu
-   umask 077
+cd "$PROJECT_DIR"
 
-   PROJECT_DIR=/volume1/docker/protovibe-merch
-   PROJECT_NAME=protovibe-merch
-   SECRETS_DIR=/volume1/docker/protovibe-merch-secrets
-   APP_URL=http://127.0.0.1:8088
-   TARGET_VERSION="${1:?Bitte einen Release-Tag wie v0.3.1 angeben}"
+compose() {
+  docker compose -f docker-compose.synology.yml "$@"
+}
 
-   if ! printf '%s\n' "$TARGET_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-     echo "Nur konkrete Release-Tags vX.Y.Z sind erlaubt." >&2
-     exit 2
-   fi
+IMAGE_TAG="$(sed -n 's/^MERCH_IMAGE_TAG=//p' .env | tr -d '\r' | tail -n 1)"
+[ "$IMAGE_TAG" = latest ] || {
+  echo "MERCH_IMAGE_TAG=latest fehlt in $PROJECT_DIR/.env." >&2
+  exit 1
+}
 
-   AUTH_FILE="$SECRETS_DIR/authorisation-token"
-   ONE_TIME_FILE="$SECRETS_DIR/one-time-unlock-secret"
-   ONE_TIME_TMP="$ONE_TIME_FILE.tmp.$$"
-   CURL_CONFIG="$(mktemp "$SECRETS_DIR/.update-unlock-curl.XXXXXX")"
-   ENV_FILE="$PROJECT_DIR/.env"
-   ENV_TMP=""
+CURRENT_CONTAINER="$(compose ps -q merch || true)"
+CURRENT_VERSION=""
+if [ -n "$CURRENT_CONTAINER" ]; then
+  CURRENT_VERSION="$(
+    docker container inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CURRENT_CONTAINER" |
+      sed -n 's/^APP_VERSION=//p' | head -n 1
+  )"
+fi
 
-   cleanup() {
-     rm -f "$ONE_TIME_FILE" "$ONE_TIME_TMP" "$CURL_CONFIG" ${ENV_TMP:+"$ENV_TMP"}
-   }
-   trap cleanup EXIT HUP INT TERM
+compose pull merch
 
-   [ -r "$AUTH_FILE" ] || { echo "Autorisierungsdatei fehlt." >&2; exit 1; }
-   [ -f "$ENV_FILE" ] || { echo ".env fehlt." >&2; exit 1; }
+TARGET_VERSION="$(
+  docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$TARGET_IMAGE" |
+    sed -n 's/^APP_VERSION=//p' | head -n 1
+)"
+[ -n "$TARGET_VERSION" ] || {
+  echo "Das geladene Image enthält keine APP_VERSION." >&2
+  exit 1
+}
 
-   compose() {
-     MERCH_IMAGE_TAG="$TARGET_VERSION" docker compose \
-       --project-name "$PROJECT_NAME" \
-       -f "$PROJECT_DIR/docker-compose.synology.yml" "$@"
-   }
+if [ -n "$CURRENT_VERSION" ] && [ "$CURRENT_VERSION" = "$TARGET_VERSION" ]; then
+  echo "Kein Update: APP_VERSION bleibt $CURRENT_VERSION."
+  exit 0
+fi
 
-   # Das Image erst laden; erst danach beginnt das kurze 20-Minuten-Fenster.
-   compose pull merch
+echo "Update: ${CURRENT_VERSION:-nicht gestartet} -> $TARGET_VERSION"
+compose up -d --no-deps --force-recreate merch
 
-   ENV_TMP="$(mktemp "$PROJECT_DIR/.env.update.XXXXXX")"
-   awk -v version="$TARGET_VERSION" '
-     BEGIN { changed = 0 }
-     /^MERCH_IMAGE_TAG=/ { print "MERCH_IMAGE_TAG=" version; changed = 1; next }
-     { print }
-     END { if (!changed) print "MERCH_IMAGE_TAG=" version }
-   ' "$ENV_FILE" > "$ENV_TMP"
-   chmod 600 "$ENV_TMP"
-   mv "$ENV_TMP" "$ENV_FILE"
-   ENV_TMP=""
+ready=0
+attempt=0
+while [ "$attempt" -lt 60 ]; do
+  status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$APP_URL/login" || true)"
+  case "$status" in
+    2??|3??) ready=1; break ;;
+  esac
+  attempt=$((attempt + 1))
+  sleep 2
+done
 
-   # Der Token liegt nur in einer kurzlebigen, root-lesbaren curl-Konfiguration,
-   # nicht als Argument in der Prozessliste.
-   {
-     printf 'header = "Authorization: Bearer %s"\n' "$(tr -d '\r\n' < "$AUTH_FILE")"
-     printf 'header = "X-Planned-Restart-Target-Version: %s"\n' "$TARGET_VERSION"
-     printf 'url = "%s/system/verschluesselung/geplanter-neustart-pass"\n' "$APP_URL"
-   } > "$CURL_CONFIG"
-   curl --fail --silent --show-error --request POST --config "$CURL_CONFIG" --output "$ONE_TIME_TMP"
-   [ -s "$ONE_TIME_TMP" ] || { echo "Kein Einmalcode empfangen." >&2; exit 1; }
-   chmod 600 "$ONE_TIME_TMP"
-   mv "$ONE_TIME_TMP" "$ONE_TIME_FILE"
-   rm -f "$CURL_CONFIG"
-   CURL_CONFIG=""
+[ "$ready" -eq 1 ] || {
+  echo "Das neue Image wurde nicht rechtzeitig erreichbar." >&2
+  exit 1
+}
+```
 
-   compose up -d --no-deps --force-recreate merch
+Beim ersten Wechsel von einer verschlüsselten Version auf dieses
+Übergangsrelease sollte das Update unter Aufsicht erfolgen, damit die
+einmalige Bestandskonvertierung direkt abgeschlossen und geprüft werden kann.
+Der geplante Task ist danach für alle weiteren Releases geeignet.
 
-   ready=0
-   for attempt in $(seq 1 60); do
-     status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$APP_URL/login" || true)"
-     if [ "$status" = 200 ]; then ready=1; break; fi
-     sleep 2
-   done
-   [ "$ready" -eq 1 ] || { echo "Neues Image blieb gesperrt oder wurde nicht bereit." >&2; exit 1; }
-   ```
-
-   Der Ablauf akzeptiert nur konkrete Tags, nie `latest` oder `stable`. Er lädt
-   das Zielimage vor dem Ausstellen des Passes, prüft nach dem Neustart die
-   Anmeldeseite und löscht den Einmalcode bei **jedem** Ende der Aufgabe. Wird
-   die Aufgabe nach dem Ausstellen abgebrochen, läuft der Pass höchstens bis
-   zum Ablauf und ohne die gelöschte Geheimdatei nicht mehr nutzbar. Ein
-   privilegierter DSM-/Docker-Administrator kann den Ablauf missbrauchen; das
-   liegt in derselben Vertrauensgrenze wie ein bereits entsperrter Container.
-
-Wenn sowohl Datenbank-Passphrase als auch Wiederherstellungsschlüssel verloren
-gehen, sind die Daten kryptografisch nicht wiederherstellbar. Das ist keine
-absichtliche Schikane, sondern die Konsequenz daraus, dass auf dem NAS kein
-automatisch lesbarer Hauptschlüssel liegt. Bewahre beide getrennt und offline
-auf.
-
-Solange die Datenbank entsperrt ist, kann der Band-Admin unter **Verwaltung →
-Datenbank-Sicherheit** nach erneuter Passwortbestätigung und, sofern
-eingerichtet, zusätzlicher 2FA-Bestätigung eine neue Datenbank-Passphrase setzen
-oder einen neuen Wiederherstellungsschlüssel erzeugen. Beim Erneuern wird der
-vorherige Wiederherstellungsschlüssel sofort ungültig.
-
-Die Verschlüsselung schützt Daten bei einem kopierten Datenträger oder einer
-kopierten `data/`-Freigabe. Sie ersetzt keine Zugangssicherung eines bereits
-laufenden, entsperrten NAS: Ein Angreifer mit Administratorzugriff auf Server
-und laufenden Container kann Daten weiterhin auslesen. HTTPS über den Reverse
-Proxy, ein starkes Synology-Admin-Passwort und restriktive Dateirechte bleiben
-deshalb wichtig.
-
-### Umstieg von einem bisherigen unverschlüsselten Datenordner
-
-Ein vorhandener `data/`-Ordner wird absichtlich **nicht automatisch**
-verschlüsselt oder überschrieben. Findet die neue Version dort alte
-`merch.sqlite3`-/`users.sqlite3`-Dateien ohne `encryption.json`, zeigt sie nur
-eine Anleitung an.
-
-1. Die alte App beenden und den gesamten bisherigen `data/`-Ordner sicher als
-   `data-legacy` ablegen.
-2. Einen neuen, leeren `data/`-Ordner anlegen und die neue App starten.
-3. Verschlüsselung einrichten, Wiederherstellungsschlüssel sichern und als
-   neuer Band-Admin anmelden.
-4. Die alten Daten getrennt und geschützt aufbewahren oder löschen, sobald sie
-   nicht mehr benötigt werden.
-
-Ungesicherte Datenbanken werden von dieser Version nicht übernommen. Lösche
-alte unverschlüsselte Daten einschließlich CSV- und Backup-Ordner erst, wenn
-sie nicht mehr benötigt werden und die neue verschlüsselte Sicherung geprüft
-ist.
+Alte Einträge `SCHEDULED_RESTART_SECRETS_DIR` und
+`SCHEDULED_RESTART_UNLOCK_TTL_SECONDS` können aus der produktiven `.env`
+gelöscht werden. Das frühere externe Verzeichnis
+`/volume1/docker/protovibe-merch-secrets` wird nicht mehr eingebunden und kann
+nach erfolgreicher Umstellung des DSM-Tasks über DSM entfernt werden.
 
 ### Sichere Erreichbarkeit bei Konzerten
 
@@ -537,18 +469,18 @@ Die App sollte nicht per Router-Portfreigabe ins öffentliche Internet gestellt
 werden.  Im Heimnetz genügt die lokale IP.  Für unterwegs empfiehlt sich ein
 VPN-Zugang zur Synology; dann bleibt die App genauso privat wie im Heimnetz.
 
-### Lokaler Entwicklungsmodus ohne HTTPS und SQLCipher
+### Lokaler Entwicklungsmodus
 
 Die Anwendung läuft bereits über normales HTTP. Für eine lokale Testinstanz
 kann zusätzlich ein ausdrücklich unsicherer Entwicklungsmodus aktiviert werden.
-Er deaktiviert die SQLCipher-Datenbankverschlüsselung sowie die Verschlüsselung
-hochgeladener Dateien. Passwort-Hashes, Sitzungs-Signaturen und die übrigen
-Zugangskontrollen bleiben aktiv. Die 2FA wird im lokalen Modus weder beim
-Login noch bei sensiblen Admin-Aktionen verlangt.
+Die SQLite-Dateien und hochgeladenen Dateien liegen inzwischen in jedem Modus
+unverschlüsselt vor. `LOCAL_DEV_MODE` lockert nur zusätzliche Anforderungen für
+die lokale Entwicklung: Die 2FA wird dann weder beim Login noch bei sensiblen
+Admin-Aktionen verlangt. Passwort-Hashes, Sitzungs-Signaturen und die übrigen
+Zugangskontrollen bleiben aktiv.
 
-Wichtig: Verwende dafür immer einen separaten, leeren Datenordner. Die normale
-`data/`-Freigabe enthält bei einer produktiven Installation verschlüsselte
-SQLite-Dateien und darf nicht im Klartextmodus geöffnet werden.
+Verwende trotzdem einen separaten, leeren Datenordner, damit Testbuchungen und
+Testkonten nie in die produktiven Daten gelangen.
 
 In der lokalen `.env`:
 
@@ -565,10 +497,9 @@ docker compose up --build
 ```
 
 Die lokale Instanz ist anschließend unter `http://localhost:8089` erreichbar.
-Für `docker-compose.synology.yml` bleibt der Modus unabhängig davon
-deaktiviert; dort wird weiterhin die verschlüsselte Datenbank verwendet. Der
-lokale Modus ist nur für Entwicklung und Tests gedacht und darf nicht ins
-Internet oder ungeschützt ins Heimnetz veröffentlicht werden.
+Für `docker-compose.synology.yml` bleibt der Modus deaktiviert. Der lokale Modus
+ist nur für Entwicklung und Tests gedacht und darf nicht ins Internet oder
+ungeschützt ins Heimnetz veröffentlicht werden.
 
 ### Offline-Verkauf ohne mitgenommenen Server
 
@@ -580,7 +511,7 @@ Service Worker – und damit der installierbare Offline-Modus – funktionieren
 nur in einem sicheren Kontext: **HTTPS** (oder `localhost` bei lokaler
 Entwicklung). Richte für die Synology deshalb einen DSM-Reverse-Proxy mit
 gültigem Zertifikat und einer festen HTTPS-Adresse ein. Der normale Online-
-Betrieb über `http://<IP>:8088` bleibt möglich, kann aber nicht als
+Betrieb über `http://<IP>:8089` bleibt möglich, kann aber nicht als
 Offline-PWA installiert werden.
 
 Vor einem Gig:
@@ -613,29 +544,26 @@ nicht weiter synchronisiert werden.
 Nach jedem erfolgreichen Verkauf, Einkauf oder Artikel-Update legt die App in
 `data/backups/<Zeitstempel>/` an:
 
-- `merch.sqlite3` – vollständige, wiederherstellbare und weiterhin
-  verschlüsselte Kopie der Betriebsdaten;
-- `encryption.json` – die dazugehörigen, weiterhin verschlüsselten
-  Schlüsselumschläge (ohne Klartext-Passphrase oder Klartext-Key);
+- `merch.sqlite3` – vollständige, unverschlüsselte und wiederherstellbare Kopie
+  der Betriebsdaten;
 - `invoices/` – die zum Sicherungszeitpunkt vorhandenen hochgeladenen
-  Rechnungen in ihrer verschlüsselten Speicherform. Die App verwendet dafür
+  Rechnungen in ihrer unverschlüsselten Speicherform. Die App verwendet dafür
   platzsparende Hardlinks, sofern das Dateisystem sie unterstützt.
-- `variant-photos/` – die optimierten Produktfotos in derselben geschützten
-  Speicherform.
+- `variant-photos/` – die optimierten, unverschlüsselten Produktfotos.
 
-Rechnungen selbst liegen im laufenden System verschlüsselt unter
-`data/invoices/`; Produktfotos unter `data/variant-photos/`. Beim Ersetzen
-oder Löschen eines Einkaufs beziehungsweise eines Produktfotos wird der
-zugehörige Anhang entfernt; die Änderung wird im Audit-Protokoll festgehalten.
+Rechnungen selbst liegen im laufenden System unverschlüsselt unter
+`data/invoices/`; Produktfotos unter `data/variant-photos/`. Beim Ersetzen oder
+Löschen eines Einkaufs beziehungsweise eines Produktfotos wird der zugehörige
+Anhang entfernt; die Änderung wird im Audit-Protokoll festgehalten.
 
 Alte Sicherungsordner werden nach der in `.env` gesetzten Anzahl von Tagen
 gelöscht.  Ergänzend ist ein Synology-Snapshot oder Hyper Backup des gesamten
 Projektordners empfehlenswert.
 
-Die Sicherungen enthalten bewusst keine Benutzerdatei. CSV-/ZIP-Exporte sind
-weiterhin möglich, werden aber nur auf ausdrücklichen Download im Browser
-unverschlüsselt erzeugt; behandle sie anschließend wie sensible Dateien. Im
-Reiter **Verwaltung** kann ein Band-Admin einen bestimmten Sicherungspunkt
+Die Sicherungen enthalten bewusst keine Benutzerdatei. Sicherungen sowie
+CSV-/ZIP-Exporte enthalten Klartext und müssen wie sensible Dateien behandelt
+werden. Im Reiter **Verwaltung** kann ein Band-Admin einen bestimmten
+Sicherungspunkt
 auswählen und ihn nach Eingabe des aktuellen Passworts sowie, falls
 eingerichtet, eines 2FA-Codes wiederherstellen. Vorher legt die App immer
 zusätzlich einen neuen Sicherungspunkt des aktuellen Zustands an. Dabei werden
@@ -731,7 +659,7 @@ nicht mehr auf dem NAS.
    und ergänzen:
 
    ```dotenv
-   MERCH_IMAGE_TAG=v0.3.0
+   MERCH_IMAGE_TAG=latest
    ```
 
 4. Das laufende Projekt stoppen, dann die Produktion-Datei
@@ -747,15 +675,13 @@ nicht mehr auf dem NAS.
    gleichen Ordner neu anlegen. Entscheidend ist, dass der Ordner `data/`
    unverändert am selben Ort bleibt; darin liegen Datenbank und Backups.
 
-Für eine spätere Version änderst du lediglich `MERCH_IMAGE_TAG`, zum Beispiel
-auf `v0.3.1`, und führst erneut `pull` und `up -d` aus. Das ist keine zweite
-Versionspflege: Es wählt nur bewusst aus, welches bereits veröffentlichte Image
-auf der Synology laufen soll. Die App-Version selbst ist bereits im gewählten
-Image hinterlegt. Ein Rücksprung auf die vorige Code-Version ist genauso
-möglich, indem du wieder den vorherigen Tag einträgst. Vor jeder Aktualisierung
-liegen bereits verschlüsselte Datenbank-Sicherungen nach jeder Buchung vor;
-zusätzlich ist ein Synology Snapshot oder Hyper Backup des Projektordners
-sinnvoll.
+Für spätere Versionen kann der oben dokumentierte DSM-Task `latest` laden und
+anhand der eingebetteten `APP_VERSION` nur bei einem echten Versionswechsel neu
+starten. Die `.env` muss dafür nicht bei jedem Release geändert werden. Für
+einen bewussten Rücksprung kann vorübergehend wieder ein konkreter Tag gesetzt
+und das Image manuell gestartet werden. Vor jeder Aktualisierung liegen
+automatische Klartext-Sicherungen nach jeder Buchung vor; zusätzlich ist ein
+Synology-Snapshot oder Hyper Backup des Projektordners sinnvoll.
 
 ### Private Repositories und die Update-Prüfung
 

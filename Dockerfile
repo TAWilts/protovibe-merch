@@ -10,10 +10,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY requirements.txt .
-# sqlcipher3 distributes self-contained wheels and, where a wheel is not
-# available, builds its bundled SQLCipher sources.  The compiler tools keep
-# that ARM/x86 fallback available without linking the old Debian SQLCipher 3
-# package (the application deliberately writes SQLCipher-4 files).
+# Transitional migration support: sqlcipher3 and its compiler fallback remain
+# in this release only so an existing SQLCipher installation can be read once
+# and converted to ordinary SQLite/files. New installations and normal runtime
+# use plaintext SQLite; remove these build tools after the migration window.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config \
     && CONAN_HOME=/tmp/sqlcipher-conan pip install --no-cache-dir -r requirements.txt \

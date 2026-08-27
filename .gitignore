@@ -1,8 +1,6 @@
 .env
 data/
 imports/
-scheduled-restart-secrets-disabled/*
-!scheduled-restart-secrets-disabled/.gitkeep
 __pycache__/
 *.py[cod]
 .pytest_cache/
