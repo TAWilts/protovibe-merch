@@ -1,0 +1,31 @@
+# Local development: MariaDB only. Backend and frontend run on the host with
+#   cd backend  && go run ./cmd/server
+#   cd frontend && npm run dev
+name: protovibe-merch-dev
+
+services:
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: merch
+      MARIADB_USER: merch
+      MARIADB_PASSWORD: merch
+      MARIADB_ROOT_PASSWORD: merch-root
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+      - --default-time-zone=+00:00
+    ports:
+      - "3307:3306"
+    volumes:
+      - dev-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  dev-db-data:
