@@ -617,6 +617,9 @@ body.product-slideshow-running { overflow: hidden; }
 .brand-login { margin-bottom: 32px; }
 .login-card h1 { margin: 0 0 7px; letter-spacing: -.04em; }
 .login-card > p { margin: 0 0 24px; color: var(--muted); }
+.login-reset-option { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+.login-reset-option h2 { margin: 0 0 6px; font-size: 1rem; }
+.login-reset-option p { margin: 0 0 12px; color: var(--muted); font-size: .9rem; }
 .stack-form { display: flex; flex-direction: column; gap: 15px; }
 
 .auth-page { min-height: calc(100vh - 66px); display: grid; place-items: center; padding-top: 18px; padding-bottom: 28px; }
@@ -742,10 +745,6 @@ body.product-slideshow-running { overflow: hidden; }
 .admin-message-card time { color: var(--muted); font-size: .72rem; white-space: nowrap; }
 .admin-message-sender { margin: 0 0 11px; color: var(--muted); font-size: .77rem; }
 .admin-message-body { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: .86rem; line-height: 1.48; }
-.database-security-area { border-color: rgba(105, 183, 255, .44); }
-.database-security-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
-.database-security-actions .admin-danger-confirmation > summary { border-color: rgba(105, 183, 255, .6); color: #d7edff; background: rgba(35, 77, 113, .32); }
-.database-security-actions .admin-danger-confirmation[open] > summary { border-color: #69b7ff; background: rgba(35, 77, 113, .55); }
 .warning-notice { border-color: rgba(255, 191, 96, .5); color: #ffe0a8; background: rgba(104, 71, 24, .31); }
 .users-table { min-width: 1060px; }
 .backups-table { min-width: 940px; }
@@ -795,7 +794,6 @@ body.product-slideshow-running { overflow: hidden; }
 .security-form .checkbox-label { display: flex; align-items: center; gap: 9px; color: #f6e6fa; }
 .security-form .checkbox-label input { width: auto; }
 .security-card .notice { margin-top: 20px; }
-.database-recovery-key { display: block; overflow-wrap: anywhere; margin: 20px 0; padding: 16px; border: 1px solid #9d6bab; border-radius: 10px; color: #fff1ff; background: #130e19; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.02rem; font-weight: 800; line-height: 1.55; letter-spacing: .08em; }
 .form-divider { margin: 0; color: var(--muted); font-size: .8rem; font-weight: 700; text-align: center; }
 .instruction-list { display: grid; gap: 12px; margin: 22px 0; padding-left: 23px; color: var(--muted); line-height: 1.5; }
 
@@ -881,7 +879,6 @@ body.product-slideshow-running { overflow: hidden; }
   .security-card { padding: 24px 19px; }
   .product-slideshow-collage { width: 100%; height: min(74dvh, 700px); min-height: 220px; }
   .product-slideshow-collage-copy { right: 4px; bottom: 4px; left: 4px; padding: 5px 6px; }
-  .database-recovery-key { font-size: .87rem; letter-spacing: .05em; }
   .metric-card { min-height: 95px; }
   .update-version-grid { grid-template-columns: 1fr; }
   .update-status-row { align-items: stretch; flex-direction: column; }

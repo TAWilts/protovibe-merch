@@ -49,6 +49,8 @@
   </article>
 </section>
 
+{% include "_email_settings.html" %}
+
 <section class="table-section admin-message-inbox system-support-inbox">
   <div class="section-heading"><div><p class="eyebrow">Support-Postfach</p><h2>Nachrichten an den Admin</h2><p>{{ admin_messages|length }} Nachricht(en), {{ admin_messages|rejectattr('is_resolved')|list|length }} offen.</p></div></div>
   {% if admin_messages %}

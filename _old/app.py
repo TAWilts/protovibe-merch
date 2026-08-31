@@ -12,7 +12,7 @@ file for the first version.  It makes it easy to inspect and change on a NAS:
   is deleted, which protects the accounting history.
 
 The app is deliberately designed for a small band inventory, not for a public
-shop.  Keep it inside the home network or behind a VPN; do not expose port 8088
+shop.  Keep it inside the home network or behind a VPN; do not expose port 8089
 directly to the public internet.
 """
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import csv
 import hashlib
 import io
@@ -42,7 +43,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.message import EmailMessage
 from functools import wraps
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from threading import Lock
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
@@ -78,8 +79,11 @@ from segno import helpers as segno_helpers
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 try:
+    # Kept only for the one-time conversion of installations created by older
+    # releases. All live and newly created databases use the standard sqlite3
+    # module below.
     from sqlcipher3 import dbapi2 as sqlcipher
-except ImportError:  # pragma: no cover - deployment configuration, not business rules.
+except ImportError:  # pragma: no cover - only relevant to legacy migration.
     sqlcipher = None
 
 
@@ -98,6 +102,10 @@ USERS_TABLE_DEFINITION_SQL = """(
     must_set_password INTEGER NOT NULL DEFAULT 0,
     setup_code_hash TEXT,
     setup_code_expires_at TEXT,
+    -- Only platform accounts may maintain this address. It is used for the
+    -- self-service password reset of a System-Admin, never rendered to Band
+    -- accounts and never copied into the audit log.
+    contact_email TEXT,
     -- TOTP secrets are encrypted with a key derived from SECRET_KEY.  Recovery
     -- codes are one-way hashes because they only need to be compared once.
     mfa_secret_encrypted TEXT,
@@ -170,6 +178,17 @@ CREATE TABLE IF NOT EXISTS smtp_notification_settings (
     updated_at TEXT,
     updated_by_user_id INTEGER,
     updated_by_username TEXT
+);
+
+-- Password reset codes are independent from account setup codes. Requesting
+-- one must never invalidate an existing System-Admin password or session.
+CREATE TABLE IF NOT EXISTS password_reset_challenges (
+    user_id INTEGER PRIMARY KEY,
+    code_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    failed_attempts INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- This single-row marker distinguishes a genuine legacy-owner migration from
@@ -582,6 +601,9 @@ PLATFORM_STAFF_ROLES = frozenset({"support_admin", "system_admin"})
 MFA_REQUIRED_ROLES = PLATFORM_STAFF_ROLES
 SYSTEM_ADMIN_MANAGED_ROLES = ("support_admin", "system_admin")
 SETUP_CODE_ALPHABET = string.ascii_uppercase + string.digits
+SYSTEM_ADMIN_PASSWORD_RESET_CODE_TTL_SECONDS = 20 * 60
+SYSTEM_ADMIN_PASSWORD_RESET_COOLDOWN_SECONDS = 15 * 60
+SYSTEM_ADMIN_PASSWORD_RESET_MAX_ATTEMPTS = 5
 SYNC_EVENT_METADATA_FIELDS = frozenset(
     {"client_event_id", "client_device_id", "client_actor_id", "client_created_at"}
 )
@@ -591,12 +613,9 @@ class SyncEventConflict(Exception):
     """A reused offline event ID describes a different transaction."""
 
 
-class DatabaseEncryptionError(RuntimeError):
-    """The on-disk encryption configuration is invalid or unavailable."""
+class LegacyEncryptionMigrationError(RuntimeError):
+    """An older SQLCipher installation could not be converted safely."""
 
-
-class DatabaseLockedError(DatabaseEncryptionError):
-    """A database connection was requested before the encrypted store was unlocked."""
 
 # ``is_received`` remains a useful, compact accounting flag.  The additional
 # state is only needed when a sale must be sent later: a shipment can be open,
@@ -929,29 +948,16 @@ UI_TRANSLATIONS: dict[str, dict[str, str]] = {
     },
 }
 
-# SQLCipher encrypts the complete SQLite files (including WAL pages).  The
-# generated 256-bit database key is never written to disk in plaintext.  It is
-# wrapped once with the administrator's unlock passphrase and once with a
-# separately generated recovery key.  SECRET_KEY deliberately remains outside
-# this mechanism: it continues to sign browser sessions and encrypt TOTP
-# secrets, but is not a database key.
-DATABASE_ENCRYPTION_METADATA_VERSION = 1
-DATABASE_ENCRYPTION_KEY_BYTES = 32
-DATABASE_ENCRYPTION_SCRYPT_N = 2**15
-DATABASE_ENCRYPTION_SCRYPT_R = 8
-DATABASE_ENCRYPTION_SCRYPT_P = 1
-DATABASE_ENCRYPTION_SALT_BYTES = 16
-DATABASE_ENCRYPTION_RECOVERY_PREFIX = "PVM-RK1"
-DATABASE_ENCRYPTION_RECOVERY_TOKEN_BYTES = 30
-DATABASE_ENCRYPTION_PENDING_RECOVERY_TTL_SECONDS = 15 * 60
-# A scheduled image update may carry one additional, short-lived wrapped copy
-# of the in-memory database key.  It is deliberately a separate sidecar, not
-# part of encryption.json, so normal backups never retain it.
-SCHEDULED_RESTART_UNLOCK_PASS_VERSION = 1
-SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX = "PVM-UP1-"
-SCHEDULED_RESTART_UNLOCK_SECRET_BYTES = 32
-SCHEDULED_RESTART_UNLOCK_MIN_TTL_SECONDS = 60
-SCHEDULED_RESTART_UNLOCK_MAX_TTL_SECONDS = 60 * 60
+# Releases up to v0.3.x stored both SQLite files and managed attachments with a
+# generated SQLCipher key.  These constants remain only so such installations
+# can be converted once, without losing data. New data is always plain SQLite
+# and ordinary PDF/JPEG files.
+LEGACY_DATABASE_ENCRYPTION_METADATA_VERSION = 1
+LEGACY_DATABASE_ENCRYPTION_KEY_BYTES = 32
+LEGACY_DATABASE_ENCRYPTION_SALT_BYTES = 16
+LEGACY_DATABASE_ENCRYPTION_RECOVERY_PREFIX = "PVM-RK1"
+LEGACY_DATABASE_ENCRYPTION_RECOVERY_TOKEN_BYTES = 30
+SQLITE_FILE_HEADER = b"SQLite format 3\x00"
 
 # These values are intentionally only used when a *new* article is created.
 # Existing articles can have completely different option groups (for example a
@@ -990,15 +996,6 @@ def display_version(version: str) -> str:
     return cleaned if cleaned.startswith("v") else f"v{cleaned}"
 
 
-def canonical_release_version(version: Any) -> str:
-    """Return one unambiguous release tag or reject values unsuitable for a grant."""
-
-    parsed = version_tuple(str(version))
-    if parsed is None:
-        raise ValueError("Die Zielversion muss dem Format vX.Y.Z entsprechen.")
-    return f"v{parsed[0]}.{parsed[1]}.{parsed[2]}"
-
-
 def environment_flag(name: str, default: bool = False) -> bool:
     """Read a deliberately small boolean setting from the process environment."""
 
@@ -1008,7 +1005,9 @@ def environment_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def smtp_notification_status(config: Any) -> dict[str, Any]:
+def smtp_notification_status(
+    config: Any, *, require_notification_recipient: bool = True
+) -> dict[str, Any]:
     """Return display-safe SMTP readiness without exposing credentials."""
 
     enabled = bool(config.get("EMAIL_NOTIFICATIONS_ENABLED", False))
@@ -1018,8 +1017,10 @@ def smtp_notification_status(config: Any) -> dict[str, Any]:
         "SMTP_USERNAME": str(config.get("SMTP_USERNAME", "") or "").strip(),
         "SMTP_PASSWORD": str(config.get("SMTP_PASSWORD", "") or "").strip(),
         "SMTP_FROM": str(config.get("SMTP_FROM", "") or "").strip(),
-        "ADMIN_NOTIFICATION_EMAIL": str(config.get("ADMIN_NOTIFICATION_EMAIL", "") or "").strip(),
     }
+    notification_recipient = str(config.get("ADMIN_NOTIFICATION_EMAIL", "") or "").strip()
+    if require_notification_recipient:
+        required["ADMIN_NOTIFICATION_EMAIL"] = notification_recipient
     missing = [name for name, value in required.items() if not value]
     errors: list[str] = []
     if security not in {"ssl", "starttls"}:
@@ -1046,7 +1047,7 @@ def smtp_notification_status(config: Any) -> dict[str, Any]:
         "host": required["SMTP_HOST"],
         "port": port,
         "security": security,
-        "recipient": required["ADMIN_NOTIFICATION_EMAIL"],
+        "recipient": notification_recipient,
         "timeout_seconds": timeout_seconds,
         "source": str(config.get("_smtp_source", "environment")),
         "password_configured": bool(config.get("_smtp_password_configured", required["SMTP_PASSWORD"])),
@@ -1136,10 +1137,11 @@ def smtp_notification_settings_public(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
+def send_smtp_email(config: Any, *, recipient: str, subject: str, body: str) -> None:
     """Send one plain-text admin notification through configured TLS SMTP."""
 
-    status = smtp_notification_status(config)
+    recipient = valid_email_address(recipient, field_name="Empfängeradresse")
+    status = smtp_notification_status(config, require_notification_recipient=False)
     if not status["ready"]:
         details = [*status["missing"], *status["errors"]]
         raise ValueError("SMTP-Benachrichtigung ist nicht vollständig konfiguriert: " + ", ".join(details))
@@ -1147,7 +1149,7 @@ def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
     password = str(config["SMTP_PASSWORD"])
     message = EmailMessage()
     message["From"] = str(config["SMTP_FROM"]).strip()
-    message["To"] = str(config["ADMIN_NOTIFICATION_EMAIL"]).strip()
+    message["To"] = recipient
     message["Subject"] = " ".join(str(subject).splitlines()).strip()
     message.set_content(str(body))
 
@@ -1167,6 +1169,16 @@ def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
         client.send_message(message)
 
 
+def send_smtp_notification(config: Any, *, subject: str, body: str) -> None:
+    """Send one plain-text notification to the configured shared inbox."""
+
+    status = smtp_notification_status(config)
+    if not status["ready"]:
+        details = [*status["missing"], *status["errors"]]
+        raise ValueError("SMTP-Benachrichtigung ist nicht vollständig konfiguriert: " + ", ".join(details))
+    send_smtp_email(config, recipient=status["recipient"], subject=subject, body=body)
+
+
 def send_admin_message_email(config: Any, message: dict[str, Any]) -> None:
     """Format a persisted internal message as a concise email notification."""
 
@@ -1183,6 +1195,31 @@ def send_admin_message_email(config: Any, message: dict[str, Any]) -> None:
             f"Betreff: {message['subject']}\n\n"
             f"{message['body']}\n\n"
             "Die Nachricht bleibt zusätzlich dauerhaft im Admin-Tab des Merch Managers erhalten."
+        ),
+    )
+
+
+def send_system_admin_password_reset_email(
+    config: Any,
+    *,
+    recipient: str,
+    username: str,
+    reset_code: str,
+    expires_at: str,
+) -> None:
+    """Deliver a one-time reset code without ever mailing a lasting password."""
+
+    send_smtp_email(
+        config,
+        recipient=recipient,
+        subject="[Merch Manager] Passwort zurücksetzen",
+        body=(
+            f"Für das System-Admin-Konto {username} wurde ein Passwort-Reset angefordert.\n\n"
+            "Einmalcode:\n"
+            f"{reset_code}\n\n"
+            f"Der Code ist bis {expires_at} gültig und kann nur einmal verwendet werden. "
+            "Danach legst du selbst ein neues Passwort fest. Falls du den Reset nicht angefordert hast, "
+            "kannst du diese E-Mail ignorieren; dein bisheriges Passwort bleibt unverändert."
         ),
     )
 
@@ -1477,6 +1514,10 @@ def user_capabilities(user: dict[str, Any] | None) -> dict[str, Any] | None:
     user["can_access_band_administration"] = role == "band_admin"
     user["can_access_system_administration"] = role in PLATFORM_STAFF_ROLES
     user["can_manage_platform_staff"] = role == "system_admin"
+    # Every band role may contact the platform team, including Band-Admins.
+    # The capability only exposes the outgoing message form; it never grants
+    # access to the platform inbox, SMTP configuration or profile email.
+    user["can_contact_support"] = role in {"seller", "member", "manager", "band_admin"}
     # Until the system-operation split is specified, the migrated local owner
     # retains the existing update workflow. Platform roles gain no implicit
     # access to this band's data or deployment controls.
@@ -1623,6 +1664,44 @@ def is_setup_code_current(user: sqlite3.Row | dict[str, Any]) -> bool:
     if expiry.tzinfo is None:
         expiry = expiry.replace(tzinfo=timezone.utc)
     return expiry > datetime.now(timezone.utc)
+
+
+def utc_timestamp_is_current(value: Any) -> bool:
+    """Return whether an ISO timestamp is still in the future."""
+
+    if not value:
+        return False
+    try:
+        expiry = datetime.fromisoformat(str(value))
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    return expiry > datetime.now(timezone.utc)
+
+
+def password_reset_challenge_is_current(challenge: sqlite3.Row | dict[str, Any]) -> bool:
+    return utc_timestamp_is_current(challenge["expires_at"])
+
+
+def password_reset_challenge_is_cooling_down(challenge: sqlite3.Row | dict[str, Any]) -> bool:
+    """Throttle repeat delivery without retaining client IP addresses."""
+
+    try:
+        requested_at = datetime.fromisoformat(str(challenge["requested_at"]))
+    except (TypeError, ValueError):
+        return False
+    if requested_at.tzinfo is None:
+        requested_at = requested_at.replace(tzinfo=timezone.utc)
+    return requested_at > datetime.now(timezone.utc) - timedelta(
+        seconds=SYSTEM_ADMIN_PASSWORD_RESET_COOLDOWN_SECONDS
+    )
+
+
+def password_reset_challenge_expiry() -> str:
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=SYSTEM_ADMIN_PASSWORD_RESET_CODE_TTL_SECONDS)
+    ).replace(microsecond=0).isoformat()
 
 
 def mfa_fernet_for_secret(secret_key: str) -> Fernet:
@@ -1950,6 +2029,8 @@ def payment_qr_settings_from_form(form: Any) -> dict[str, str]:
         if paypal_me_username is None
         else normalise_paypal_me_username(paypal_me_username)
     )
+
+
     account_holder = normalise_payment_qr_text(
         form.get("bank_account_holder"),
         field_name="Kontoinhaber",
@@ -2229,37 +2310,21 @@ def invoice_storage_path(
     directory: str | Path | None = None,
     app: Flask | None = None,
 ) -> Path | None:
-    """Resolve a managed invoice path without allowing traversal or plaintext leakage.
-
-    Database rows keep the original PDF/image filename.  In an encrypted
-    installation the physical file has an additional ``.enc`` suffix, so rows
-    remain independent of the storage format.
-    """
+    """Resolve a managed invoice path without allowing path traversal."""
 
     if not filename:
         return None
     safe_name = Path(str(filename)).name
     if safe_name != str(filename) or Path(safe_name).suffix.lower() not in MANAGED_ATTACHMENT_FILE_EXTENSIONS:
         return None
-    configured_app = app
-    if configured_app is None and has_app_context():
-        configured_app = current_app._get_current_object()
     if directory is None:
+        configured_app = app
+        if configured_app is None and has_app_context():
+            configured_app = current_app._get_current_object()
         if configured_app is None:
             raise RuntimeError("Für den Rechnungs-Speicher fehlt die Anwendungskonfiguration.")
         directory = configured_app.config["INVOICE_UPLOAD_DIR"]
-    physical_name = f"{safe_name}.enc" if database_encryption_enabled(configured_app) else safe_name
-    return Path(directory) / physical_name
-
-
-def invoice_file_fernet(app: Flask | None = None) -> Fernet:
-    """Derive a separate attachment key from the in-memory database key."""
-
-    database_key = active_database_key(app)
-    attachment_key = base64.urlsafe_b64encode(
-        hashlib.sha256(b"protovibe-merch:invoice-files:" + database_key).digest()
-    )
-    return Fernet(attachment_key)
+    return Path(directory) / safe_name
 
 
 def store_invoice_bytes(
@@ -2269,19 +2334,15 @@ def store_invoice_bytes(
     directory: str | Path | None = None,
     app: Flask | None = None,
 ) -> Path:
-    """Persist an invoice, encrypting it whenever the live database is encrypted."""
+    """Persist an invoice as an ordinary, unencrypted file."""
 
     target = invoice_storage_path(filename, directory=directory, app=app)
     if target is None:
         raise ValueError("Rechnungsdatei konnte nicht gespeichert werden.")
-    configured_app = app
-    if configured_app is None and has_app_context():
-        configured_app = current_app._get_current_object()
-    payload = invoice_file_fernet(configured_app).encrypt(content) if database_encryption_enabled(configured_app) else content
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         with target.open("xb") as output:
-            output.write(payload)
+            output.write(content)
             output.flush()
             os.fsync(output.fileno())
     except Exception:
@@ -2297,14 +2358,10 @@ def read_invoice_bytes(filename: str, *, app: Flask | None = None) -> bytes | No
     if target is None or not target.is_file():
         return None
     try:
-        content = target.read_bytes()
-        configured_app = app
-        if configured_app is None and has_app_context():
-            configured_app = current_app._get_current_object()
-        return invoice_file_fernet(configured_app).decrypt(content) if database_encryption_enabled(configured_app) else content
-    except (OSError, InvalidToken) as exc:
-        current_app.logger.error("Could not read encrypted invoice attachment: %s", filename)
-        raise ValueError("Die gespeicherte Rechnung kann nicht entschlüsselt werden.") from exc
+        return target.read_bytes()
+    except OSError as exc:
+        current_app.logger.error("Could not read invoice attachment: %s", filename)
+        raise ValueError("Die gespeicherte Rechnung kann nicht gelesen werden.") from exc
 
 
 def invoice_mimetype(filename: str) -> str:
@@ -2361,25 +2418,14 @@ def variant_photo_storage_path(
     safe_name = Path(str(filename)).name
     if safe_name != str(filename) or Path(safe_name).suffix.lower() != ".jpg":
         return None
-    configured_app = app
-    if configured_app is None and has_app_context():
-        configured_app = current_app._get_current_object()
     if directory is None:
+        configured_app = app
+        if configured_app is None and has_app_context():
+            configured_app = current_app._get_current_object()
         if configured_app is None:
             raise RuntimeError("Für den Produktfoto-Speicher fehlt die Anwendungskonfiguration.")
         directory = configured_app.config["VARIANT_PHOTO_UPLOAD_DIR"]
-    physical_name = f"{safe_name}.enc" if database_encryption_enabled(configured_app) else safe_name
-    return Path(directory) / physical_name
-
-
-def variant_photo_file_fernet(app: Flask | None = None) -> Fernet:
-    """Derive a separate key for filesystem product-photo attachments."""
-
-    database_key = active_database_key(app)
-    attachment_key = base64.urlsafe_b64encode(
-        hashlib.sha256(b"protovibe-merch:variant-photo-files:" + database_key).digest()
-    )
-    return Fernet(attachment_key)
+    return Path(directory) / safe_name
 
 
 def store_variant_photo_bytes(
@@ -2394,18 +2440,10 @@ def store_variant_photo_bytes(
     target = variant_photo_storage_path(filename, directory=directory, app=app)
     if target is None:
         raise ValueError("Produktfoto konnte nicht gespeichert werden.")
-    configured_app = app
-    if configured_app is None and has_app_context():
-        configured_app = current_app._get_current_object()
-    payload = (
-        variant_photo_file_fernet(configured_app).encrypt(content)
-        if database_encryption_enabled(configured_app)
-        else content
-    )
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
         with target.open("xb") as output:
-            output.write(payload)
+            output.write(content)
             output.flush()
             os.fsync(output.fileno())
     except Exception:
@@ -2421,18 +2459,10 @@ def read_variant_photo_bytes(filename: str, *, app: Flask | None = None) -> byte
     if target is None or not target.is_file():
         return None
     try:
-        content = target.read_bytes()
-        configured_app = app
-        if configured_app is None and has_app_context():
-            configured_app = current_app._get_current_object()
-        return (
-            variant_photo_file_fernet(configured_app).decrypt(content)
-            if database_encryption_enabled(configured_app)
-            else content
-        )
-    except (OSError, InvalidToken) as exc:
+        return target.read_bytes()
+    except OSError as exc:
         current_app.logger.error("Could not read product photo attachment: %s", filename)
-        raise ValueError("Das gespeicherte Produktfoto kann nicht entschlüsselt werden.") from exc
+        raise ValueError("Das gespeicherte Produktfoto kann nicht gelesen werden.") from exc
 
 
 def delete_variant_photo_file(filename: str | None, *, app: Flask | None = None) -> None:
@@ -2766,147 +2796,35 @@ def purchase_items_from_payload(
     return purchased_on, items, cart_invoice_files
 
 
-def database_encryption_enabled(app: Flask | None = None) -> bool:
-    """Return whether this app instance must use SQLCipher for live data."""
-
-    configured_app = app
-    if configured_app is None and has_app_context():
-        configured_app = current_app._get_current_object()
-    return bool(configured_app and configured_app.config.get("DATABASE_ENCRYPTION_ENABLED", False))
-
-
 def database_encryption_metadata_path(app: Flask) -> Path:
-    """Return the small non-secret envelope beside the encrypted databases."""
+    """Return the legacy key envelope used only during one-time conversion."""
 
     return Path(app.config["DATABASE_ENCRYPTION_METADATA"])
 
 
-def scheduled_restart_unlock_pass_path(app: Flask) -> Path:
-    """Return the one-use update grant beside, but separate from, encryption metadata."""
+def legacy_scheduled_restart_unlock_pass_path(app: Flask) -> Path:
+    """Locate an obsolete restart grant so the converter can remove it."""
 
     return database_encryption_metadata_path(app).with_name("scheduled-restart-unlock.json")
 
 
-def _configured_scheduled_restart_secret_path(app: Flask, config_name: str) -> Path | None:
-    """Read a mounted secret-file location without allowing it inside persistent data."""
+def remove_legacy_scheduled_restart_artifacts(app: Flask) -> None:
+    """Remove pending and formerly claimed grants from the retired mechanism."""
 
-    configured = str(app.config.get(config_name, "") or "").strip()
-    if not configured:
-        return None
-    path = Path(configured)
-    try:
-        data_directory = database_encryption_metadata_path(app).parent.resolve()
-        resolved_path = path.resolve()
-    except OSError as exc:
-        raise DatabaseEncryptionError("Die Geheimdatei für einen geplanten Neustart kann nicht geprüft werden.") from exc
-    try:
-        resolved_path.relative_to(data_directory)
-    except ValueError:
-        return path
-    raise DatabaseEncryptionError(
-        "Die Geheimdatei für einen geplanten Neustart darf nicht im dauerhaften Datenordner liegen."
-    )
-
-
-def _read_scheduled_restart_secret_file(app: Flask, config_name: str, *, label: str) -> str | None:
-    """Read one small root-only scheduler secret without ever placing it in config."""
-
-    path = _configured_scheduled_restart_secret_path(app, config_name)
-    if path is None:
-        return None
-    try:
-        details = path.stat()
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise DatabaseEncryptionError(f"Die {label}-Datei kann nicht gelesen werden.") from exc
-    if not path.is_file() or details.st_size <= 0 or details.st_size > 512:
-        raise DatabaseEncryptionError(f"Die {label}-Datei hat kein zulässiges Format.")
-    # NAS Docker deployments are Linux-based.  Windows test environments do
-    # not expose equivalent POSIX permission bits, so the owner-only check is
-    # intentionally conditional there.
-    if os.name != "nt" and details.st_mode & 0o077:
-        raise DatabaseEncryptionError(f"Die {label}-Datei muss ausschließlich für ihren Besitzer lesbar sein.")
-    try:
-        value = path.read_text(encoding="utf-8").rstrip("\r\n")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise DatabaseEncryptionError(f"Die {label}-Datei kann nicht gelesen werden.") from exc
-    if not value or "\x00" in value or any(character.isspace() for character in value):
-        raise DatabaseEncryptionError(f"Die {label}-Datei hat kein zulässiges Format.")
-    return value
-
-
-def _scheduled_restart_authorization_is_valid(app: Flask, authorization: Any) -> bool:
-    """Authenticate the scheduler with its separate, mounted high-entropy token."""
-
-    try:
-        expected = _read_scheduled_restart_secret_file(
-            app,
-            "SCHEDULED_RESTART_AUTH_TOKEN_FILE",
-            label="Autorisierungs",
-        )
-    except DatabaseEncryptionError:
-        # Do not disclose whether the feature is configured, or why its local
-        # secret was rejected, to a network caller.
-        app.logger.warning("Scheduled restart authorization secret is unavailable or unsafe")
-        return False
-    if expected is None or len(expected) < 32:
-        return False
-    bearer_prefix = "Bearer "
-    provided = str(authorization or "")
-    if not provided.startswith(bearer_prefix):
-        return False
-    return secrets.compare_digest(expected, provided[len(bearer_prefix):])
-
-
-def _normalised_scheduled_restart_unlock_secret(value: Any) -> str:
-    """Validate the printable, per-update secret returned to the scheduler once."""
-
-    secret = str(value or "")
-    if not secret.startswith(SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX):
-        raise ValueError("Der Einmal-Entsperrcode hat kein gültiges Format.")
-    token = secret[len(SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX):]
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
-        raise ValueError("Der Einmal-Entsperrcode hat kein gültiges Format.")
-    try:
-        decoded = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-    except (ValueError, UnicodeEncodeError, binascii.Error) as exc:
-        raise ValueError("Der Einmal-Entsperrcode hat kein gültiges Format.") from exc
-    canonical_token = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
-    if len(decoded) != SCHEDULED_RESTART_UNLOCK_SECRET_BYTES or not secrets.compare_digest(token, canonical_token):
-        raise ValueError("Der Einmal-Entsperrcode hat kein gültiges Format.")
-    return f"{SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX}{canonical_token}"
-
-
-def generate_scheduled_restart_unlock_secret() -> str:
-    """Create the second half of an update grant; it is never persisted by the app."""
-
-    token = base64.urlsafe_b64encode(secrets.token_bytes(SCHEDULED_RESTART_UNLOCK_SECRET_BYTES)).decode("ascii")
-    return f"{SCHEDULED_RESTART_UNLOCK_SECRET_PREFIX}{token.rstrip('=')}"
-
-
-def _scheduled_restart_unlock_ttl_seconds(app: Flask) -> int:
-    """Keep a scheduler-issued unlock window intentionally short and bounded."""
-
-    try:
-        ttl = int(app.config["SCHEDULED_RESTART_UNLOCK_TTL_SECONDS"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError("SCHEDULED_RESTART_UNLOCK_TTL_SECONDS muss eine ganze Zahl sein.") from exc
-    if not SCHEDULED_RESTART_UNLOCK_MIN_TTL_SECONDS <= ttl <= SCHEDULED_RESTART_UNLOCK_MAX_TTL_SECONDS:
-        raise RuntimeError(
-            "SCHEDULED_RESTART_UNLOCK_TTL_SECONDS muss zwischen "
-            f"{SCHEDULED_RESTART_UNLOCK_MIN_TTL_SECONDS} und {SCHEDULED_RESTART_UNLOCK_MAX_TTL_SECONDS} liegen."
-        )
-    return ttl
+    pending = legacy_scheduled_restart_unlock_pass_path(app)
+    candidates = [pending, *pending.parent.glob(f".{pending.name}.*.claimed")]
+    for candidate in candidates:
+        if candidate.is_file() or candidate.is_symlink():
+            _durable_remove_migration_path(candidate)
 
 
 def _decode_encryption_base64(value: Any, *, field: str) -> bytes:
     try:
         decoded = base64.urlsafe_b64decode(str(value).encode("ascii"))
     except (ValueError, UnicodeEncodeError, binascii.Error) as exc:
-        raise DatabaseEncryptionError(f"Die Verschlüsselungs-Konfiguration enthält ein ungültiges Feld: {field}.") from exc
+        raise LegacyEncryptionMigrationError(f"Die Verschlüsselungs-Konfiguration enthält ein ungültiges Feld: {field}.") from exc
     if not decoded:
-        raise DatabaseEncryptionError(f"Die Verschlüsselungs-Konfiguration enthält ein leeres Feld: {field}.")
+        raise LegacyEncryptionMigrationError(f"Die Verschlüsselungs-Konfiguration enthält ein leeres Feld: {field}.")
     return decoded
 
 
@@ -2919,13 +2837,13 @@ def _encryption_kdf_parameters(envelope: dict[str, Any]) -> tuple[bytes, int, in
         r = int(envelope["r"])
         p = int(envelope["p"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration ist unvollständig.") from exc
-    if len(salt) != DATABASE_ENCRYPTION_SALT_BYTES:
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration enthält einen ungültigen Salt.")
+        raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration ist unvollständig.") from exc
+    if len(salt) != LEGACY_DATABASE_ENCRYPTION_SALT_BYTES:
+        raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration enthält einen ungültigen Salt.")
     # Protect the unlock route from a tampered metadata file requesting an
     # unreasonable amount of memory or CPU time.
     if n < 2**14 or n > 2**20 or n & (n - 1) or r < 1 or r > 32 or p < 1 or p > 8:
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration enthält ungültige KDF-Parameter.")
+        raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration enthält ungültige KDF-Parameter.")
     return salt, n, r, p
 
 
@@ -2936,47 +2854,23 @@ def _derive_wrapping_key(secret: str, envelope: dict[str, Any]) -> bytes:
             Scrypt(salt=salt, length=32, n=n, r=r, p=p).derive(secret.encode("utf-8"))
         )
     except (TypeError, ValueError) as exc:
-        raise DatabaseEncryptionError("Der Datenbankschlüssel konnte nicht abgeleitet werden.") from exc
-
-
-def _wrap_database_key(database_key: bytes, secret: str) -> dict[str, Any]:
-    salt = secrets.token_bytes(DATABASE_ENCRYPTION_SALT_BYTES)
-    envelope: dict[str, Any] = {
-        "kdf": "scrypt",
-        "n": DATABASE_ENCRYPTION_SCRYPT_N,
-        "r": DATABASE_ENCRYPTION_SCRYPT_R,
-        "p": DATABASE_ENCRYPTION_SCRYPT_P,
-        "salt": base64.urlsafe_b64encode(salt).decode("ascii"),
-    }
-    envelope["wrapped_key"] = Fernet(_derive_wrapping_key(secret, envelope)).encrypt(database_key).decode("ascii")
-    return envelope
+        raise LegacyEncryptionMigrationError("Der Datenbankschlüssel konnte nicht abgeleitet werden.") from exc
 
 
 def _unwrap_database_key(envelope: dict[str, Any], secret: str) -> bytes:
     try:
         wrapped_key = str(envelope["wrapped_key"]).encode("ascii")
         database_key = Fernet(_derive_wrapping_key(secret, envelope)).decrypt(wrapped_key)
-    except (KeyError, InvalidToken, UnicodeEncodeError, DatabaseEncryptionError) as exc:
+    except (KeyError, InvalidToken, UnicodeEncodeError, LegacyEncryptionMigrationError) as exc:
         raise ValueError("Der Entsperrcode ist nicht korrekt.") from exc
-    if len(database_key) != DATABASE_ENCRYPTION_KEY_BYTES:
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration enthält keinen gültigen Datenbankschlüssel.")
+    if len(database_key) != LEGACY_DATABASE_ENCRYPTION_KEY_BYTES:
+        raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration enthält keinen gültigen Datenbankschlüssel.")
     return database_key
-
-
-def validate_database_passphrase(value: Any) -> str:
-    """Accept a strong, deliberately separate local database passphrase."""
-
-    passphrase = str(value or "")
-    if passphrase != passphrase.strip():
-        raise ValueError("Die Datenbank-Passphrase darf nicht mit Leerzeichen beginnen oder enden.")
-    if len(passphrase) < 12:
-        raise ValueError("Die Datenbank-Passphrase muss mindestens 12 Zeichen lang sein.")
-    return passphrase
 
 
 def _normalised_recovery_key(value: Any) -> str:
     compact = re.sub(r"[\s-]+", "", str(value or "").upper())
-    prefix = re.sub(r"-", "", DATABASE_ENCRYPTION_RECOVERY_PREFIX)
+    prefix = re.sub(r"-", "", LEGACY_DATABASE_ENCRYPTION_RECOVERY_PREFIX)
     if not compact.startswith(prefix):
         raise ValueError("Der Wiederherstellungsschlüssel hat kein gültiges Format.")
     token = compact[len(prefix):]
@@ -2986,33 +2880,12 @@ def _normalised_recovery_key(value: Any) -> str:
         decoded = base64.b32decode(token + "=" * (-len(token) % 8), casefold=True)
     except (ValueError, UnicodeEncodeError, binascii.Error) as exc:
         raise ValueError("Der Wiederherstellungsschlüssel hat kein gültiges Format.") from exc
-    if len(decoded) != DATABASE_ENCRYPTION_RECOVERY_TOKEN_BYTES:
+    if len(decoded) != LEGACY_DATABASE_ENCRYPTION_RECOVERY_TOKEN_BYTES:
         raise ValueError("Der Wiederherstellungsschlüssel hat kein gültiges Format.")
     return prefix + token
 
 
-def generate_database_recovery_key() -> str:
-    """Create a printable high-entropy recovery key; never persist it in plaintext."""
-
-    token = base64.b32encode(secrets.token_bytes(DATABASE_ENCRYPTION_RECOVERY_TOKEN_BYTES)).decode("ascii").rstrip("=")
-    groups = "-".join(token[index:index + 5] for index in range(0, len(token), 5))
-    return f"{DATABASE_ENCRYPTION_RECOVERY_PREFIX}-{groups}"
-
-
-def new_database_encryption_metadata(passphrase: str, recovery_key: str, database_key: bytes) -> dict[str, Any]:
-    """Create the only persistent key metadata; it contains no usable clear-text key."""
-
-    return {
-        "version": DATABASE_ENCRYPTION_METADATA_VERSION,
-        "cipher": "sqlcipher-4",
-        "created_at": utc_now(),
-        "databases_ready": False,
-        "passphrase": _wrap_database_key(database_key, passphrase),
-        "recovery": _wrap_database_key(database_key, _normalised_recovery_key(recovery_key)),
-    }
-
-
-def load_database_encryption_metadata(app: Flask) -> dict[str, Any] | None:
+def load_legacy_database_encryption_metadata(app: Flask) -> dict[str, Any] | None:
     """Read and sanity-check the non-secret encryption envelope."""
 
     metadata_path = database_encryption_metadata_path(app)
@@ -3021,25 +2894,53 @@ def load_database_encryption_metadata(app: Flask) -> dict[str, Any] | None:
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration kann nicht gelesen werden.") from exc
-    if not isinstance(metadata, dict) or metadata.get("version") != DATABASE_ENCRYPTION_METADATA_VERSION:
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration hat eine nicht unterstützte Version.")
+        raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration kann nicht gelesen werden.") from exc
+    if not isinstance(metadata, dict) or metadata.get("version") != LEGACY_DATABASE_ENCRYPTION_METADATA_VERSION:
+        raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration hat eine nicht unterstützte Version.")
     if metadata.get("cipher") != "sqlcipher-4":
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration verwendet kein unterstütztes Datenbankformat.")
+        raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration verwendet kein unterstütztes Datenbankformat.")
     for name in ("passphrase", "recovery"):
         envelope = metadata.get(name)
         if not isinstance(envelope, dict):
-            raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration ist unvollständig.")
+            raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration ist unvollständig.")
         _encryption_kdf_parameters(envelope)
         if not isinstance(envelope.get("wrapped_key"), str):
-            raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration ist unvollständig.")
+            raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration ist unvollständig.")
     if not isinstance(metadata.get("databases_ready"), bool):
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration ist unvollständig.")
+        raise LegacyEncryptionMigrationError("Die Verschlüsselungs-Konfiguration ist unvollständig.")
     return metadata
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Persist directory-entry changes on POSIX filesystems after a rename."""
+
+    if os.name == "nt":
+        return
+    try:
+        descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise LegacyEncryptionMigrationError(
+            f"Der Migrationsordner {directory.name} konnte nicht sicher synchronisiert werden."
+        ) from exc
+
+
+def _durable_replace(source: Path, target: Path) -> None:
+    """Atomically replace a migration target and persist both directory entries."""
+
+    source_parent = source.parent
+    target_parent = target.parent
+    os.replace(source, target)
+    _fsync_directory(source_parent)
+    if target_parent != source_parent:
+        _fsync_directory(target_parent)
+
+
 def _write_owner_only_json(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically write a small security envelope with conservative file permissions."""
+    """Atomically write a small JSON document with conservative file permissions."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -3051,6 +2952,7 @@ def _write_owner_only_json(path: Path, payload: dict[str, Any]) -> None:
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
+        _fsync_directory(path.parent)
         try:
             os.chmod(path, 0o600)
         except OSError:
@@ -3061,259 +2963,17 @@ def _write_owner_only_json(path: Path, payload: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def write_database_encryption_metadata(app: Flask, metadata: dict[str, Any]) -> None:
-    """Atomically persist the normal wrapped key envelope with owner-only permissions."""
-
-    _write_owner_only_json(database_encryption_metadata_path(app), metadata)
-
-
-def _parse_scheduled_restart_unlock_timestamp(value: Any, *, field: str) -> datetime:
-    """Parse an explicitly UTC-aware timestamp from a short-lived update grant."""
-
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError) as exc:
-        raise DatabaseEncryptionError(f"Der Einmal-Entsperrpass enthält kein gültiges Feld: {field}.") from exc
-    if parsed.tzinfo is None:
-        raise DatabaseEncryptionError(f"Der Einmal-Entsperrpass enthält kein gültiges Feld: {field}.")
-    return parsed.astimezone(timezone.utc)
-
-
-def _load_scheduled_restart_unlock_pass_from_path(path: Path) -> dict[str, Any] | None:
-    """Read and strictly validate a pending update grant without attempting an unlock."""
-
-    if not path.is_file():
-        return None
-    try:
-        if path.stat().st_size <= 0 or path.stat().st_size > 16 * 1024:
-            raise DatabaseEncryptionError("Der Einmal-Entsperrpass hat keine zulässige Größe.")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise DatabaseEncryptionError("Der Einmal-Entsperrpass kann nicht gelesen werden.") from exc
-    if not isinstance(payload, dict) or payload.get("version") != SCHEDULED_RESTART_UNLOCK_PASS_VERSION:
-        raise DatabaseEncryptionError("Der Einmal-Entsperrpass hat eine nicht unterstützte Version.")
-    if payload.get("purpose") != "scheduled-update-unlock":
-        raise DatabaseEncryptionError("Der Einmal-Entsperrpass hat keinen zulässigen Zweck.")
-    try:
-        uuid.UUID(str(payload["grant_id"]))
-        target_version = canonical_release_version(payload["target_app_version"])
-    except (KeyError, ValueError, AttributeError) as exc:
-        raise DatabaseEncryptionError("Der Einmal-Entsperrpass ist unvollständig.") from exc
-    if payload.get("target_app_version") != target_version:
-        raise DatabaseEncryptionError("Der Einmal-Entsperrpass enthält keine eindeutige Zielversion.")
-    issued_at = _parse_scheduled_restart_unlock_timestamp(payload.get("issued_at"), field="issued_at")
-    expires_at = _parse_scheduled_restart_unlock_timestamp(payload.get("expires_at"), field="expires_at")
-    if expires_at <= issued_at:
-        raise DatabaseEncryptionError("Der Einmal-Entsperrpass enthält keine gültige Gültigkeitsdauer.")
-    envelope = payload.get("envelope")
-    if not isinstance(envelope, dict):
-        raise DatabaseEncryptionError("Der Einmal-Entsperrpass ist unvollständig.")
-    _encryption_kdf_parameters(envelope)
-    if not isinstance(envelope.get("wrapped_key"), str):
-        raise DatabaseEncryptionError("Der Einmal-Entsperrpass ist unvollständig.")
-    return payload
-
-
-def load_scheduled_restart_unlock_pass(app: Flask) -> dict[str, Any] | None:
-    """Load the optional, transient update grant without putting it into backups."""
-
-    return _load_scheduled_restart_unlock_pass_from_path(scheduled_restart_unlock_pass_path(app))
-
-
-def _scheduled_restart_unlock_pass_targets_current_app(app: Flask, payload: dict[str, Any]) -> bool:
-    """Only the exact next release may consume a grant issued by the old release."""
-
-    target_version = canonical_release_version(payload["target_app_version"])
-    current_version = canonical_release_version(app.config["APP_VERSION"])
-    return secrets.compare_digest(target_version, current_version)
-
-
-def create_scheduled_restart_unlock_pass(app: Flask, target_version: Any) -> str:
-    """Create one short-lived key envelope for one different, planned release start."""
-
-    if database_encryption_state(app) != "unlocked":
-        raise DatabaseLockedError("Die Datenbank muss vor dem geplanten Neustart entsperrt sein.")
-    target = canonical_release_version(target_version)
-    current = canonical_release_version(app.config["APP_VERSION"])
-    if secrets.compare_digest(target, current):
-        raise ValueError("Der Einmal-Entsperrpass ist nur für ein anderes Release-Image möglich.")
-    unlock_secret = generate_scheduled_restart_unlock_secret()
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    expires_at = now + timedelta(seconds=_scheduled_restart_unlock_ttl_seconds(app))
-    payload = {
-        "version": SCHEDULED_RESTART_UNLOCK_PASS_VERSION,
-        "purpose": "scheduled-update-unlock",
-        "grant_id": str(uuid.uuid4()),
-        "issued_at": now.isoformat(),
-        "expires_at": expires_at.isoformat(),
-        "target_app_version": target,
-        "envelope": _wrap_database_key(active_database_key(app), unlock_secret),
-    }
-    _write_owner_only_json(scheduled_restart_unlock_pass_path(app), payload)
-    return unlock_secret
-
-
-def _claim_scheduled_restart_unlock_pass(app: Flask) -> Path | None:
-    """Atomically move the pending file so no second process can consume it too."""
-
-    pending = scheduled_restart_unlock_pass_path(app)
-    claimed = pending.with_name(f".{pending.name}.{uuid.uuid4().hex}.claimed")
-    try:
-        os.replace(pending, claimed)
-    except FileNotFoundError:
-        return None
-    return claimed
-
-
-def invalidate_all_user_sessions_after_scheduled_restart_unlock(app: Flask, *, target_version: str) -> None:
-    """Ensure automatic database unlock never restores an already authenticated browser."""
-
-    connection = db_connect(app.config["USERS_DATABASE"], app=app)
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute("UPDATE users SET session_version = session_version + 1")
-        connection.execute(
-            """
-            INSERT INTO audit_log (
-                created_at, user_id, user_username, action, entity_type, entity_id, details_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                utc_now(),
-                None,
-                None,
-                "scheduled_restart_unlock",
-                "database_encryption",
-                None,
-                json.dumps({"target_app_version": target_version}, ensure_ascii=False),
-            ),
-        )
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
-
-
-def consume_scheduled_restart_unlock_pass(app: Flask) -> bool:
-    """Consume a matching update grant at startup, otherwise leave the store locked.
-
-    The pass deliberately remains untouched when this is an unexpected restart
-    of the old image.  Once the matching release claims it, any success or
-    failure consumes it, so a corrected second attempt requires a manual
-    database unlock or a newly issued pass from a still-unlocked old release.
-    """
-
-    if not database_encryption_enabled(app):
-        return False
-    try:
-        if database_encryption_state(app) != "locked":
-            return False
-    except DatabaseEncryptionError:
-        app.logger.warning("Scheduled restart unlock skipped because encryption metadata is unavailable")
-        return False
-    try:
-        unlock_secret = _read_scheduled_restart_secret_file(
-            app,
-            "SCHEDULED_RESTART_UNLOCK_SECRET_FILE",
-            label="Einmal-Entsperrcode",
-        )
-    except DatabaseEncryptionError:
-        app.logger.warning("Scheduled restart one-time secret is unavailable or unsafe")
-        return False
-    if unlock_secret is None:
-        return False
-    try:
-        normalised_secret = _normalised_scheduled_restart_unlock_secret(unlock_secret)
-        pending = load_scheduled_restart_unlock_pass(app)
-    except (ValueError, DatabaseEncryptionError):
-        app.logger.warning("Scheduled restart unlock pass or one-time secret was rejected")
-        return False
-    if pending is None or not _scheduled_restart_unlock_pass_targets_current_app(app, pending):
-        return False
-    try:
-        claimed = _claim_scheduled_restart_unlock_pass(app)
-    except OSError:
-        app.logger.warning("Scheduled restart unlock pass could not be claimed")
-        return False
-    if claimed is None:
-        return False
-    try:
-        payload = _load_scheduled_restart_unlock_pass_from_path(claimed)
-        if payload is None or not _scheduled_restart_unlock_pass_targets_current_app(app, payload):
-            raise DatabaseEncryptionError("Der Einmal-Entsperrpass passt nicht zum gestarteten Release.")
-        expires_at = _parse_scheduled_restart_unlock_timestamp(payload["expires_at"], field="expires_at")
-        if datetime.now(timezone.utc) >= expires_at:
-            raise DatabaseEncryptionError("Der Einmal-Entsperrpass ist abgelaufen.")
-        database_key = _unwrap_database_key(payload["envelope"], normalised_secret)
-        app.extensions["database_encryption_key"] = database_key
-        try:
-            initialise_database(app)
-            invalidate_all_user_sessions_after_scheduled_restart_unlock(
-                app,
-                target_version=canonical_release_version(payload["target_app_version"]),
-            )
-        except Exception:
-            app.extensions.pop("database_encryption_key", None)
-            raise
-        return True
-    except (ValueError, DatabaseEncryptionError, OSError):
-        app.extensions.pop("database_encryption_key", None)
-        app.logger.warning("Scheduled restart unlock pass could not be consumed")
-        return False
-    except Exception:
-        app.extensions.pop("database_encryption_key", None)
-        app.logger.exception("Scheduled restart unlock failed while starting the encrypted database")
-        return False
-    finally:
-        try:
-            claimed.unlink(missing_ok=True)
-        except OSError:
-            # A claimed filename is never reconsidered by a later startup, so
-            # inability to clean it up cannot replay the one-time envelope.
-            app.logger.warning("Consumed scheduled restart unlock pass could not be removed")
-
-
-def database_encryption_state(app: Flask) -> str:
-    """Return setup, legacy, locked or unlocked without opening user data."""
-
-    if not database_encryption_enabled(app):
-        return "disabled"
-    metadata = load_database_encryption_metadata(app)
-    if metadata is None:
-        data_paths = (Path(app.config["DATABASE"]), Path(app.config["USERS_DATABASE"]))
-        return "legacy" if any(path.exists() for path in data_paths) else "setup"
-    if not metadata["databases_ready"]:
-        return "setup_pending"
-    return "unlocked" if isinstance(app.extensions.get("database_encryption_key"), bytes) else "locked"
-
-
-def active_database_key(app: Flask | None = None) -> bytes:
-    """Return the process-memory key, never a key from configuration or disk."""
-
-    configured_app = app
-    if configured_app is None and has_app_context():
-        configured_app = current_app._get_current_object()
-    if configured_app is None or not database_encryption_enabled(configured_app):
-        raise DatabaseLockedError("Für diese Verbindung ist keine verschlüsselte Datenbank konfiguriert.")
-    database_key = configured_app.extensions.get("database_encryption_key")
-    if not isinstance(database_key, bytes) or len(database_key) != DATABASE_ENCRYPTION_KEY_BYTES:
-        raise DatabaseLockedError("Die Datenbank ist gesperrt.")
-    return database_key
-
-
 def _sqlcipher_dbapi():
     if sqlcipher is None:
-        raise DatabaseEncryptionError(
+        raise LegacyEncryptionMigrationError(
             "SQLCipher ist nicht installiert. Installiere die Abhängigkeiten erneut, bevor die verschlüsselte "
-            "Datenbank gestartet wird."
+            "Altinstallation umgewandelt wird."
         )
     return sqlcipher
 
 
 def plaintext_db_connect(path: str | Path) -> sqlite3.Connection:
-    """Open an explicitly unencrypted temporary or legacy SQLite database."""
+    """Open an ordinary SQLite database with the application's pragmas."""
 
     connection = sqlite3.connect(path, detect_types=sqlite3.PARSE_DECLTYPES)
     connection.row_factory = sqlite3.Row
@@ -3327,41 +2987,14 @@ def db_connect(
     path: str | Path,
     *,
     app: Flask | None = None,
-    encrypted: bool | None = None,
-    database_key: bytes | None = None,
 ) -> sqlite3.Connection:
-    """Open a live SQLCipher or explicit plain SQLite connection consistently."""
+    """Open every live, backup and temporary database as plaintext SQLite."""
 
-    configured_app = app
-    if configured_app is None and has_app_context():
-        configured_app = current_app._get_current_object()
-    if encrypted is None:
-        encrypted = database_key is not None or database_encryption_enabled(configured_app)
-    if not encrypted:
-        return plaintext_db_connect(path)
-
-    key = database_key or active_database_key(configured_app)
-    api = _sqlcipher_dbapi()
-    connection = api.connect(path, detect_types=sqlite3.PARSE_DECLTYPES)
-    # Pin the on-disk format deliberately. A future SQLCipher major release
-    # must not silently choose different defaults for existing installations.
-    connection.execute("PRAGMA cipher_compatibility = 4")
-    # The key consists solely of lowercase hexadecimal characters generated by
-    # this process, so interpolation cannot turn the PRAGMA into SQL input.
-    connection.execute(f"PRAGMA key = \"x'{key.hex()}'\"")
-    connection.execute("PRAGMA cipher_memory_security = ON")
-    connection.row_factory = getattr(api, "Row", sqlite3.Row)
-    # Force SQLCipher to validate the key before callers make schema changes.
-    connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA temp_store = MEMORY")
-    connection.execute("PRAGMA journal_mode = WAL")
-    connection.execute("PRAGMA busy_timeout = 5000")
-    return connection
+    return plaintext_db_connect(path)
 
 
 def copy_live_database_snapshot(app: Flask, source_path: Path, target_path: Path) -> None:
-    """Copy an encrypted live database into another encrypted SQLCipher file."""
+    """Copy one live plaintext SQLite database into a self-contained snapshot."""
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     for file_path in (target_path, Path(f"{target_path}-wal"), Path(f"{target_path}-shm")):
@@ -3373,6 +3006,662 @@ def copy_live_database_snapshot(app: Flask, source_path: Path, target_path: Path
     finally:
         target.close()
         source.close()
+
+
+def legacy_encryption_migration_pending(app: Flask) -> bool:
+    """Return whether an older ``encryption.json`` still needs conversion."""
+
+    return database_encryption_metadata_path(app).is_file()
+
+
+def legacy_encryption_migration_journal_path(app: Flask) -> Path:
+    """Return the crash-recovery journal beside the legacy metadata file."""
+
+    return database_encryption_metadata_path(app).with_name("plaintext-migration-journal.json")
+
+
+def _is_plain_sqlite_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as stream:
+            return stream.read(len(SQLITE_FILE_HEADER)) == SQLITE_FILE_HEADER
+    except OSError as exc:
+        raise LegacyEncryptionMigrationError(f"Die Datei {path.name} kann nicht gelesen werden.") from exc
+
+
+def _validate_plain_sqlite_file(path: Path) -> None:
+    """Require a readable ordinary SQLite file whose integrity check passes."""
+
+    if not _is_plain_sqlite_file(path):
+        raise LegacyEncryptionMigrationError(f"{path.name} ist keine unverschlüsselte SQLite-Datenbank.")
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(path)
+        result = connection.execute("PRAGMA quick_check").fetchone()
+        connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise LegacyEncryptionMigrationError(f"Die Klartextkopie {path.name} ist nicht lesbar.") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    if result is None or str(result[0]).lower() != "ok":
+        raise LegacyEncryptionMigrationError(f"Die Integritätsprüfung für {path.name} ist fehlgeschlagen.")
+
+
+def _legacy_database_key_from_form(
+    app: Flask, *, database_passphrase: Any = None, recovery_key: Any = None
+) -> bytes:
+    """Unwrap the former raw database key exactly once for conversion."""
+
+    passphrase = str(database_passphrase or "")
+    recovery = str(recovery_key or "")
+    if bool(passphrase) == bool(recovery):
+        raise ValueError("Bitte gib entweder die bisherige Datenbank-Passphrase oder den Wiederherstellungsschlüssel ein.")
+    metadata = load_legacy_database_encryption_metadata(app)
+    if metadata is None:
+        raise LegacyEncryptionMigrationError("Die frühere Verschlüsselungs-Konfiguration fehlt.")
+    if recovery:
+        return _unwrap_database_key(metadata["recovery"], _normalised_recovery_key(recovery))
+    return _unwrap_database_key(metadata["passphrase"], passphrase)
+
+
+def _legacy_sqlcipher_connection(path: Path, database_key: bytes):
+    """Open one former SQLCipher-4 file with its already unwrapped raw key."""
+
+    api = _sqlcipher_dbapi()
+    connection = api.connect(path, detect_types=sqlite3.PARSE_DECLTYPES)
+    try:
+        connection.execute("PRAGMA cipher_compatibility = 4")
+        connection.execute(f"PRAGMA key = \"x'{database_key.hex()}'\"")
+        connection.execute("PRAGMA cipher_memory_security = ON")
+        connection.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        return connection
+    except Exception:
+        connection.close()
+        raise
+
+
+def _create_empty_plain_database(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA user_version = 0")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _quoted_sql_identifier(value: Any) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _copy_legacy_database_logically(source: Any, target: sqlite3.Connection) -> None:
+    """Copy schema and rows from a keyed SQLCipher connection into sqlite3."""
+
+    schema_rows = source.execute(
+        """
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_master
+        WHERE sql IS NOT NULL
+        ORDER BY rowid
+        """
+    ).fetchall()
+    table_rows = [
+        row for row in schema_rows if row[0] == "table" and not str(row[1]).startswith("sqlite_")
+    ]
+    target.execute("PRAGMA foreign_keys = OFF")
+    target.execute("BEGIN")
+    try:
+        for _, _, _, create_sql in table_rows:
+            target.execute(str(create_sql))
+        for _, table_name, _, _ in table_rows:
+            quoted_table = _quoted_sql_identifier(table_name)
+            columns = [
+                str(row[1])
+                for row in source.execute(f"PRAGMA table_xinfo({quoted_table})").fetchall()
+                if len(row) < 7 or int(row[6] or 0) == 0
+            ]
+            if not columns:
+                continue
+            quoted_columns = ", ".join(_quoted_sql_identifier(column) for column in columns)
+            placeholders = ", ".join("?" for _ in columns)
+            cursor = source.execute(f"SELECT {quoted_columns} FROM {quoted_table}")
+            while True:
+                batch = cursor.fetchmany(500)
+                if not batch:
+                    break
+                target.executemany(
+                    f"INSERT INTO {quoted_table} ({quoted_columns}) VALUES ({placeholders})",
+                    [tuple(row) for row in batch],
+                )
+        for object_type in ("index", "trigger", "view"):
+            for row in schema_rows:
+                if row[0] == object_type and not str(row[1]).startswith("sqlite_"):
+                    target.execute(str(row[3]))
+        if source.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'"
+        ).fetchone() is not None:
+            target.execute("DELETE FROM sqlite_sequence")
+            target.executemany(
+                "INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)",
+                [tuple(row) for row in source.execute("SELECT name, seq FROM sqlite_sequence").fetchall()],
+            )
+        target.commit()
+    except Exception:
+        target.rollback()
+        raise
+    target.execute("PRAGMA foreign_keys = ON")
+    violation = target.execute("PRAGMA foreign_key_check").fetchone()
+    if violation is not None:
+        raise LegacyEncryptionMigrationError(
+            f"Die konvertierte Datenbank verletzt eine Fremdschlüsselbeziehung in {violation[0]}."
+        )
+
+
+def _export_legacy_database_to_plaintext(source_path: Path, target_path: Path, database_key: bytes) -> None:
+    """Export either a former SQLCipher file or an already-converted retry copy."""
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    for candidate in (target_path, Path(f"{target_path}-wal"), Path(f"{target_path}-shm")):
+        candidate.unlink(missing_ok=True)
+    if not source_path.is_file():
+        _create_empty_plain_database(target_path)
+        _validate_plain_sqlite_file(target_path)
+        return
+    if _is_plain_sqlite_file(source_path):
+        # A prior interrupted attempt may already have produced a plain SQLite
+        # file whose newest committed pages still live in ``-wal``. A filesystem
+        # copy of only the main file would silently lose those rows, whereas
+        # SQLite's backup API takes one consistent snapshot including the WAL.
+        source = sqlite3.connect(source_path)
+        target = sqlite3.connect(target_path)
+        try:
+            source.execute("PRAGMA busy_timeout = 5000")
+            source.backup(target)
+        except sqlite3.DatabaseError as exc:
+            target_path.unlink(missing_ok=True)
+            raise LegacyEncryptionMigrationError(
+                f"Die bereits lesbare SQLite-Datei {source_path.name} konnte nicht sicher kopiert werden."
+            ) from exc
+        finally:
+            target.close()
+            source.close()
+        _validate_plain_sqlite_file(target_path)
+        return
+
+    source = None
+    target = None
+    try:
+        source = _legacy_sqlcipher_connection(source_path, database_key)
+        try:
+            checkpoint = source.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+            if checkpoint is not None and int(checkpoint[0] or 0) != 0:
+                raise LegacyEncryptionMigrationError(
+                    f"{source_path.name} wird noch von einer anderen Verbindung verwendet."
+                )
+        except Exception:
+            if Path(f"{source_path}-wal").exists() or Path(f"{source_path}-shm").exists():
+                raise
+        # Copy logical schema/rows through the keyed connection and rebuild
+        # them with the standard library. Cross-key ``backup``/``ATTACH`` is
+        # unreliable in the Windows SQLCipher wheel.
+        user_version = int(source.execute("PRAGMA user_version").fetchone()[0])
+        application_id = int(source.execute("PRAGMA application_id").fetchone()[0])
+        target = sqlite3.connect(target_path)
+        _copy_legacy_database_logically(source, target)
+        target.execute(f"PRAGMA user_version = {user_version}")
+        target.execute(f"PRAGMA application_id = {application_id}")
+        target.commit()
+    except Exception as exc:
+        target_path.unlink(missing_ok=True)
+        raise LegacyEncryptionMigrationError(
+            f"{source_path.name} konnte mit dem bisherigen Schlüssel nicht sicher in SQLite umgewandelt werden."
+        ) from exc
+    finally:
+        if target is not None:
+            target.close()
+        if source is not None:
+            source.close()
+    _validate_plain_sqlite_file(target_path)
+
+
+def _legacy_attachment_cipher(database_key: bytes, *, photo: bool) -> Fernet:
+    purpose = b"variant-photo-files:" if photo else b"invoice-files:"
+    key = base64.urlsafe_b64encode(hashlib.sha256(b"protovibe-merch:" + purpose + database_key).digest())
+    return Fernet(key)
+
+
+def _decrypt_legacy_attachment_tree(directory: Path, database_key: bytes, *, photo: bool) -> int:
+    """Decrypt every managed ``.enc`` file in one staged directory tree."""
+
+    if not directory.is_dir():
+        return 0
+    cipher = _legacy_attachment_cipher(database_key, photo=photo)
+    converted = 0
+    for encrypted_path in sorted(directory.rglob("*.enc")):
+        target_path = encrypted_path.with_suffix("")
+        try:
+            plaintext = cipher.decrypt(encrypted_path.read_bytes())
+        except (OSError, InvalidToken) as exc:
+            raise LegacyEncryptionMigrationError(
+                f"Die alte Datei {encrypted_path.name} konnte nicht entschlüsselt werden."
+            ) from exc
+        if target_path.exists():
+            if not target_path.is_file() or target_path.read_bytes() != plaintext:
+                raise LegacyEncryptionMigrationError(
+                    f"Für {target_path.name} existiert bereits eine andere Klartextdatei."
+                )
+        else:
+            target_path.write_bytes(plaintext)
+        encrypted_path.unlink()
+        converted += 1
+    return converted
+
+
+def _plain_database_bytes_from_archive(
+    payload: bytes, database_key: bytes, temporary_directory: Path, token: str
+) -> bytes:
+    if payload.startswith(SQLITE_FILE_HEADER):
+        return payload
+    source = temporary_directory / f"{token}-encrypted.sqlite3"
+    target = temporary_directory / f"{token}-plain.sqlite3"
+    source.write_bytes(payload)
+    try:
+        _export_legacy_database_to_plaintext(source, target, database_key)
+        return target.read_bytes()
+    finally:
+        for candidate in (
+            source,
+            target,
+            Path(f"{source}-wal"),
+            Path(f"{source}-shm"),
+            Path(f"{target}-wal"),
+            Path(f"{target}-shm"),
+        ):
+            candidate.unlink(missing_ok=True)
+
+
+def _rewrite_legacy_zip_archive(archive_path: Path, database_key: bytes, temporary_directory: Path) -> bool:
+    """Rewrite SQLCipher databases and ``.enc`` files inside one staged ZIP."""
+
+    output_path = archive_path.with_name(f".{archive_path.name}.{uuid.uuid4().hex}.tmp")
+    changed = False
+    written_names: set[str] = set()
+    invoice_cipher = _legacy_attachment_cipher(database_key, photo=False)
+    photo_cipher = _legacy_attachment_cipher(database_key, photo=True)
+    try:
+        with ZipFile(archive_path, "r") as source_archive:
+            damaged = source_archive.testzip()
+            if damaged is not None:
+                raise LegacyEncryptionMigrationError(
+                    f"Das Archiv {archive_path.name} enthält eine beschädigte Datei: {damaged}."
+                )
+            with ZipFile(output_path, "w") as target_archive:
+                for index, info in enumerate(source_archive.infolist()):
+                    original_name = info.filename.replace("\\", "/")
+                    if info.is_dir():
+                        new_name = original_name
+                        payload = b""
+                    else:
+                        payload = source_archive.read(info)
+                        new_name = original_name
+                        basename = new_name.rsplit("/", 1)[-1]
+                        if basename == "encryption.json":
+                            changed = True
+                            continue
+                        if basename in {"merch.sqlite3", "users.sqlite3"} and not payload.startswith(
+                            SQLITE_FILE_HEADER
+                        ):
+                            payload = _plain_database_bytes_from_archive(
+                                payload, database_key, temporary_directory, f"zip-{index}-{uuid.uuid4().hex}"
+                            )
+                            changed = True
+                        elif new_name.endswith(".enc") and "/variant-photos/" in f"/{new_name}":
+                            try:
+                                payload = photo_cipher.decrypt(payload)
+                            except InvalidToken as exc:
+                                raise LegacyEncryptionMigrationError(
+                                    f"{archive_path.name} enthält ein nicht entschlüsselbares Produktfoto."
+                                ) from exc
+                            new_name = new_name[:-4]
+                            changed = True
+                        elif new_name.endswith(".enc") and "/invoices/" in f"/{new_name}":
+                            try:
+                                payload = invoice_cipher.decrypt(payload)
+                            except InvalidToken as exc:
+                                raise LegacyEncryptionMigrationError(
+                                    f"{archive_path.name} enthält einen nicht entschlüsselbaren Anhang."
+                                ) from exc
+                            new_name = new_name[:-4]
+                            changed = True
+                    if new_name in written_names:
+                        raise LegacyEncryptionMigrationError(
+                            f"Das Archiv {archive_path.name} enthält den Zielnamen {new_name} mehrfach."
+                        )
+                    written_names.add(new_name)
+                    target_info = copy.copy(info)
+                    target_info.filename = new_name
+                    target_archive.writestr(target_info, payload)
+        if changed:
+            os.replace(output_path, archive_path)
+        else:
+            output_path.unlink(missing_ok=True)
+        return changed
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+
+
+def _copy_directory_for_migration(source: Path, target: Path) -> None:
+    if source.is_dir():
+        shutil.copytree(source, target)
+    else:
+        target.mkdir(parents=True)
+
+
+def _remove_migration_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _durable_remove_migration_path(path: Path) -> None:
+    """Remove a migration artefact and persist the directory-entry change."""
+
+    _remove_migration_path(path)
+    _fsync_directory(path.parent)
+
+
+def _fsync_migration_tree(root: Path) -> None:
+    """Flush every staged file before the prepared journal becomes durable."""
+
+    if os.name == "nt":
+        return
+    for directory_name, _, filenames in os.walk(root, topdown=False):
+        directory = Path(directory_name)
+        for filename in filenames:
+            with (directory / filename).open("rb") as stream:
+                os.fsync(stream.fileno())
+        _fsync_directory(directory)
+    _fsync_directory(root.parent)
+
+
+def _migration_target_pairs(app: Flask, stage_root: Path) -> tuple[tuple[Path, Path], ...]:
+    """List rollback targets, placing database sidecars before their main files."""
+
+    database_pairs = (
+        (Path(app.config["DATABASE"]), stage_root / "live" / "merch.sqlite3"),
+        (Path(app.config["USERS_DATABASE"]), stage_root / "live" / "users.sqlite3"),
+    )
+    pairs: list[tuple[Path, Path]] = []
+    for target, staged in database_pairs:
+        for suffix in ("-wal", "-shm"):
+            pairs.append((Path(f"{target}{suffix}"), Path(f"{staged}{suffix}")))
+        pairs.append((target, staged))
+    pairs.extend(
+        (
+            (Path(app.config["INVOICE_UPLOAD_DIR"]), stage_root / "live" / "invoices"),
+            (Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"]), stage_root / "live" / "variant-photos"),
+            (Path(app.config["BACKUP_DIR"]), stage_root / "live" / "backups"),
+            (Path(app.config["RESET_ARCHIVE_DIR"]), stage_root / "live" / "reset-archives"),
+        )
+    )
+    return tuple(pairs)
+
+
+def _migration_swap_targets(app: Flask, stage_root: Path) -> list[dict[str, Any]]:
+    rollback_root = stage_root / "rollback"
+    return [
+        {
+            "target": str(target.resolve()),
+            "staged": str(staged.resolve()),
+            "rollback": str((rollback_root / f"item-{index}").resolve()),
+            "original_exists": target.exists(),
+            "place_staged": staged.exists(),
+        }
+        for index, (target, staged) in enumerate(_migration_target_pairs(app, stage_root))
+    ]
+
+
+def _validated_migration_journal(app: Flask) -> dict[str, Any] | None:
+    journal_path = legacy_encryption_migration_journal_path(app)
+    if not journal_path.is_file():
+        return None
+    try:
+        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise LegacyEncryptionMigrationError("Das Klartext-Migrationsjournal kann nicht gelesen werden.") from exc
+    if not isinstance(payload, dict) or payload.get("version") != 1 or not isinstance(payload.get("items"), list):
+        raise LegacyEncryptionMigrationError("Das Klartext-Migrationsjournal ist ungültig.")
+    data_root = database_encryption_metadata_path(app).parent.resolve()
+    try:
+        stage_root = Path(str(payload["stage_root"])).resolve()
+        stage_root.relative_to(data_root)
+    except (KeyError, OSError, ValueError) as exc:
+        raise LegacyEncryptionMigrationError("Das Klartext-Migrationsjournal enthält einen unsicheren Pfad.") from exc
+    expected_targets = {
+        str(target.resolve()) for target, _ in _migration_target_pairs(app, stage_root)
+    }
+    actual_targets = {str(Path(str(item.get("target", ""))).resolve()) for item in payload["items"]}
+    if actual_targets != expected_targets or len(payload["items"]) != len(expected_targets):
+        raise LegacyEncryptionMigrationError("Das Klartext-Migrationsjournal passt nicht zu diesem Datenordner.")
+    for item in payload["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("original_exists"), bool):
+            raise LegacyEncryptionMigrationError("Das Klartext-Migrationsjournal ist unvollständig.")
+        if not isinstance(item.get("place_staged"), bool):
+            raise LegacyEncryptionMigrationError("Das Klartext-Migrationsjournal ist unvollständig.")
+        try:
+            Path(str(item["staged"])).resolve().relative_to(stage_root)
+            Path(str(item["rollback"])).resolve().relative_to(stage_root)
+        except (KeyError, OSError, ValueError) as exc:
+            raise LegacyEncryptionMigrationError("Das Klartext-Migrationsjournal enthält einen unsicheren Pfad.") from exc
+    return payload
+
+
+def recover_interrupted_legacy_encryption_migration(app: Flask) -> None:
+    """Rollback an interrupted swap, or finish cleanup after a committed one."""
+
+    payload = _validated_migration_journal(app)
+    if payload is None:
+        return
+    journal_path = legacy_encryption_migration_journal_path(app)
+    stage_root = Path(payload["stage_root"])
+    if payload.get("phase") == "complete":
+        _durable_remove_migration_path(database_encryption_metadata_path(app))
+        remove_legacy_scheduled_restart_artifacts(app)
+        _durable_remove_migration_path(stage_root)
+        _durable_remove_migration_path(journal_path)
+        return
+    for item in reversed(payload["items"]):
+        target = Path(item["target"])
+        rollback = Path(item["rollback"])
+        if rollback.exists():
+            _durable_remove_migration_path(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _durable_replace(rollback, target)
+        elif not bool(item.get("original_exists")):
+            _durable_remove_migration_path(target)
+    _durable_remove_migration_path(stage_root)
+    _durable_remove_migration_path(journal_path)
+
+
+def _create_plaintext_migration_archive(app: Flask) -> Path:
+    """Keep one readable post-conversion recovery point containing both DBs."""
+
+    archive_dir = Path(app.config["MIGRATION_ARCHIVE_DIR"])
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    archive_path = archive_dir / f"plaintext-conversion-{timestamp}.zip"
+    suffix = 1
+    while archive_path.exists():
+        suffix += 1
+        archive_path = archive_dir / f"plaintext-conversion-{timestamp}-{suffix}.zip"
+    temporary_archive = archive_path.with_name(f".{archive_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tempfile.TemporaryDirectory(prefix=".plaintext-archive-", dir=archive_dir) as temporary_name:
+            snapshot_root = Path(temporary_name)
+            merch_snapshot = snapshot_root / "merch.sqlite3"
+            users_snapshot = snapshot_root / "users.sqlite3"
+            copy_live_database_snapshot(app, Path(app.config["DATABASE"]), merch_snapshot)
+            copy_live_database_snapshot(app, Path(app.config["USERS_DATABASE"]), users_snapshot)
+            with ZipFile(temporary_archive, "w", ZIP_DEFLATED) as archive:
+                archive.write(merch_snapshot, "data/merch.sqlite3")
+                archive.write(users_snapshot, "data/users.sqlite3")
+                for config_name, archive_name in (
+                    ("INVOICE_UPLOAD_DIR", "data/invoices"),
+                    ("VARIANT_PHOTO_UPLOAD_DIR", "data/variant-photos"),
+                ):
+                    directory = Path(app.config[config_name])
+                    if directory.is_dir():
+                        for item in directory.rglob("*"):
+                            if item.is_file():
+                                archive.write(item, Path(archive_name) / item.relative_to(directory))
+        with ZipFile(temporary_archive, "r") as archive:
+            damaged = archive.testzip()
+            if damaged is not None:
+                raise LegacyEncryptionMigrationError(
+                    f"Die neue Migrationssicherung enthält eine beschädigte Datei: {damaged}."
+                )
+            for database_name in ("data/merch.sqlite3", "data/users.sqlite3"):
+                with archive.open(database_name, "r") as database_stream:
+                    header = database_stream.read(len(SQLITE_FILE_HEADER))
+                if header != SQLITE_FILE_HEADER:
+                    raise LegacyEncryptionMigrationError(
+                        "Die neue Migrationssicherung enthält keine lesbaren SQLite-Datenbanken."
+                    )
+        with temporary_archive.open("rb+") as archive_stream:
+            os.fsync(archive_stream.fileno())
+        _durable_replace(temporary_archive, archive_path)
+    finally:
+        temporary_archive.unlink(missing_ok=True)
+    return archive_path
+
+
+def migrate_legacy_encrypted_installation(
+    app: Flask, *, database_passphrase: Any = None, recovery_key: Any = None
+) -> dict[str, Any]:
+    """Convert all durable SQLCipher-era data into validated plaintext files."""
+
+    recover_interrupted_legacy_encryption_migration(app)
+    if not legacy_encryption_migration_pending(app):
+        raise LegacyEncryptionMigrationError("Für diesen Datenordner ist keine Umwandlung mehr erforderlich.")
+    database_key = _legacy_database_key_from_form(
+        app, database_passphrase=database_passphrase, recovery_key=recovery_key
+    )
+    data_root = database_encryption_metadata_path(app).parent.resolve()
+    stage_root = data_root / f".plaintext-migration-{uuid.uuid4().hex}"
+    stage_root.mkdir(parents=False, exist_ok=False)
+    try:
+        live_stage = stage_root / "live"
+        live_stage.mkdir()
+        _export_legacy_database_to_plaintext(
+            Path(app.config["DATABASE"]), live_stage / "merch.sqlite3", database_key
+        )
+        _export_legacy_database_to_plaintext(
+            Path(app.config["USERS_DATABASE"]), live_stage / "users.sqlite3", database_key
+        )
+
+        invoice_stage = live_stage / "invoices"
+        photo_stage = live_stage / "variant-photos"
+        backup_stage = live_stage / "backups"
+        reset_stage = live_stage / "reset-archives"
+        _copy_directory_for_migration(Path(app.config["INVOICE_UPLOAD_DIR"]), invoice_stage)
+        _copy_directory_for_migration(Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"]), photo_stage)
+        _copy_directory_for_migration(Path(app.config["BACKUP_DIR"]), backup_stage)
+        _copy_directory_for_migration(Path(app.config["RESET_ARCHIVE_DIR"]), reset_stage)
+
+        converted_attachments = _decrypt_legacy_attachment_tree(invoice_stage, database_key, photo=False)
+        converted_photos = _decrypt_legacy_attachment_tree(photo_stage, database_key, photo=True)
+        converted_backup_databases = 0
+        for backup_database in sorted(backup_stage.rglob("*.sqlite3")):
+            if _is_plain_sqlite_file(backup_database):
+                _validate_plain_sqlite_file(backup_database)
+                continue
+            temporary = backup_database.with_name(f".{backup_database.name}.{uuid.uuid4().hex}.plain")
+            _export_legacy_database_to_plaintext(backup_database, temporary, database_key)
+            os.replace(temporary, backup_database)
+            Path(f"{backup_database}-wal").unlink(missing_ok=True)
+            Path(f"{backup_database}-shm").unlink(missing_ok=True)
+            converted_backup_databases += 1
+        for invoice_directory in sorted(path for path in backup_stage.rglob("invoices") if path.is_dir()):
+            converted_attachments += _decrypt_legacy_attachment_tree(
+                invoice_directory, database_key, photo=False
+            )
+        for photo_directory in sorted(path for path in backup_stage.rglob("variant-photos") if path.is_dir()):
+            converted_photos += _decrypt_legacy_attachment_tree(photo_directory, database_key, photo=True)
+        for metadata_file in backup_stage.rglob("encryption.json"):
+            metadata_file.unlink()
+
+        archive_temp = stage_root / "archive-work"
+        archive_temp.mkdir()
+        converted_archives = 0
+        for archive_path in sorted(reset_stage.glob("*.zip")):
+            if _rewrite_legacy_zip_archive(archive_path, database_key, archive_temp):
+                converted_archives += 1
+
+        _validate_plain_sqlite_file(live_stage / "merch.sqlite3")
+        _validate_plain_sqlite_file(live_stage / "users.sqlite3")
+        for backup_database in backup_stage.rglob("*.sqlite3"):
+            _validate_plain_sqlite_file(backup_database)
+        if any(path.is_file() for path in live_stage.rglob("*.enc")):
+            raise LegacyEncryptionMigrationError("Mindestens eine verschlüsselte Anhangsdatei blieb übrig.")
+        for archive_path in reset_stage.glob("*.zip"):
+            with ZipFile(archive_path, "r") as archive:
+                damaged = archive.testzip()
+                if damaged is not None:
+                    raise LegacyEncryptionMigrationError(f"Das geprüfte Archiv {archive_path.name} ist beschädigt.")
+
+        (stage_root / "rollback").mkdir()
+        _fsync_migration_tree(stage_root)
+        items = _migration_swap_targets(app, stage_root)
+        journal = {
+            "version": 1,
+            "phase": "prepared",
+            "stage_root": str(stage_root.resolve()),
+            "items": items,
+        }
+        _write_owner_only_json(legacy_encryption_migration_journal_path(app), journal)
+        for item in items:
+            target = Path(item["target"])
+            staged = Path(item["staged"])
+            rollback = Path(item["rollback"])
+            rollback.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                _durable_replace(target, rollback)
+            if item["place_staged"]:
+                _durable_replace(staged, target)
+
+        journal["phase"] = "placed"
+        _write_owner_only_json(legacy_encryption_migration_journal_path(app), journal)
+        initialise_database(app)
+        _validate_plain_sqlite_file(Path(app.config["DATABASE"]))
+        _validate_plain_sqlite_file(Path(app.config["USERS_DATABASE"]))
+        archive_path = _create_plaintext_migration_archive(app)
+
+        journal["phase"] = "complete"
+        _write_owner_only_json(legacy_encryption_migration_journal_path(app), journal)
+        for item in items:
+            _durable_remove_migration_path(Path(item["rollback"]))
+        _durable_remove_migration_path(stage_root)
+        remove_legacy_scheduled_restart_artifacts(app)
+        _durable_remove_migration_path(database_encryption_metadata_path(app))
+        _durable_remove_migration_path(legacy_encryption_migration_journal_path(app))
+        return {
+            "attachments": converted_attachments,
+            "photos": converted_photos,
+            "backup_databases": converted_backup_databases,
+            "reset_archives": converted_archives,
+            "archive_path": archive_path,
+        }
+    except Exception:
+        if legacy_encryption_migration_journal_path(app).is_file():
+            recover_interrupted_legacy_encryption_migration(app)
+        else:
+            _durable_remove_migration_path(stage_root)
+        raise
 
 
 def get_db() -> sqlite3.Connection:
@@ -3667,6 +3956,7 @@ def rebuild_users_for_role_model(connection: sqlite3.Connection) -> list[dict[st
         INSERT INTO users_role_model_replacement (
             id, username, password_hash, is_admin, role, is_active,
             must_set_password, setup_code_hash, setup_code_expires_at,
+            contact_email,
             mfa_secret_encrypted, mfa_pending_secret_encrypted,
             mfa_recovery_code_hashes_json, mfa_enabled, mfa_enrolled_at,
             session_version, last_login_at, ui_theme, ui_language,
@@ -3692,7 +3982,7 @@ def rebuild_users_for_role_model(connection: sqlite3.Connection) -> list[dict[st
                 ELSE 'seller'
             END,
             is_active, must_set_password, setup_code_hash,
-            setup_code_expires_at, mfa_secret_encrypted,
+            setup_code_expires_at, contact_email, mfa_secret_encrypted,
             mfa_pending_secret_encrypted, mfa_recovery_code_hashes_json,
             mfa_enabled, mfa_enrolled_at,
             session_version + CASE
@@ -4123,6 +4413,7 @@ def upgrade_legacy_combined_database(app: Flask) -> None:
             ("must_set_password", "INTEGER NOT NULL DEFAULT 0"),
             ("setup_code_hash", "TEXT"),
             ("setup_code_expires_at", "TEXT"),
+            ("contact_email", "TEXT"),
             ("mfa_secret_encrypted", "TEXT"),
             ("mfa_pending_secret_encrypted", "TEXT"),
             ("mfa_recovery_code_hashes_json", "TEXT NOT NULL DEFAULT '[]'"),
@@ -4886,6 +5177,7 @@ def upgrade_users_schema(
         ("must_set_password", "INTEGER NOT NULL DEFAULT 0"),
         ("setup_code_hash", "TEXT"),
         ("setup_code_expires_at", "TEXT"),
+        ("contact_email", "TEXT"),
         ("mfa_secret_encrypted", "TEXT"),
         ("mfa_pending_secret_encrypted", "TEXT"),
         ("mfa_recovery_code_hashes_json", "TEXT NOT NULL DEFAULT '[]'"),
@@ -5280,167 +5572,11 @@ def initialise_database(app: Flask) -> None:
     users_path = Path(app.config["USERS_DATABASE"])
     if database_path.resolve() == users_path.resolve():
         raise RuntimeError("DATABASE und USERS_DATABASE müssen unterschiedliche Dateien sein.")
-    # An encrypted installation is always split from its first setup. Looking
-    # at it with the standard sqlite3 module would both fail and be wrong.
-    if not database_encryption_enabled(app) and database_contains_table(database_path, "users"):
+    if database_contains_table(database_path, "users"):
         migrate_combined_database(app)
     initialise_operations_database(app)
     initialise_users_database(app)
     recover_intermediate_role_handover_from_operational_audit(app)
-
-
-def configured_bootstrap_admin(app: Flask) -> tuple[str, str]:
-    """Return the existing first-start credentials without treating them as a DB key."""
-
-    username = str(app.config.get("ADMIN_USERNAME", "")).strip()
-    password = str(app.config.get("ADMIN_PASSWORD", ""))
-    if not username or not password or password.startswith("replace-this"):
-        raise DatabaseEncryptionError(
-            "Setze vor der ersten Einrichtung ADMIN_USERNAME und ADMIN_PASSWORD in der .env."
-        )
-    return username, password
-
-
-def _remember_pending_database_recovery_key(app: Flask, recovery_key: str) -> str:
-    """Keep a one-time display value only in process memory, never in a cookie or file."""
-
-    token = secrets.token_urlsafe(32)
-    pending = app.extensions.setdefault("pending_database_recovery_keys", {})
-    now = time.time()
-    for existing_token, entry in list(pending.items()):
-        if float(entry.get("expires_at", 0)) < now:
-            pending.pop(existing_token, None)
-    pending[token] = {
-        "recovery_key": recovery_key,
-        "expires_at": now + DATABASE_ENCRYPTION_PENDING_RECOVERY_TTL_SECONDS,
-    }
-    return token
-
-
-def pending_database_recovery_key(app: Flask, token: Any) -> str | None:
-    pending = app.extensions.get("pending_database_recovery_keys", {})
-    entry = pending.get(str(token or "")) if isinstance(pending, dict) else None
-    if not isinstance(entry, dict) or float(entry.get("expires_at", 0)) < time.time():
-        if isinstance(pending, dict):
-            pending.pop(str(token or ""), None)
-        return None
-    recovery_key = entry.get("recovery_key")
-    return str(recovery_key) if recovery_key else None
-
-
-def discard_pending_database_recovery_key(app: Flask, token: Any) -> None:
-    pending = app.extensions.get("pending_database_recovery_keys", {})
-    if isinstance(pending, dict):
-        pending.pop(str(token or ""), None)
-
-
-def setup_encrypted_databases(
-    app: Flask, *, bootstrap_password: Any, database_passphrase: Any, confirmation: Any
-) -> tuple[str, str]:
-    """Create a fresh encrypted installation and return its one-time recovery key.
-
-    The caller must already be in the dedicated setup state.  Existing plain
-    databases are deliberately not overwritten; they need the explicit legacy
-    import workflow after a fresh encrypted store has been created.
-    """
-
-    if database_encryption_state(app) != "setup":
-        raise DatabaseEncryptionError("Die Datenbankverschlüsselung wurde bereits eingerichtet.")
-    _, expected_bootstrap_password = configured_bootstrap_admin(app)
-    if not secrets.compare_digest(expected_bootstrap_password, str(bootstrap_password or "")):
-        raise ValueError("Das Einrichtungs-Admin-Passwort ist nicht korrekt.")
-    passphrase = validate_database_passphrase(database_passphrase)
-    if passphrase != str(confirmation or ""):
-        raise ValueError("Die beiden Datenbank-Passphrasen stimmen nicht überein.")
-
-    database_key = secrets.token_bytes(DATABASE_ENCRYPTION_KEY_BYTES)
-    recovery_key = generate_database_recovery_key()
-    metadata = new_database_encryption_metadata(passphrase, recovery_key, database_key)
-    # Persist the wrapped key first.  If a power loss interrupts initialization,
-    # the passphrase can still resume it; the raw database key never needs to be
-    # reconstructed or placed into .env.
-    write_database_encryption_metadata(app, metadata)
-    app.extensions["database_encryption_key"] = database_key
-    try:
-        initialise_database(app)
-        metadata["databases_ready"] = True
-        write_database_encryption_metadata(app, metadata)
-    except Exception:
-        app.extensions.pop("database_encryption_key", None)
-        raise
-    return _remember_pending_database_recovery_key(app, recovery_key), recovery_key
-
-
-def unlock_encrypted_databases(
-    app: Flask, *, database_passphrase: Any = None, recovery_key: Any = None
-) -> str:
-    """Unwrap the in-memory SQLCipher key using exactly one supported secret."""
-
-    state = database_encryption_state(app)
-    if state not in {"locked", "setup_pending"}:
-        raise DatabaseEncryptionError("Die Datenbank kann in ihrem aktuellen Zustand nicht entsperrt werden.")
-    provided_passphrase = str(database_passphrase or "")
-    provided_recovery_key = str(recovery_key or "")
-    if bool(provided_passphrase) == bool(provided_recovery_key):
-        raise ValueError("Bitte gib entweder die Datenbank-Passphrase oder den Wiederherstellungsschlüssel ein.")
-    metadata = load_database_encryption_metadata(app)
-    if metadata is None:  # Defensive guard for the state check above.
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration fehlt.")
-    method = "passphrase"
-    if provided_recovery_key:
-        method = "recovery"
-        secret = _normalised_recovery_key(provided_recovery_key)
-    else:
-        secret = provided_passphrase
-    database_key = _unwrap_database_key(metadata[method], secret)
-
-    app.extensions["database_encryption_key"] = database_key
-    try:
-        database_paths = (Path(app.config["DATABASE"]), Path(app.config["USERS_DATABASE"]))
-        if not metadata["databases_ready"]:
-            if any(path.exists() for path in database_paths):
-                raise DatabaseEncryptionError(
-                    "Die erste Verschlüsselungs-Einrichtung wurde unterbrochen. Bitte die Daten nicht manuell "
-                    "ändern; stelle sie aus einer Sicherung wieder her oder richte einen leeren Datenordner ein."
-                )
-            initialise_database(app)
-            metadata["databases_ready"] = True
-            write_database_encryption_metadata(app, metadata)
-        else:
-            # Running the normal schema upgrade after every successful unlock
-            # keeps a future release migration encrypted as well.
-            initialise_database(app)
-    except Exception:
-        app.extensions.pop("database_encryption_key", None)
-        raise
-    return method
-
-
-def change_database_passphrase(app: Flask, *, passphrase: Any, confirmation: Any) -> None:
-    """Re-wrap the in-memory database key with a newly chosen unlock passphrase."""
-
-    new_passphrase = validate_database_passphrase(passphrase)
-    if new_passphrase != str(confirmation or ""):
-        raise ValueError("Die beiden Datenbank-Passphrasen stimmen nicht überein.")
-    metadata = load_database_encryption_metadata(app)
-    if metadata is None:
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration fehlt.")
-    metadata["passphrase"] = _wrap_database_key(active_database_key(app), new_passphrase)
-    metadata["updated_at"] = utc_now()
-    write_database_encryption_metadata(app, metadata)
-
-
-def regenerate_database_recovery_key(app: Flask) -> tuple[str, str]:
-    """Invalidate the former recovery key and return a new one-time display value."""
-
-    metadata = load_database_encryption_metadata(app)
-    if metadata is None:
-        raise DatabaseEncryptionError("Die Verschlüsselungs-Konfiguration fehlt.")
-    recovery_key = generate_database_recovery_key()
-    metadata["recovery"] = _wrap_database_key(active_database_key(app), _normalised_recovery_key(recovery_key))
-    metadata["updated_at"] = utc_now()
-    write_database_encryption_metadata(app, metadata)
-    return _remember_pending_database_recovery_key(app, recovery_key), recovery_key
 
 
 def login_required(view):
@@ -5525,12 +5661,6 @@ def system_admin_required(view):
     return exact_role_required("system_admin")(view)
 
 
-def administration_staff_required(view):
-    """Permit the shared support inbox to Band- and platform administrators."""
-
-    return exact_role_required("band_admin", "support_admin", "system_admin")(view)
-
-
 def profile_reauth_required(view):
     """Require a fresh password confirmation before account-sensitive views."""
 
@@ -5559,10 +5689,6 @@ def require_csrf() -> None:
     """Validate mutation requests before anything is written to the database."""
 
     if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
-        return
-    if request.endpoint == "issue_scheduled_restart_unlock_pass":
-        # This machine-only route has no browser session. Its independent,
-        # high-entropy authorization token is checked by the route itself.
         return
     provided = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
     if not provided or provided != session.get("csrf_token"):
@@ -7163,11 +7289,10 @@ def import_transaction_rows(
 
 
 def create_backup(app: Flask, *, force: bool = False) -> Path | None:
-    """Create a restorable encrypted SQLite snapshot and invoice files.
+    """Create a restorable plaintext SQLite snapshot and managed files.
 
     It runs after every successful write.  The application database itself stays
-    authoritative. CSV files remain deliberate browser exports; encrypted
-    installations never create them automatically next to a backup.
+    authoritative. CSV files provide additional, directly readable exports.
     """
 
     if not force and not app.config.get("AUTO_BACKUP", True):
@@ -7187,12 +7312,9 @@ def create_backup(app: Flask, *, force: bool = False) -> Path | None:
     try:
         source.backup(destination)
         destination.close()
-        # A CSV is intentionally an explicit browser export, never an
-        # unencrypted sidecar of an automatic encrypted backup.
-        if not database_encryption_enabled(app):
-            for kind in ("articles", "sales", "purchases", "inventory"):
-                filename, headers, rows = csv_rows(source, kind)
-                (target / f"{filename}.csv").write_bytes(csv_bytes(headers, rows))
+        for kind in ("articles", "sales", "purchases", "inventory"):
+            filename, headers, rows = csv_rows(source, kind)
+            (target / f"{filename}.csv").write_bytes(csv_bytes(headers, rows))
         # Attachments belong to the same recovery point as their database
         # rows.  Hard links avoid multiplying disk use on normal local
         # filesystems; fall back to copying if a platform does not support it.
@@ -7218,12 +7340,6 @@ def create_backup(app: Flask, *, force: bool = False) -> Path | None:
                     os.link(photo, photo_target / photo.name)
                 except OSError:
                     shutil.copy2(photo, photo_target / photo.name)
-        if database_encryption_enabled(app):
-            metadata_path = database_encryption_metadata_path(app)
-            if metadata_path.is_file():
-                # It contains only wrapped keys, but is required together with
-                # an offline recovery key to open a copied SQLCipher database.
-                shutil.copy2(metadata_path, target / "encryption.json")
     finally:
         source.close()
         try:
@@ -7799,10 +7915,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         SECRET_KEY=os.environ.get("SECRET_KEY", "development-only-change-me"),
         DATABASE=str(data_dir / "merch.sqlite3"),
         USERS_DATABASE=os.environ.get("USERS_DATABASE", str(data_dir / "users.sqlite3")),
-        # Local development may deliberately use ordinary SQLite.  It is
-        # opt-in and never changes the secure production default.
+        # Local development relaxes MFA enforcement only. Database and managed
+        # files use the same plaintext storage format in every mode.
         LOCAL_DEV_MODE=environment_flag("LOCAL_DEV_MODE"),
-        DATABASE_ENCRYPTION_ENABLED=not environment_flag("LOCAL_DEV_MODE"),
+        # Retained only to locate an encryption.json from releases that still
+        # require the one-time plaintext conversion.
         DATABASE_ENCRYPTION_METADATA=str(data_dir / "encryption.json"),
         BACKUP_DIR=str(data_dir / "backups"),
         RESET_ARCHIVE_DIR=str(data_dir / "reset-archives"),
@@ -7833,11 +7950,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         # A published image receives the GitHub release tag at Docker build
         # time.  The neutral fallback only applies to local development builds.
         APP_VERSION=os.environ.get("APP_VERSION", "0.0.0").strip(),
-        # These are file locations inside a read-only, root-owned bind mount.
-        # The actual values never enter .env or a container environment value.
-        SCHEDULED_RESTART_AUTH_TOKEN_FILE=os.environ.get("SCHEDULED_RESTART_AUTH_TOKEN_FILE", "").strip(),
-        SCHEDULED_RESTART_UNLOCK_SECRET_FILE=os.environ.get("SCHEDULED_RESTART_UNLOCK_SECRET_FILE", "").strip(),
-        SCHEDULED_RESTART_UNLOCK_TTL_SECONDS=os.environ.get("SCHEDULED_RESTART_UNLOCK_TTL_SECONDS", "1200"),
         # A public repository needs no token.  For a private repository, use a
         # separate, fine-grained read-only token; it remains server-side.
         UPDATE_CHECK_REPOSITORY=os.environ.get("UPDATE_CHECK_REPOSITORY", "TAWilts/protovibe-merch").strip(),
@@ -7850,13 +7962,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     )
     if test_config:
         app.config.update(test_config)
-    if app.config.get("LOCAL_DEV_MODE") and (not test_config or "DATABASE_ENCRYPTION_ENABLED" not in test_config):
-        app.config["DATABASE_ENCRYPTION_ENABLED"] = False
-    # Existing regression tests deliberately exercise old, plaintext schemas.
-    # A production app never receives TESTING=True and therefore always uses
-    # SQLCipher unless a test explicitly chooses otherwise.
-    if app.config.get("TESTING") and (not test_config or "DATABASE_ENCRYPTION_ENABLED" not in test_config):
-        app.config["DATABASE_ENCRYPTION_ENABLED"] = False
     # Test instances and manual local installations often override only the
     # old DATABASE setting.  Keep the account file next to it unless the
     # caller deliberately configured a different USERS_DATABASE path.
@@ -7873,13 +7978,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         app.config["MIGRATION_ARCHIVE_DIR"] = str(Path(app.config["DATABASE"]).parent / "migration-archives")
     if version_tuple(str(app.config["APP_VERSION"])) is None:
         raise RuntimeError("APP_VERSION muss dem Format vX.Y.Z entsprechen, zum Beispiel v0.3.0.")
-    _scheduled_restart_unlock_ttl_seconds(app)
     if app.config["SECRET_KEY"] == "development-only-change-me" and not app.config.get("TESTING"):
         raise RuntimeError("Set SECRET_KEY in .env before starting the app.")
     if app.config.get("LOCAL_DEV_MODE"):
-        app.logger.warning(
-            "LOCAL_DEV_MODE is active: database/files are unencrypted and MFA is not enforced."
-        )
+        app.logger.warning("LOCAL_DEV_MODE is active: MFA is not enforced.")
 
     Path(app.config["DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
     Path(app.config["USERS_DATABASE"]).parent.mkdir(parents=True, exist_ok=True)
@@ -7889,33 +7991,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     Path(app.config["MIGRATION_ARCHIVE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["INVOICE_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(app.config["VARIANT_PHOTO_UPLOAD_DIR"]).mkdir(parents=True, exist_ok=True)
-    if app.config.get("LOCAL_DEV_MODE"):
-        # Fail with a useful message instead of letting sqlite3 report a
-        # mysterious "file is not a database" error when somebody points the
-        # local mode at an encrypted production volume.
+    app.extensions["legacy_encryption_migration_lock"] = Lock()
+    remove_legacy_scheduled_restart_artifacts(app)
+    recover_interrupted_legacy_encryption_migration(app)
+    if not legacy_encryption_migration_pending(app):
         for database_file in (Path(app.config["DATABASE"]), Path(app.config["USERS_DATABASE"])):
-            if database_file.is_file():
-                with database_file.open("rb") as stream:
-                    is_plain_sqlite = stream.read(16) == b"SQLite format 3\x00"
-            else:
-                is_plain_sqlite = True
-            if not is_plain_sqlite:
-                raise DatabaseEncryptionError(
-                    "LOCAL_DEV_MODE benötigt einen separaten, leeren Datenordner. "
-                    f"Die Datei {database_file.name} ist verschlüsselt oder kein normales SQLite."
+            if database_file.is_file() and not _is_plain_sqlite_file(database_file):
+                raise LegacyEncryptionMigrationError(
+                    f"{database_file.name} ist verschlüsselt, aber encryption.json fehlt. "
+                    "Stelle die frühere Schlüsseldatei aus derselben Installation wieder her."
                 )
-    app.extensions["database_encryption_lock"] = Lock()
-    app.extensions["pending_database_recovery_keys"] = {}
-    if database_encryption_enabled(app):
-        # Fail closed. A production deployment may never silently fall back to
-        # ordinary SQLite just because a native SQLCipher dependency is absent.
-        _sqlcipher_dbapi()
-        # A normal restart has no mounted one-time secret and therefore stays
-        # locked.  This only succeeds for a short-lived grant that names this
-        # exact release image; failures remain available for manual unlock.
-        with app.extensions["database_encryption_lock"]:
-            consume_scheduled_restart_unlock_pass(app)
-    else:
         initialise_database(app)
     app.teardown_appcontext(close_db)
 
@@ -7944,46 +8029,25 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         }
 
     @app.before_request
-    def enforce_database_encryption_state():
-        """Keep every data endpoint closed until the encrypted store is unlocked."""
+    def enforce_legacy_database_migration():
+        """Expose only the one-time converter while legacy SQLCipher data exists."""
 
-        if not database_encryption_enabled(app):
+        if not legacy_encryption_migration_pending(app):
             return None
-        allowed_endpoints = {
-            "static",
-            "service_worker",
-            "encryption_setup",
-            "encryption_unlock",
-            "encryption_recovery",
-            "encryption_legacy_data",
-            # It returns 423 while locked and can only issue a pass from an
-            # already unlocked process, but must not redirect a DSM task to an
-            # HTML unlock form where curl would mistake a 302 for success.
-            "issue_scheduled_restart_unlock_pass",
-        }
+        allowed_endpoints = {"static", "service_worker", "legacy_database_migration"}
         if request.endpoint in allowed_endpoints:
-            return None
-        try:
-            state = database_encryption_state(app)
-        except DatabaseEncryptionError as exc:
-            return render_template("error.html", title="Verschlüsselungsfehler", message=str(exc)), 503
-        if state == "unlocked":
             return None
         session.clear()
         if request.path.startswith("/api/"):
-            return jsonify({"ok": False, "error": "Die Datenbank ist derzeit gesperrt."}), 423
-        if state == "legacy":
-            return redirect(url_for("encryption_legacy_data"))
-        if state == "setup":
-            return redirect(url_for("encryption_setup"))
-        return redirect(url_for("encryption_unlock"))
+            return jsonify({"ok": False, "error": "Die einmalige Altdaten-Umwandlung ist noch offen."}), 423
+        return redirect(url_for("legacy_database_migration"))
 
     @app.before_request
     def load_request_context() -> None:
         require_csrf()
         user_id = session.get("user_id")
         g.user = None
-        if database_encryption_enabled(app) and database_encryption_state(app) != "unlocked":
+        if legacy_encryption_migration_pending(app):
             return
         if user_id:
             user = row_to_dict(get_user_db().execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
@@ -8058,9 +8122,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "profile_page",
             "administration_page",
             "system_administration_page",
-            "encryption_setup",
-            "encryption_unlock",
-            "encryption_recovery",
+            "confirm_system_admin_password_reset",
+            "legacy_database_migration",
         }:
             response.headers["Cache-Control"] = "no-store, max-age=0"
             response.headers["Pragma"] = "no-cache"
@@ -8070,217 +8133,44 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def index():
         return redirect(url_for("sales_page"))
 
-    @app.route("/system/verschluesselung/einrichten", methods=["GET", "POST"])
-    def encryption_setup():
-        """Create the first encrypted datastore without placing its key in .env."""
+    @app.route("/system/datenbankmigration", methods=["GET", "POST"])
+    def legacy_database_migration():
+        """Convert an older encrypted installation once, then retire its key."""
 
-        if not database_encryption_enabled(app):
-            return redirect(url_for("login"))
-        state = database_encryption_state(app)
-        if state == "legacy":
-            return redirect(url_for("encryption_legacy_data"))
-        if state == "unlocked":
-            return redirect(url_for("login"))
-        if state == "setup_pending":
-            return redirect(url_for("encryption_unlock"))
-        try:
-            username, _ = configured_bootstrap_admin(app)
-        except DatabaseEncryptionError as exc:
-            return render_template("error.html", title="Einrichtung nicht möglich", message=str(exc)), 503
-        if request.method == "POST":
-            try:
-                with app.extensions["database_encryption_lock"]:
-                    token, _ = setup_encrypted_databases(
-                        app,
-                        bootstrap_password=request.form.get("bootstrap_password"),
-                        database_passphrase=request.form.get("database_passphrase"),
-                        confirmation=request.form.get("database_passphrase_confirmation"),
-                    )
-                session.clear()
-                session["pending_database_recovery_token"] = token
-                return redirect(url_for("encryption_recovery"))
-            except (ValueError, DatabaseEncryptionError) as exc:
-                flash(str(exc), "error")
-            except Exception:
-                current_app.logger.exception("Could not initialise encrypted databases")
-                flash("Die verschlüsselte Datenbank konnte nicht eingerichtet werden. Es wurden keine Daten überschrieben.", "error")
-        return render_template(
-            "encryption_setup.html",
-            title="Verschlüsselung einrichten",
-            bootstrap_username=username,
-        )
-
-    @app.route("/system/verschluesselung/recovery", methods=["GET", "POST"])
-    def encryption_recovery():
-        """Show the initial recovery key exactly while it remains in process memory."""
-
-        token = session.get("pending_database_recovery_token")
-        recovery_key = pending_database_recovery_key(app, token)
-        if recovery_key is None:
-            flash(
-                "Der einmalige Wiederherstellungsschlüssel wird nicht mehr angezeigt. Bewahre mindestens die "
-                "Datenbank-Passphrase sicher auf.",
-                "error",
-            )
-            return redirect(url_for("login" if database_encryption_state(app) == "unlocked" else "encryption_unlock"))
-        if request.method == "POST":
-            discard_pending_database_recovery_key(app, token)
-            session.pop("pending_database_recovery_token", None)
-            if g.get("user") is not None:
-                flash("Der neue Wiederherstellungsschlüssel wurde aktiviert. Der bisherige Schlüssel ist ungültig.", "success")
-                return redirect(url_for("administration_page"))
-            flash("Verschlüsselung eingerichtet. Melde dich nun mit dem Admin-Konto an und richte dessen 2FA ein.", "success")
-            return redirect(url_for("login"))
-        return render_template(
-            "encryption_recovery.html",
-            title="Wiederherstellungsschlüssel sichern",
-            recovery_key=recovery_key,
-            return_to_administration=bool(g.get("user")),
-        )
-
-    @app.route("/system/verschluesselung/entsperren", methods=["GET", "POST"])
-    def encryption_unlock():
-        """Unlock SQLCipher only in memory after each container/application restart."""
-
-        if not database_encryption_enabled(app):
-            return redirect(url_for("login"))
-        state = database_encryption_state(app)
-        if state == "legacy":
-            return redirect(url_for("encryption_legacy_data"))
-        if state == "setup":
-            return redirect(url_for("encryption_setup"))
-        if state == "unlocked":
+        if not legacy_encryption_migration_pending(app):
             return redirect(url_for("login"))
         if request.method == "POST":
             try:
-                with app.extensions["database_encryption_lock"]:
-                    method = unlock_encrypted_databases(
+                with app.extensions["legacy_encryption_migration_lock"]:
+                    result = migrate_legacy_encrypted_installation(
                         app,
                         database_passphrase=request.form.get("database_passphrase"),
                         recovery_key=request.form.get("recovery_key"),
                     )
                 session.clear()
                 flash(
-                    "Die Datenbank wurde mit {} entsperrt. Bitte melde dich an.".format(
-                        "dem Wiederherstellungsschlüssel" if method == "recovery" else "der Datenbank-Passphrase"
-                    ),
+                    "Die Altdaten wurden vollständig in unverschlüsseltes SQLite und normale Dateien "
+                    f"umgewandelt. Eine lesbare Migrationssicherung liegt unter {result['archive_path'].name}.",
                     "success",
                 )
                 return redirect(url_for("login"))
-            except (ValueError, DatabaseEncryptionError) as exc:
+            except ValueError as exc:
                 flash(str(exc), "error")
+            except LegacyEncryptionMigrationError:
+                current_app.logger.exception("Could not safely convert legacy encrypted installation")
+                flash(
+                    "Die Altdaten konnten nicht sicher umgewandelt werden. Der bisherige Bestand wurde nicht "
+                    "verändert; Details stehen im Serverprotokoll.",
+                    "error",
+                )
             except Exception:
-                current_app.logger.exception("Could not unlock encrypted databases")
-                flash("Die Datenbank konnte nicht entsperrt werden.", "error")
-        return render_template("encryption_unlock.html", title="Datenbank entsperren")
-
-    @app.post("/system/verschluesselung/geplanter-neustart-pass")
-    def issue_scheduled_restart_unlock_pass():
-        """Give a root-owned DSM task one ephemeral secret for one target image start."""
-
-        if not database_encryption_enabled(app) or not _scheduled_restart_authorization_is_valid(
-            app, request.headers.get("Authorization")
-        ):
-            # The task capability should not become a discoverable network
-            # feature when its separate host-side authorization file is absent.
-            abort(404)
-        if database_encryption_state(app) != "unlocked":
-            return Response(status=423)
-        try:
-            with app.extensions["database_encryption_lock"]:
-                unlock_secret = create_scheduled_restart_unlock_pass(
-                    app,
-                    request.headers.get("X-Planned-Restart-Target-Version"),
+                current_app.logger.exception("Could not convert legacy encrypted installation")
+                flash(
+                    "Die Altdaten konnten nicht vollständig umgewandelt werden. "
+                    "Der bisherige Bestand wurde wiederhergestellt und die Umwandlung kann erneut gestartet werden.",
+                    "error",
                 )
-        except (ValueError, DatabaseEncryptionError) as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
-        response = Response(f"{unlock_secret}\n", status=201, mimetype="text/plain")
-        response.headers["Cache-Control"] = "no-store, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        return response
-
-    @app.get("/system/verschluesselung/altdaten")
-    def encryption_legacy_data():
-        """Fail safely when a deployment still points at unencrypted files."""
-
-        if not database_encryption_enabled(app):
-            return redirect(url_for("login"))
-        state = database_encryption_state(app)
-        if state == "setup":
-            return redirect(url_for("encryption_setup"))
-        if state in {"locked", "setup_pending"}:
-            return redirect(url_for("encryption_unlock"))
-        if state == "unlocked":
-            return redirect(url_for("login"))
-        return render_template("encryption_legacy.html", title="Ungesicherte Altdaten gefunden")
-
-    @app.post("/verwaltung/verschluesselung/passphrase")
-    @login_required
-    @admin_required
-    def update_database_passphrase():
-        """Let the authenticated Admin recover from a forgotten unlock passphrase."""
-
-        if request.form.get("confirmation", "").strip() != "DATENBANK-PASSPHRASE ÄNDERN":
-            flash("Bitte die Bestätigung exakt als „DATENBANK-PASSPHRASE ÄNDERN“ eingeben.", "error")
-            return redirect(url_for("administration_page"))
-        connection = get_user_db()
-        try:
-            admin = verify_admin_sensitive_action(
-                connection,
-                password=request.form.get("password"),
-                mfa_code=request.form.get("mfa_code"),
-                context="change_database_passphrase",
-            )
-            with app.extensions["database_encryption_lock"]:
-                change_database_passphrase(
-                    app,
-                    passphrase=request.form.get("database_passphrase"),
-                    confirmation=request.form.get("database_passphrase_confirmation"),
-                )
-            audit(connection, "change_database_passphrase", "system", None, {}, user_id=admin["id"])
-            connection.commit()
-            flash("Die Datenbank-Passphrase wurde geändert. Der bisherige Wiederherstellungsschlüssel bleibt gültig.", "success")
-        except (ValueError, DatabaseEncryptionError) as exc:
-            connection.rollback()
-            flash(str(exc), "error")
-        except Exception:
-            connection.rollback()
-            current_app.logger.exception("Could not change database passphrase")
-            flash("Die Datenbank-Passphrase konnte nicht geändert werden.", "error")
-        return redirect(url_for("administration_page"))
-
-    @app.post("/verwaltung/verschluesselung/wiederherstellungsschluessel")
-    @login_required
-    @admin_required
-    def renew_database_recovery_key():
-        """Replace a possibly lost recovery key after password and MFA confirmation."""
-
-        if request.form.get("confirmation", "").strip() != "WIEDERHERSTELLUNGSSCHLÜSSEL ERNEUERN":
-            flash("Bitte die Bestätigung exakt als „WIEDERHERSTELLUNGSSCHLÜSSEL ERNEUERN“ eingeben.", "error")
-            return redirect(url_for("administration_page"))
-        connection = get_user_db()
-        try:
-            admin = verify_admin_sensitive_action(
-                connection,
-                password=request.form.get("password"),
-                mfa_code=request.form.get("mfa_code"),
-                context="renew_database_recovery_key",
-            )
-            with app.extensions["database_encryption_lock"]:
-                token, _ = regenerate_database_recovery_key(app)
-            audit(connection, "renew_database_recovery_key", "system", None, {}, user_id=admin["id"])
-            connection.commit()
-            session["pending_database_recovery_token"] = token
-            return redirect(url_for("encryption_recovery"))
-        except (ValueError, DatabaseEncryptionError) as exc:
-            connection.rollback()
-            flash(str(exc), "error")
-        except Exception:
-            connection.rollback()
-            current_app.logger.exception("Could not renew database recovery key")
-            flash("Der Wiederherstellungsschlüssel konnte nicht erneuert werden.", "error")
-        return redirect(url_for("administration_page"))
+        return render_template("database_migration.html", title="Altdaten umwandeln")
 
     @app.get("/service-worker.js")
     def service_worker():
@@ -8295,12 +8185,16 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
+        password_reset_available = False
+        password_reset_username = ""
         if request.method == "POST":
             username = request.form.get("username", "").strip()
             password_or_setup_code = request.form.get("password", "")
             user = get_user_db().execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
             if user is None or not bool(user["is_active"]):
                 flash("Benutzername oder Passwort ist nicht korrekt.", "error")
+                password_reset_available = True
+                password_reset_username = username
             elif bool(user["must_set_password"]):
                 if (
                     not user["setup_code_hash"]
@@ -8308,6 +8202,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     or not check_password_hash(user["setup_code_hash"], password_or_setup_code)
                 ):
                     flash("Benutzername oder Passwort ist nicht korrekt.", "error")
+                    password_reset_available = True
+                    password_reset_username = username
                 else:
                     begin_auth_challenge(
                         "password_setup", user, post_login_destination(user, request.args.get("next"))
@@ -8315,6 +8211,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     return redirect(url_for("account_setup"))
             elif not check_password_hash(user["password_hash"], password_or_setup_code):
                 flash("Benutzername oder Passwort ist nicht korrekt.", "error")
+                password_reset_available = True
+                password_reset_username = username
             else:
                 # Platform access is deliberately impossible before TOTP has
                 # been enrolled. Band roles, including Band-Admin, may opt in.
@@ -8337,7 +8235,189 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 next_url = post_login_destination(user, request.args.get("next"))
                 establish_authenticated_session(user)
                 return redirect(next_url)
-        return render_template("login.html", title="Anmelden")
+        return render_template(
+            "login.html",
+            title="Anmelden",
+            password_reset_available=password_reset_available,
+            password_reset_username=password_reset_username,
+        )
+
+    @app.post("/login/system-admin/passwort-zuruecksetzen")
+    def request_system_admin_password_reset():
+        """Issue a code only for an active System-Admin with a private address.
+
+        The response intentionally stays identical for unknown, inactive and
+        non-platform accounts. A request merely creates a short-lived code;
+        it does not alter the current password or invalidate any session.
+        """
+
+        username = str(request.form.get("username", "")).strip()
+        session["system_admin_password_reset_username"] = username
+        connection = get_user_db()
+        user = connection.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        if (
+            user is not None
+            and bool(user["is_active"])
+            and normalized_role(user) == "system_admin"
+            and str(user["contact_email"] or "").strip()
+        ):
+            try:
+                recipient = valid_email_address(user["contact_email"])
+                notification_config = smtp_notification_config(connection, app)
+                smtp_ready = smtp_notification_status(
+                    notification_config, require_notification_recipient=False
+                )["ready"]
+                existing = connection.execute(
+                    "SELECT * FROM password_reset_challenges WHERE user_id = ?", (user["id"],)
+                ).fetchone()
+                if smtp_ready and not (
+                    existing is not None and password_reset_challenge_is_cooling_down(existing)
+                ):
+                    reset_code = generate_setup_code()
+                    code_hash = generate_password_hash(reset_code)
+                    expires_at = password_reset_challenge_expiry()
+                    connection.execute("BEGIN IMMEDIATE")
+                    connection.execute(
+                        """
+                        INSERT INTO password_reset_challenges (
+                            user_id, code_hash, expires_at, requested_at, failed_attempts
+                        ) VALUES (?, ?, ?, ?, 0)
+                        ON CONFLICT(user_id) DO UPDATE SET
+                            code_hash = excluded.code_hash,
+                            expires_at = excluded.expires_at,
+                            requested_at = excluded.requested_at,
+                            failed_attempts = 0
+                        """,
+                        (user["id"], code_hash, expires_at, utc_now()),
+                    )
+                    audit(
+                        connection,
+                        "request_system_admin_password_reset",
+                        "user",
+                        user["id"],
+                        {"delivery": "pending"},
+                    )
+                    connection.commit()
+                    try:
+                        send_system_admin_password_reset_email(
+                            notification_config,
+                            recipient=recipient,
+                            username=str(user["username"]),
+                            reset_code=reset_code,
+                            expires_at=expires_at,
+                        )
+                    except (ValueError, OSError, smtplib.SMTPException):
+                        current_app.logger.exception("Could not send System-Admin password-reset email")
+                        connection.execute("BEGIN IMMEDIATE")
+                        connection.execute(
+                            "DELETE FROM password_reset_challenges WHERE user_id = ? AND code_hash = ?",
+                            (user["id"], code_hash),
+                        )
+                        audit(
+                            connection,
+                            "system_admin_password_reset_delivery_failed",
+                            "user",
+                            user["id"],
+                            {},
+                        )
+                        connection.commit()
+            except (ValueError, sqlite3.DatabaseError):
+                connection.rollback()
+                current_app.logger.exception("Could not create System-Admin password-reset challenge")
+        flash(
+            "Falls ein passendes System-Admin-Konto mit eingerichteter E-Mail-Adresse existiert, "
+            "wurde ein Einmalcode versandt.",
+            "success",
+        )
+        return redirect(url_for("confirm_system_admin_password_reset"))
+
+    @app.route("/login/system-admin/passwort-zuruecksetzen/bestaetigen", methods=["GET", "POST"])
+    def confirm_system_admin_password_reset():
+        """Consume a mail-delivered code and let its owner choose a new password."""
+
+        username = str(session.get("system_admin_password_reset_username", "")).strip()
+        if not username:
+            return redirect(url_for("login"))
+        if request.method == "POST":
+            connection = get_user_db()
+            reset_code = str(request.form.get("reset_code", "")).strip()
+            try:
+                password = validate_new_password(
+                    request.form.get("password"), request.form.get("password_confirmation")
+                )
+                connection.execute("BEGIN IMMEDIATE")
+                user = connection.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+                challenge = (
+                    connection.execute(
+                        "SELECT * FROM password_reset_challenges WHERE user_id = ?", (user["id"],)
+                    ).fetchone()
+                    if user is not None
+                    else None
+                )
+                valid_target = (
+                    user is not None
+                    and bool(user["is_active"])
+                    and normalized_role(user) == "system_admin"
+                    and challenge is not None
+                    and password_reset_challenge_is_current(challenge)
+                    and int(challenge["failed_attempts"] or 0) < SYSTEM_ADMIN_PASSWORD_RESET_MAX_ATTEMPTS
+                )
+                if not valid_target:
+                    if challenge is not None:
+                        connection.execute(
+                            "DELETE FROM password_reset_challenges WHERE user_id = ?", (user["id"],)
+                        )
+                    connection.commit()
+                    raise ValueError("Der Einmalcode ist ungültig oder abgelaufen. Bitte fordere einen neuen an.")
+                if len(reset_code) > 128 or not check_password_hash(challenge["code_hash"], reset_code):
+                    failed_attempts = int(challenge["failed_attempts"] or 0) + 1
+                    if failed_attempts >= SYSTEM_ADMIN_PASSWORD_RESET_MAX_ATTEMPTS:
+                        connection.execute(
+                            "DELETE FROM password_reset_challenges WHERE user_id = ?", (user["id"],)
+                        )
+                    else:
+                        connection.execute(
+                            "UPDATE password_reset_challenges SET failed_attempts = ? WHERE user_id = ?",
+                            (failed_attempts, user["id"]),
+                        )
+                    connection.commit()
+                    raise ValueError("Der Einmalcode ist ungültig oder abgelaufen. Bitte fordere einen neuen an.")
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET password_hash = ?, must_set_password = 0,
+                        setup_code_hash = NULL, setup_code_expires_at = NULL,
+                        session_version = session_version + 1
+                    WHERE id = ?
+                    """,
+                    (generate_password_hash(password), user["id"]),
+                )
+                connection.execute("DELETE FROM password_reset_challenges WHERE user_id = ?", (user["id"],))
+                audit(
+                    connection,
+                    "complete_system_admin_password_reset",
+                    "user",
+                    user["id"],
+                    {},
+                )
+                connection.commit()
+            except ValueError as exc:
+                if connection.in_transaction:
+                    connection.rollback()
+                flash(str(exc), "error")
+            except sqlite3.DatabaseError:
+                connection.rollback()
+                current_app.logger.exception("Could not complete System-Admin password reset")
+                flash("Der Einmalcode konnte nicht verarbeitet werden. Bitte versuche es erneut.", "error")
+            else:
+                session.pop("system_admin_password_reset_username", None)
+                flash("Dein Passwort wurde geändert. Melde dich jetzt mit dem neuen Passwort an.", "success")
+                return redirect(url_for("login"))
+        return render_template(
+            "system_admin_password_reset.html",
+            title="Passwort zurücksetzen",
+            username=username,
+        )
 
     @app.route("/konto/einrichten", methods=["GET", "POST"])
     def account_setup():
@@ -8652,6 +8732,38 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash(str(exc), "error")
         return redirect(url_for("profile_page"))
 
+    @app.post("/profil/kontakt-email")
+    @login_required
+    @platform_staff_required
+    @profile_reauth_required
+    def update_own_contact_email():
+        """Store the reset/contact address only for the caller's platform account."""
+
+        connection = get_user_db()
+        try:
+            contact_email = valid_email_address(request.form.get("contact_email"))
+            connection.execute(
+                "UPDATE users SET contact_email = ? WHERE id = ?",
+                (contact_email, g.user["id"]),
+            )
+            connection.execute(
+                "DELETE FROM password_reset_challenges WHERE user_id = ?",
+                (g.user["id"],),
+            )
+            audit(
+                connection,
+                "update_contact_email",
+                "user",
+                g.user["id"],
+                {"configured": True},
+            )
+            connection.commit()
+            flash("Die E-Mail-Adresse für Support und Passwort-Reset wurde gespeichert.", "success")
+        except ValueError as exc:
+            connection.rollback()
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page"))
+
     @app.post("/profil/passwort")
     @login_required
     @profile_reauth_required
@@ -8785,6 +8897,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.post("/admin-nachricht")
     @login_required
+    @exact_role_required("seller", "member", "manager", "band_admin")
     def send_admin_message():
         """Persist an authenticated user's issue or question for the admin."""
 
@@ -8937,7 +9050,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         reset_archive_name: str | None = None,
     ):
         users_connection = get_user_db()
-        notification_config = smtp_notification_config(users_connection, app)
         pending_migration_state = users_connection.execute(
             "SELECT * FROM role_migration_state WHERE id = 1 AND status = 'pending'"
         ).fetchone()
@@ -8966,14 +9078,10 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             "admin.html",
             title="Verwaltung",
             users=administration_users(),
-            admin_messages=administration_messages(),
             backups=operational_backup_points(app),
             setup_credential=setup_credential,
             reset_archive_name=reset_archive_name,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
-            database_encryption_active=database_encryption_enabled(app),
-            email_notification=smtp_notification_status(notification_config),
-            email_settings=smtp_notification_settings_public(notification_config),
             payment_qr_settings=payment_qr_settings_for_administration(get_db()),
             legacy_role_handover=legacy_role_handover,
             can_bootstrap_system_admin=(
@@ -8989,12 +9097,17 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     def render_system_administration(
         *, setup_credential: dict[str, str] | None = None
     ):
+        notification_config = smtp_notification_config(get_user_db(), app)
         return render_template(
             "system_admin.html",
             title="System-Verwaltung",
             band_users=platform_administration_users(band_accounts=True),
             platform_users=platform_administration_users(band_accounts=False),
             admin_messages=administration_messages(),
+            email_notification=smtp_notification_status(
+                notification_config, require_notification_recipient=False
+            ),
+            email_settings=smtp_notification_settings_public(notification_config),
             setup_credential=setup_credential,
             setup_code_days=int(current_app.config["ACCOUNT_SETUP_CODE_DAYS"]),
             sensitive_action_mfa_required=bool(g.user["sensitive_action_mfa_required"]),
@@ -9176,7 +9289,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         except (ValueError, sqlite3.IntegrityError) as exc:
             connection.rollback()
             flash("Die Rollenübergabe konnte nicht abgeschlossen werden: " + str(exc), "error")
-            return redirect(url_for("administration_page"))
+            return redirect(url_for("system_administration_page"))
 
         session.clear()
         g.user = None
@@ -9337,9 +9450,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash(str(exc), "error")
         return redirect(url_for("system_administration_page"))
 
-    @app.post("/verwaltung/email/test")
+    @app.post("/system-verwaltung/email/test")
     @login_required
-    @admin_required
+    @platform_staff_required
     def test_admin_email_notification():
         """Let the admin verify SMTP without exposing account credentials."""
 
@@ -9352,7 +9465,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 + (", ".join(details) if details else "E-Mail-Benachrichtigungen sind deaktiviert."),
                 "error",
             )
-            return redirect(url_for("administration_page"))
+            return redirect(url_for("system_administration_page"))
         try:
             send_smtp_notification(
                 notification_config,
@@ -9371,12 +9484,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             )
         else:
             flash(f"Test-E-Mail an {status['recipient']} wurde gesendet.", "success")
-        return redirect(url_for("administration_page"))
+        return redirect(url_for("system_administration_page"))
 
-    @app.post("/verwaltung/nachrichten/<int:message_id>/status")
     @app.post("/system-verwaltung/nachrichten/<int:message_id>/status")
     @login_required
-    @administration_staff_required
+    @platform_staff_required
     def update_admin_message_resolution(message_id: int):
         """Mark a private inbox item done or reopen it without deleting it."""
 
@@ -9418,16 +9530,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash("Der Nachrichtenstatus konnte nicht gespeichert werden.", "error")
         else:
             flash("Nachricht als erledigt markiert." if is_resolved else "Nachricht wieder geöffnet.", "success")
-        destination = (
-            "system_administration_page"
-            if normalized_role(g.user) in PLATFORM_STAFF_ROLES
-            else "administration_page"
-        )
-        return redirect(url_for(destination))
+        return redirect(url_for("system_administration_page"))
 
-    @app.post("/verwaltung/email/einstellungen")
+    @app.post("/system-verwaltung/email/einstellungen")
     @login_required
-    @admin_required
+    @platform_staff_required
     def save_admin_email_notification_settings():
         """Persist SMTP credentials encrypted after a fresh admin confirmation."""
 
@@ -9500,7 +9607,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             flash("E-Mail-Einstellungen konnten nicht gespeichert werden: " + str(exc), "error")
         else:
             flash("E-Mail-Einstellungen wurden verschlüsselt gespeichert.", "success")
-        return redirect(url_for("administration_page"))
+        return redirect(url_for("system_administration_page"))
 
     @app.post("/verwaltung/zahlungs-qr/einstellungen")
     @login_required

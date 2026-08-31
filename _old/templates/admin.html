@@ -116,6 +116,8 @@
 </section>
 {% endif %}
 
+{# SMTP settings belong exclusively to the System-Verwaltung. #}
+{#
 <section class="table-section admin-email-settings">
   <div class="section-heading">
     <div>
@@ -168,6 +170,7 @@
     <div class="dialog-actions"><button class="secondary-button" type="button" data-email-settings-close>Abbrechen</button><button class="primary-button" type="submit">Verschlüsselt speichern</button></div>
   </form>
 </dialog>
+#}
 
 <section class="table-section admin-payment-qr-settings">
   <div class="section-heading">
@@ -244,6 +247,8 @@
   </form>
 </dialog>
 
+{# The support inbox is intentionally rendered only in system_admin.html. #}
+{#
 <section class="table-section admin-message-inbox">
   <div class="section-heading"><div><p class="eyebrow">Privates Postfach</p><h2>Nachrichten an den Admin</h2><p>{{ admin_messages|length }} Nachricht(en), {{ admin_messages|rejectattr('is_resolved')|list|length }} offen.</p></div></div>
   {% if admin_messages %}
@@ -260,11 +265,12 @@
   <p class="muted">Noch keine Issues oder Fragen eingegangen.</p>
   {% endif %}
 </section>
+#}
 
 <section class="admin-grid">
   <article class="table-section admin-create-card">
     <h2>Benutzer anlegen</h2>
-    <p class="muted">Neue Bandkonten beginnen mit einem einmaligen Einrichtungscode. Support- und System-Admins werden getrennt in der System-Verwaltung angelegt.</p>
+    <p class="muted">Neue Bandkonten beginnen mit einem einmaligen Einrichtungscode.</p>
     <form action="{{ url_for('create_user') }}" method="post" class="stack-form" data-role-form>
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="band_admin_confirmation" value="" data-band-admin-confirmation>
@@ -281,8 +287,6 @@
       <div><dt>Member</dt><dd>Wie bisher: Verkauf, Historie, offene Vorgänge, Einkäufe, Bandfinanzen, Bilanzen und Diashow nutzen; Einkäufe und Bandfinanzen nur ansehen.</dd></div>
       <div><dt>Manager</dt><dd>Zusätzlich Artikel, Einkaufswarenkörbe inklusive Rechnungen, Bandfinanzen und die Diashow verwalten.</dd></div>
       <div><dt>Band-Admin</dt><dd>Verwaltet Benutzer und Rollen dieser Band sowie Zahlungsdaten, Sicherungen und den Reset der Betriebsdaten. Ein Reset erstellt vorher ein Archiv; Benutzerkonten und 2FA bleiben erhalten.</dd></div>
-      <div><dt>Support-Admin</dt><dd>Bearbeitet Supportnachrichten und erhält Bandzugriff erst nach einer ausdrücklichen, zeitlich begrenzten Freigabe. Diese Plattformrolle wird nicht hier vergeben.</dd></div>
-      <div><dt>System-Admin</dt><dd>Verwaltet die Plattform und Support-Admins. Banddaten sind ohne ausdrückliche Freigabe nicht zugänglich. Diese Plattformrolle wird nicht hier vergeben.</dd></div>
     </dl>
   </article>
 </section>
@@ -296,38 +300,6 @@
   <p id="band-admin-role-countdown" class="band-admin-role-countdown" role="status" aria-live="polite">Bestätigung in 3 Sekunden möglich.</p>
   <div class="dialog-actions"><button class="secondary-button" type="button" data-band-admin-cancel>Abbrechen</button><button class="danger-button" type="button" data-band-admin-confirm disabled>Band-Admin zuweisen (3)</button></div>
 </dialog>
-
-{% if database_encryption_active %}
-<section class="table-section database-security-area">
-  <div class="section-heading"><div><p class="eyebrow">Verschlüsselung</p><h2>Datenbank-Sicherheit</h2><p>Die Datenbanken und Rechnungsanhänge sind verschlüsselt. Nach normalen oder ungeplanten Neustarts benötigt die Anwendung die separate Datenbank-Passphrase oder den Wiederherstellungsschlüssel.</p></div></div>
-  <div class="database-security-actions">
-    <details class="admin-danger-confirmation">
-      <summary>Datenbank-Passphrase ändern</summary>
-      <form action="{{ url_for('update_database_passphrase') }}" method="post" class="admin-sensitive-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <p>Die aktuelle Passphrase ist danach sofort ungültig. Der bestehende Wiederherstellungsschlüssel bleibt gültig.</p>
-        <label>Neue Datenbank-Passphrase<input name="database_passphrase" type="password" autocomplete="new-password" minlength="12" required></label>
-        <label>Neue Passphrase wiederholen<input name="database_passphrase_confirmation" type="password" autocomplete="new-password" minlength="12" required></label>
-        <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-        {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
-        <label>Zur Bestätigung <code>DATENBANK-PASSPHRASE ÄNDERN</code><input name="confirmation" autocomplete="off" required></label>
-        <button class="danger-button compact-button" type="submit">Passphrase ändern</button>
-      </form>
-    </details>
-    <details class="admin-danger-confirmation">
-      <summary>Wiederherstellungsschlüssel erneuern</summary>
-      <form action="{{ url_for('renew_database_recovery_key') }}" method="post" class="admin-sensitive-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <p>Der bisherige Wiederherstellungsschlüssel wird sofort ungültig. Der neue Schlüssel wird einmalig auf der nächsten Seite angezeigt.</p>
-        <label>Dein aktuelles Passwort<input name="password" type="password" autocomplete="current-password" required></label>
-        {% if sensitive_action_mfa_required and not local_dev_mode %}<label>Aktueller 2FA-Code oder Wiederherstellungscode<input name="mfa_code" autocomplete="one-time-code" required></label>{% endif %}
-        <label>Zur Bestätigung <code>WIEDERHERSTELLUNGSSCHLÜSSEL ERNEUERN</code><input name="confirmation" autocomplete="off" required></label>
-        <button class="danger-button compact-button" type="submit">Neuen Schlüssel erzeugen</button>
-      </form>
-    </details>
-  </div>
-</section>
-{% endif %}
 
 <section class="table-section">
   <div class="section-heading"><div><h2>Benutzer</h2><p>Änderungen an Rolle, Passwort oder Aktivstatus melden bestehende Sitzungen des jeweiligen Kontos ab.</p></div></div>

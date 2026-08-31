@@ -18,10 +18,21 @@
     {% endwith %}
     <form method="post" class="stack-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label>Benutzername<input name="username" autocomplete="username" required autofocus></label>
+      <label>Benutzername<input name="username" value="{{ password_reset_username }}" autocomplete="username" required autofocus></label>
       <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
       <button class="primary-button full-width" type="submit">Anmelden</button>
     </form>
+    {% if password_reset_available %}
+    <section class="login-reset-option" aria-live="polite">
+      <h2>System-Admin-Passwort vergessen?</h2>
+      <p>Fordere einen Einmalcode an, mit dem du ein neues Passwort festlegst.</p>
+      <form action="{{ url_for('request_system_admin_password_reset') }}" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="username" value="{{ password_reset_username }}">
+        <button class="secondary-button full-width" type="submit">Einmalcode per E-Mail anfordern</button>
+      </form>
+    </section>
+    {% endif %}
   </main>
 </body>
 </html>

@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block page_class %}security-page{% endblock %}
+{% block content %}
+<section class="security-card">
+  <p class="eyebrow">Einmalige Datenübernahme</p>
+  <h1>Verschlüsselte Altdaten umwandeln</h1>
+  <p>Dieser Datenordner stammt aus einer älteren Version. Gib einmalig die bisherige Datenbank-Passphrase oder den damaligen Wiederherstellungsschlüssel ein. Danach werden die beiden Datenbanken, Anhänge, Produktfotos, Sicherungspunkte und Reset-Archive in normales, unverschlüsseltes SQLite beziehungsweise in normale Dateien umgewandelt.</p>
+  <form method="post" class="stack-form security-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Bisherige Datenbank-Passphrase <small>Nur für diese einmalige Umwandlung; sie wird nicht gespeichert.</small><input name="database_passphrase" type="password" autocomplete="current-password" autofocus></label>
+    <p class="form-divider">oder</p>
+    <label>Bisheriger Wiederherstellungsschlüssel<input name="recovery_key" type="password" autocomplete="off" spellcheck="false"></label>
+    <button class="primary-button" type="submit">Jetzt in unverschlüsselte Dateien umwandeln</button>
+  </form>
+  <aside class="notice warning-notice">
+    <strong>Bitte nicht unterbrechen:</strong> Je nach Anzahl der Sicherungen kann die Umwandlung einige Minuten dauern. Erst nach vollständiger Prüfung wird die alte Schlüsseldatei entfernt. Bei einem Fehler bleiben die noch nicht umgewandelten Bestände erneut migrierbar.
+  </aside>
+</section>
+{% endblock %}

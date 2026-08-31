@@ -36,6 +36,17 @@
   </article>
 </section>
 
+{% if profile_user.can_access_system_administration %}
+<section class="table-section password-card">
+  <div class="section-heading"><div><h2>E-Mail für Support und Passwort-Reset</h2><p>Nur Support- und System-Admins können eine persönliche Kontaktadresse hinterlegen. Ein System-Admin erhält den Passwort-Reset-Code ausschließlich an diese Adresse.</p></div></div>
+  <form action="{{ url_for('update_own_contact_email') }}" method="post" class="form-grid-inline username-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>E-Mail-Adresse<input name="contact_email" type="email" value="{{ profile_user.contact_email or '' }}" maxlength="254" autocomplete="email" required></label>
+    <button class="secondary-button" type="submit">E-Mail speichern</button>
+  </form>
+</section>
+{% endif %}
+
 <section class="table-section personalization-card">
   <div class="section-heading"><div><h2>{{ ui_text.get('profile.personalization') }}</h2><p>{{ ui_text.get('profile.personalization_intro') }}</p></div></div>
   <form action="{{ url_for('update_own_personalization') }}" method="post" class="personalization-form">
