@@ -1,0 +1,90 @@
+# Production-ish stack: MariaDB + Go API + Caddy (TLS and static SPA).
+# Run from the repository root:
+#   docker compose -f deploy/docker-compose.yml up --build
+name: protovibe-merch
+
+services:
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${DB_NAME:-merch}
+      MARIADB_USER: ${DB_USER:-merch}
+      MARIADB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      # Money is integer cents and every timestamp is written in UTC; a strict
+      # mode plus UTC keeps MariaDB from silently coercing either.
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+      - --default-time-zone=+00:00
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+      args:
+        APP_VERSION: ${APP_VERSION:-v0.0.0}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      LISTEN_ADDR: ":8000"
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DATABASE_DSN: "${DB_USER:-merch}:${DB_PASSWORD}@tcp(db:3306)/${DB_NAME:-merch}?charset=utf8mb4&parseTime=true&loc=UTC&multiStatements=true"
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      STORAGE_ROOT: /data/storage
+      BACKUP_ROOT: /data/backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-90}
+      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/Berlin}
+      MFA_ISSUER: ${MFA_ISSUER:-Protovibe Merch Manager}
+      ACCOUNT_SETUP_CODE_DAYS: ${ACCOUNT_SETUP_CODE_DAYS:-14}
+      PROFILE_REAUTH_SECONDS: ${PROFILE_REAUTH_SECONDS:-600}
+      EMAIL_NOTIFICATIONS_ENABLED: ${EMAIL_NOTIFICATIONS_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_SECURITY: ${SMTP_SECURITY:-ssl}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      UPDATE_CHECK_REPOSITORY: ${UPDATE_CHECK_REPOSITORY:-TAWilts/protovibe-merch}
+      UPDATE_CHECK_TOKEN: ${UPDATE_CHECK_TOKEN:-}
+    volumes:
+      - app-data:/data
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      BACKEND_UPSTREAM: backend:8000
+    ports:
+      - "${HOST_PORT:-8080}:80"
+      - "${HOST_TLS_PORT:-8443}:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  db-data:
+  app-data:
+  caddy-data:
+  caddy-config:

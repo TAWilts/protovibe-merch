@@ -1,0 +1,33 @@
+{$SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# The API and the health endpoints belong to the Go backend.
+	handle /api/* {
+		reverse_proxy {$BACKEND_UPSTREAM:backend:8000}
+	}
+	handle /healthz {
+		reverse_proxy {$BACKEND_UPSTREAM:backend:8000}
+	}
+	handle /readyz {
+		reverse_proxy {$BACKEND_UPSTREAM:backend:8000}
+	}
+
+	# Everything else is the SPA. try_files sends unknown paths to index.html so
+	# vue-router's history mode works on a hard refresh.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+
+		# The service worker must never be served stale, otherwise a device keeps
+		# an outdated offline sales view after a release.
+		@sw path /service-worker.js /manifest.webmanifest
+		header @sw Cache-Control "no-cache"
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy same-origin
+	}
+}

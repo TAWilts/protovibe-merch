@@ -1,0 +1,35 @@
+{
+  "name": "protovibe-merch-frontend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --build && vite build",
+    "preview": "vite preview",
+    "type-check": "vue-tsc --build",
+    "test:unit": "vitest run",
+    "lint": "eslint . --ext .ts,.vue"
+  },
+  "dependencies": {
+    "idb": "^8.0.3",
+    "pinia": "^2.3.1",
+    "vue": "^3.5.13",
+    "vue-i18n": "^11.1.2",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.4.6",
+    "@vue/tsconfig": "^0.7.0",
+    "happy-dom": "^17.1.8",
+    "typescript": "~5.7.3",
+    "vite": "^6.2.0",
+    "vite-plugin-pwa": "^0.21.1",
+    "vitest": "^3.0.7",
+    "vue-tsc": "^2.2.4",
+    "workbox-precaching": "^7.3.0",
+    "workbox-window": "^7.3.0"
+  }
+}
