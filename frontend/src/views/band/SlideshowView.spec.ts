@@ -16,7 +16,12 @@ vi.mock('@/stores/flash', () => ({
   useFlashStore: () => ({ success: vi.fn(), error: vi.fn() }),
 }))
 vi.mock('@/stores/session', () => ({
-  useSessionStore: () => ({ capabilities: { can_manage_slideshow: false } }),
+  // This is the real transition state: entering POS mode updates pos_mode,
+  // while the account's management capability remains true.
+  useSessionStore: () => ({
+    posMode: true,
+    capabilities: { can_manage_slideshow: true },
+  }),
 }))
 vi.mock('@/api/endpoints', () => ({
   catalogueApi: { list: listCatalogue },
@@ -57,7 +62,7 @@ describe('SlideshowView in POS mode', () => {
     })
   })
 
-  it('loads photos without the POS-restricted catalogue request and starts playback', async () => {
+  it('reloads photos in POS mode without the restricted catalogue request and starts playback', async () => {
     const wrapper = mount(SlideshowView)
     await flushPromises()
 

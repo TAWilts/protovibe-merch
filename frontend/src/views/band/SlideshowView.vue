@@ -34,7 +34,13 @@ const collageModes = ref<CollageMode[]>(['scroll', 'reveal', 'filmstrip'])
 const articles = ref<Article[]>([])
 const uploadTarget = ref('')
 
-const canManage = computed(() => session.capabilities?.can_manage_slideshow ?? false)
+// Capabilities describe the account and deliberately stay unchanged when the
+// current session enters POS mode. Management endpoints are nevertheless
+// blocked there, so the component must include the session restriction when
+// deciding whether to load the catalogue or show curator controls.
+const canManage = computed(() => (
+  (session.capabilities?.can_manage_slideshow ?? false) && !session.posMode
+))
 const selected = computed(() => gallery.value.filter((photo) => photo.include_in_slideshow))
 
 /** Playback state. */

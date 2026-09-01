@@ -563,4 +563,10 @@ Belegnummer auch auf Ebene des Unique-Constraints wieder frei; konkurrierende
 Reservierungen werden mit einer neuen Nummer wiederholt statt als sporadischer 500er
 ausgegeben. Der Ablauf ist zusätzlich gegen eine echte MariaDB getestet.
 
+Beim erneuten Öffnen der Produktpalette im laufenden POS Mode wird die unverändert
+vorhandene Rollen-Capability nun ausdrücklich mit dem Sitzungsmodus kombiniert. Dadurch
+bleiben die Verwaltungsfelder verborgen und der gesperrte Artikel-Endpunkt wird auch
+nach einem Reiterwechsel nicht mehr aufgerufen; Fotos und Startknopf werden erneut
+geladen.
+
 ---
