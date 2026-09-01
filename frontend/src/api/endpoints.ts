@@ -122,7 +122,6 @@ export const salesApi = {
   createPaymentQrIntent: (payload: {
     method: string
     sale: BookSalePayload
-    description?: string
   }) => api.post<PaymentQRIntent>('/payment-qr/intents', payload),
   /** Releases the reservation when the customer walks away mid-scan. */
   cancelPaymentQrIntent: (token: string) =>

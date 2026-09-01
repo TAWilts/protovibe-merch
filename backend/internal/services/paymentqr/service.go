@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -19,7 +21,14 @@ import (
 // IntentTTL is how long a displayed code stays valid. It matches the original:
 // long enough for a customer to fumble with their banking app, short enough
 // that an abandoned code frees its receipt number the same evening.
-const IntentTTL = 20 * time.Minute
+const (
+	IntentTTL                 = 20 * time.Minute
+	DefaultBankRemittanceText = "Merch-Kauf"
+	PaymentRemittancePrefix   = "Protovibe Merch"
+	PayPalMeURLPrefix         = "https://paypal.me/"
+)
+
+var paypalMeUsernamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // Errors from the intent workflow.
 var (
@@ -49,7 +58,7 @@ func (s *Service) Settings(ctx context.Context) (*models.PaymentQRSettings, erro
 	err := s.db.WithContext(ctx).First(&settings).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// A band that never configured anything is a normal state, not an error.
-		return &models.PaymentQRSettings{BankRemittanceText: "Merch-Kauf"}, nil
+		return &models.PaymentQRSettings{BankRemittanceText: DefaultBankRemittanceText}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -59,12 +68,9 @@ func (s *Service) Settings(ctx context.Context) (*models.PaymentQRSettings, erro
 
 // SaveSettings validates and stores the payment destinations.
 func (s *Service) SaveSettings(ctx context.Context, input models.PaymentQRSettings, actorID int64, actorName string) (*models.PaymentQRSettings, error) {
-	paypal := strings.TrimSpace(input.PayPalMeURL)
-	if paypal != "" {
-		parsed, err := url.Parse(paypal)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-			return nil, ErrInvalidPayPalURL
-		}
+	paypal, err := NormalizePayPalMeURL(input.PayPalMeURL)
+	if err != nil {
+		return nil, err
 	}
 
 	iban := NormalizeIBAN(input.BankIBAN)
@@ -80,11 +86,6 @@ func (s *Service) SaveSettings(ctx context.Context, input models.PaymentQRSettin
 		return nil, err
 	}
 
-	remittance := strings.TrimSpace(input.BankRemittanceText)
-	if remittance == "" {
-		remittance = "Merch-Kauf"
-	}
-
 	existing, err := s.Settings(ctx)
 	if err != nil {
 		return nil, err
@@ -95,7 +96,9 @@ func (s *Service) SaveSettings(ctx context.Context, input models.PaymentQRSettin
 	existing.BankAccountHolder = strings.TrimSpace(input.BankAccountHolder)
 	existing.BankIBAN = iban
 	existing.BankBIC = strings.ToUpper(strings.TrimSpace(input.BankBIC))
-	existing.BankRemittanceText = remittance
+	// Kept as an additive legacy column only. Every actual transfer reference
+	// is generated from receipt ID and basket in CreateIntent below.
+	existing.BankRemittanceText = DefaultBankRemittanceText
 	existing.UpdatedAt = now
 	existing.UpdatedByUserID = &actorID
 	existing.UpdatedByUsername = actorName
@@ -147,7 +150,7 @@ func (s *Service) CreateIntent(
 	receiptID string,
 	salePayloadJSON string,
 	actorID int64,
-	description string,
+	descriptions []string,
 ) (*Intent, error) {
 	if amountCents <= 0 {
 		return nil, ErrNoAmount
@@ -164,23 +167,20 @@ func (s *Service) CreateIntent(
 		if settings.PayPalMeURL == "" {
 			return nil, ErrNotConfigured
 		}
+		paypalURL, err := NormalizePayPalMeURL(settings.PayPalMeURL)
+		if err != nil {
+			return nil, err
+		}
 		// PayPal.me takes the amount in the path; the currency suffix keeps it
 		// unambiguous for a customer whose account is not in euros.
-		payload = strings.TrimRight(settings.PayPalMeURL, "/") +
+		payload = strings.TrimRight(paypalURL, "/") +
 			"/" + formatAmount(amountCents) + "EUR"
 
 	case models.PaymentMethodTransfer:
 		if settings.BankIBAN == "" || settings.BankAccountHolder == "" {
 			return nil, ErrNotConfigured
 		}
-		remittance := settings.BankRemittanceText
-		if receiptID != "" {
-			// The receipt ID leads, so it survives any later shortening.
-			remittance = receiptID
-			if description != "" {
-				remittance += ": " + description
-			}
-		}
+		remittance := RemittanceText(receiptID, descriptions)
 		payload, err = EPCPayload(BankAccount{
 			Holder:     settings.BankAccountHolder,
 			IBAN:       settings.BankIBAN,
@@ -230,6 +230,66 @@ func (s *Service) CreateIntent(
 		PayloadHint:  payloadHint(method, payload),
 		ExpiresAt:    expires,
 	}, nil
+}
+
+// NormalizePayPalMeURL accepts only the one destination the UI exposes. This
+// also protects installations whose settings were inserted directly into the
+// database instead of going through SaveSettings.
+func NormalizePayPalMeURL(value string) (string, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "paypal.me") ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return "", ErrInvalidPayPalURL
+	}
+	username := strings.Trim(parsed.Path, "/")
+	if !paypalMeUsernamePattern.MatchString(username) || strings.Contains(parsed.Path, "//") {
+		return "", ErrInvalidPayPalURL
+	}
+	return PayPalMeURLPrefix + username, nil
+}
+
+// RemittanceText recreates the original generic transfer reference: the
+// product name is fixed, followed by the final receipt ID and as many complete
+// basket labels as fit into EPC's 140-character field.
+func RemittanceText(receiptID string, descriptions []string) string {
+	receipt := strings.Join(strings.Fields(receiptID), " ")
+	base := strings.TrimSpace(PaymentRemittancePrefix + " " + receipt)
+	result := base
+	for _, rawDescription := range descriptions {
+		description := strings.Join(strings.Fields(rawDescription), " ")
+		if description == "" {
+			continue
+		}
+		separator := ", "
+		if result == base {
+			separator = ": "
+		}
+		candidate := result + separator + description
+		if utf8.RuneCountInString(candidate) <= MaxRemittanceLength {
+			result = candidate
+			continue
+		}
+		if result == base {
+			remaining := MaxRemittanceLength - utf8.RuneCountInString(result+separator)
+			if remaining > 3 {
+				runes := []rune(description)
+				if len(runes) > remaining-3 {
+					runes = runes[:remaining-3]
+				}
+				return result + separator + strings.TrimSpace(string(runes)) + "..."
+			}
+			return result
+		}
+		if utf8.RuneCountInString(result)+4 <= MaxRemittanceLength {
+			return result + " ..."
+		}
+		return result
+	}
+	return result
 }
 
 // CancelIntent releases a reservation so its receipt number is free again.

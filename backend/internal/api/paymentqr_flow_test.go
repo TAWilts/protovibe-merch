@@ -38,13 +38,19 @@ func TestPaymentQRSettingsValidation(t *testing.T) {
 	if insecure.Status != http.StatusBadRequest {
 		t.Fatalf("a plain-http PayPal link must be rejected: %d %v", insecure.Status, insecure.Body)
 	}
+	wrongHost := h.do(http.MethodPut, "/api/v1/payment-qr/settings", map[string]any{
+		"paypal_me_url": "https://example.com/protovibe",
+	})
+	if wrongHost.Status != http.StatusBadRequest || wrongHost.Body["code"] != "invalid_paypal_url" {
+		t.Fatalf("only PayPal.Me may be stored: %d %v", wrongHost.Status, wrongHost.Body)
+	}
 
 	good := h.do(http.MethodPut, "/api/v1/payment-qr/settings", map[string]any{
 		"paypal_me_url":        "https://paypal.me/protovibe",
 		"bank_account_holder":  "Protovibe",
 		"bank_iban":            "DE89 3704 0044 0532 0130 00",
 		"bank_bic":             "COBADEFFXXX",
-		"bank_remittance_text": "Merch-Kauf",
+		"bank_remittance_text": "Vom Admin bestimmter Text",
 	})
 	if good.Status != http.StatusOK {
 		t.Fatalf("valid settings must be accepted: %d %v", good.Status, good.Body)
@@ -52,6 +58,16 @@ func TestPaymentQRSettingsValidation(t *testing.T) {
 	// Spaces as typed are normalised away.
 	if good.Body["bank_iban"] != testIBAN {
 		t.Fatalf("the IBAN should be stored without spaces: %v", good.Body)
+	}
+	if _, exposed := good.Body["bank_remittance_text"]; exposed {
+		t.Fatalf("the obsolete admin remittance must no longer be exposed: %v", good.Body)
+	}
+	var stored models.PaymentQRSettings
+	if err := h.db.WithContext(h.ctx()).First(&stored).Error; err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if stored.BankRemittanceText != "Merch-Kauf" {
+		t.Fatalf("an admin-supplied remittance must be ignored, got %q", stored.BankRemittanceText)
 	}
 }
 
@@ -94,7 +110,7 @@ func TestShowingACodeBooksNothing(t *testing.T) {
 	}
 
 	intent := h.do(http.MethodPost, "/api/v1/payment-qr/intents", map[string]any{
-		"method": "Überweisung", "sale": basket, "description": "Geometry Shirt M",
+		"method": "Überweisung", "sale": basket, "description": "Vom Browser bestimmter Text",
 	})
 	if intent.Status != http.StatusCreated {
 		t.Fatalf("create intent: %d %v", intent.Status, intent.Body)
@@ -108,8 +124,11 @@ func TestShowingACodeBooksNothing(t *testing.T) {
 	}
 	hint, _ := intent.Body["payload_hint"].(string)
 	receiptID, _ := intent.Body["receipt_id"].(string)
-	if !strings.HasPrefix(hint, receiptID) {
-		t.Fatalf("the reference must lead with the receipt ID: %q vs %q", hint, receiptID)
+	if !strings.HasPrefix(hint, "Protovibe Merch "+receiptID+": 2x QR Shirt") {
+		t.Fatalf("the server must generate the reference from receipt and basket: %q", hint)
+	}
+	if strings.Contains(hint, "Vom Browser") || strings.Contains(hint, "Merch-Kauf") {
+		t.Fatalf("neither browser nor admin text may influence the reference: %q", hint)
 	}
 
 	// Nothing was booked.
@@ -187,22 +206,25 @@ func TestCancellingACodeFreesTheNumber(t *testing.T) {
 }
 
 // TestUnconfiguredMethodIsRefused keeps a seller from showing a code that
-// points nowhere.
+// points nowhere while preserving an ordinary sale with the same method.
 func TestUnconfiguredMethodIsRefused(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()
 	h.signInAs(band, models.RoleBandAdmin)
 	_, variants := h.sellableArticle("Unconfigured QR Shirt")
 
+	sale := map[string]any{
+		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+		"payment_method": "PayPal", "is_paid": true, "is_received": true, "sold_on": "2026-08-27",
+	}
 	res := h.do(http.MethodPost, "/api/v1/payment-qr/intents", map[string]any{
-		"method": "PayPal",
-		"sale": map[string]any{
-			"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
-			"payment_method": "PayPal", "is_paid": true, "is_received": true, "sold_on": "2026-08-27",
-		},
+		"method": "PayPal", "sale": sale,
 	})
 	if res.Status != http.StatusConflict || res.Body["code"] != "payment_not_configured" {
 		t.Fatalf("expected payment_not_configured, got %d %v", res.Status, res.Body)
+	}
+	if booked := h.do(http.MethodPost, "/api/v1/sales", sale); booked.Status != http.StatusCreated {
+		t.Fatalf("missing QR settings must not block the sale: %d %v", booked.Status, booked.Body)
 	}
 }
 

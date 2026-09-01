@@ -33,6 +33,17 @@ const confirming = ref<{ grantId: number; password: string; code: string } | nul
  */
 const paymentQr = ref<PaymentQRSettings | null>(null)
 const paymentQrSaving = ref(false)
+const paypalMeUsername = computed({
+  get: () => {
+    const value = paymentQr.value?.paypal_me_url.trim() ?? ''
+    return value.replace(/^https:\/\/paypal\.me\//i, '')
+  },
+  set: (value: string) => {
+    if (!paymentQr.value) return
+    const username = value.trim().replace(/^https:\/\/paypal\.me\//i, '').replace(/^\/+/, '')
+    paymentQr.value.paypal_me_url = username ? `https://paypal.me/${username}` : ''
+  },
+})
 
 /** Account management. */
 const users = ref<BandUser[]>([])
@@ -216,7 +227,17 @@ function durationLabel(seconds: number): string {
       <form class="stack-form" @submit.prevent="savePaymentQr">
         <label>
           {{ t('administration.paymentQr.paypal') }}
-          <input v-model="paymentQr.paypal_me_url" type="url" placeholder="https://paypal.me/…" />
+          <span class="paypal-me-input">
+            <span aria-hidden="true">https://paypal.me/</span>
+            <input
+              v-model="paypalMeUsername"
+              type="text"
+              inputmode="text"
+              autocomplete="off"
+              pattern="[A-Za-z0-9._-]+"
+              placeholder="deinname"
+            />
+          </span>
           <small>{{ t('administration.paymentQr.paypalHint') }}</small>
         </label>
         <div class="field-grid two-columns">
@@ -229,16 +250,11 @@ function durationLabel(seconds: number): string {
             <input v-model="paymentQr.bank_iban" autocomplete="off" />
           </label>
         </div>
-        <div class="field-grid two-columns">
-          <label>
-            {{ t('administration.paymentQr.bic') }}
-            <input v-model="paymentQr.bank_bic" autocomplete="off" />
-          </label>
-          <label>
-            {{ t('administration.paymentQr.remittance') }}
-            <input v-model="paymentQr.bank_remittance_text" />
-          </label>
-        </div>
+        <label>
+          {{ t('administration.paymentQr.bic') }}
+          <input v-model="paymentQr.bank_bic" autocomplete="off" />
+        </label>
+        <p class="muted">{{ t('administration.paymentQr.remittanceHint') }}</p>
         <button class="primary-button" type="submit" :disabled="paymentQrSaving">
           {{ t('common.save') }}
         </button>

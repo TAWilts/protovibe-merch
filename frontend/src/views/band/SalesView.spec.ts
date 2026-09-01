@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import SalesView from './SalesView.vue'
 
-const { assortment, book } = vi.hoisted(() => ({ assortment: vi.fn(), book: vi.fn() }))
+const { assortment, book, createPaymentQrIntent } = vi.hoisted(() => ({
+  assortment: vi.fn(),
+  book: vi.fn(),
+  createPaymentQrIntent: vi.fn(),
+}))
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ name: 'sales' }) }))
 vi.mock('vue-i18n', () => ({
@@ -36,7 +40,7 @@ vi.mock('@/api/endpoints', () => ({
     receiptPreview: vi.fn().mockResolvedValue({ receipt_id: 'V-1' }),
     paymentQrAvailability: vi.fn().mockResolvedValue({ paypal: false, bank: false }),
     createEvent: vi.fn(),
-    createPaymentQrIntent: vi.fn(),
+    createPaymentQrIntent,
     cancelPaymentQrIntent: vi.fn(),
     book,
   },
@@ -53,6 +57,7 @@ function button(wrapper: ReturnType<typeof mount>, text: string) {
 describe('SalesView checkout', () => {
   beforeEach(() => {
     book.mockReset().mockResolvedValue({ receipt_id: 'V-1', sale_ids: [1] })
+    createPaymentQrIntent.mockReset()
     assortment.mockReset().mockResolvedValue({
       payment_methods: ['Bar'],
       articles: [{
@@ -154,5 +159,40 @@ describe('SalesView checkout', () => {
 
     await button(wrapper, 'Blau').trigger('click')
     expect(wrapper.get('.variant-photo-caption').text()).toBe('sales.variantPhotoExact')
+  })
+
+  it('allows PayPal sales without configured QR data and explains where to add it', async () => {
+    assortment.mockResolvedValueOnce({
+      payment_methods: ['PayPal'],
+      articles: [{
+        id: 1,
+        name: 'Testshirt',
+        total_stock: 12,
+        option_groups: [],
+        variants: [{
+          id: 11,
+          combination_key: '',
+          option_value_ids: [],
+          sale_price_cents: 2000,
+          on_hand: 12,
+          photo_ids: [],
+        }],
+      }],
+    })
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+    await button(wrapper, 'Testshirt').trigger('click')
+    await button(wrapper, 'sales.addToCart').trigger('click')
+    await button(wrapper, 'sales.paymentDetails').trigger('click')
+
+    expect(wrapper.text()).toContain('sales.paymentQrSetupHint')
+    await button(wrapper, 'common.confirm').trigger('click')
+    expect(wrapper.find('.checkout-step-3').exists()).toBe(true)
+    expect(createPaymentQrIntent).not.toHaveBeenCalled()
+
+    await button(wrapper, 'sales.book').trigger('click')
+    await flushPromises()
+    expect(book).toHaveBeenCalledOnce()
   })
 })

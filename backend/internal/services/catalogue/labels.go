@@ -11,6 +11,9 @@ import (
 type Label struct {
 	ArticleName  string `json:"article_name"`
 	VariantLabel string `json:"variant_label"`
+	// OptionValues is the compact, group-name-free representation used where
+	// space is scarce, for example "Schwarz/M" in an EPC transfer reference.
+	OptionValues []string `json:"-"`
 	// OptionPositions preserves the configured value order (for example
 	// S, M, L, XL). It is intentionally not exposed; consumers use it only
 	// when their default order must follow the catalogue rather than the
@@ -86,11 +89,14 @@ func (s *Service) VariantLabels(ctx context.Context) (map[int64]Label, error) {
 			text += part.GroupName + ": " + part.Value
 		}
 		positions := make([]int, 0, len(parts)*2)
+		optionValues := make([]string, 0, len(parts))
 		for _, part := range parts {
 			positions = append(positions, part.GroupPos, part.ValuePos)
+			optionValues = append(optionValues, part.Value)
 		}
 		labels[variant.ID] = Label{
-			ArticleName: variant.ArticleName, VariantLabel: text, OptionPositions: positions,
+			ArticleName: variant.ArticleName, VariantLabel: text,
+			OptionValues: optionValues, OptionPositions: positions,
 		}
 	}
 	return labels, nil

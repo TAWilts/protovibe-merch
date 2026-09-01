@@ -118,6 +118,11 @@ const qrOffered = computed(() => {
   if (paymentMethod.value === 'Überweisung') return qrAvailability.value.bank
   return false
 })
+const qrSetupMissing = computed(() => (
+  session.featureFlags?.payment_qr !== false
+  && (paymentMethod.value === 'PayPal' || paymentMethod.value === 'Überweisung')
+  && !qrOffered.value
+))
 
 /**
  * A stand with forty articles is a scroll; typing two letters is faster than
@@ -401,7 +406,6 @@ async function showPaymentQr(): Promise<boolean> {
     qrIntent.value = await salesApi.createPaymentQrIntent({
       method: qrMethodFor(paymentMethod.value),
       sale: salePayload(),
-      description: basket.value.map((line) => `${line.quantity}× ${line.label}`).join(', '),
     })
     return true
   } catch (error) {
@@ -481,7 +485,7 @@ async function confirmCheckout() {
 function reportError(error: unknown) {
   flash.error(
     error instanceof ApiError
-      ? t(`errors.${error.detailCode ?? 'generic'}`, t('errors.generic'))
+      ? t(`errors.${error.detailCode ?? 'generic'}`, error.message || t('errors.generic'))
       : t('errors.network'),
   )
 }
@@ -573,7 +577,7 @@ async function book(override?: BookSalePayload): Promise<boolean> {
     // The second case is queued rather than lost, which is the whole point of
     // taking the app to a gig.
     if (error instanceof ApiError) {
-      flash.error(t(`errors.${error.detailCode ?? 'generic'}`, t('errors.generic')))
+      flash.error(t(`errors.${error.detailCode ?? 'generic'}`, error.message || t('errors.generic')))
     } else if (session.featureFlags?.offline_sales !== false) {
       await offline.queue(payload)
       flash.success(t('sales.queuedOffline'))
@@ -808,6 +812,9 @@ function resetAfterSale() {
               <span>{{ method }}</span>
             </button>
           </div>
+          <p v-if="qrSetupMissing" class="notice payment-qr-setup-hint">
+            {{ t('sales.paymentQrSetupHint') }}
+          </p>
           <div v-if="paymentMethod === 'Bar' && (!needsShipping || !shipPayLater)" class="till-given">
             <label>
               <span>{{ t('sales.amountGiven') }}</span>

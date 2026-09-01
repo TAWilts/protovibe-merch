@@ -57,6 +57,38 @@ func TestValidateBIC(t *testing.T) {
 	}
 }
 
+func TestNormalizePayPalMeURL(t *testing.T) {
+	got, err := paymentqr.NormalizePayPalMeURL("https://paypal.me/protovibe")
+	if err != nil || got != "https://paypal.me/protovibe" {
+		t.Fatalf("canonical PayPal.Me URL = %q, %v", got, err)
+	}
+	for _, bad := range []string{
+		"http://paypal.me/protovibe",
+		"https://example.com/protovibe",
+		"https://paypal.me/protovibe/extra",
+		"https://paypal.me/protovibe?country=DE",
+	} {
+		if _, err := paymentqr.NormalizePayPalMeURL(bad); !errors.Is(err, paymentqr.ErrInvalidPayPalURL) {
+			t.Errorf("%q must be rejected, got %v", bad, err)
+		}
+	}
+}
+
+func TestGeneratedRemittanceMatchesOriginalFormat(t *testing.T) {
+	got := paymentqr.RemittanceText("V-20260827-001", []string{
+		"2x Geometry Shirt Schwarz/M", "1x Cap",
+	})
+	want := "Protovibe Merch V-20260827-001: 2x Geometry Shirt Schwarz/M, 1x Cap"
+	if got != want {
+		t.Fatalf("remittance = %q, want %q", got, want)
+	}
+
+	long := paymentqr.RemittanceText("V-20260827-001", []string{strings.Repeat("Langer Artikel ", 20)})
+	if !strings.HasPrefix(long, "Protovibe Merch V-20260827-001: ") || len([]rune(long)) > paymentqr.MaxRemittanceLength {
+		t.Fatalf("receipt must survive a long description within 140 characters: %q", long)
+	}
+}
+
 // TestEPCPayloadShape pins the eleven-line SEPA credit transfer format.
 func TestEPCPayloadShape(t *testing.T) {
 	payload, err := paymentqr.EPCPayload(account(), 5400)

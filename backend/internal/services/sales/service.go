@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/catalogue"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/receipt"
 )
 
@@ -339,4 +341,44 @@ func (s *Service) QuoteTotal(ctx context.Context, req Request) (int64, error) {
 		return 0, err
 	}
 	return prepared.TotalDueCents, nil
+}
+
+// PaymentQRDescriptions builds compact, server-owned basket labels for an EPC
+// transfer reference. Browser text is deliberately not accepted here: the
+// reference must describe the same variants that the server has just priced.
+func (s *Service) PaymentQRDescriptions(ctx context.Context, items []BasketItem) ([]string, error) {
+	labels, err := catalogue.NewService(s.db).VariantLabels(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	quantities := make(map[int64]int, len(items))
+	order := make([]int64, 0, len(items))
+	for _, item := range items {
+		if _, seen := quantities[item.VariantID]; !seen {
+			order = append(order, item.VariantID)
+		}
+		quantities[item.VariantID] += item.Quantity
+	}
+
+	descriptions := make([]string, 0, len(order))
+	for _, variantID := range order {
+		label, ok := labels[variantID]
+		if !ok {
+			return nil, ErrUnknownVariant
+		}
+		article := strings.Join(strings.Fields(label.ArticleName), " ")
+		options := make([]string, 0, len(label.OptionValues))
+		for _, value := range label.OptionValues {
+			if compact := strings.Join(strings.Fields(value), " "); compact != "" {
+				options = append(options, compact)
+			}
+		}
+		description := fmt.Sprintf("%dx %s", quantities[variantID], article)
+		if len(options) > 0 {
+			description += " " + strings.Join(options, "/")
+		}
+		descriptions = append(descriptions, description)
+	}
+	return descriptions, nil
 }

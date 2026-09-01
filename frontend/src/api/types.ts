@@ -86,7 +86,6 @@ export interface PaymentQRSettings {
   bank_account_holder: string
   bank_iban: string
   bank_bic: string
-  bank_remittance_text: string
 }
 
 /** A reserved receipt number with its rendered code. Nothing is booked yet. */

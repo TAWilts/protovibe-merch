@@ -540,4 +540,13 @@ Optionswerten gewählt und als ähnliche Variante beschriftet.
 Im dritten Schritt steht die Verkaufs-ID zusätzlich als kontrastreiche, groß gesetzte
 Kennung direkt im Abschlusskopf; bei QR-Zahlungen wird die reservierte ID angezeigt.
 
+Die Zahlungs-QR-Nacharbeiten sind ebenfalls wieder auf dem Verhalten des Originals:
+Im Adminformular ist `https://paypal.me/` fest vorgegeben und es wird nur noch der
+Kontoname eingegeben. Der freie Überweisungs-Verwendungszweck ist entfernt; der Server
+erzeugt ihn manipulationssicher als `Protovibe Merch <Verkaufs-ID>` plus Stückzahlen,
+Artikel und Varianten aus dem tatsächlich bepreisten Warenkorb. Fehlen PayPal- oder
+Bankdaten, bleibt der Verkauf möglich und erklärt, wo ein Band-Admin die QR-Funktion
+einrichtet. Ungültige direkt eingetragene IBAN-/BIC-/PayPal-Daten sowie ein zu großer
+QR-Inhalt erscheinen nun als konkrete Fehlermeldung statt als allgemeiner Fehler.
+
 ---

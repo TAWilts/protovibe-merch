@@ -38,11 +38,10 @@ func (s *Server) paymentQRAvailability(c *gin.Context) {
 // paymentQRSettingsPayload never returns anything secret; a bank account is
 // printed on every invoice anyway, and the band admin needs to verify it.
 type paymentQRSettingsPayload struct {
-	PayPalMeURL        string `json:"paypal_me_url"`
-	BankAccountHolder  string `json:"bank_account_holder"`
-	BankIBAN           string `json:"bank_iban"`
-	BankBIC            string `json:"bank_bic"`
-	BankRemittanceText string `json:"bank_remittance_text"`
+	PayPalMeURL       string `json:"paypal_me_url"`
+	BankAccountHolder string `json:"bank_account_holder"`
+	BankIBAN          string `json:"bank_iban"`
+	BankBIC           string `json:"bank_bic"`
 }
 
 func (s *Server) getPaymentQRSettings(c *gin.Context) {
@@ -52,11 +51,10 @@ func (s *Server) getPaymentQRSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, paymentQRSettingsPayload{
-		PayPalMeURL:        settings.PayPalMeURL,
-		BankAccountHolder:  settings.BankAccountHolder,
-		BankIBAN:           settings.BankIBAN,
-		BankBIC:            settings.BankBIC,
-		BankRemittanceText: settings.BankRemittanceText,
+		PayPalMeURL:       settings.PayPalMeURL,
+		BankAccountHolder: settings.BankAccountHolder,
+		BankIBAN:          settings.BankIBAN,
+		BankBIC:           settings.BankBIC,
 	})
 }
 
@@ -70,11 +68,10 @@ func (s *Server) savePaymentQRSettings(c *gin.Context) {
 	state := stateFrom(c)
 	ctx := c.Request.Context()
 	settings, err := s.paymentQR.SaveSettings(ctx, models.PaymentQRSettings{
-		PayPalMeURL:        req.PayPalMeURL,
-		BankAccountHolder:  req.BankAccountHolder,
-		BankIBAN:           req.BankIBAN,
-		BankBIC:            req.BankBIC,
-		BankRemittanceText: req.BankRemittanceText,
+		PayPalMeURL:       req.PayPalMeURL,
+		BankAccountHolder: req.BankAccountHolder,
+		BankIBAN:          req.BankIBAN,
+		BankBIC:           req.BankBIC,
 	}, state.User.ID, state.User.Username)
 	if err != nil {
 		s.reportPaymentQRError(c, err)
@@ -89,11 +86,10 @@ func (s *Server) savePaymentQRSettings(c *gin.Context) {
 		},
 	})
 	c.JSON(http.StatusOK, paymentQRSettingsPayload{
-		PayPalMeURL:        settings.PayPalMeURL,
-		BankAccountHolder:  settings.BankAccountHolder,
-		BankIBAN:           settings.BankIBAN,
-		BankBIC:            settings.BankBIC,
-		BankRemittanceText: settings.BankRemittanceText,
+		PayPalMeURL:       settings.PayPalMeURL,
+		BankAccountHolder: settings.BankAccountHolder,
+		BankIBAN:          settings.BankIBAN,
+		BankBIC:           settings.BankBIC,
 	})
 }
 
@@ -102,8 +98,6 @@ type createIntentRequest struct {
 	// Sale is the basket the code is for. It is stored with the reservation so
 	// confirming the payment books exactly what the customer scanned.
 	Sale sales.Request `json:"sale"`
-	// Description is the optional item list appended to the bank reference.
-	Description string `json:"description"`
 }
 
 // createPaymentQRIntent reserves a receipt number and renders the code.
@@ -130,6 +124,15 @@ func (s *Server) createPaymentQRIntent(c *gin.Context) {
 		return
 	}
 
+	var descriptions []string
+	if req.Method == models.PaymentMethodTransfer {
+		descriptions, err = s.sales.PaymentQRDescriptions(ctx, req.Sale.Items)
+		if err != nil {
+			s.reportSalesError(c, err)
+			return
+		}
+	}
+
 	receiptID, err := s.receipts.Allocate(ctx, receipt.PrefixSale, req.Sale.ReceiptID, req.Sale.SoldOn, "")
 	if err != nil {
 		serverError(c, err)
@@ -144,7 +147,7 @@ func (s *Server) createPaymentQRIntent(c *gin.Context) {
 
 	state := stateFrom(c)
 	intent, err := s.paymentQR.CreateIntent(ctx, req.Method, amountCents, receiptID,
-		string(encoded), state.User.ID, req.Description)
+		string(encoded), state.User.ID, descriptions)
 	if err != nil {
 		s.reportPaymentQRError(c, err)
 		return
@@ -171,6 +174,8 @@ func (s *Server) reportPaymentQRError(c *gin.Context, err error) {
 	case errors.Is(err, paymentqr.ErrUnknownMethod):
 		fail(c, http.StatusBadRequest, "unknown_payment_method", err.Error())
 	case errors.Is(err, paymentqr.ErrNoAmount):
+		fail(c, http.StatusBadRequest, "invalid_amount", err.Error())
+	case errors.Is(err, paymentqr.ErrAmountTooLarge):
 		fail(c, http.StatusBadRequest, "invalid_amount", err.Error())
 	case errors.Is(err, paymentqr.ErrInvalidIBAN), errors.Is(err, paymentqr.ErrMissingIBAN):
 		fail(c, http.StatusBadRequest, "invalid_iban", err.Error())
