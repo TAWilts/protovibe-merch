@@ -133,12 +133,6 @@ func (s *Server) createPaymentQRIntent(c *gin.Context) {
 		}
 	}
 
-	receiptID, err := s.receipts.Allocate(ctx, receipt.PrefixSale, req.Sale.ReceiptID, req.Sale.SoldOn, "")
-	if err != nil {
-		serverError(c, err)
-		return
-	}
-
 	encoded, err := json.Marshal(req.Sale)
 	if err != nil {
 		serverError(c, err)
@@ -146,8 +140,25 @@ func (s *Server) createPaymentQRIntent(c *gin.Context) {
 	}
 
 	state := stateFrom(c)
-	intent, err := s.paymentQR.CreateIntent(ctx, req.Method, amountCents, receiptID,
-		string(encoded), state.User.ID, descriptions)
+	var intent *paymentqr.Intent
+	// Allocation scans reservations and therefore cannot lock a row that does
+	// not exist yet. If two devices choose the same next number concurrently,
+	// the unique constraint picks a winner and the loser simply allocates the
+	// next number instead of exposing a sporadic 500 error.
+	for attempt := 0; attempt < 4; attempt++ {
+		receiptID, allocateErr := s.receipts.Allocate(
+			ctx, receipt.PrefixSale, req.Sale.ReceiptID, req.Sale.SoldOn, "",
+		)
+		if allocateErr != nil {
+			serverError(c, allocateErr)
+			return
+		}
+		intent, err = s.paymentQR.CreateIntent(ctx, req.Method, amountCents, receiptID,
+			string(encoded), state.User.ID, descriptions)
+		if !errors.Is(err, paymentqr.ErrReceiptReserved) {
+			break
+		}
+	}
 	if err != nil {
 		s.reportPaymentQRError(c, err)
 		return
@@ -187,6 +198,9 @@ func (s *Server) reportPaymentQRError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "missing_account_holder", err.Error())
 	case errors.Is(err, paymentqr.ErrPayloadTooLarge):
 		fail(c, http.StatusBadRequest, "qr_payload_too_large", err.Error())
+	case errors.Is(err, paymentqr.ErrReceiptReserved):
+		fail(c, http.StatusConflict, "payment_receipt_busy",
+			"a receipt number was reserved concurrently; please try again")
 	default:
 		serverError(c, err)
 	}

@@ -129,7 +129,7 @@ func (s *Service) SetDeliveryStatus(ctx context.Context, saleID int64, next mode
 	})
 }
 
-// MarkPaid settles an outstanding payment.
+// MarkPaid settles the complete outstanding basket containing saleID.
 //
 // The original booking is not rewritten: the row keeps payment_follow_up set,
 // which is what moves it into the separate "paid later" history rather than
@@ -146,18 +146,30 @@ func (s *Service) MarkPaid(ctx context.Context, saleID int64) error {
 		if sale.IsCancelled {
 			return ErrAlreadyCancelled
 		}
-		if sale.IsPaid {
+
+		var open []models.Sale
+		if err := tx.WithContext(ctx).
+			Where("receipt_id = ? AND is_cancelled = ? AND is_paid = ?", sale.ReceiptID, false, false).
+			Find(&open).Error; err != nil {
+			return err
+		}
+		if len(open) == 0 {
 			return ErrAlreadyPaid
 		}
 
 		// What was owed is what was received; a late payment carries no
-		// donation, because nobody handed over more than the invoice.
-		amount := sale.AmountDueCents
-		return tx.WithContext(ctx).Model(&models.Sale{}).Where("id = ?", saleID).
-			Updates(map[string]any{
-				"is_paid":            true,
-				"payment_follow_up":  true,
-				"amount_given_cents": amount,
-			}).Error
+		// donation. Every position is updated inside this transaction so a
+		// receipt can never be left half paid.
+		for _, position := range open {
+			if err := tx.WithContext(ctx).Model(&models.Sale{}).Where("id = ?", position.ID).
+				Updates(map[string]any{
+					"is_paid":            true,
+					"payment_follow_up":  true,
+					"amount_given_cents": position.AmountDueCents,
+				}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }

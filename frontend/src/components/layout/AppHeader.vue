@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
 import { useOfflineStore } from '@/stores/offline'
+import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
+import { ApiError } from '@/api/client'
 import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
 
 /**
@@ -16,6 +18,7 @@ import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
  */
 const session = useSessionStore()
 const offline = useOfflineStore()
+const flash = useFlashStore()
 const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
@@ -27,6 +30,8 @@ const platformOnly = computed(
 )
 /** A live support grant stands in for the band role in the navigation. */
 const viaGrant = computed(() => session.supportGrant !== null)
+const posExitPrompt = ref<{ password: string; code: string } | null>(null)
+const posBusy = ref(false)
 
 interface NavLink {
   name: string
@@ -66,6 +71,39 @@ function isActive(name: string) {
 async function signOut() {
   await session.logout()
   router.push({ name: 'login' })
+}
+
+function report(error: unknown) {
+  flash.error(
+    error instanceof ApiError
+      ? t(`errors.${error.detailCode ?? 'generic'}`, error.message)
+      : t('errors.network'),
+  )
+}
+
+async function togglePOSMode() {
+  if (session.posMode) {
+    posExitPrompt.value = { password: '', code: '' }
+    return
+  }
+  try {
+    await session.setPosMode(true)
+  } catch (error) {
+    report(error)
+  }
+}
+
+async function leavePOSMode() {
+  if (!posExitPrompt.value || posBusy.value) return
+  posBusy.value = true
+  try {
+    await session.setPosMode(false, posExitPrompt.value.password, posExitPrompt.value.code)
+    posExitPrompt.value = null
+  } catch (error) {
+    report(error)
+  } finally {
+    posBusy.value = false
+  }
 }
 </script>
 
@@ -111,7 +149,7 @@ async function signOut() {
         :class="{ 'is-active': session.posMode }"
         type="button"
         :aria-pressed="session.posMode"
-        @click="session.setPosMode(!session.posMode)"
+        @click="togglePOSMode"
       >
         {{ t('nav.posMode') }}
       </button>
@@ -143,6 +181,41 @@ async function signOut() {
       </button>
     </div>
   </header>
+
+  <dialog v-if="posExitPrompt" class="confirmation-dialog" open>
+    <form @submit.prevent="leavePOSMode">
+      <p class="eyebrow">{{ t('posExit.eyebrow') }}</p>
+      <h2>{{ t('posExit.title') }}</h2>
+      <p>{{ t('posExit.intro') }}</p>
+      <label>
+        {{ t('posExit.password') }}
+        <input
+          v-model="posExitPrompt.password"
+          type="password"
+          autocomplete="current-password"
+          required
+          autofocus
+        />
+      </label>
+      <label v-if="caps?.sensitive_action_mfa_required">
+        {{ t('posExit.code') }}
+        <input
+          v-model="posExitPrompt.code"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          required
+        />
+      </label>
+      <div class="dialog-actions">
+        <button class="secondary-button" type="button" :disabled="posBusy" @click="posExitPrompt = null">
+          {{ t('common.cancel') }}
+        </button>
+        <button class="primary-button" type="submit" :disabled="posBusy">
+          {{ t('posExit.leave') }}
+        </button>
+      </div>
+    </form>
+  </dialog>
 </template>
 
 <style scoped>

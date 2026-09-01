@@ -1,6 +1,6 @@
 # Fortschritt
 
-**Stand:** 2026-08-30 — **aktueller Schritt:** Schritt 6. Backend und Oberfläche sind
+**Stand:** 2026-09-01 — **aktueller Schritt:** Schritt 6. Backend und Oberfläche sind
 funktional deckungsgleich; offen sind der Legacy-Import, die Testportierung und die
 Abnahme (visueller Abgleich, funktionaler Durchlauf, Mandantentest, README).
 
@@ -548,5 +548,19 @@ Artikel und Varianten aus dem tatsächlich bepreisten Warenkorb. Fehlen PayPal- 
 Bankdaten, bleibt der Verkauf möglich und erklärt, wo ein Band-Admin die QR-Funktion
 einrichtet. Ungültige direkt eingetragene IBAN-/BIC-/PayPal-Daten sowie ein zu großer
 QR-Inhalt erscheinen nun als konkrete Fehlermeldung statt als allgemeiner Fehler.
+
+**POS- und Vorgangskorrekturen am 01.09.:** Die Produktpalette lädt im POS Mode nur
+die freigegebenen Foto- und Diashow-Endpunkte und lässt sich damit wieder anzeigen und
+starten; der gesperrte Artikelverwaltungs-Endpunkt blockiert den gemeinsamen Ladevorgang
+nicht mehr. Das Verlassen des POS Mode verlangt immer das aktuelle Passwort und bei
+entsprechend geschützten Konten zusätzlich den zweiten Faktor. Diese Sperre wird auch
+serverseitig erzwungen und kann nicht durch einen direkten API-Aufruf umgangen werden.
+
+Offene Zahlungen erscheinen nun wie Sendungen als vollständige Beleg-Warenkörbe. Eine
+Zahlungsbestätigung begleicht alle nicht stornierten Positionen des Belegs gemeinsam in
+einer Transaktion. Abgebrochene oder abgelaufene Zahlungs-QR-Codes geben ihre
+Belegnummer auch auf Ebene des Unique-Constraints wieder frei; konkurrierende
+Reservierungen werden mit einer neuen Nummer wiederholt statt als sporadischer 500er
+ausgegeben. Der Ablauf ist zusätzlich gegen eine echte MariaDB getestet.
 
 ---

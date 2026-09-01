@@ -36,6 +36,7 @@ var (
 	ErrUnknownMethod    = errors.New("paymentqr: unknown payment method")
 	ErrIntentNotFound   = errors.New("paymentqr: no such payment code")
 	ErrInvalidPayPalURL = errors.New("paymentqr: the PayPal link must be an https URL")
+	ErrReceiptReserved  = errors.New("paymentqr: the receipt number was reserved concurrently")
 )
 
 // Availability tells the sales page which codes it may offer.
@@ -204,7 +205,8 @@ func (s *Service) CreateIntent(
 	if err != nil {
 		return nil, err
 	}
-	expires := time.Now().UTC().Add(IntentTTL)
+	now := time.Now().UTC()
+	expires := now.Add(IntentTTL)
 
 	if salePayloadJSON == "" {
 		salePayloadJSON = "{}"
@@ -214,10 +216,24 @@ func (s *Service) CreateIntent(
 		ReceiptID:       receiptID,
 		SalePayloadJSON: salePayloadJSON,
 		CreatedByUserID: actorID,
-		CreatedAt:       time.Now().UTC(),
+		CreatedAt:       now,
 		ExpiresAt:       expires,
 	}
+	// Cancelled or expired intents release their number. Remove such an old row
+	// before inserting its replacement; the unique receipt constraint otherwise
+	// turns a perfectly valid retry into an internal server error. These are
+	// deliberately separate statements: a transaction deleting a missing unique
+	// key can gap-lock two concurrent creators and manufacture a deadlock.
+	if err := s.db.WithContext(ctx).Where(
+		"receipt_id = ? AND consumed_at IS NULL AND (cancelled_at IS NOT NULL OR expires_at <= ?)",
+		receiptID, now,
+	).Delete(&models.PaymentQRIntent{}).Error; err != nil {
+		return nil, err
+	}
 	if err := s.db.WithContext(ctx).Create(record).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return nil, ErrReceiptReserved
+		}
 		return nil, err
 	}
 
@@ -294,9 +310,9 @@ func RemittanceText(receiptID string, descriptions []string) string {
 
 // CancelIntent releases a reservation so its receipt number is free again.
 func (s *Service) CancelIntent(ctx context.Context, token string) error {
-	result := s.db.WithContext(ctx).Model(&models.PaymentQRIntent{}).
+	result := s.db.WithContext(ctx).
 		Where("token = ? AND consumed_at IS NULL AND cancelled_at IS NULL", token).
-		Update("cancelled_at", time.Now().UTC())
+		Delete(&models.PaymentQRIntent{})
 	if result.Error != nil {
 		return result.Error
 	}

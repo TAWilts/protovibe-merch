@@ -178,12 +178,13 @@ func TestCancellingACodeFreesTheNumber(t *testing.T) {
 		"paypal_me_url": "https://paypal.me/protovibe",
 	})
 
+	sale := map[string]any{
+		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+		"payment_method": "PayPal", "is_paid": true, "is_received": true, "sold_on": "2026-08-27",
+	}
 	intent := h.do(http.MethodPost, "/api/v1/payment-qr/intents", map[string]any{
 		"method": "PayPal",
-		"sale": map[string]any{
-			"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
-			"payment_method": "PayPal", "is_paid": true, "is_received": true, "sold_on": "2026-08-27",
-		},
+		"sale":   sale,
 	})
 	if intent.Status != http.StatusCreated {
 		t.Fatalf("create intent: %d %v", intent.Status, intent.Body)
@@ -202,6 +203,15 @@ func TestCancellingACodeFreesTheNumber(t *testing.T) {
 	}
 	if res := h.do(http.MethodPost, "/api/v1/payment-qr/intents/"+token+"/cancel", nil); res.Status != http.StatusNotFound {
 		t.Fatalf("cancelling twice must be a 404, got %d", res.Status)
+	}
+
+	// The database's unique receipt key must not turn the freed number into an
+	// intermittent internal server error on the next PayPal/transfer attempt.
+	recreated := h.do(http.MethodPost, "/api/v1/payment-qr/intents", map[string]any{
+		"method": "PayPal", "sale": sale,
+	})
+	if recreated.Status != http.StatusCreated || recreated.Body["receipt_id"] != reserved {
+		t.Fatalf("the freed number must be reusable immediately: %d %v", recreated.Status, recreated.Body)
 	}
 }
 

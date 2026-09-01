@@ -63,8 +63,8 @@ export const authApi = {
     }),
   logout: () => api.post<void>('/auth/logout'),
   me: () => api.get<Identity>('/me'),
-  setPosMode: (enabled: boolean) =>
-    api.post<{ pos_mode: boolean }>('/session/pos-mode', { enabled }),
+  setPosMode: (enabled: boolean, password = '', code = '') =>
+    api.post<{ pos_mode: boolean }>('/session/pos-mode', { enabled, password, code }),
 }
 
 /** Catalogue: the full view for management, the offered subset for selling. */

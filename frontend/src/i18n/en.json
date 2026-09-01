@@ -16,6 +16,14 @@
     "updates": "Updates",
     "posMode": "POS Mode"
   },
+  "posExit": {
+    "eyebrow": "Protected POS mode",
+    "title": "Leave POS mode?",
+    "intro": "Enter your current password to unlock the restricted administration areas.",
+    "password": "Current password",
+    "code": "Authentication code",
+    "leave": "Leave POS mode"
+  },
   "common": {
     "loading": "Loading …",
     "save": "Save",
@@ -184,6 +192,7 @@
     "sync_conflict": "Dieser Offline-Verkauf wurde bereits mit anderen Daten übertragen.",
     "payment_code_unusable": "Der Zahlungscode ist abgelaufen oder wurde bereits eingelöst.",
     "payment_not_configured": "No QR-code details have been configured for this payment method yet.",
+    "payment_receipt_busy": "A receipt number is being reserved by another device. Please try again.",
     "invalid_iban": "The configured IBAN is invalid. Check it in band administration.",
     "invalid_bic": "The configured BIC is invalid. Check it in band administration or leave the optional field empty.",
     "missing_account_holder": "The account holder is missing for the bank-transfer QR code.",
@@ -238,7 +247,7 @@
     "openShipments": "Aktuelle Sendungen",
     "openShipmentsHint": "Artikel, die noch versendet oder übergeben werden müssen.",
     "openPayments": "Offene Zahlungen",
-    "openPaymentsHint": "Verkäufe, bei denen noch Geld aussteht.",
+    "openPaymentsHint": "Outstanding payments are settled as complete receipt baskets.",
     "deliveredShipments": "Gesendete Waren",
     "deliveredHint": "Abgeschlossene Sendungen, getrennt von der Verkaufshistorie. Falls nötig, lässt sich der Versandstatus hier wieder korrigieren.",
     "settledPayments": "Bezahlte Verkäufe",
@@ -253,6 +262,7 @@
     "shipped": "Versendet",
     "received": "Erhalten",
     "markPaid": "Als bezahlt markieren",
+    "markBasketPaid": "Mark basket paid",
     "statusSaved": "Status gespeichert.",
     "paymentSaved": "Als bezahlt markiert.",
     "nothingOpen": "Nichts offen.",

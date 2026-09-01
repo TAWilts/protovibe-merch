@@ -58,6 +58,7 @@ interface Shipment {
   customerAddress: string
   eventName: string
   comment: string
+  paymentMethod: string
   status: DeliveryStatus
   totalCents: number
   positions: Position[]
@@ -75,6 +76,7 @@ function groupByReceipt(positions: Position[]): Shipment[] {
         customerAddress: position.customer_address,
         eventName: position.event_name,
         comment: position.comment,
+        paymentMethod: position.payment_method,
         status: position.delivery_status,
         totalCents: 0,
         positions: [],
@@ -88,6 +90,7 @@ function groupByReceipt(positions: Position[]): Shipment[] {
 }
 
 const openShipments = computed(() => groupByReceipt(queues.value.open_shipments))
+const openPayments = computed(() => groupByReceipt(queues.value.open_payments))
 
 /** Copies an address in one go; nobody retypes a street from a screen. */
 const copiedReceipt = ref('')
@@ -140,9 +143,11 @@ async function advance(position: Position, status: DeliveryStatus) {
   }
 }
 
-async function settle(position: Position) {
+async function settle(payment: Shipment) {
+  const firstPosition = payment.positions[0]
+  if (!firstPosition) return
   try {
-    await operationsApi.markPaid(position.id)
+    await operationsApi.markPaid(firstPosition.id)
     flash.success(t('operations.paymentSaved'))
     await load(true)
   } catch (error) {
@@ -233,38 +238,41 @@ async function settle(position: Position) {
             <p>{{ t('operations.openPaymentsHint') }}</p>
           </div>
         </div>
-        <p v-if="!queues.open_payments.length" class="muted">{{ t('operations.nothingOpen') }}</p>
-        <div v-else class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>{{ t('sales.receiptId') }}</th>
-                <th>{{ t('operations.customer') }}</th>
-                <th>{{ t('sales.articles') }}</th>
-                <th class="numeric">{{ t('history.amount') }}</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="position in queues.open_payments" :key="position.id">
-                <td>
-                  <code>{{ position.receipt_id }}</code>
-                  <small>{{ position.sold_on }}</small>
-                </td>
-                <td>{{ position.customer_name || '—' }}</td>
-                <td>
+        <p v-if="!openPayments.length" class="muted">{{ t('operations.nothingOpen') }}</p>
+        <div v-else class="shipment-grid payment-grid">
+          <article v-for="payment in openPayments" :key="payment.receiptId" class="shipment-card payment-card">
+            <header>
+              <code>{{ payment.receiptId }}</code>
+              <span class="muted">{{ payment.soldOn }}</span>
+            </header>
+
+            <p class="payment-customer">
+              <strong>{{ payment.customerName || t('operations.noCustomer') }}</strong>
+              <span class="muted">{{ payment.paymentMethod }}</span>
+            </p>
+
+            <ul class="shipment-items">
+              <li v-for="position in payment.positions" :key="position.id">
+                <span>{{ position.quantity }}×</span>
+                <span>
                   <strong>{{ position.article_name }}</strong>
                   <small>{{ position.variant_label }}</small>
-                </td>
-                <td class="numeric">{{ format(position.amount_due_cents) }}</td>
-                <td>
-                  <button class="compact-button" type="button" @click="settle(position)">
-                    {{ t('operations.markPaid') }}
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                </span>
+                <b>{{ format(position.amount_due_cents) }}</b>
+              </li>
+            </ul>
+
+            <p v-if="payment.eventName || payment.comment" class="shipment-note muted">
+              {{ [payment.eventName, payment.comment].filter(Boolean).join(' · ') }}
+            </p>
+
+            <footer>
+              <span class="shipment-total">{{ format(payment.totalCents) }}</span>
+              <button class="compact-button" type="button" @click="settle(payment)">
+                {{ t('operations.markBasketPaid') }}
+              </button>
+            </footer>
+          </article>
         </div>
       </section>
 
@@ -429,6 +437,13 @@ async function settle(position: Position) {
   font-size: 1.1rem;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
+}
+
+.payment-customer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
 }
 
 .numeric {

@@ -71,8 +71,8 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function setPosMode(enabled: boolean) {
-    const result = await authApi.setPosMode(enabled)
+  async function setPosMode(enabled: boolean, password = '', code = '') {
+    const result = await authApi.setPosMode(enabled, password, code)
     if (identity.value) {
       identity.value = { ...identity.value, pos_mode: result.pos_mode }
     }

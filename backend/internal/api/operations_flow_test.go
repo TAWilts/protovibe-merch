@@ -239,15 +239,19 @@ func TestPaymentFollowUp(t *testing.T) {
 	_, variants := h.sellableArticle("Unpaid Shirt")
 
 	booked := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
-		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+		"items": []any{
+			map[string]any{"variant_id": variants[0], "quantity": 1},
+			map[string]any{"variant_id": variants[1], "quantity": 2},
+		},
 		"payment_method": "Bar", "is_paid": false, "is_received": true,
 		"customer_name": "Alex Muster", "customer_address": "Musterweg 1", "sold_on": "2026-08-27",
 	})
-	saleID := int64(jsonList(booked.Body, "sale_ids")[0].(float64))
+	saleIDs := jsonList(booked.Body, "sale_ids")
+	saleID := int64(saleIDs[0].(float64))
 
 	queues := h.do(http.MethodGet, "/api/v1/operations", nil)
-	if len(jsonList(queues.Body, "open_payments")) != 1 {
-		t.Fatalf("the sale should be waiting for payment: %v", queues.Body)
+	if len(jsonList(queues.Body, "open_payments")) != 2 {
+		t.Fatalf("both basket positions should be waiting for payment: %v", queues.Body)
 	}
 
 	path := "/api/v1/sales/" + itoa(saleID) + "/payment-status"
@@ -259,10 +263,11 @@ func TestPaymentFollowUp(t *testing.T) {
 	if len(jsonList(queues.Body, "open_payments")) != 0 {
 		t.Fatalf("nothing should be outstanding now: %v", queues.Body)
 	}
-	if len(jsonList(queues.Body, "settled_payments")) != 1 {
-		t.Fatalf("the chased payment should have its own history: %v", queues.Body)
+	if len(jsonList(queues.Body, "settled_payments")) != 2 {
+		t.Fatalf("the whole chased basket should have its own history: %v", queues.Body)
 	}
-	if res := h.do(http.MethodPatch, path, nil); res.Status != http.StatusConflict {
+	secondPath := "/api/v1/sales/" + itoa(int64(saleIDs[1].(float64))) + "/payment-status"
+	if res := h.do(http.MethodPatch, secondPath, nil); res.Status != http.StatusConflict {
 		t.Fatalf("marking it paid twice must be a conflict, got %d", res.Status)
 	}
 }

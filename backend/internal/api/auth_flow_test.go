@@ -408,6 +408,26 @@ func TestPOSModeBlocksRestrictedAreas(t *testing.T) {
 	if res := h.do(http.MethodGet, "/api/v1/me", nil); res.Status != http.StatusOK {
 		t.Fatalf("POS mode must keep the sales workflow usable: %d", res.Status)
 	}
+
+	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{
+		"enabled": false,
+	}); res.Status != http.StatusUnauthorized {
+		t.Fatalf("leaving POS mode without a password must fail: %d %v", res.Status, res.Body)
+	}
+	if res := h.do(http.MethodGet, "/api/v1/purchases/anything", nil); res.Status != http.StatusForbidden {
+		t.Fatalf("a failed unlock must leave POS mode active, got %d %v", res.Status, res.Body)
+	}
+	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{
+		"enabled": false, "password": "falsches-passwort",
+	}); res.Status != http.StatusUnauthorized {
+		t.Fatalf("a wrong password must not leave POS mode: %d %v", res.Status, res.Body)
+	}
+	unlocked := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{
+		"enabled": false, "password": "ein-langes-passwort",
+	})
+	if unlocked.Status != http.StatusOK || unlocked.Body["pos_mode"] != false {
+		t.Fatalf("the current password must unlock POS mode: %d %v", unlocked.Status, unlocked.Body)
+	}
 }
 
 // TestPlatformStaffCannotReachBandData is the outer wall of the tenant

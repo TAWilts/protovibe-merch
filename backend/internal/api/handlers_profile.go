@@ -34,8 +34,8 @@ func (s *Server) registerProfileRoutes(g *gin.RouterGroup) {
 	p.POST("/mfa/disable", s.disableMFA)
 	p.POST("/mfa/recovery-codes", s.regenerateRecoveryCodes)
 
-	// POS mode is a per-session switch, not a profile setting, and must stay
-	// usable without a step-up confirmation so a seller can toggle it quickly.
+	// POS mode is a per-session switch, not a profile setting. Entering stays
+	// quick; leaving verifies live credentials inside togglePOSMode.
 	g.POST("/session/pos-mode", requireAuth(), s.togglePOSMode)
 }
 
@@ -56,25 +56,8 @@ func (s *Server) reauthenticate(c *gin.Context) {
 	}
 
 	state := stateFrom(c)
-	if !auth.VerifyPassword(req.Password, state.User.PasswordHash) {
-		fail(c, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
+	if !s.confirmCurrentCredentials(c, req.Password, req.Code) {
 		return
-	}
-
-	if state.Caps.SensitiveActionMFARequired {
-		if req.Code == "" {
-			fail(c, http.StatusUnauthorized, "mfa_required", "an authentication code is required")
-			return
-		}
-		if err := s.auth.VerifySecondFactor(state.User, req.Code); err != nil {
-			s.reportAuthError(c, err)
-			return
-		}
-		if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).
-			Model(state.User).Update("mfa_recovery_code_hashes", state.User.MFARecoveryCodeHashes).Error; err != nil {
-			serverError(c, err)
-			return
-		}
 	}
 
 	if err := s.auth.MarkReauthenticated(c.Request.Context(), state.Session); err != nil {
@@ -85,6 +68,36 @@ func (s *Server) reauthenticate(c *gin.Context) {
 		audit.Entry{Action: audit.ActionReauthenticated, EntityType: "session"})
 
 	c.JSON(http.StatusOK, gin.H{"valid_for_seconds": int(s.auth.ReauthWindow().Seconds())})
+}
+
+// confirmCurrentCredentials verifies a live password (and, where configured,
+// the second factor). It deliberately does not honour an existing reauth
+// window: leaving POS mode must always require the person holding the device
+// to unlock it, matching the predecessor's protected exit.
+func (s *Server) confirmCurrentCredentials(c *gin.Context, password, code string) bool {
+	state := stateFrom(c)
+	if !auth.VerifyPassword(password, state.User.PasswordHash) {
+		fail(c, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
+		return false
+	}
+
+	if !state.Caps.SensitiveActionMFARequired {
+		return true
+	}
+	if code == "" {
+		fail(c, http.StatusUnauthorized, "mfa_required", "an authentication code is required")
+		return false
+	}
+	if err := s.auth.VerifySecondFactor(state.User, code); err != nil {
+		s.reportAuthError(c, err)
+		return false
+	}
+	if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).
+		Model(state.User).Update("mfa_recovery_code_hashes", state.User.MFARecoveryCodeHashes).Error; err != nil {
+		serverError(c, err)
+		return false
+	}
+	return true
 }
 
 func (s *Server) getProfile(c *gin.Context) {
@@ -268,7 +281,9 @@ func (s *Server) updateOwnContactEmail(c *gin.Context) {
 }
 
 type posModeRequest struct {
-	Enabled bool `json:"enabled"`
+	Enabled  bool   `json:"enabled"`
+	Password string `json:"password"`
+	Code     string `json:"code"`
 }
 
 // togglePOSMode switches the restricted point-of-sale mode for this session
@@ -282,6 +297,17 @@ func (s *Server) togglePOSMode(c *gin.Context) {
 	}
 
 	state := stateFrom(c)
+	if state.Session.POSMode && !req.Enabled {
+		if !s.confirmCurrentCredentials(c, req.Password, req.Code) {
+			return
+		}
+		if err := s.auth.MarkReauthenticated(c.Request.Context(), state.Session); err != nil {
+			serverError(c, err)
+			return
+		}
+		s.audit.Log(c.Request.Context(), actorFrom(c),
+			audit.Entry{Action: audit.ActionReauthenticated, EntityType: "session"})
+	}
 	if err := s.auth.SetPOSMode(c.Request.Context(), state.Session, req.Enabled); err != nil {
 		serverError(c, err)
 		return

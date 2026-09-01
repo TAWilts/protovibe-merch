@@ -171,8 +171,14 @@ function scheduleImageFit() {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
+    // POS sessions may view and run the slideshow, but the management-only
+    // article endpoint is intentionally blocked there. Only curators need the
+    // catalogue for assigning uploads to variants.
+    const catalogueRequest = canManage.value
+      ? catalogueApi.list()
+      : Promise.resolve({ articles: [] as Article[] })
     const [all, show, catalogue] = await Promise.all([
-      photosApi.list(), photosApi.slideshow(), catalogueApi.list(),
+      photosApi.list(), photosApi.slideshow(), catalogueRequest,
     ])
     gallery.value = all.photos
     collagePrices.value = show.collage_show_prices
