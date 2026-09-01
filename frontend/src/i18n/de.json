@@ -115,6 +115,8 @@
     "total": "Summe",
     "removeLine": "Position entfernen",
     "cartCount": "{count} Artikel",
+    "showCart": "Warenkorb öffnen",
+    "hideCart": "Warenkorb schließen",
     "paymentMethod": "Bezahlart",
     "event": "Veranstaltung",
     "noEvent": "Keine Veranstaltung",

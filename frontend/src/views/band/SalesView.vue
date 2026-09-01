@@ -173,6 +173,11 @@ const variantLabel = computed(() => {
 const basketTotalCents = computed(() =>
   basket.value.reduce((sum, line) => sum + line.unitPriceCents * line.quantity, 0),
 )
+const basketItemCount = computed(() =>
+  basket.value.reduce((sum, line) => sum + line.quantity, 0),
+)
+/** The mobile receipt rail starts closed so it never covers article controls. */
+const mobileCartOpen = ref(false)
 
 const amountGivenCents = computed(() => parseAmount(amountGivenInput.value))
 
@@ -402,10 +407,12 @@ async function confirmPaymentQr() {
 
 function goToPayment() {
   if (!basket.value.length) return
+  mobileCartOpen.value = false
   checkoutStep.value = 2
 }
 
 function backToBasket() {
+  mobileCartOpen.value = false
   checkoutStep.value = 1
 }
 
@@ -553,6 +560,7 @@ function resetAfterSale() {
   shipAddress.value = ''
   shipPayLater.value = false
   shipOpen.value = isOrder.value
+  mobileCartOpen.value = false
   checkoutStep.value = 1
   qrIntent.value = null
   // sold_by deliberately survives, so a stand run by one person does not have
@@ -666,41 +674,59 @@ function resetAfterSale() {
         </footer>
       </section>
 
-      <aside class="till-column till-rail">
+      <aside class="till-column till-rail" :class="{ 'is-mobile-open': mobileCartOpen }">
         <header class="till-rail-head">
-          <span>{{ t('sales.receiptId') }}</span>
-          <strong>{{ receiptId || t('sales.receiptLoading') }}</strong>
-        </header>
-        <div class="till-scroll till-lines" aria-live="polite">
-          <div v-if="!basket.length" class="till-empty">{{ t('sales.cartEmpty') }}</div>
-          <div v-for="(line, index) in basket" :key="`${line.variantId}-${index}`" class="till-line">
-            <span class="till-line-label">{{ line.label }}</span>
-            <b>{{ format(line.quantity * line.unitPriceCents) }}</b>
-            <small class="till-line-unit">{{ t('sales.perUnit', { price: format(line.unitPriceCents) }) }}</small>
-            <span class="till-line-stepper">
-              <button
-                type="button"
-                :class="{ 'is-remove': line.quantity <= 1 }"
-                :aria-label="line.quantity <= 1 ? t('sales.removeLine') : t('common.decrease')"
-                @click="stepLine(index, -1)"
-              >
-                <svg v-if="line.quantity <= 1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M4 7h16M10 4h4M9.5 7v11M14.5 7v11" />
-                  <path d="M6 7l1 12.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5L18 7" />
-                </svg>
-                <span v-else aria-hidden="true">−</span>
-              </button>
-              <span class="till-line-qty">{{ line.quantity }}</span>
-              <button type="button" :aria-label="t('common.increase')" @click="stepLine(index, 1)">+</button>
+          <span class="till-rail-receipt-label">{{ t('sales.receiptId') }}</span>
+          <strong class="till-rail-receipt-id">{{ receiptId || t('sales.receiptLoading') }}</strong>
+          <button
+            class="mobile-cart-toggle"
+            type="button"
+            :aria-expanded="mobileCartOpen"
+            :aria-label="mobileCartOpen ? t('sales.hideCart') : t('sales.showCart')"
+            @click="mobileCartOpen = !mobileCartOpen"
+          >
+            <span>
+              <b>{{ t('sales.cart') }}</b>
+              <small>{{ t('sales.cartCount', { count: basketItemCount }) }}</small>
             </span>
-          </div>
-        </div>
-        <footer class="till-foot">
-          <div class="till-total"><span>{{ t('sales.total') }}</span><strong>{{ format(basketTotalCents) }}</strong></div>
-          <button class="primary-button full-width till-book" type="button" :disabled="!basket.length" @click="goToPayment">
-            {{ t('sales.paymentDetails') }}
+            <strong>{{ format(basketTotalCents) }}</strong>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
           </button>
-        </footer>
+        </header>
+        <div class="till-rail-body">
+          <div class="till-scroll till-lines" aria-live="polite">
+            <div v-if="!basket.length" class="till-empty">{{ t('sales.cartEmpty') }}</div>
+            <div v-for="(line, index) in basket" :key="`${line.variantId}-${index}`" class="till-line">
+              <span class="till-line-label">{{ line.label }}</span>
+              <b>{{ format(line.quantity * line.unitPriceCents) }}</b>
+              <small class="till-line-unit">{{ t('sales.perUnit', { price: format(line.unitPriceCents) }) }}</small>
+              <span class="till-line-stepper">
+                <button
+                  type="button"
+                  :class="{ 'is-remove': line.quantity <= 1 }"
+                  :aria-label="line.quantity <= 1 ? t('sales.removeLine') : t('common.decrease')"
+                  @click="stepLine(index, -1)"
+                >
+                  <svg v-if="line.quantity <= 1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 7h16M10 4h4M9.5 7v11M14.5 7v11" />
+                    <path d="M6 7l1 12.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5L18 7" />
+                  </svg>
+                  <span v-else aria-hidden="true">−</span>
+                </button>
+                <span class="till-line-qty">{{ line.quantity }}</span>
+                <button type="button" :aria-label="t('common.increase')" @click="stepLine(index, 1)">+</button>
+              </span>
+            </div>
+          </div>
+          <footer class="till-foot">
+            <div class="till-total"><span>{{ t('sales.total') }}</span><strong>{{ format(basketTotalCents) }}</strong></div>
+            <button class="primary-button full-width till-book" type="button" :disabled="!basket.length" @click="goToPayment">
+              {{ t('sales.paymentDetails') }}
+            </button>
+          </footer>
+        </div>
       </aside>
     </template>
 
@@ -1234,6 +1260,17 @@ function resetAfterSale() {
   background: var(--option-bg);
 }
 
+.till-rail-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.mobile-cart-toggle {
+  display: none;
+}
+
 /* The torn edge. The rail is a receipt, and saying so once at the top is
    enough — nothing else on the page is decorated. */
 .till-rail::before {
@@ -1586,7 +1623,7 @@ function resetAfterSale() {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
     height: auto;
     min-height: calc(100dvh - var(--till-offset, 66px));
-    padding-bottom: calc(var(--till-gap) + 210px);
+    padding-bottom: calc(var(--till-gap) + 88px);
   }
 
   .till-articles .button-list { max-height: 46vh; }
@@ -1597,12 +1634,84 @@ function resetAfterSale() {
     bottom: 0;
     left: 0;
     z-index: 9;
-    max-height: 62dvh;
+    max-height: 76px;
+    padding: 0 14px 10px;
+    overflow: hidden;
     border-radius: var(--radius) var(--radius) 0 0;
     box-shadow: 0 -18px 40px rgba(0, 0, 0, 0.42);
+    transition: max-height 180ms ease;
   }
 
-  .till-lines { max-height: 26dvh; }
+  .till-rail.is-mobile-open {
+    max-height: min(72dvh, 680px);
+    padding-bottom: 14px;
+  }
+
+  .till-rail-head {
+    min-height: 64px;
+    margin: 0;
+  }
+
+  .till-rail-receipt-label,
+  .till-rail-receipt-id {
+    display: none;
+  }
+
+  .mobile-cart-toggle {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto 24px;
+    gap: 12px;
+    align-items: center;
+    width: 100%;
+    min-height: 54px;
+    padding: 7px 4px;
+    border: 0;
+    color: var(--text);
+    background: transparent;
+    text-align: left;
+  }
+
+  .mobile-cart-toggle > span {
+    display: grid;
+    gap: 2px;
+  }
+
+  .mobile-cart-toggle b {
+    font-size: 0.9rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .mobile-cart-toggle small {
+    color: var(--muted);
+    font-size: 0.76rem;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .mobile-cart-toggle > strong {
+    font-size: 1.15rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .mobile-cart-toggle svg {
+    width: 22px;
+    transition: transform 180ms ease;
+  }
+
+  .till-rail.is-mobile-open .mobile-cart-toggle svg {
+    transform: rotate(180deg);
+  }
+
+  .till-rail-body {
+    display: none;
+  }
+
+  .till-rail.is-mobile-open .till-rail-body {
+    display: flex;
+  }
+
+  .till-lines { max-height: 32dvh; }
 
   .checkout-step-2,
   .checkout-step-3 {
@@ -1614,7 +1723,13 @@ function resetAfterSale() {
 
 @media (max-width: 700px) {
   .till { grid-template-columns: minmax(0, 1fr); }
-  .till-articles .button-list { max-height: 34vh; }
+  .till-column { min-height: auto; }
+  .till-scroll {
+    overflow: visible;
+    overscroll-behavior: auto;
+  }
+  .till-articles .button-list { max-height: none; }
+  .till-rail .till-scroll { overflow-y: auto; }
   .checkout-progress span { font-size: 0.76rem; }
   .checkout-panel-head { align-items: flex-end; }
   .checkout-confirm-grid { grid-template-columns: minmax(0, 1fr); }

@@ -75,6 +75,13 @@ describe('SalesView checkout', () => {
     await button(wrapper, 'sales.addToCart').trigger('click')
 
     expect(wrapper.find('.checkout-step-1').exists()).toBe(true)
+    const mobileCartToggle = wrapper.get('.mobile-cart-toggle')
+    expect(mobileCartToggle.attributes('aria-expanded')).toBe('false')
+    expect(wrapper.get('.till-rail').classes()).not.toContain('is-mobile-open')
+    await mobileCartToggle.trigger('click')
+    expect(mobileCartToggle.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('.till-rail').classes()).toContain('is-mobile-open')
+
     await button(wrapper, 'sales.paymentDetails').trigger('click')
     expect(wrapper.find('.checkout-step-2').exists()).toBe(true)
 
