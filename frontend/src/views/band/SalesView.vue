@@ -878,6 +878,10 @@ function resetAfterSale() {
           <p class="eyebrow">{{ paymentMethod }}</p>
           <h2>{{ qrIntent ? t('sales.paymentQrTitle') : t('common.confirm') }}</h2>
           <p v-if="qrIntent">{{ t('sales.paymentQrIntro') }}</p>
+          <p class="checkout-sale-id" aria-live="polite">
+            <span>{{ t('sales.saleId') }}</span>
+            <strong>{{ qrIntent?.receipt_id || receiptId || t('sales.receiptLoading') }}</strong>
+          </p>
         </div>
         <strong>{{ format(basketTotalCents) }}</strong>
       </header>
@@ -1060,6 +1064,33 @@ function resetAfterSale() {
   font-size: clamp(1.8rem, 4vw, 3rem);
   font-variant-numeric: tabular-nums;
   line-height: 1;
+}
+
+.checkout-sale-id {
+  display: inline-grid;
+  gap: 3px;
+  min-width: min(280px, 100%);
+  margin-top: 14px !important;
+  padding: 10px 14px;
+  border: 1px solid var(--accent-bright);
+  border-radius: 10px;
+  background: var(--selection-hover);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.checkout-sale-id span {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.checkout-sale-id strong {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: clamp(1.35rem, 4vw, 2rem);
+  letter-spacing: 0.03em;
 }
 
 .checkout-payment-grid {

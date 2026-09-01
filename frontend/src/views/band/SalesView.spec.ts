@@ -94,6 +94,8 @@ describe('SalesView checkout', () => {
 
     await button(wrapper, 'common.confirm').trigger('click')
     expect(wrapper.find('.checkout-step-3').exists()).toBe(true)
+    expect(wrapper.get('.checkout-sale-id').text()).toContain('sales.saleId')
+    expect(wrapper.get('.checkout-sale-id').text()).toContain('V-1')
 
     await button(wrapper, 'sales.book').trigger('click')
     await flushPromises()

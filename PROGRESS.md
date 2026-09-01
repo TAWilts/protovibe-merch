@@ -537,5 +537,7 @@ links nach rechts in nur 40 Pixel hohen Schaltflächen. Die Verkaufsansicht verw
 außerdem wieder den Variantenfoto-Fallback des Originals: Fehlt das exakte Foto, wird
 die fotografierte Variante desselben Artikels mit den meisten übereinstimmenden
 Optionswerten gewählt und als ähnliche Variante beschriftet.
+Im dritten Schritt steht die Verkaufs-ID zusätzlich als kontrastreiche, groß gesetzte
+Kennung direkt im Abschlusskopf; bei QR-Zahlungen wird die reservierte ID angezeigt.
 
 ---

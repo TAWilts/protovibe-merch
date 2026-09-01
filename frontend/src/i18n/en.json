@@ -98,6 +98,7 @@
     "ordersTitle": "Bestellungen",
     "ordersHint": "Bestellung erfassen: die Ware wird versendet, nicht übergeben. Sie erscheint danach unter „Offene Vorgänge“.",
     "receiptId": "Receipt ID",
+    "saleId": "Sale ID",
     "receiptLoading": "Wird geladen …",
     "articles": "Articles",
     "articlesHint": "Zuerst Artikel, dann Variante auswählen.",
