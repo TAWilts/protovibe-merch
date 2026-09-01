@@ -152,6 +152,9 @@ func (s *Server) uploadPhoto(c *gin.Context) {
 		s.reportPhotoError(c, err)
 		return
 	}
+	if !s.checkStorageQuota(c, int64(len(normalized.Data)), 0) {
+		return
+	}
 
 	ctx := c.Request.Context()
 	bandID := tenant.MustBandID(ctx)

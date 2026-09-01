@@ -19,16 +19,16 @@ const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 
-const links = [
-  { name: 'platform-bands', label: 'platform.nav.bands' },
-  { name: 'platform-support', label: 'platform.nav.support' },
-  { name: 'platform-messages', label: 'platform.nav.messages' },
-  { name: 'platform-audit', label: 'platform.nav.audit' },
-  { name: 'platform-backups', label: 'platform.nav.backups' },
-  { name: 'platform-settings', label: 'platform.nav.settings' },
-]
-
 const isSystemAdmin = computed(() => session.capabilities?.is_system_admin ?? false)
+const links = computed(() => [
+  { name: 'platform-bands', label: 'platform.nav.bands', systemOnly: false },
+  { name: 'platform-users', label: 'platform.nav.users', systemOnly: true },
+  { name: 'platform-support', label: 'platform.nav.support', systemOnly: false },
+  { name: 'platform-messages', label: 'platform.nav.messages', systemOnly: false },
+  { name: 'platform-audit', label: 'platform.nav.audit', systemOnly: false },
+  { name: 'platform-backups', label: 'platform.nav.backups', systemOnly: false },
+  { name: 'platform-settings', label: 'platform.nav.settings', systemOnly: false },
+].filter((link) => !link.systemOnly || isSystemAdmin.value))
 
 async function signOut() {
   await session.logout()

@@ -120,6 +120,15 @@ func TestSetupCodeFlow(t *testing.T) {
 		t.Fatalf("no session may exist before the password is set, got %d", me.Status)
 	}
 
+	weak := h.do(http.MethodPost, "/api/v1/auth/password-setup", map[string]any{
+		"pending_token": pending,
+		"password":      "short",
+	})
+	if weak.Status != http.StatusBadRequest {
+		t.Fatalf("a weak password must be rejected, got %d %v", weak.Status, weak.Body)
+	}
+
+	// The rejected password must not consume the one-time pending token.
 	setup := h.do(http.MethodPost, "/api/v1/auth/password-setup", map[string]any{
 		"pending_token": pending,
 		"password":      "mein-neues-passwort",

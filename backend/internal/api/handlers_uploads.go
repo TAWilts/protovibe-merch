@@ -133,6 +133,9 @@ func (s *Server) uploadPurchaseInvoice(c *gin.Context) {
 	if closer, exists := c.Get("upload_closer"); exists {
 		defer closer.(io.Closer).Close()
 	}
+	if !s.checkStorageQuota(c, upload.Size, purchase.InvoiceSizeBytes) {
+		return
+	}
 
 	bandID := tenant.MustBandID(ctx)
 	object, err := s.files.Put(ctx, bandID, storage.CategoryInvoice, upload.MediaType, upload.Reader)
@@ -255,6 +258,9 @@ func (s *Server) uploadReceiptAttachment(c *gin.Context) {
 	}
 	if closer, exists := c.Get("upload_closer"); exists {
 		defer closer.(io.Closer).Close()
+	}
+	if !s.checkStorageQuota(c, upload.Size, 0) {
+		return
 	}
 
 	object, err := s.files.Put(ctx, tenant.MustBandID(ctx), storage.CategoryInvoice, upload.MediaType, upload.Reader)

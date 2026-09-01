@@ -29,6 +29,7 @@ import (
 var (
 	ErrRunNotFound = errors.New("backup: no such backup run")
 	ErrDumpFailed  = errors.New("backup: the database dump failed")
+	ErrUnsafePath  = errors.New("backup: run path is outside the backup root")
 )
 
 // bandScopedTables are dumped with a band_id filter for a per-band backup.
@@ -175,7 +176,7 @@ func (s *Service) dump(ctx context.Context, bandID *int64, target string) error 
 		args = append(args, bandScopedTables...)
 	}
 
-	file, err := os.Create(target)
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -240,7 +241,11 @@ func (s *Service) Prune(ctx context.Context) (int, error) {
 	removed := 0
 	for _, run := range runs {
 		if run.Path != "" {
-			if err := os.RemoveAll(run.Path); err != nil && !os.IsNotExist(err) {
+			path, err := s.safeRunPath(run.Path)
+			if err != nil {
+				return removed, err
+			}
+			if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
 				return removed, err
 			}
 		}
@@ -263,13 +268,37 @@ func (s *Service) Open(ctx context.Context, id int64) (io.ReadSeekCloser, string
 		return nil, "", ErrRunNotFound
 	}
 
-	path := filepath.Join(run.Path, "dump.sql")
+	runPath, err := s.safeRunPath(run.Path)
+	if err != nil {
+		return nil, "", ErrRunNotFound
+	}
+	path := filepath.Join(runPath, "dump.sql")
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, "", ErrRunNotFound
 	}
-	name := strings.ReplaceAll(run.Path, string(os.PathSeparator), "_") + ".sql"
+	name := filepath.Base(filepath.Dir(runPath)) + "_" + filepath.Base(runPath) + ".sql"
 	return file, name, nil
+}
+
+// safeRunPath rejects database paths that do not point below the configured
+// backup root. BackupRun rows are persistent state and must never be able to
+// turn a download, restore or retention cleanup into arbitrary file access.
+func (s *Service) safeRunPath(path string) (string, error) {
+	root, err := filepath.Abs(s.cfg.Root)
+	if err != nil {
+		return "", ErrUnsafePath
+	}
+	candidate, err := filepath.Abs(path)
+	if err != nil {
+		return "", ErrUnsafePath
+	}
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || relative == "." || relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || filepath.IsAbs(relative) {
+		return "", ErrUnsafePath
+	}
+	return candidate, nil
 }
 
 // dsnSettings is the subset of the DSN the dump command needs.
@@ -348,7 +377,7 @@ func copyFile(source, target string) error {
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o640)
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}

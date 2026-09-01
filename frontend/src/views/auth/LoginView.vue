@@ -27,10 +27,11 @@ const band = ref('')
 const username = ref('')
 const secret = ref('')
 const error = ref('')
+const notice = ref('')
 const busy = ref(false)
 
 /** The step the server asked for after the password was accepted. */
-const step = ref<'credentials' | 'mfa' | 'password-setup' | 'mfa-enrollment'>('credentials')
+const step = ref<'credentials' | 'mfa' | 'password-setup' | 'mfa-enrollment' | 'reset-request' | 'reset-confirm'>('credentials')
 const pendingToken = ref('')
 const code = ref('')
 const newPassword = ref('')
@@ -38,6 +39,9 @@ const enrollmentSecret = ref('')
 const enrollmentUri = ref('')
 const enrollmentQr = ref('')
 const recoveryCodes = ref<string[]>([])
+const resetUsername = ref('')
+const resetCode = ref('')
+const resetPassword = ref('')
 
 function fail(err: unknown) {
   if (err instanceof ApiError) {
@@ -134,6 +138,35 @@ async function submitEnrollment() {
 function finishEnrollment() {
   router.replace((route.query.next as string) || '/sales')
 }
+
+async function requestReset() {
+  busy.value = true
+  error.value = ''
+  try {
+    await authApi.requestPasswordReset(resetUsername.value.trim())
+    step.value = 'reset-confirm'
+    notice.value = t('auth.resetSent')
+  } catch (err) {
+    fail(err)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function confirmReset() {
+  busy.value = true
+  error.value = ''
+  try {
+    await authApi.confirmPasswordReset(resetUsername.value.trim(), resetCode.value, resetPassword.value)
+    username.value = resetUsername.value.trim()
+    step.value = 'credentials'
+    notice.value = t('auth.resetDone')
+  } catch (err) {
+    fail(err)
+  } finally {
+    busy.value = false
+  }
+}
 </script>
 
 <template>
@@ -158,6 +191,7 @@ function finishEnrollment() {
         <h1>{{ t('auth.signIn') }}</h1>
         <p>{{ t('auth.intro') }}</p>
         <div v-if="error" class="flash error">{{ error }}</div>
+        <div v-if="notice" class="flash success">{{ notice }}</div>
         <form class="stack-form" @submit.prevent="submitCredentials">
           <label>
             {{ t('auth.band') }}
@@ -174,6 +208,31 @@ function finishEnrollment() {
           <button class="primary-button full-width" type="submit" :disabled="busy">
             {{ t('auth.signIn') }}
           </button>
+        </form>
+        <button class="text-button full-width" type="button" @click="resetUsername = username; step = 'reset-request'; error = ''; notice = ''">
+          {{ t('auth.forgotPassword') }}
+        </button>
+      </template>
+
+      <template v-else-if="step === 'reset-request'">
+        <h1>{{ t('auth.resetTitle') }}</h1>
+        <p>{{ t('auth.resetIntro') }}</p>
+        <div v-if="error" class="flash error">{{ error }}</div>
+        <form class="stack-form" @submit.prevent="requestReset">
+          <label>{{ t('auth.username') }}<input v-model="resetUsername" autocomplete="username" required autofocus /></label>
+          <button class="primary-button full-width" type="submit" :disabled="busy">{{ t('auth.requestReset') }}</button>
+          <button class="secondary-button full-width" type="button" @click="step = 'credentials'">{{ t('common.cancel') }}</button>
+        </form>
+      </template>
+
+      <template v-else-if="step === 'reset-confirm'">
+        <h1>{{ t('auth.resetTitle') }}</h1>
+        <p>{{ notice }}</p>
+        <div v-if="error" class="flash error">{{ error }}</div>
+        <form class="stack-form" @submit.prevent="confirmReset">
+          <label>{{ t('auth.resetCode') }}<input v-model="resetCode" autocomplete="one-time-code" required autofocus /></label>
+          <label>{{ t('auth.newPassword') }}<input v-model="resetPassword" type="password" autocomplete="new-password" required /></label>
+          <button class="primary-button full-width" type="submit" :disabled="busy">{{ t('common.save') }}</button>
         </form>
       </template>
 

@@ -38,12 +38,15 @@ export interface CurrentUser {
   ui_language: string
   show_variant_photos: boolean
   mfa_enabled: boolean
+  contact_email: string
 }
 
-export interface BandSummary {
+export interface IdentityBandSummary {
   id: number
   slug: string
   name: string
+  feature_flags: Required<FeatureFlags>
+  maintenance_message?: string
 }
 
 /** Shown as a persistent banner to both sides while support access is live. */
@@ -57,7 +60,7 @@ export interface SupportGrantBanner {
 
 export interface Identity {
   user: CurrentUser
-  band?: BandSummary
+  band?: IdentityBandSummary
   capabilities: Capabilities
   pos_mode: boolean
   support_grant?: SupportGrantBanner
@@ -508,6 +511,10 @@ export interface BandUser {
   last_login_at: string | null
   created_at: string
   is_self: boolean
+}
+
+export interface PlatformUser extends BandUser {
+  contact_email: string
 }
 
 export interface ProfilePayload {

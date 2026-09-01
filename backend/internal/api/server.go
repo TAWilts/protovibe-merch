@@ -61,6 +61,7 @@ type Server struct {
 	settingsMu      sync.RWMutex
 	settings        *models.PlatformSettings
 	settingsFetched time.Time
+	authLimiter     *requestLimiter
 }
 
 // settingsTTL is how long a cached copy of platform_settings is trusted.
@@ -106,8 +107,9 @@ func NewServer(cfg *config.Config, database *gorm.DB) (*Server, error) {
 			MysqldumpPath: cfg.MysqldumpPath,
 			RetentionDays: cfg.BackupRetentionDays,
 		}),
-		metrics: newMetrics(),
-		files:   files,
+		metrics:     newMetrics(),
+		files:       files,
+		authLimiter: newRequestLimiter(20, time.Minute),
 	}, nil
 }
 

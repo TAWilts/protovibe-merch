@@ -22,6 +22,7 @@ import type {
   PaymentQRSettings,
   Photo,
   PlatformSettings,
+  PlatformUser,
   ProfilePayload,
   Purchase,
   Queues,
@@ -43,6 +44,12 @@ export const authApi = {
     api.post<LoginResponse>('/auth/password-setup', {
       pending_token: pendingToken,
       password,
+    }),
+  requestPasswordReset: (username: string) =>
+    api.post<{ message: string }>('/auth/password-reset/request', { username }),
+  confirmPasswordReset: (username: string, code: string, newPassword: string) =>
+    api.post<void>('/auth/password-reset/confirm', {
+      username, code, new_password: newPassword,
     }),
   startEnrollment: (pendingToken?: string) =>
     api.post<MfaEnrollmentStart>('/mfa/enrollment/start', {
@@ -194,6 +201,20 @@ export const platformApi = {
       `/platform/bands/${id}/admins`,
       { username },
     ),
+
+  users: () =>
+    api.get<{ users: PlatformUser[]; assignable_roles: Role[] }>('/platform/users'),
+  createUser: (username: string, contactEmail: string, role: Role) =>
+    api.post<{ id: number; username: string; role: Role; setup_code: string }>(
+      '/platform/users', { username, contact_email: contactEmail, role },
+    ),
+  resetUserPassword: (id: number) =>
+    api.post<{ username: string; setup_code: string }>(`/platform/users/${id}/reset-password`),
+  changeUserRole: (id: number, role: Role) =>
+    api.patch<void>(`/platform/users/${id}/role`, { role }),
+  setUserActive: (id: number, active: boolean) =>
+    api.patch<void>(`/platform/users/${id}/active`, { active }),
+  resetUserMfa: (id: number) => api.post<void>(`/platform/users/${id}/reset-mfa`),
 
   grants: (bandId?: number) =>
     api.get<{ grants: SupportGrant[] }>(
@@ -380,6 +401,8 @@ export const profileApi = {
     }),
   changeUsername: (username: string) =>
     api.post<{ username: string }>('/profile/username', { username }),
+  changeContactEmail: (contactEmail: string) =>
+    api.put<{ contact_email: string }>('/profile/contact-email', { contact_email: contactEmail }),
   startMfa: () => api.post<MfaEnrollmentStart>('/mfa/enrollment/start', {}),
   confirmMfa: (code: string) =>
     api.post<{ recovery_codes: string[] }>('/mfa/enrollment/confirm', { code }),

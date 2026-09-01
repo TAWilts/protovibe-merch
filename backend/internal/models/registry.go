@@ -9,7 +9,7 @@ package models
 func AllModels() []any {
 	return []any{
 		// Control plane — deliberately not band-scoped.
-		&Band{}, &User{}, &Session{}, &PendingAuth{},
+		&Band{}, &User{}, &Session{}, &PendingAuth{}, &PasswordResetChallenge{},
 		&SupportAccessGrant{}, &PlatformSettings{}, &BackupRun{}, &AuditLog{},
 
 		// Band data — every one of these embeds Tenant.

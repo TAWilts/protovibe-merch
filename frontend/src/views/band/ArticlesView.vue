@@ -7,6 +7,7 @@ import { ApiError } from '@/api/client'
 import type { Article, ImportPreview, Photo } from '@/api/types'
 import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
+import { useSessionStore } from '@/stores/session'
 
 /**
  * Article management, ported from _old/templates/articles.html.
@@ -19,6 +20,7 @@ import { useFlashStore } from '@/stores/flash'
 const { t } = useI18n()
 const { format } = useMoney()
 const flash = useFlashStore()
+const session = useSessionStore()
 
 const articles = ref<Article[]>([])
 const loading = ref(true)
@@ -572,7 +574,7 @@ function onMinimumChange(variantId: number, raw: string) {
       </div>
     </dialog>
 
-    <section class="table-section transaction-import-panel">
+    <section v-if="session.featureFlags?.csv_import !== false" class="table-section transaction-import-panel">
       <div class="section-heading">
         <div>
           <h2>{{ t('articles.import.title') }}</h2>

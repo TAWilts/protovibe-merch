@@ -258,6 +258,7 @@ async function loadAssortment() {
 }
 
 async function loadPaymentQrAvailability() {
+	if (session.featureFlags?.payment_qr === false) return
   try {
     qrAvailability.value = await salesApi.paymentQrAvailability()
   } catch {
@@ -500,10 +501,12 @@ async function book(override?: BookSalePayload) {
     // taking the app to a gig.
     if (error instanceof ApiError) {
       flash.error(t(`errors.${error.detailCode ?? 'generic'}`, t('errors.generic')))
-    } else {
+    } else if (session.featureFlags?.offline_sales !== false) {
       await offline.queue(payload)
       flash.success(t('sales.queuedOffline'))
       resetAfterSale()
+    } else {
+      flash.error(t('errors.network'))
     }
   } finally {
     busy.value = false

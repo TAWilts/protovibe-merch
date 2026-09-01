@@ -20,6 +20,7 @@ export const useSessionStore = defineStore('session', () => {
 
   const user = computed(() => identity.value?.user ?? null)
   const band = computed(() => identity.value?.band ?? null)
+  const featureFlags = computed(() => identity.value?.band?.feature_flags ?? null)
   const capabilities = computed(() => identity.value?.capabilities ?? null)
   const posMode = computed(() => identity.value?.pos_mode ?? false)
   const supportGrant = computed(() => identity.value?.support_grant ?? null)
@@ -81,6 +82,7 @@ export const useSessionStore = defineStore('session', () => {
     identity,
     user,
     band,
+    featureFlags,
     capabilities,
     posMode,
     supportGrant,

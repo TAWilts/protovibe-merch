@@ -5,9 +5,11 @@ import (
 	"slices"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/audit"
 	"github.com/tawilts/protovibe-merch/backend/internal/auth"
+	"github.com/tawilts/protovibe-merch/backend/internal/models"
 	"github.com/tawilts/protovibe-merch/backend/internal/tenant"
 )
 
@@ -28,6 +30,7 @@ func (s *Server) registerProfileRoutes(g *gin.RouterGroup) {
 	p.PATCH("/personalization", s.updatePersonalization)
 	p.POST("/password", s.changeOwnPassword)
 	p.POST("/username", s.changeOwnUsername)
+	p.PUT("/contact-email", s.updateOwnContactEmail)
 	p.POST("/mfa/disable", s.disableMFA)
 	p.POST("/mfa/recovery-codes", s.regenerateRecoveryCodes)
 
@@ -225,6 +228,43 @@ func (s *Server) changeOwnUsername(c *gin.Context) {
 		Details: map[string]any{"from": previous, "to": name},
 	})
 	c.JSON(http.StatusOK, gin.H{"username": name})
+}
+
+type contactEmailRequest struct {
+	ContactEmail string `json:"contact_email" binding:"required"`
+}
+
+func (s *Server) updateOwnContactEmail(c *gin.Context) {
+	state := stateFrom(c)
+	if !state.User.Role.IsPlatformRole() {
+		forbidden(c, "platform_only", "only platform accounts have a recovery address")
+		return
+	}
+	var req contactEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	email, err := normalizeEmail(req.ContactEmail, false)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid_email", err.Error())
+		return
+	}
+	ctx := tenant.WithCrossBandAccess(c.Request.Context())
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(state.User).Update("contact_email", email).Error; err != nil {
+			return err
+		}
+		return tx.Where("user_id = ?", state.User.ID).Delete(&models.PasswordResetChallenge{}).Error
+	})
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+	state.User.ContactEmail = email
+	s.audit.Log(c.Request.Context(), actorFrom(c), audit.Entry{Action: "user.contact_email_changed",
+		EntityType: "user", EntityID: &state.User.ID})
+	c.JSON(http.StatusOK, gin.H{"contact_email": email})
 }
 
 type posModeRequest struct {

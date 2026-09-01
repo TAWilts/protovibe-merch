@@ -31,6 +31,7 @@ const reauth = ref({ password: '', code: '' })
 
 const passwords = ref({ current: '', next: '' })
 const username = ref('')
+const contactEmail = ref('')
 const enrollment = ref<{ secret: string; uri: string; qr: string } | null>(null)
 const enrollmentCode = ref('')
 const recoveryCodes = ref<string[]>([])
@@ -46,6 +47,7 @@ async function load() {
   try {
     data.value = await profileApi.get()
     username.value = data.value.profile.user.username
+    contactEmail.value = data.value.profile.user.contact_email
     needsReauth.value = false
   } catch (error) {
     if (error instanceof ApiError && error.detailCode === 'reauth_required') {
@@ -115,6 +117,16 @@ async function changePassword() {
 async function changeUsername() {
   try {
     await profileApi.changeUsername(username.value.trim())
+    await session.restore()
+    flash.success(t('profile.saved'))
+  } catch (error) {
+    report(error)
+  }
+}
+
+async function changeContactEmail() {
+  try {
+    await profileApi.changeContactEmail(contactEmail.value.trim())
     await session.restore()
     flash.success(t('profile.saved'))
   } catch (error) {
@@ -229,6 +241,11 @@ async function regenerateCodes() {
         </dl>
         <form class="stack-form" @submit.prevent="changeUsername">
           <label>{{ t('auth.username') }}<input v-model="username" required /></label>
+          <button class="secondary-button" type="submit">{{ t('common.save') }}</button>
+        </form>
+        <form v-if="caps?.is_platform_staff" class="stack-form" @submit.prevent="changeContactEmail">
+          <label>{{ t('profile.contactEmail') }}<input v-model="contactEmail" type="email" required /></label>
+          <p class="muted">{{ t('profile.contactEmailHint') }}</p>
           <button class="secondary-button" type="submit">{{ t('common.save') }}</button>
         </form>
       </section>

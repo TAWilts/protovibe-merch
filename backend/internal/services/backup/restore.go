@@ -52,7 +52,12 @@ func (s *Service) RestoreBand(ctx context.Context, runID int64, actor Actor) (*m
 	if run.Status != models.BackupStatusSucceeded || run.Path == "" {
 		return nil, ErrRunNotFound
 	}
-	dumpPath := filepath.Join(run.Path, "dump.sql")
+	runPath, err := s.safeRunPath(run.Path)
+	if err != nil {
+		return nil, err
+	}
+	run.Path = runPath
+	dumpPath := filepath.Join(runPath, "dump.sql")
 	statements, err := readStatements(dumpPath)
 	if err != nil {
 		return nil, err

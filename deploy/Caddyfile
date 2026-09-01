@@ -29,5 +29,7 @@
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy same-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self' blob:; manifest-src 'self'"
 	}
 }

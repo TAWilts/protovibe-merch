@@ -54,7 +54,14 @@
     "enrollQrAlt": "QR-Code für die Authenticator-App",
     "recoveryTitle": "Wiederherstellungscodes",
     "recoveryIntro": "Diese Codes werden genau einmal angezeigt. Bewahre sie offline auf — jeder funktioniert einmal, falls du dein Gerät verlierst.",
-    "recoverySaved": "Ich habe die Codes gesichert"
+    "recoverySaved": "Ich habe die Codes gesichert",
+    "forgotPassword": "System-Admin-Passwort vergessen?",
+    "resetTitle": "Passwort zuruecksetzen",
+    "resetIntro": "Nur fuer System-Admin-Konten mit hinterlegter Kontakt-E-Mail. Die Antwort verraet nicht, ob ein Konto existiert.",
+    "requestReset": "Einmalcode anfordern",
+    "resetSent": "Falls ein passendes Konto existiert, wurde ein Einmalcode versandt.",
+    "resetCode": "Einmalcode aus der E-Mail",
+    "resetDone": "Passwort geaendert. Du kannst dich jetzt anmelden."
   },
   "support": {
     "active": "Supportzugriff aktiv",
@@ -154,7 +161,13 @@
     "maintenance": "Die Anwendung ist gerade in Wartung.",
     "file_too_large": "Die Datei ist größer als 10 MB.",
     "unsupported_type": "Es werden nur PDF-, JPEG-, PNG- und WebP-Dateien akzeptiert.",
-    "type_mismatch": "Die Dateiendung passt nicht zum Dateityp."
+    "type_mismatch": "Die Dateiendung passt nicht zum Dateityp.",
+    "feature_disabled": "Diese Funktion ist fuer diese Band deaktiviert.",
+    "storage_quota_exceeded": "Das Speicherlimit dieser Band ist erreicht.",
+    "rate_limited": "Zu viele Versuche. Bitte warte kurz.",
+    "invalid_reset_code": "Der Einmalcode ist ungueltig oder abgelaufen.",
+    "invalid_email": "Bitte gib eine gueltige E-Mail-Adresse ein.",
+    "last_system_admin": "Mindestens ein aktiver System-Admin muss erhalten bleiben."
   },
   "history": {
     "eyebrow": "Belege",
@@ -368,6 +381,7 @@
     "supportAdminNote": "Als Support-Admin kannst du ansehen und Supportzugriff anfordern, aber keine Bands anlegen oder Einstellungen ändern.",
     "nav": {
       "bands": "Bands",
+      "users": "Konten",
       "support": "Supportzugriff",
       "messages": "Postfach",
       "audit": "Audit-Log",
@@ -499,6 +513,12 @@
         "succeeded": "Erfolgreich",
         "failed": "Fehlgeschlagen"
       }
+    },
+    "users": {
+      "title": "Plattformkonten",
+      "intro": "System-Admins verwalten hier Support- und weitere System-Admins. Neue Konten erhalten einen einmaligen Einrichtungscode.",
+      "email": "Kontakt-E-Mail",
+      "you": "das bist du"
     },
     "settings": {
       "title": "Einstellungen",
@@ -642,6 +662,8 @@
     "role": "Rolle",
     "band": "Band",
     "lastLogin": "Letzte Anmeldung",
+    "contactEmail": "Private Kontakt-E-Mail",
+    "contactEmailHint": "Wird nur fuer die Passwort-Wiederherstellung deines Plattformkontos verwendet.",
     "personalization": "Darstellung",
     "personalizationHint": "Gilt nur für dich — andere Konten der Band sehen weiterhin ihre eigene Einstellung.",
     "theme": "Farbthema",

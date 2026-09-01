@@ -100,13 +100,25 @@ func (s *Server) maintenanceGuard() gin.HandlerFunc {
 			serverError(c, err)
 			return
 		}
-		if !settings.MaintenanceEnabled {
+		state := stateFrom(c)
+		if state != nil && state.User != nil && state.User.Role.IsPlatformRole() {
 			c.Next()
 			return
 		}
 
-		state := stateFrom(c)
-		if state != nil && state.User != nil && state.User.Role.IsPlatformRole() {
+		message := settings.MaintenanceMessage
+		maintenanceEnabled := settings.MaintenanceEnabled
+		if !maintenanceEnabled && state != nil && state.User != nil && state.User.BandID != nil {
+			var band models.Band
+			if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).
+				Select("id", "maintenance_message").First(&band, *state.User.BandID).Error; err != nil {
+				serverError(c, err)
+				return
+			}
+			maintenanceEnabled = strings.TrimSpace(band.MaintenanceMessage) != ""
+			message = band.MaintenanceMessage
+		}
+		if !maintenanceEnabled {
 			c.Next()
 			return
 		}
@@ -124,7 +136,54 @@ func (s *Server) maintenanceGuard() gin.HandlerFunc {
 
 		failWithDetails(c, http.StatusServiceUnavailable, "maintenance",
 			"the service is temporarily unavailable",
-			map[string]string{"message": settings.MaintenanceMessage})
+			map[string]string{"message": message})
+	}
+}
+
+// featureGuard enforces tenant feature switches on the API. Hiding a link in
+// Vue is only a convenience; without this guard a disabled paid or staged
+// feature remained callable by sending requests directly.
+func (s *Server) featureGuard() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		state := stateFrom(c)
+		if state == nil {
+			c.Next()
+			return
+		}
+		bandID, err := tenant.BandID(c.Request.Context())
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		path := c.Request.URL.Path
+		var feature string
+		var enabled func(models.FeatureFlags) bool
+		switch {
+		case strings.HasPrefix(path, "/api/v1/slideshow"):
+			feature, enabled = "slideshow", func(f models.FeatureFlags) bool { return f.SlideshowEnabled() }
+		case strings.HasPrefix(path, "/api/v1/band-finances"):
+			feature, enabled = "band_finances", func(f models.FeatureFlags) bool { return f.BandFinancesEnabled() }
+		case strings.HasPrefix(path, "/api/v1/payment-qr"):
+			feature, enabled = "payment_qr", func(f models.FeatureFlags) bool { return f.PaymentQREnabled() }
+		case strings.HasPrefix(path, "/api/v1/imports"):
+			feature, enabled = "csv_import", func(f models.FeatureFlags) bool { return f.CSVImportEnabled() }
+		default:
+			c.Next()
+			return
+		}
+
+		var band models.Band
+		if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).
+			Select("id", "feature_flags").First(&band, bandID).Error; err != nil {
+			serverError(c, err)
+			return
+		}
+		if !enabled(band.FeatureFlags) {
+			forbidden(c, "feature_disabled", "the "+feature+" feature is disabled for this band")
+			return
+		}
+		c.Next()
 	}
 }
 

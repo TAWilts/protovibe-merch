@@ -50,7 +50,6 @@ func TestCapabilityMatrix(t *testing.T) {
 				CanManageArticles:        true,
 				CanManageSlideshow:       true,
 				CanAccessBandAdmin:       true,
-				CanManageUpdates:         true,
 			},
 		},
 		{
@@ -70,6 +69,7 @@ func TestCapabilityMatrix(t *testing.T) {
 				IsPlatformStaff:            true,
 				CanAccessSystemAdmin:       true,
 				CanManagePlatformStaff:     true,
+				CanManageUpdates:           true,
 				MFARequired:                true,
 				SensitiveActionMFARequired: true,
 			},

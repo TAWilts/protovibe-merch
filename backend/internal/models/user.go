@@ -63,6 +63,7 @@ type User struct {
 	BandID *int64 `gorm:"index" json:"band_id,omitempty"`
 
 	Username     string `gorm:"size:150;not null" json:"username"`
+	ContactEmail string `gorm:"size:254;not null;default:''" json:"contact_email"`
 	PasswordHash string `gorm:"size:255;not null" json:"-"`
 	Role         Role   `gorm:"size:20;not null;index" json:"role"`
 	IsActive     bool   `gorm:"not null" json:"is_active"`
@@ -154,3 +155,15 @@ const (
 	PendingAuthMFAEnrollment = "mfa_enrollment"
 	PendingAuthPasswordSetup = "password_setup"
 )
+
+// PasswordResetChallenge is the short-lived, mail-delivered recovery code for
+// a system administrator. Only the hash is persisted.
+type PasswordResetChallenge struct {
+	UserID         int64     `gorm:"primaryKey" json:"-"`
+	CodeHash       string    `gorm:"size:64;not null" json:"-"`
+	ExpiresAt      time.Time `gorm:"not null" json:"-"`
+	RequestedAt    time.Time `gorm:"not null" json:"-"`
+	FailedAttempts int       `gorm:"not null" json:"-"`
+}
+
+func (PasswordResetChallenge) TableName() string { return "password_reset_challenges" }

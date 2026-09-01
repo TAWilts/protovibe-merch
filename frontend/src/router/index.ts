@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
 import { useSessionStore } from '@/stores/session'
+import type { FeatureFlags } from '@/api/types'
 
 /**
  * Two shells share one router: the band app at `/` and the platform admin
@@ -26,10 +27,10 @@ const routes: RouteRecordRaw[] = [
       { path: 'orders', name: 'orders', component: () => import('@/views/band/SalesView.vue') },
       { path: 'history', name: 'history', component: () => import('@/views/band/HistoryView.vue') },
       { path: 'operations', name: 'operations', component: () => import('@/views/band/OperationsView.vue') },
-      { path: 'slideshow', name: 'slideshow', component: () => import('@/views/band/SlideshowView.vue') },
+      { path: 'slideshow', name: 'slideshow', component: () => import('@/views/band/SlideshowView.vue'), meta: { feature: 'slideshow' } },
       { path: 'articles', name: 'articles', component: () => import('@/views/band/ArticlesView.vue') },
       { path: 'purchases', name: 'purchases', component: () => import('@/views/band/PurchasesView.vue') },
-      { path: 'band-finances', name: 'band-finances', component: () => import('@/views/band/BandFinancesView.vue') },
+      { path: 'band-finances', name: 'band-finances', component: () => import('@/views/band/BandFinancesView.vue'), meta: { feature: 'band_finances' } },
       { path: 'balances', name: 'balances', component: () => import('@/views/band/BalancesView.vue') },
       { path: 'administration', name: 'administration', component: () => import('@/views/band/AdministrationView.vue') },
       { path: 'profile', name: 'profile', component: () => import('@/views/band/ProfileView.vue') },
@@ -44,6 +45,7 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', redirect: { name: 'platform-bands' } },
       { path: 'bands', name: 'platform-bands', component: () => import('@/views/platform/BandsView.vue') },
+      { path: 'users', name: 'platform-users', component: () => import('@/views/platform/UsersView.vue'), meta: { systemAdmin: true } },
       { path: 'support-access', name: 'platform-support', component: () => import('@/views/platform/SupportAccessView.vue') },
       { path: 'messages', name: 'platform-messages', component: () => import('@/views/platform/MessagesView.vue') },
       { path: 'audit', name: 'platform-audit', component: () => import('@/views/platform/AuditView.vue') },
@@ -103,6 +105,14 @@ router.beforeEach(async (to) => {
   }
   // The reverse: a band account has nothing to do in the control plane.
   if (caps && isPlatformRoute && !caps.can_access_system_administration) {
+    return { name: 'sales' }
+  }
+  if (to.meta.systemAdmin && !caps?.is_system_admin) {
+    return { name: 'platform-bands' }
+  }
+
+  const requiredFeature = to.meta.feature as keyof FeatureFlags | undefined
+  if (requiredFeature && session.featureFlags?.[requiredFeature] === false) {
     return { name: 'sales' }
   }
 

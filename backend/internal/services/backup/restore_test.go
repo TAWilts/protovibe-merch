@@ -55,3 +55,26 @@ func TestReadStatementsReportsAMissingDump(t *testing.T) {
 		t.Fatalf("expected ErrRestoreMissing, got %v", err)
 	}
 }
+
+func TestSafeRunPathStaysBelowBackupRoot(t *testing.T) {
+	root := t.TempDir()
+	service := NewService(nil, Config{Root: root})
+
+	inside := filepath.Join(root, "band-7", "2026-09-01_12-00-00")
+	resolved, err := service.safeRunPath(inside)
+	if err != nil {
+		t.Fatalf("valid backup path was rejected: %v", err)
+	}
+	want, _ := filepath.Abs(inside)
+	if resolved != want {
+		t.Fatalf("resolved path %q, want %q", resolved, want)
+	}
+
+	outside := filepath.Join(root, "..", "not-a-backup")
+	if _, err := service.safeRunPath(outside); err != ErrUnsafePath {
+		t.Fatalf("outside path must return ErrUnsafePath, got %v", err)
+	}
+	if _, err := service.safeRunPath(root); err != ErrUnsafePath {
+		t.Fatalf("backup root itself must return ErrUnsafePath, got %v", err)
+	}
+}

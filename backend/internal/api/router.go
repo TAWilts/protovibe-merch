@@ -41,8 +41,10 @@ func New(s *Server) *gin.Engine {
 	// group by mistake can therefore never slip past the tenant boundary.
 	for _, guard := range []gin.HandlerFunc{
 		noStore(),
+		s.authRateLimit(),
 		s.resolveSession(),
 		s.maintenanceGuard(),
+		s.featureGuard(),
 		s.csrfGuard(),
 		s.platformBoundary(),
 		posModeGuard(),
@@ -65,6 +67,7 @@ func New(s *Server) *gin.Engine {
 	s.registerPaymentQRRoutes(api)
 	s.registerImportRoutes(api)
 	s.registerPlatformRoutes(api)
+	s.registerPlatformUserRoutes(api)
 	s.registerPlatformOpsRoutes(api)
 	s.registerSupportInboxRoutes(api)
 	s.registerBackupRoutes(api)

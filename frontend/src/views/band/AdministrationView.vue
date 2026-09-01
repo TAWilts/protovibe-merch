@@ -56,15 +56,16 @@ onMounted(load)
 async function load() {
   loading.value = true
   try {
-    const [grantList, userList, qrSettings] = await Promise.all([
+    const [grantList, userList] = await Promise.all([
       bandAdminApi.grants(),
       bandUsersApi.list(),
-      bandUsersApi.paymentQrSettings(),
     ])
     grants.value = grantList.grants
     users.value = userList.users
     assignableRoles.value = userList.assignable_roles
-    paymentQr.value = qrSettings
+    paymentQr.value = session.featureFlags?.payment_qr === false
+      ? null
+      : await bandUsersApi.paymentQrSettings()
   } catch {
     flash.error(t('errors.generic'))
   } finally {

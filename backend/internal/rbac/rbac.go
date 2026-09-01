@@ -80,9 +80,9 @@ func For(user *models.User) Capabilities {
 		CanAccessBandAdmin:       role == models.RoleBandAdmin,
 		CanAccessSystemAdmin:     role.IsPlatformRole(),
 		CanManagePlatformStaff:   role == models.RoleSystemAdmin,
-		// Deployment controls stay with the band admin; platform roles gain no
-		// implicit access to a band's data or its update workflow.
-		CanManageUpdates: role == models.RoleBandAdmin,
+		// Updates deploy the shared instance and therefore belong to the
+		// system administrator, not to an individual band's administration.
+		CanManageUpdates: role == models.RoleSystemAdmin,
 
 		MFARequired:                mfaRequired,
 		MFAEnabled:                 user.MFAEnabled,
@@ -102,7 +102,6 @@ var POSRestrictedPrefixes = []string{
 	"/api/v1/balances",
 	"/api/v1/band-admin",
 	"/api/v1/platform",
-	"/api/v1/updates",
 	"/api/v1/exports",
 	"/api/v1/imports",
 }

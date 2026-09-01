@@ -22,6 +22,8 @@ func (s *Server) registerAuthRoutes(g *gin.RouterGroup) {
 	a.POST("/login", s.login)
 	a.POST("/mfa", s.completeMFALogin)
 	a.POST("/password-setup", s.completePasswordSetup)
+	a.POST("/password-reset/request", s.requestSystemAdminPasswordReset)
+	a.POST("/password-reset/confirm", s.confirmSystemAdminPasswordReset)
 	a.POST("/logout", requireAuth(), s.logout)
 
 	// Enrolment is reachable both from a pending login (a platform account
@@ -164,6 +166,12 @@ func (s *Server) completePasswordSetup(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	// Validate before consuming the one-time token. A typing error must not
+	// strand the account and force an administrator to issue a new setup code.
+	if err := auth.ValidatePassword(req.Password); err != nil {
+		s.reportAuthError(c, err)
+		return
+	}
 	user, err := s.auth.ConsumePendingAuth(ctx, req.PendingToken, models.PendingAuthPasswordSetup)
 	if err != nil {
 		s.reportAuthError(c, err)
@@ -269,6 +277,7 @@ type meResponse struct {
 		UILanguage        string      `json:"ui_language"`
 		ShowVariantPhotos bool        `json:"show_variant_photos"`
 		MFAEnabled        bool        `json:"mfa_enabled"`
+		ContactEmail      string      `json:"contact_email"`
 	} `json:"user"`
 	Band         *bandSummary        `json:"band,omitempty"`
 	Capabilities rbac.Capabilities   `json:"capabilities"`
@@ -277,9 +286,11 @@ type meResponse struct {
 }
 
 type bandSummary struct {
-	ID   int64  `json:"id"`
-	Slug string `json:"slug"`
-	Name string `json:"name"`
+	ID                 int64               `json:"id"`
+	Slug               string              `json:"slug"`
+	Name               string              `json:"name"`
+	FeatureFlags       featureFlagsPayload `json:"feature_flags"`
+	MaintenanceMessage string              `json:"maintenance_message,omitempty"`
 }
 
 // supportGrantBanner drives the persistent notice both sides see while a
@@ -311,6 +322,7 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 	payload.User.UILanguage = user.UILanguage
 	payload.User.ShowVariantPhotos = user.ShowVariantPhotos
 	payload.User.MFAEnabled = user.MFAEnabled
+	payload.User.ContactEmail = user.ContactEmail
 
 	bandID := user.BandID
 	if grant != nil {
@@ -338,7 +350,17 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 	if bandID != nil {
 		var band models.Band
 		if err := s.db.WithContext(tenant.WithCrossBandAccess(ctx)).First(&band, *bandID).Error; err == nil {
-			payload.Band = &bandSummary{ID: band.ID, Slug: band.Slug, Name: band.Name}
+			payload.Band = &bandSummary{
+				ID: band.ID, Slug: band.Slug, Name: band.Name,
+				FeatureFlags: featureFlagsPayload{
+					Slideshow:    band.FeatureFlags.SlideshowEnabled(),
+					BandFinances: band.FeatureFlags.BandFinancesEnabled(),
+					PaymentQR:    band.FeatureFlags.PaymentQREnabled(),
+					OfflineSales: band.FeatureFlags.OfflineSalesEnabled(),
+					CSVImport:    band.FeatureFlags.CSVImportEnabled(),
+				},
+				MaintenanceMessage: band.MaintenanceMessage,
+			}
 		}
 	}
 	return payload

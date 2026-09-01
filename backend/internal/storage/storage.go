@@ -106,20 +106,32 @@ func (s *LocalStore) Put(ctx context.Context, bandID int64, category, mediaType 
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+
+	if err := root.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 		return nil, err
 	}
 
 	// Write to a temporary file first and rename into place, so a failed or
 	// interrupted upload never leaves a half-written invoice behind.
-	temp, err := os.CreateTemp(filepath.Dir(target), ".upload-*")
+	tempSuffix, err := randomName()
 	if err != nil {
 		return nil, err
 	}
-	tempName := temp.Name()
+	tempName := filepath.Join(filepath.Dir(target), ".upload-"+tempSuffix)
+	temp, err := root.OpenFile(tempName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
-		temp.Close()
-		os.Remove(tempName)
+		if temp != nil {
+			_ = temp.Close()
+		}
+		_ = root.Remove(tempName)
 	}()
 
 	written, err := io.Copy(temp, r)
@@ -132,10 +144,8 @@ func (s *LocalStore) Put(ctx context.Context, bandID int64, category, mediaType 
 	if err := temp.Close(); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(tempName, 0o640); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tempName, target); err != nil {
+	temp = nil
+	if err := root.Rename(tempName, target); err != nil {
 		return nil, err
 	}
 
@@ -147,7 +157,13 @@ func (s *LocalStore) Open(ctx context.Context, key string) (io.ReadSeekCloser, *
 	if err != nil {
 		return nil, nil, err
 	}
-	file, err := os.Open(target)
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer root.Close()
+
+	file, err := root.Open(target)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, ErrNotFound
@@ -156,8 +172,7 @@ func (s *LocalStore) Open(ctx context.Context, key string) (io.ReadSeekCloser, *
 	}
 	info, err := file.Stat()
 	if err != nil {
-		file.Close()
-		return nil, nil, err
+		return nil, nil, errors.Join(err, file.Close())
 	}
 	return file, &Object{Key: key, SizeBytes: info.Size(), MediaType: mediaTypeOf(key)}, nil
 }
@@ -170,7 +185,13 @@ func (s *LocalStore) Delete(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+	root, err := os.OpenRoot(s.root)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+
+	if err := root.Remove(target); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
@@ -198,17 +219,17 @@ func (s *LocalStore) UsageBytes(ctx context.Context, bandID int64) (int64, error
 	return total, nil
 }
 
-// resolve turns a key into an absolute path and refuses anything that would
-// escape the store, which is the guard against a crafted key from the database
-// or a request parameter.
+// resolve turns a key into a path relative to LocalStore.root and refuses
+// traversal. The caller passes it to os.Root, which also confines symlinks at
+// the operating-system boundary.
 func (s *LocalStore) resolve(key string) (string, error) {
-	cleaned := path.Clean("/" + strings.TrimSpace(key))
-	target := filepath.Join(s.root, filepath.FromSlash(cleaned))
-
-	if target != s.root && !strings.HasPrefix(target, s.root+string(os.PathSeparator)) {
+	normalized := strings.ReplaceAll(strings.TrimSpace(key), "\\", "/")
+	cleaned := path.Clean(normalized)
+	if normalized == "" || path.IsAbs(normalized) || cleaned == "." || cleaned == ".." ||
+		strings.HasPrefix(cleaned, "../") {
 		return "", fmt.Errorf("storage: key %q escapes the store", key)
 	}
-	return target, nil
+	return filepath.FromSlash(cleaned), nil
 }
 
 func randomName() (string, error) {

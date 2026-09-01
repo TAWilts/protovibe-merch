@@ -23,7 +23,7 @@ func (s *Server) registerPaymentQRRoutes(g *gin.RouterGroup) {
 
 	admins := g.Group("/payment-qr", requireAuth(), requireBandRole(models.RoleBandAdmin))
 	admins.GET("/settings", s.getPaymentQRSettings)
-	admins.PUT("/settings", s.savePaymentQRSettings)
+	admins.PUT("/settings", requireBandAccount(), s.savePaymentQRSettings)
 }
 
 func (s *Server) paymentQRAvailability(c *gin.Context) {

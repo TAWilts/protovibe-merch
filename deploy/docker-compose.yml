@@ -20,7 +20,9 @@ services:
       - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
       - --default-time-zone=+00:00
     ports:
-      - "${DB_HOST_PORT:-3307}:3306"
+      # Diagnostics stay available on the host without exposing MariaDB to
+      # the LAN. Set an explicit non-loopback bind only when it is intended.
+      - "127.0.0.1:${DB_HOST_PORT:-3307}:3306"
     volumes:
       - db-data:/var/lib/mysql
     healthcheck:
