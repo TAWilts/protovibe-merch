@@ -69,9 +69,6 @@ const busy = ref(false)
  */
 const isOrder = computed(() => route.name === 'orders')
 
-/** The sheet holding everything a sale carries beyond its items. */
-const sheetOpen = ref(false)
-
 /** The address a parcel needs. Empty until a shipment is actually booked. */
 const shipOpen = ref(false)
 const shipName = ref('')
@@ -82,15 +79,9 @@ const shipReady = computed(
   () => shipName.value.trim() !== '' && shipAddress.value.trim() !== '',
 )
 
-/**
- * Whether anything in the sheet deviates from a plain cash sale. It drives a
- * marker on the button, so a seller can see that something is set without
- * opening it — otherwise a forgotten "not paid" is invisible until the sale
- * turns up in the wrong worklist.
- */
-const sheetTouched = computed(
-  () => selectedEventId.value !== 0 || comment.value.trim() !== '',
-)
+type CheckoutStep = 1 | 2 | 3
+const checkoutStep = ref<CheckoutStep>(1)
+const needsShipping = computed(() => isOrder.value || shipOpen.value)
 
 /**
  * The till claims exactly the space left below whatever is above it.
@@ -222,6 +213,13 @@ const canAddToCart = computed(
   () => selectedVariant.value !== null && quantity.value > 0 && parseAmount(unitPriceInput.value) !== null,
 )
 const canBook = computed(() => basket.value.length > 0 && !busy.value)
+const paymentStepReady = computed(() => {
+  if (!basket.value.length || busy.value || (needsShipping.value && !shipReady.value)) return false
+  if (paymentMethod.value === 'Bar' && (!needsShipping.value || !shipPayLater.value) && amountGivenCents.value !== null) {
+    return amountGivenCents.value >= basketTotalCents.value
+  }
+  return true
+})
 
 onMounted(async () => {
   measureTill()
@@ -309,6 +307,11 @@ watch(selectedVariant, (variant) => {
   }
 })
 
+watch(isOrder, (order) => {
+  shipOpen.value = order
+  checkoutStep.value = 1
+})
+
 /**
  * The stepper is the only way to change the amount on a tablet, so it must
  * never leave the field in a state the basket cannot use: clearing a number
@@ -319,26 +322,9 @@ watch(selectedVariant, (variant) => {
  * is no other screen for sale events, so without this the picker stays empty
  * forever on a fresh band.
  */
-/**
- * Books a sale that is not handed over. The server turns "not received" into a
- * pending shipment and demands the address, which is why it is asked for here
- * rather than left to the extra fields.
- */
-async function bookShipment() {
-  if (!shipReady.value || busy.value) return
-  await book({
-    ...salePayload(),
-    is_received: false,
-    is_paid: !shipPayLater.value,
-    amount_given_cents: null,
-    customer_name: shipName.value.trim(),
-    customer_address: shipAddress.value.trim(),
-  })
-  shipOpen.value = false
-}
-
 /** Builds the request body once, so the code and the booking agree exactly. */
 function salePayload(): BookSalePayload {
+  const paid = !needsShipping.value || !shipPayLater.value
   return {
     items: basket.value.map((line) => ({
       variant_id: line.variantId,
@@ -349,14 +335,15 @@ function salePayload(): BookSalePayload {
     // A sale at the stand is money taken and goods handed over. The flags stay
     // in the payload because the server and the worklists are built on them;
     // a sale that is settled later is corrected under "Offene Vorgänge".
-    is_paid: true,
-    is_received: true,
+    is_paid: paid,
+    is_received: !needsShipping.value,
     // Handing the surplus back means the band kept the amount due, and that is
     // what the server must record — anything more becomes a donation there.
-    amount_given_cents:
-      surplusMode.value === 'donation' ? amountGivenCents.value : basketTotalCents.value,
-    customer_name: '',
-    customer_address: '',
+    amount_given_cents: paid
+      ? (surplusMode.value === 'donation' ? amountGivenCents.value : basketTotalCents.value)
+      : null,
+    customer_name: needsShipping.value ? shipName.value.trim() : '',
+    customer_address: needsShipping.value ? shipAddress.value.trim() : '',
     event_name: events.value.find((event) => event.id === selectedEventId.value)?.name ?? '',
     sold_by: soldBy.value.trim(),
     comment: comment.value.trim(),
@@ -364,8 +351,8 @@ function salePayload(): BookSalePayload {
   }
 }
 
-async function showPaymentQr() {
-  if (!canBook.value || qrBusy.value) return
+async function showPaymentQr(): Promise<boolean> {
+  if (!paymentStepReady.value || qrBusy.value) return false
   qrBusy.value = true
   try {
     qrIntent.value = await salesApi.createPaymentQrIntent({
@@ -373,15 +360,17 @@ async function showPaymentQr() {
       sale: salePayload(),
       description: basket.value.map((line) => `${line.quantity}× ${line.label}`).join(', '),
     })
+    return true
   } catch (error) {
     reportError(error)
+    return false
   } finally {
     qrBusy.value = false
   }
 }
 
 /** The customer walked away: release the reservation so the number is free. */
-async function cancelPaymentQr() {
+async function cancelPaymentQr(returnToPayment = false) {
   const intent = qrIntent.value
   qrIntent.value = null
   if (!intent) return
@@ -391,6 +380,7 @@ async function cancelPaymentQr() {
     // The reservation expires on its own; a failed cancel must not block the
     // seller from carrying on.
   }
+  if (returnToPayment) checkoutStep.value = 2
 }
 
 /** The money arrived. Now — and only now — the sale is booked. */
@@ -399,11 +389,48 @@ async function confirmPaymentQr() {
   if (!intent || qrBusy.value) return
   qrBusy.value = true
   try {
-    await book({ ...salePayload(), receipt_id: intent.receipt_id, payment_qr_intent_token: intent.token })
-    qrIntent.value = null
+    const completed = await book({
+      ...salePayload(),
+      receipt_id: intent.receipt_id,
+      payment_qr_intent_token: intent.token,
+    })
+    if (completed) qrIntent.value = null
   } finally {
     qrBusy.value = false
   }
+}
+
+function goToPayment() {
+  if (!basket.value.length) return
+  checkoutStep.value = 2
+}
+
+function backToBasket() {
+  checkoutStep.value = 1
+}
+
+async function goToConfirmation() {
+  if (!paymentStepReady.value) return
+  if (qrOffered.value && (!needsShipping.value || !shipPayLater.value)) {
+    if (!await showPaymentQr()) return
+  }
+  checkoutStep.value = 3
+}
+
+async function backToPayment() {
+  if (qrIntent.value) {
+    await cancelPaymentQr(true)
+    return
+  }
+  checkoutStep.value = 2
+}
+
+async function confirmCheckout() {
+  if (qrIntent.value) {
+    await confirmPaymentQr()
+    return
+  }
+  await book()
 }
 
 function reportError(error: unknown) {
@@ -484,8 +511,8 @@ function removeLine(index: number) {
   basket.value.splice(index, 1)
 }
 
-async function book(override?: BookSalePayload) {
-  if (!override && !canBook.value) return
+async function book(override?: BookSalePayload): Promise<boolean> {
+  if (!override && !canBook.value) return false
   busy.value = true
 
   const payload: BookSalePayload = override ?? salePayload()
@@ -495,6 +522,7 @@ async function book(override?: BookSalePayload) {
     flash.success(t('sales.booked', { receipt: result.receipt_id }))
     resetAfterSale()
     await Promise.all([loadAssortment(), refreshReceiptPreview()])
+    return true
   } catch (error) {
     // A rejected sale is the seller's to fix; a missing connection is not.
     // The second case is queued rather than lost, which is the whole point of
@@ -505,9 +533,11 @@ async function book(override?: BookSalePayload) {
       await offline.queue(payload)
       flash.success(t('sales.queuedOffline'))
       resetAfterSale()
+      return true
     } else {
       flash.error(t('errors.network'))
     }
+    return false
   } finally {
     busy.value = false
   }
@@ -522,154 +552,131 @@ function resetAfterSale() {
   shipName.value = ''
   shipAddress.value = ''
   shipPayLater.value = false
+  shipOpen.value = isOrder.value
+  checkoutStep.value = 1
+  qrIntent.value = null
   // sold_by deliberately survives, so a stand run by one person does not have
   // to retype it for every sale.
 }
 </script>
 
 <template>
-  <main ref="tillEl" class="till" :class="{ 'has-note': isOrder }">
+  <main
+    ref="tillEl"
+    class="till checkout-till"
+    :class="[`checkout-step-${checkoutStep}`, { 'has-note': isOrder }]"
+  >
     <h1 class="visually-hidden">{{ isOrder ? t('sales.ordersTitle') : t('sales.title') }}</h1>
 
-    <!-- An order is rarer and easier to get wrong than a counter sale, so this
-         one says out loud which counter you are standing at. -->
+    <nav class="checkout-progress" :aria-label="t('sales.paymentDetails')">
+      <button type="button" :class="{ active: checkoutStep === 1, complete: checkoutStep > 1 }" @click="backToBasket">
+        <b>1</b><span>{{ t('sales.cart') }}</span>
+      </button>
+      <button
+        type="button"
+        :disabled="!basket.length"
+        :class="{ active: checkoutStep === 2, complete: checkoutStep > 2 }"
+        @click="checkoutStep > 1 ? backToPayment() : goToPayment()"
+      >
+        <b>2</b><span>{{ t('sales.paymentMethod') }}</span>
+      </button>
+      <button type="button" disabled :class="{ active: checkoutStep === 3 }">
+        <b>3</b><span>{{ t('common.confirm') }}</span>
+      </button>
+    </nav>
+
     <p v-if="isOrder" class="till-mode-note">{{ t('sales.ordersHint') }}</p>
 
-    <section class="till-column till-articles">
-      <header class="till-column-head">
-        <h2>{{ t('sales.articles') }}</h2>
-        <input
-          v-model="articleFilter"
-          class="till-filter"
-          type="search"
-          :placeholder="t('sales.filterArticles')"
-        />
-      </header>
-      <div class="till-scroll">
-        <div class="button-list">
-          <button
-            v-for="article in visibleArticles"
-            :key="article.id"
-            type="button"
-            class="selection-button"
-            :class="{ selected: article.id === selectedArticleId }"
-            @click="selectArticle(article)"
-          >
-            <span>{{ article.name }}</span>
-            <small>{{ article.total_stock }}</small>
-          </button>
-          <p v-if="!loading && !visibleArticles.length" class="muted">{{ t('sales.noArticles') }}</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="till-column till-variant">
-      <div class="till-scroll">
-        <div class="option-groups">
-          <div v-if="!selectedArticle" class="empty-selection">{{ t('sales.pickArticle') }}</div>
-          <div v-for="group in optionGroups" :key="group.id" class="option-group">
-            <h3>{{ group.name }}</h3>
-            <div class="option-choices">
-              <button
-                v-for="value in group.values"
-                :key="value.id"
-                type="button"
-                class="option-choice"
-                :class="{ selected: chosenValues[group.id] === value.id }"
-                @click="chooseValue(group.id, value.id)"
-              >
-                {{ value.value }}
-              </button>
-            </div>
+    <template v-if="checkoutStep === 1">
+      <section class="till-column till-articles">
+        <header class="till-column-head">
+          <h2>{{ t('sales.articles') }}</h2>
+          <input v-model="articleFilter" class="till-filter" type="search" :placeholder="t('sales.filterArticles')" />
+        </header>
+        <div class="till-scroll">
+          <div class="button-list">
+            <button
+              v-for="article in visibleArticles"
+              :key="article.id"
+              type="button"
+              class="selection-button"
+              :class="{ selected: article.id === selectedArticleId }"
+              @click="selectArticle(article)"
+            >
+              <span>{{ article.name }}</span>
+              <small>{{ article.total_stock }}</small>
+            </button>
+            <p v-if="!loading && !visibleArticles.length" class="muted">{{ t('sales.noArticles') }}</p>
           </div>
         </div>
+      </section>
 
-        <!-- One line, not a card: it confirms what is about to be added, and
-             that is all it has to do. Stock never blocks a sale; the seller is
-             only told about it. -->
-        <p v-if="selectedVariant" class="till-chosen">
-          <strong>{{ variantLabel }}</strong>
-          <span
-            class="till-stock"
-            :class="{ 'is-empty': selectedVariant.on_hand <= 0 }"
-            :title="selectedVariant.on_hand <= 0 ? t('sales.stockWarning') : ''"
-          >{{ t('sales.inStock', { count: selectedVariant.on_hand }) }}</span>
-        </p>
-
-        <div v-if="variantPhotos.length" class="variant-photo-preview">
-          <img
-            v-for="(url, index) in variantPhotos"
-            :key="url"
-            :src="url"
-            :alt="t('sales.variantPhotoAlt', { variant: variantLabel, index: index + 1 })"
-            loading="lazy"
-          />
-        </div>
-      </div>
-
-      <!-- Anchored: price, amount and "add" never scroll away from the
-           variant they belong to. -->
-      <footer class="till-compose">
-        <label class="till-price">
-          {{ t('sales.unitPrice') }}
-          <input v-model="unitPriceInput" inputmode="decimal" :disabled="!selectedVariant" />
-        </label>
-        <label class="quantity-control">
-          {{ t('common.quantity') }}
-          <span class="stepper">
-            <button type="button" :aria-label="t('common.decrease')" @click="stepQuantity(-1)">−</button>
-            <input
-              v-model.number="quantity"
-              type="number"
-              min="1"
-              inputmode="numeric"
-              @blur="normalizeQuantity"
+      <section class="till-column till-variant">
+        <div class="till-scroll">
+          <div class="option-groups">
+            <div v-if="!selectedArticle" class="empty-selection">{{ t('sales.pickArticle') }}</div>
+            <div v-for="group in optionGroups" :key="group.id" class="option-group">
+              <h3>{{ group.name }}</h3>
+              <div class="option-choices">
+                <button
+                  v-for="value in group.values"
+                  :key="value.id"
+                  type="button"
+                  class="option-choice"
+                  :class="{ selected: chosenValues[group.id] === value.id }"
+                  @click="chooseValue(group.id, value.id)"
+                >{{ value.value }}</button>
+              </div>
+            </div>
+          </div>
+          <p v-if="selectedVariant" class="till-chosen">
+            <strong>{{ variantLabel }}</strong>
+            <span
+              class="till-stock"
+              :class="{ 'is-empty': selectedVariant.on_hand <= 0 }"
+              :title="selectedVariant.on_hand <= 0 ? t('sales.stockWarning') : ''"
+            >{{ t('sales.inStock', { count: selectedVariant.on_hand }) }}</span>
+          </p>
+          <div v-if="variantPhotos.length" class="variant-photo-preview">
+            <img
+              v-for="(url, index) in variantPhotos"
+              :key="url"
+              :src="url"
+              :alt="t('sales.variantPhotoAlt', { variant: variantLabel, index: index + 1 })"
+              loading="lazy"
             />
-            <button type="button" :aria-label="t('common.increase')" @click="stepQuantity(1)">+</button>
-          </span>
-        </label>
-        <button
-          class="secondary-button till-add"
-          type="button"
-          :disabled="!canAddToCart"
-          @click="addToCart"
-        >{{ t('sales.addToCart') }}</button>
-      </footer>
-    </section>
+          </div>
+        </div>
+        <footer class="till-compose">
+          <label class="till-price">
+            {{ t('sales.unitPrice') }}
+            <input v-model="unitPriceInput" inputmode="decimal" :disabled="!selectedVariant" />
+          </label>
+          <label class="quantity-control">
+            {{ t('common.quantity') }}
+            <span class="stepper">
+              <button type="button" :aria-label="t('common.decrease')" @click="stepQuantity(-1)">−</button>
+              <input v-model.number="quantity" type="number" min="1" inputmode="numeric" @blur="normalizeQuantity" />
+              <button type="button" :aria-label="t('common.increase')" @click="stepQuantity(1)">+</button>
+            </span>
+          </label>
+          <button class="secondary-button till-add" type="button" :disabled="!canAddToCart" @click="addToCart">
+            {{ t('sales.addToCart') }}
+          </button>
+        </footer>
+      </section>
 
-    <!-- The receipt rail. It is the sale itself: what is on it, what it costs,
-         and the one control that books it — always in the same place, never
-         pushed off screen by anything above it. -->
-    <aside class="till-column till-rail">
-      <header class="till-rail-head">
-        <span>{{ t('sales.receiptId') }}</span>
-        <strong>{{ receiptId || t('sales.receiptLoading') }}</strong>
-      </header>
-
-      <div class="till-methods" role="group" :aria-label="t('sales.paymentMethod')">
-        <button
-          v-for="method in paymentMethods"
-          :key="method"
-          type="button"
-          class="option-choice till-method"
-          :class="{ selected: paymentMethod === method }"
-          @click="paymentMethod = method"
-        >
-          <PaymentMethodIcon :method="method" />
-          <span>{{ method }}</span>
-        </button>
-      </div>
-
-      <div class="till-scroll till-lines" aria-live="polite">
+      <aside class="till-column till-rail">
+        <header class="till-rail-head">
+          <span>{{ t('sales.receiptId') }}</span>
+          <strong>{{ receiptId || t('sales.receiptLoading') }}</strong>
+        </header>
+        <div class="till-scroll till-lines" aria-live="polite">
           <div v-if="!basket.length" class="till-empty">{{ t('sales.cartEmpty') }}</div>
           <div v-for="(line, index) in basket" :key="`${line.variantId}-${index}`" class="till-line">
             <span class="till-line-label">{{ line.label }}</span>
             <b>{{ format(line.quantity * line.unitPriceCents) }}</b>
             <small class="till-line-unit">{{ t('sales.perUnit', { price: format(line.unitPriceCents) }) }}</small>
-
-            <!-- Correcting a miscount is the most common fix at a stand, so it
-                 happens on the line itself. At one, taking one away is the same
-                 as removing the position, and the icon says so. -->
             <span class="till-line-stepper">
               <button
                 type="button"
@@ -677,213 +684,167 @@ function resetAfterSale() {
                 :aria-label="line.quantity <= 1 ? t('sales.removeLine') : t('common.decrease')"
                 @click="stepLine(index, -1)"
               >
-                <svg
-                  v-if="line.quantity <= 1"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.8"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                  focusable="false"
-                >
+                <svg v-if="line.quantity <= 1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M4 7h16M10 4h4M9.5 7v11M14.5 7v11" />
                   <path d="M6 7l1 12.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5L18 7" />
                 </svg>
                 <span v-else aria-hidden="true">−</span>
               </button>
               <span class="till-line-qty">{{ line.quantity }}</span>
-              <button
-                type="button"
-                :aria-label="t('common.increase')"
-                @click="stepLine(index, 1)"
-              >+</button>
+              <button type="button" :aria-label="t('common.increase')" @click="stepLine(index, 1)">+</button>
             </span>
           </div>
-
-
-      </div>
-
-      <!-- The foot never scrolls: the total and the booking action are the two
-           things a seller must always be able to see and reach. -->
-      <footer class="till-foot">
-        <div class="till-total">
-          <span>{{ t('sales.total') }}</span>
-          <strong>{{ format(basketTotalCents) }}</strong>
         </div>
-        <!-- Counting cash happens here, not behind a dialog: a customer hands
-             over more than the total often enough that hiding the field would
-             cost a tap on most sales, and the surplus is the band's donation. -->
-        <div v-if="!isOrder" class="till-given">
-          <label>
-            <span>{{ t('sales.amountGiven') }}</span>
-            <input
-              v-model="amountGivenInput"
-              inputmode="decimal"
-              :placeholder="format(basketTotalCents)"
-            />
-          </label>
-          <div v-if="surplusCents > 0" class="till-surplus">
-            <p class="till-change" :class="{ 'is-donation': surplusMode === 'donation' }">
-              <span>{{ surplusMode === 'donation' ? t('sales.donationLabel') : t('sales.changeLabel') }}</span>
-              <strong>{{ format(surplusCents) }}</strong>
-            </p>
+        <footer class="till-foot">
+          <div class="till-total"><span>{{ t('sales.total') }}</span><strong>{{ format(basketTotalCents) }}</strong></div>
+          <button class="primary-button full-width till-book" type="button" :disabled="!basket.length" @click="goToPayment">
+            {{ t('sales.paymentDetails') }}
+          </button>
+        </footer>
+      </aside>
+    </template>
+
+    <section v-else-if="checkoutStep === 2" class="till-column checkout-panel checkout-payment">
+      <header class="checkout-panel-head">
+        <div>
+          <p class="eyebrow">{{ t('sales.receiptId') }} {{ receiptId || t('sales.receiptLoading') }}</p>
+          <h2>{{ t('sales.paymentDetails') }}</h2>
+        </div>
+        <strong>{{ format(basketTotalCents) }}</strong>
+      </header>
+
+      <div class="checkout-payment-grid till-scroll">
+        <section class="checkout-group">
+          <h3>{{ t('sales.paymentMethod') }}</h3>
+          <div class="till-methods" role="group" :aria-label="t('sales.paymentMethod')">
             <button
-              class="compact-button till-surplus-toggle"
+              v-for="method in paymentMethods"
+              :key="method"
               type="button"
-              @click="surplusMode = surplusMode === 'donation' ? 'change' : 'donation'"
+              class="option-choice till-method"
+              :class="{ selected: paymentMethod === method }"
+              @click="paymentMethod = method"
             >
-              {{ surplusMode === 'donation' ? t('sales.giveChange') : t('sales.keepAsDonation') }}
+              <PaymentMethodIcon :method="method" />
+              <span>{{ method }}</span>
             </button>
           </div>
-        </div>
-        <button
-          class="secondary-button full-width till-sheet-open"
-          :class="{ 'is-set': sheetTouched }"
-          type="button"
-          @click="sheetOpen = true"
-        >{{ t('sales.saleDetails') }}</button>
-
-        <!-- Showing a code first is the normal order for a transfer or PayPal:
-             the money has to arrive before the sale is booked. -->
-        <button
-          v-if="qrOffered"
-          class="secondary-button full-width"
-          type="button"
-          :disabled="!canBook || qrBusy"
-          @click="showPaymentQr"
-        >
-          {{ t('sales.showPaymentQr') }}
-        </button>
-        <button
-          v-if="!isOrder"
-          class="primary-button full-width till-book"
-          type="button"
-          :disabled="!canBook"
-          @click="book()"
-        >{{ t('sales.book') }}</button>
-
-        <!-- Two outcomes, two buttons. Which one it is decides where the sale
-             lands afterwards, and that is too consequential for a checkbox
-             somebody has to remember to read. -->
-        <button
-          :class="isOrder ? 'primary-button full-width till-book' : 'secondary-button full-width'"
-          type="button"
-          :disabled="!canBook"
-          @click="shipOpen = true"
-        >{{ isOrder ? t('sales.createOrder') : t('sales.bookShipment') }}</button>
-      </footer>
-    </aside>
-
-
-    <!-- Everything a sale can carry beyond its items. It is not part of the
-         receipt — a receipt is what was sold — so it lives one tap away
-         instead of between the last line and the total. -->
-    <dialog v-if="sheetOpen" class="till-sheet confirmation-dialog" open>
-      <div class="till-sheet-head">
-        <h2>{{ t('sales.saleDetails') }}</h2>
-        <button class="compact-button" type="button" @click="sheetOpen = false">
-          {{ t('common.close') }}
-        </button>
-      </div>
-
-        <section class="till-sheet-group">
-            <div class="field-grid">
-              <label>
-                {{ t('sales.event') }}
-                <span class="event-picker">
-                  <select v-model.number="selectedEventId">
-                    <option :value="0">{{ t('sales.noEvent') }}</option>
-                    <option v-for="event in events" :key="event.id" :value="event.id">{{ event.name }}</option>
-                  </select>
-                  <button
-                    class="compact-button"
-                    type="button"
-                    :aria-label="t('sales.newEvent')"
-                    @click="newEventName = ''"
-                    v-if="newEventName === null"
-                  >+</button>
-                </span>
-              </label>
-            </div>
-
-            <div v-if="newEventName !== null" class="new-event-row">
-              <input
-                v-model="newEventName"
-                :placeholder="t('sales.newEventPlaceholder')"
-                @keyup.enter="createEvent"
-              />
-              <button class="secondary-button" type="button" :disabled="busy" @click="createEvent">
-                {{ t('sales.createEvent') }}
-              </button>
-              <button class="compact-button" type="button" @click="newEventName = null">
-                {{ t('common.cancel') }}
+          <div v-if="paymentMethod === 'Bar' && (!needsShipping || !shipPayLater)" class="till-given">
+            <label>
+              <span>{{ t('sales.amountGiven') }}</span>
+              <input v-model="amountGivenInput" inputmode="decimal" :placeholder="format(basketTotalCents)" />
+            </label>
+            <div v-if="surplusCents > 0" class="till-surplus">
+              <p class="till-change" :class="{ 'is-donation': surplusMode === 'donation' }">
+                <span>{{ surplusMode === 'donation' ? t('sales.donationLabel') : t('sales.changeLabel') }}</span>
+                <strong>{{ format(surplusCents) }}</strong>
+              </p>
+              <button class="compact-button till-surplus-toggle" type="button" @click="surplusMode = surplusMode === 'donation' ? 'change' : 'donation'">
+                {{ surplusMode === 'donation' ? t('sales.giveChange') : t('sales.keepAsDonation') }}
               </button>
             </div>
-
-            <label>{{ t('sales.soldBy') }}<input v-model="soldBy" /></label>
-
-            <label>{{ t('common.comment') }}<textarea v-model="comment" rows="2" /></label>
+          </div>
         </section>
-    </dialog>
 
-    <dialog v-if="shipOpen" class="confirmation-dialog till-ship" open>
-      <form class="stack-form" @submit.prevent="bookShipment">
+        <section class="checkout-group">
+          <h3>{{ t('sales.saleDetails') }}</h3>
+          <label>
+            {{ t('sales.event') }}
+            <span class="event-picker">
+              <select v-model.number="selectedEventId">
+                <option :value="0">{{ t('sales.noEvent') }}</option>
+                <option v-for="event in events" :key="event.id" :value="event.id">{{ event.name }}</option>
+              </select>
+              <button v-if="newEventName === null" class="compact-button" type="button" :aria-label="t('sales.newEvent')" @click="newEventName = ''">+</button>
+            </span>
+          </label>
+          <div v-if="newEventName !== null" class="new-event-row">
+            <input v-model="newEventName" :placeholder="t('sales.newEventPlaceholder')" @keyup.enter="createEvent" />
+            <button class="secondary-button" type="button" :disabled="busy" @click="createEvent">{{ t('sales.createEvent') }}</button>
+            <button class="compact-button" type="button" @click="newEventName = null">{{ t('common.cancel') }}</button>
+          </div>
+          <label>{{ t('sales.soldBy') }}<input v-model="soldBy" /></label>
+          <label>{{ t('common.comment') }}<textarea v-model="comment" rows="3" /></label>
+        </section>
+
+        <section class="checkout-group">
+          <h3>{{ t('sales.shipmentTitle') }}</h3>
+          <label v-if="!isOrder" class="checkbox-row">
+            <input v-model="shipOpen" type="checkbox" />
+            <span>{{ t('sales.bookShipment') }}</span>
+          </label>
+          <template v-if="needsShipping">
+            <p class="muted">{{ t('sales.shipmentIntro') }}</p>
+            <label>{{ t('sales.customerName') }}<input v-model="shipName" autocomplete="name" /></label>
+            <label>{{ t('sales.customerAddress') }}<textarea v-model="shipAddress" rows="3" autocomplete="street-address" /></label>
+            <label class="checkbox-row">
+              <input v-model="shipPayLater" type="checkbox" />
+              <span>{{ t('sales.payLater') }}</span>
+            </label>
+          </template>
+        </section>
+      </div>
+
+      <footer class="checkout-actions">
+        <button class="secondary-button" type="button" @click="backToBasket">{{ t('sales.cart') }}</button>
+        <button class="primary-button" type="button" :disabled="!paymentStepReady || qrBusy" @click="goToConfirmation">
+          {{ t('common.confirm') }}
+        </button>
+      </footer>
+    </section>
+
+    <section v-else class="till-column checkout-panel checkout-confirmation">
+      <header class="checkout-panel-head">
         <div>
-          <p class="eyebrow">{{ format(basketTotalCents) }}</p>
-          <h2>{{ t('sales.shipmentTitle') }}</h2>
-          <p>{{ t('sales.shipmentIntro') }}</p>
+          <p class="eyebrow">{{ paymentMethod }}</p>
+          <h2>{{ qrIntent ? t('sales.paymentQrTitle') : t('common.confirm') }}</h2>
+          <p v-if="qrIntent">{{ t('sales.paymentQrIntro') }}</p>
+        </div>
+        <strong>{{ format(basketTotalCents) }}</strong>
+      </header>
+
+      <div class="checkout-confirm-grid till-scroll">
+        <div v-if="qrIntent" class="payment-qr-image-wrap">
+          <img :src="qrIntent.image_data_uri" :alt="t('sales.paymentQrAlt')" />
+        </div>
+        <div v-else class="checkout-payment-symbol">
+          <PaymentMethodIcon :method="paymentMethod" />
+          <strong>{{ paymentMethod }}</strong>
         </div>
 
-        <label>
-          {{ t('sales.customerName') }}
-          <input v-model="shipName" autocomplete="name" required autofocus />
-        </label>
-        <label>
-          {{ t('sales.customerAddress') }}
-          <textarea v-model="shipAddress" rows="3" autocomplete="street-address" required />
-        </label>
-        <label class="checkbox-row">
-          <input v-model="shipPayLater" type="checkbox" />
-          <span>{{ t('sales.payLater') }}</span>
-        </label>
+        <section class="checkout-review">
+          <div v-for="line in basket" :key="line.variantId" class="checkout-review-line">
+            <span>{{ line.quantity }}× {{ line.label }}</span>
+            <b>{{ format(line.quantity * line.unitPriceCents) }}</b>
+          </div>
+          <div class="till-total"><span>{{ t('sales.total') }}</span><strong>{{ format(basketTotalCents) }}</strong></div>
+          <div v-if="paymentMethod === 'Bar' && amountGivenCents !== null" class="checkout-cash-summary">
+            <span>{{ t('sales.amountGiven') }}: <b>{{ format(amountGivenCents) }}</b></span>
+            <span v-if="surplusCents > 0">
+              {{ surplusMode === 'donation' ? t('sales.donationLabel') : t('sales.changeLabel') }}:
+              <b>{{ format(surplusCents) }}</b>
+            </span>
+          </div>
+          <p v-if="needsShipping" class="muted">
+            {{ shipName }} · {{ shipAddress }}
+          </p>
+          <p v-if="qrIntent" class="muted payment-qr-hint">{{ qrIntent.payload_hint }}</p>
+        </section>
+      </div>
 
-        <div class="dialog-actions">
-          <button class="secondary-button" type="button" @click="shipOpen = false">
-            {{ t('common.cancel') }}
-          </button>
-          <button class="primary-button" type="submit" :disabled="!shipReady || busy">
-            {{ isOrder ? t('sales.createOrder') : t('sales.bookShipment') }}
-          </button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog v-if="qrIntent" class="payment-qr-dialog confirmation-dialog" open>
-      <div>
-        <p class="eyebrow">{{ qrIntent.method }}</p>
-        <h2>{{ t('sales.paymentQrTitle') }}</h2>
-        <p>{{ t('sales.paymentQrIntro') }}</p>
-      </div>
-      <div class="payment-qr-image-wrap">
-        <img :src="qrIntent.image_data_uri" :alt="t('sales.paymentQrAlt')" />
-      </div>
-      <div class="payment-qr-summary">
-        <span>{{ t('sales.receiptId') }} {{ qrIntent.receipt_id }}</span>
-        <strong>{{ format(qrIntent.amount_cents) }}</strong>
-      </div>
-      <!-- Read aloud when a camera refuses to focus. -->
-      <p class="muted payment-qr-hint">{{ qrIntent.payload_hint }}</p>
-      <div class="dialog-actions payment-qr-actions">
-        <button class="payment-qr-cancel" type="button" :disabled="qrBusy" @click="cancelPaymentQr">
-          {{ t('sales.paymentQrCancel') }}
+      <footer class="checkout-actions">
+        <button class="secondary-button" type="button" :disabled="qrBusy" @click="backToPayment">
+          {{ t('sales.paymentMethod') }}
         </button>
-        <button class="payment-qr-confirm" type="button" :disabled="qrBusy" @click="confirmPaymentQr">
-          {{ t('sales.paymentQrConfirm') }}
+        <button class="primary-button till-book" type="button" :disabled="busy || qrBusy" @click="confirmCheckout">
+          {{ qrIntent
+            ? t('sales.paymentQrConfirm')
+            : needsShipping
+              ? (isOrder ? t('sales.createOrder') : t('sales.bookShipment'))
+              : t('sales.book') }}
         </button>
-      </div>
-    </dialog>
+      </footer>
+    </section>
   </main>
 </template>
 
@@ -911,6 +872,51 @@ function resetAfterSale() {
   padding: var(--till-gap);
   /* The header is sticky; the till claims exactly the rest of the viewport. */
   height: calc(100dvh - var(--till-offset, 66px));
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.checkout-progress {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.checkout-progress button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  background: var(--panel);
+}
+
+.checkout-progress button:disabled {
+  opacity: 1;
+}
+
+.checkout-progress button.active {
+  border-color: var(--accent-bright);
+  color: var(--text);
+  background: var(--selection-hover);
+}
+
+.checkout-progress button.complete {
+  color: var(--text);
+}
+
+.checkout-progress b {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--panel-muted);
+  font-size: 0.78rem;
 }
 
 .till-column {
@@ -936,7 +942,7 @@ function resetAfterSale() {
 /* The note claims a row of its own; the columns share whatever is left, so the
    till keeps filling the screen exactly once. */
 .till.has-note {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .till-mode-note {
@@ -948,6 +954,130 @@ function resetAfterSale() {
   background: var(--selection-hover);
   color: var(--text);
   font-size: 0.88rem;
+}
+
+.checkout-panel {
+  grid-column: 1 / -1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.checkout-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.checkout-panel-head h2,
+.checkout-panel-head p {
+  margin: 0;
+}
+
+.checkout-panel-head > strong {
+  font-size: clamp(1.8rem, 4vw, 3rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.checkout-payment-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.checkout-group {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  min-width: 0;
+  padding: clamp(14px, 2vw, 24px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--option-bg);
+}
+
+.checkout-group h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.checkout-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.checkout-actions button {
+  min-width: min(240px, 42vw);
+  min-height: 54px;
+}
+
+.checkout-confirm-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr);
+  gap: clamp(18px, 4vw, 54px);
+  align-items: center;
+  width: min(1050px, 100%);
+  margin: auto;
+}
+
+.checkout-payment-symbol {
+  display: grid;
+  gap: 18px;
+  place-items: center;
+  min-height: 260px;
+  color: var(--accent-bright);
+}
+
+.checkout-payment-symbol :deep(.payment-icon) {
+  width: min(180px, 34vw);
+  height: min(180px, 34vw);
+}
+
+.checkout-payment-symbol strong {
+  color: var(--text);
+  font-size: 1.3rem;
+}
+
+.checkout-review {
+  display: grid;
+  gap: 12px;
+  padding: clamp(16px, 3vw, 30px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--option-bg);
+}
+
+.checkout-review-line,
+.checkout-cash-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.checkout-review-line {
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.checkout-cash-summary {
+  flex-wrap: wrap;
+  color: var(--muted);
+}
+
+.checkout-confirmation .payment-qr-image-wrap {
+  width: min(440px, 100%);
+  margin: auto;
 }
 
 .till-column-head {
@@ -1473,11 +1603,23 @@ function resetAfterSale() {
   }
 
   .till-lines { max-height: 26dvh; }
+
+  .checkout-step-2,
+  .checkout-step-3 {
+    padding-bottom: var(--till-gap);
+  }
+
+  .checkout-payment-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 700px) {
   .till { grid-template-columns: minmax(0, 1fr); }
   .till-articles .button-list { max-height: 34vh; }
+  .checkout-progress span { font-size: 0.76rem; }
+  .checkout-panel-head { align-items: flex-end; }
+  .checkout-confirm-grid { grid-template-columns: minmax(0, 1fr); }
+  .checkout-payment-symbol { min-height: 150px; }
+  .checkout-actions button { min-width: 0; flex: 1; }
 }
 
 /* A tablet lying flat has little height; keep the foot intact and let the
