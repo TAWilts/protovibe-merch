@@ -202,15 +202,53 @@ const donationCents = computed(() =>
   surplusMode.value === 'donation' ? surplusCents.value : 0,
 )
 
+/** Labels a photo source precisely enough to prevent confusing two variants. */
+function photoVariantLabel(variant: Variant) {
+  const article = selectedArticle.value
+  if (!article) return ''
+  const parts = optionGroups.value.map((group) => {
+    const value = group.values.find((entry) => variant.option_value_ids.includes(entry.id))
+    return value ? `${group.name}: ${value.value}` : ''
+  }).filter(Boolean)
+  return parts.length ? `${article.name} — ${parts.join(' · ')}` : article.name
+}
+
 /**
- * The product picture while selling, as the original had it. It follows the
- * seller's own preference: at a busy stand the photos are a help, on a small
- * phone they are in the way.
+ * Uses the exact variant's photos or the closest photographed variant of the
+ * same article, matching the predecessor's deterministic scoring: most equal
+ * option values, then offered variants, then the stable variant ID.
  */
-const variantPhotos = computed(() => {
-  if (!session.user?.show_variant_photos) return []
-  return (selectedVariant.value?.photo_ids ?? []).map((id) => photosApi.fileUrl(id))
+const variantPhotoSelection = computed(() => {
+  const article = selectedArticle.value
+  if (!session.user?.show_variant_photos || !article) return null
+
+  const candidates = article.variants.filter((variant) => variant.photo_ids.length > 0)
+  if (!candidates.length) return null
+
+  const exact = selectedVariant.value
+  let source = exact?.photo_ids.length ? exact : null
+  if (!source) {
+    const targetOptions = new Set(
+      exact?.option_value_ids ?? Object.values(chosenValues.value),
+    )
+    source = [...candidates].sort((left, right) => {
+      const leftMatches = left.option_value_ids.filter((id) => targetOptions.has(id)).length
+      const rightMatches = right.option_value_ids.filter((id) => targetOptions.has(id)).length
+      if (leftMatches !== rightMatches) return rightMatches - leftMatches
+      if (left.is_offered !== right.is_offered) return Number(right.is_offered) - Number(left.is_offered)
+      return left.id - right.id
+    })[0] ?? null
+  }
+  if (!source) return null
+
+  return {
+    urls: source.photo_ids.map((id) => photosApi.fileUrl(id)),
+    sourceLabel: photoVariantLabel(source),
+    isFallback: source.id !== exact?.id,
+  }
 })
+
+const variantPhotos = computed(() => variantPhotoSelection.value?.urls ?? [])
 
 
 
@@ -646,13 +684,20 @@ function resetAfterSale() {
             >{{ t('sales.inStock', { count: selectedVariant.on_hand }) }}</span>
           </p>
           <div v-if="variantPhotos.length" class="variant-photo-preview">
-            <img
-              v-for="(url, index) in variantPhotos"
-              :key="url"
-              :src="url"
-              :alt="t('sales.variantPhotoAlt', { variant: variantLabel, index: index + 1 })"
-              loading="lazy"
-            />
+            <p class="variant-photo-caption">
+              {{ variantPhotoSelection?.isFallback
+                ? t('sales.variantPhotoFallback', { variant: variantPhotoSelection.sourceLabel })
+                : t('sales.variantPhotoExact') }}
+            </p>
+            <div class="variant-photo-list">
+              <img
+                v-for="(url, index) in variantPhotos"
+                :key="url"
+                :src="url"
+                :alt="t('sales.variantPhotoAlt', { variant: variantPhotoSelection?.sourceLabel || variantLabel, index: index + 1 })"
+                loading="eager"
+              />
+            </div>
           </div>
         </div>
         <footer class="till-compose">
@@ -693,6 +738,14 @@ function resetAfterSale() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <path d="m6 9 6 6 6-6" />
             </svg>
+          </button>
+          <button
+            class="primary-button mobile-cart-checkout"
+            type="button"
+            :disabled="!basket.length"
+            @click="goToPayment"
+          >
+            {{ t('sales.continueToPayment') }}
           </button>
         </header>
         <div class="till-rail-body">
@@ -889,7 +942,7 @@ function resetAfterSale() {
 .till {
   --till-gap: 14px;
   display: grid;
-  grid-template-columns: minmax(210px, 0.72fr) minmax(300px, 1.35fr) minmax(290px, 0.95fr);
+  grid-template-columns: minmax(210px, 0.78fr) minmax(280px, 1.05fr) minmax(290px, 0.95fr);
   gap: var(--till-gap);
   align-items: stretch;
   width: 100%;
@@ -1146,35 +1199,28 @@ function resetAfterSale() {
 
 /* --- variant ----------------------------------------------------------- */
 
-/*
- * The option groups own the middle column's height instead of sitting at the
- * top of it. A tablet had 400px of nothing between the last option and the
- * price field; spending it on bigger targets is the cheapest speed there is —
- * a larger tile is a faster, more certain tap.
- */
+/* Two or three option groups are normal: groups stack vertically while their
+   values run left to right in compact, predictable rows. */
 .till-variant .till-scroll {
   display: flex;
   flex-direction: column;
 }
 
 .option-groups {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 18px;
+  display: grid;
+  gap: 12px;
   min-height: 0;
 }
 
 .option-group {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
+  display: grid;
+  gap: 6px;
   min-height: 0;
 }
 
 .option-group h3 {
-  margin: 0 0 8px;
-  font-size: 0.82rem;
+  margin: 0;
+  font-size: 0.76rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -1183,20 +1229,48 @@ function resetAfterSale() {
 
 .option-choices {
   display: grid;
-  flex: 1;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
-  gap: 10px;
-  /* Rows share the height rather than clustering at the top. */
-  grid-auto-rows: minmax(56px, 1fr);
-  align-content: stretch;
+  grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
+  gap: 6px;
 }
 
 .option-choices .option-choice {
   display: grid;
   place-items: center;
-  padding: 10px;
-  font-size: 1.05rem;
+  min-height: 40px;
+  padding: 6px 8px;
+  font-size: 0.9rem;
   font-weight: 650;
+}
+
+.till-variant .variant-photo-preview {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.variant-photo-caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.variant-photo-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.variant-photo-list img {
+  display: block;
+  width: 96px;
+  height: 72px;
+  border: 2px solid #050505;
+  border-radius: 7px;
+  background: #050505;
+  object-fit: contain;
 }
 
 .till-chosen {
@@ -1267,7 +1341,8 @@ function resetAfterSale() {
   min-height: 0;
 }
 
-.mobile-cart-toggle {
+.mobile-cart-toggle,
+.mobile-cart-checkout {
   display: none;
 }
 
@@ -1648,6 +1723,10 @@ function resetAfterSale() {
   }
 
   .till-rail-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
     min-height: 64px;
     margin: 0;
   }
@@ -1659,8 +1738,8 @@ function resetAfterSale() {
 
   .mobile-cart-toggle {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto 24px;
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) auto 20px;
+    gap: 7px;
     align-items: center;
     width: 100%;
     min-height: 54px;
@@ -1695,8 +1774,18 @@ function resetAfterSale() {
   }
 
   .mobile-cart-toggle svg {
-    width: 22px;
+    width: 20px;
     transition: transform 180ms ease;
+  }
+
+  .mobile-cart-checkout {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 46px;
+    padding: 8px 13px;
+    font-size: 0.82rem;
+    white-space: nowrap;
   }
 
   .till-rail.is-mobile-open .mobile-cart-toggle svg {

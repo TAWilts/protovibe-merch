@@ -117,6 +117,7 @@
     "cartCount": "{count} Artikel",
     "showCart": "Warenkorb öffnen",
     "hideCart": "Warenkorb schließen",
+    "continueToPayment": "Weiter",
     "paymentMethod": "Bezahlart",
     "event": "Veranstaltung",
     "noEvent": "Keine Veranstaltung",
@@ -155,6 +156,8 @@
     "outOfStock": "Kein Bestand mehr verzeichnet",
     "stockWarning": "Für diese Variante ist kein Bestand mehr verzeichnet. Der Verkauf wird trotzdem gebucht.",
     "variantPhotoAlt": "{variant}, Foto {index}",
+    "variantPhotoExact": "Produktfoto dieser Variante",
+    "variantPhotoFallback": "Foto einer ähnlichen Variante: {variant}",
     "queuedOffline": "Keine Verbindung — der Verkauf ist vorgemerkt und wird automatisch übertragen."
   },
   "errors": {

@@ -531,4 +531,11 @@ kleinere Breiten- beziehungsweise Höhenfaktor verwendet und bei Resize, Drehung
 Fullscreen neu berechnet. Dadurch bleiben Seitenverhältnis und vollständiger Bildinhalt
 erhalten.
 
+Der eingeklappte mobile Warenkorb behält nun zusätzlich den Weiter-Button sichtbar.
+Optionsgruppen stehen kompakt untereinander; bis zu fünf Werte laufen je Gruppe von
+links nach rechts in nur 40 Pixel hohen Schaltflächen. Die Verkaufsansicht verwendet
+außerdem wieder den Variantenfoto-Fallback des Originals: Fehlt das exakte Foto, wird
+die fotografierte Variante desselben Artikels mit den meisten übereinstimmenden
+Optionswerten gewählt und als ähnliche Variante beschriftet.
+
 ---

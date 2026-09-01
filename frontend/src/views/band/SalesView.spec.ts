@@ -3,11 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import SalesView from './SalesView.vue'
 
-const { book } = vi.hoisted(() => ({ book: vi.fn() }))
+const { assortment, book } = vi.hoisted(() => ({ assortment: vi.fn(), book: vi.fn() }))
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ name: 'sales' }) }))
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key, locale: { value: 'de' } }),
+  useI18n: () => ({
+    t: (key: string, params?: Record<string, unknown>) => (
+      params?.variant ? `${key}:${params.variant}` : key
+    ),
+    locale: { value: 'de' },
+  }),
 }))
 vi.mock('@/stores/flash', () => ({
   useFlashStore: () => ({ success: vi.fn(), error: vi.fn() }),
@@ -17,29 +22,13 @@ vi.mock('@/stores/offline', () => ({
 }))
 vi.mock('@/stores/session', () => ({
   useSessionStore: () => ({
-    user: { username: 'seller', show_variant_photos: false },
+    user: { username: 'seller', show_variant_photos: true },
     featureFlags: { payment_qr: true, offline_sales: true },
   }),
 }))
 vi.mock('@/api/endpoints', () => ({
   catalogueApi: {
-    assortment: vi.fn().mockResolvedValue({
-      payment_methods: ['Bar'],
-      articles: [{
-        id: 1,
-        name: 'Testshirt',
-        total_stock: 12,
-        option_groups: [],
-        variants: [{
-          id: 11,
-          combination_key: '',
-          option_value_ids: [],
-          sale_price_cents: 2000,
-          on_hand: 12,
-          photo_ids: [],
-        }],
-      }],
-    }),
+    assortment,
   },
   photosApi: { fileUrl: (id: number) => `/photos/${id}` },
   salesApi: {
@@ -64,6 +53,23 @@ function button(wrapper: ReturnType<typeof mount>, text: string) {
 describe('SalesView checkout', () => {
   beforeEach(() => {
     book.mockReset().mockResolvedValue({ receipt_id: 'V-1', sale_ids: [1] })
+    assortment.mockReset().mockResolvedValue({
+      payment_methods: ['Bar'],
+      articles: [{
+        id: 1,
+        name: 'Testshirt',
+        total_stock: 12,
+        option_groups: [],
+        variants: [{
+          id: 11,
+          combination_key: '',
+          option_value_ids: [],
+          sale_price_cents: 2000,
+          on_hand: 12,
+          photo_ids: [],
+        }],
+      }],
+    })
   })
 
   it('moves from basket to payment and confirmation, then starts a fresh sale', async () => {
@@ -78,6 +84,7 @@ describe('SalesView checkout', () => {
     const mobileCartToggle = wrapper.get('.mobile-cart-toggle')
     expect(mobileCartToggle.attributes('aria-expanded')).toBe('false')
     expect(wrapper.get('.till-rail').classes()).not.toContain('is-mobile-open')
+    expect(wrapper.get('.mobile-cart-checkout').attributes('disabled')).toBeUndefined()
     await mobileCartToggle.trigger('click')
     expect(mobileCartToggle.attributes('aria-expanded')).toBe('true')
     expect(wrapper.get('.till-rail').classes()).toContain('is-mobile-open')
@@ -94,5 +101,56 @@ describe('SalesView checkout', () => {
     expect(book).toHaveBeenCalledOnce()
     expect(wrapper.find('.checkout-step-1').exists()).toBe(true)
     expect(wrapper.text()).toContain('sales.cartEmpty')
+  })
+
+  it('shows the closest photographed variant with a fallback hint', async () => {
+    assortment.mockResolvedValueOnce({
+      payment_methods: ['Bar'],
+      articles: [{
+        id: 1,
+        name: 'Testshirt',
+        total_stock: 12,
+        option_groups: [
+          {
+            id: 1,
+            name: 'Größe',
+            position: 1,
+            is_active: true,
+            values: [
+              { id: 1, value: 'S', position: 1, is_active: true },
+              { id: 2, value: 'M', position: 2, is_active: true },
+            ],
+          },
+          {
+            id: 2,
+            name: 'Farbe',
+            position: 2,
+            is_active: true,
+            values: [
+              { id: 10, value: 'Rot', position: 1, is_active: true },
+              { id: 11, value: 'Blau', position: 2, is_active: true },
+            ],
+          },
+        ],
+        variants: [
+          { id: 11, combination_key: '1|10', option_value_ids: [1, 10], sale_price_cents: 2000, on_hand: 4, photo_ids: [], is_offered: true },
+          { id: 12, combination_key: '1|11', option_value_ids: [1, 11], sale_price_cents: 2000, on_hand: 4, photo_ids: [99], is_offered: true },
+          { id: 13, combination_key: '2|11', option_value_ids: [2, 11], sale_price_cents: 2000, on_hand: 4, photo_ids: [100], is_offered: true },
+        ],
+      }],
+    })
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+    await button(wrapper, 'Testshirt').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.variant-photo-list img').attributes('src')).toBe('/photos/99')
+    expect(wrapper.get('.variant-photo-caption').text()).toBe(
+      'sales.variantPhotoFallback:Testshirt — Größe: S · Farbe: Blau',
+    )
+
+    await button(wrapper, 'Blau').trigger('click')
+    expect(wrapper.get('.variant-photo-caption').text()).toBe('sales.variantPhotoExact')
   })
 })
