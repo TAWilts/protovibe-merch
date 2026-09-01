@@ -521,4 +521,14 @@ Ankündigung entfernt außerdem ein altes Ablaufdatum, das neue Texte unsichtbar
 konnte. Der Smartphone-Verkauf läuft in drei Schritten (Warenkorb, Zahlungsangaben,
 Bestätigung beziehungsweise QR-Code) und ist separat als Commit `1778a63` abgelegt.
 
+**Mobilkorrektur am 01.09.:** Im ersten Verkaufsschritt bleibt der Warenkorb auf
+Ansichten bis 1000 Pixel als kompakte Summenleiste standardmäßig geschlossen und kann
+bei Bedarf aufgeklappt werden. Unter 700 Pixel scrollen Artikelliste, Variantenwahl und
+die Schaltfläche zum Hinzufügen gemeinsam als vollständige Seite, sodass die feste
+Leiste keine Bedienelemente mehr verdeckt. Die Diashow übernimmt wieder die explizite
+Viewport-Messung der Vorgängerversion: Für Einzelbilder und Collage-Kacheln wird der
+kleinere Breiten- beziehungsweise Höhenfaktor verwendet und bei Resize, Drehung und
+Fullscreen neu berechnet. Dadurch bleiben Seitenverhältnis und vollständiger Bildinhalt
+erhalten.
+
 ---

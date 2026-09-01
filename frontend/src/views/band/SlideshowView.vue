@@ -8,6 +8,7 @@ import type { Article, Photo } from '@/api/types'
 import { useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
+import { fitImageSize } from '@/utils/imageFit'
 
 /**
  * The shop display, ported from _old/templates/slideshow.html.
@@ -43,6 +44,8 @@ const activeCollageMode = ref<CollageMode>('reveal')
 const current = ref<Photo | null>(null)
 const collagePhotos = ref<Photo[]>([])
 const stage = ref<HTMLElement | null>(null)
+const currentImage = ref<HTMLImageElement | null>(null)
+const fittedSlideSize = ref<{ width: string; height: string } | null>(null)
 const changeSeconds = ref(8)
 const animationSpeed = ref(1)
 const direction = ref<'left' | 'right' | 'top' | 'bottom'>('left')
@@ -55,6 +58,7 @@ let bag: Photo[] = []
 let timer: number | undefined
 let previousPhotoId: number | null = null
 let productSlidesSinceCollage = 0
+let viewportFitFrame: number | null = null
 
 const productPhotos = computed(() => selected.value.filter((photo) => photo.article_name))
 const collageDurationSeconds = computed(() => {
@@ -87,12 +91,75 @@ const uploadVariants = computed(() => articles.value.flatMap((article) => articl
 
 onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreenChange)
+  window.addEventListener('resize', scheduleImageFit)
+  window.addEventListener('orientationchange', scheduleImageFit)
+  window.visualViewport?.addEventListener('resize', scheduleImageFit)
   load()
 })
 onUnmounted(() => {
   document.removeEventListener('fullscreenchange', onFullscreenChange)
+  window.removeEventListener('resize', scheduleImageFit)
+  window.removeEventListener('orientationchange', scheduleImageFit)
+  window.visualViewport?.removeEventListener('resize', scheduleImageFit)
+  if (viewportFitFrame !== null) window.cancelAnimationFrame(viewportFitFrame)
   stop()
 })
+
+function cssPixels(value: string) {
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+/** Mirrors the predecessor's visual-viewport measurement. */
+function availableStageSize() {
+  const element = stage.value
+  if (!element) return null
+  const style = window.getComputedStyle(element)
+  const visualWidth = Number(window.visualViewport?.width) || element.clientWidth
+  const visualHeight = Number(window.visualViewport?.height) || element.clientHeight
+  const stageWidth = Math.min(element.clientWidth || visualWidth, visualWidth)
+  const stageHeight = Math.min(element.clientHeight || visualHeight, visualHeight)
+  return {
+    width: Math.max(1, stageWidth - cssPixels(style.paddingLeft) - cssPixels(style.paddingRight)),
+    height: Math.max(1, stageHeight - cssPixels(style.paddingTop) - cssPixels(style.paddingBottom)),
+  }
+}
+
+function fitCurrentImage() {
+  const image = currentImage.value
+  const available = availableStageSize()
+  if (!image || !available) return
+  const fitted = fitImageSize(image.naturalWidth, image.naturalHeight, available.width, available.height)
+  if (!fitted) return
+  fittedSlideSize.value = { width: `${fitted.width}px`, height: `${fitted.height}px` }
+}
+
+function fitCollageImages() {
+  stage.value?.querySelectorAll<HTMLImageElement>('.slideshow-card-image img').forEach((image) => {
+    const container = image.parentElement
+    if (!container) return
+    const style = window.getComputedStyle(container)
+    const fitted = fitImageSize(
+      image.naturalWidth,
+      image.naturalHeight,
+      container.clientWidth - cssPixels(style.paddingLeft) - cssPixels(style.paddingRight),
+      container.clientHeight - cssPixels(style.paddingTop) - cssPixels(style.paddingBottom),
+    )
+    if (!fitted) return
+    image.style.width = `${fitted.width}px`
+    image.style.height = `${fitted.height}px`
+  })
+}
+
+function scheduleImageFit() {
+  if (!playing.value) return
+  if (viewportFitFrame !== null) window.cancelAnimationFrame(viewportFitFrame)
+  viewportFitFrame = window.requestAnimationFrame(() => {
+    viewportFitFrame = null
+    fitCurrentImage()
+    fitCollageImages()
+  })
+}
 
 /**
  * Reloads the list.
@@ -257,11 +324,13 @@ function advance() {
   if (!bag.length) refillBag()
   const next = bag.pop()
   if (!next) return
+  fittedSlideSize.value = null
   current.value = next
   previousPhotoId = next.id
   if (next.article_name) productSlidesSinceCollage++
   playbackMode.value = 'slide'
   direction.value = directions[Math.floor(Math.random() * directions.length)]
+  nextTick(scheduleImageFit)
   timer = window.setTimeout(advance, changeSeconds.value * 1000)
 }
 
@@ -274,6 +343,7 @@ function showCollage() {
   activeCollageMode.value = collageModes.value[Math.floor(Math.random() * collageModes.value.length)] ?? 'reveal'
   productSlidesSinceCollage = 0
   playbackMode.value = 'collage'
+  nextTick(scheduleImageFit)
   timer = window.setTimeout(advance, collageDurationSeconds.value * 1000)
 }
 
@@ -286,6 +356,7 @@ async function start() {
   playing.value = true
   advance()
   await nextTick()
+  scheduleImageFit()
   stage.value?.focus()
   stage.value?.requestFullscreen?.().catch(() => {})
   document.addEventListener('keydown', onSlideshowExit)
@@ -304,7 +375,10 @@ function stop(leaveFullscreen = true) {
   previousPhotoId = null
   productSlidesSinceCollage = 0
   current.value = null
+  fittedSlideSize.value = null
   collagePhotos.value = []
+  if (viewportFitFrame !== null) window.cancelAnimationFrame(viewportFitFrame)
+  viewportFitFrame = null
   document.removeEventListener('keydown', onSlideshowExit)
   if (leaveFullscreen && document.fullscreenElement === stage.value) {
     document.exitFullscreen?.().catch(() => {})
@@ -312,7 +386,12 @@ function stop(leaveFullscreen = true) {
 }
 
 function onFullscreenChange() {
-  if (playing.value && document.fullscreenElement !== stage.value) stop(false)
+  if (!playing.value) return
+  if (document.fullscreenElement !== stage.value) {
+    stop(false)
+    return
+  }
+  scheduleImageFit()
 }
 
 function collageCardStyle(index: number) {
@@ -462,10 +541,15 @@ function collageCardStyle(index: number) {
       v-if="playbackMode === 'slide' && current"
       :key="current.id"
       class="slideshow-slide"
-      :style="{ '--animation-seconds': `${animationSeconds}s` }"
+      :style="[{ '--animation-seconds': `${animationSeconds}s` }, fittedSlideSize ?? {}]"
     >
       <div class="slideshow-frame" :class="`from-${direction}`">
-        <img :src="photosApi.fileUrl(current.id)" :alt="current.original_filename" />
+        <img
+          ref="currentImage"
+          :src="photosApi.fileUrl(current.id)"
+          :alt="current.original_filename"
+          @load="scheduleImageFit"
+        />
       </div>
       <figcaption v-if="current.article_name" class="slideshow-copy" :class="`from-${oppositeDirection}`">
         <strong>{{ current.article_name }}</strong>
@@ -490,7 +574,13 @@ function collageCardStyle(index: number) {
           class="slideshow-collage-card"
           :style="collageCardStyle(index)"
         >
-          <img :src="photosApi.fileUrl(photo.id)" :alt="photo.original_filename" />
+          <div class="slideshow-card-image">
+            <img
+              :src="photosApi.fileUrl(photo.id)"
+              :alt="photo.original_filename"
+              @load="scheduleImageFit"
+            />
+          </div>
           <figcaption>
             <strong>{{ photo.article_name }}</strong>
             <span>{{ photo.variant_label || t('slideshow.defaultVariant') }}</span>
@@ -506,7 +596,13 @@ function collageCardStyle(index: number) {
             class="slideshow-collage-card"
             :style="collageCardStyle(index + rowIndex * row.length)"
           >
-            <img :src="photosApi.fileUrl(photo.id)" :alt="photo.original_filename" />
+            <div class="slideshow-card-image">
+              <img
+                :src="photosApi.fileUrl(photo.id)"
+                :alt="photo.original_filename"
+                @load="scheduleImageFit"
+              />
+            </div>
             <figcaption>
               <strong>{{ photo.article_name }}</strong>
               <span>{{ photo.variant_label || t('slideshow.defaultVariant') }}</span>
@@ -538,7 +634,8 @@ function collageCardStyle(index: number) {
 .photo-card img {
   width: 100%;
   aspect-ratio: 4 / 3;
-  object-fit: cover;
+  object-fit: contain;
+  object-position: center;
   border-radius: 10px;
   background: var(--input-bg);
 }
@@ -629,7 +726,7 @@ function collageCardStyle(index: number) {
   z-index: 100;
   display: grid;
   place-items: center;
-  padding: clamp(12px, 2vw, 32px);
+  padding: clamp(10px, 1.8vw, 32px) clamp(10px, 1.8vw, 32px) clamp(38px, 5vw, 64px);
   background:
     radial-gradient(circle at 50% 42%, rgba(91, 48, 112, 0.22), transparent 48%),
     #08080b;
@@ -752,13 +849,23 @@ function collageCardStyle(index: number) {
   box-shadow: 0 22px 52px rgba(0, 0, 0, 0.56);
 }
 
-.slideshow-collage-card img {
-  display: block;
-  width: 100%;
-  height: 100%;
+.slideshow-card-image {
+  display: grid;
+  min-width: 0;
   min-height: 0;
+  place-items: center;
+  overflow: hidden;
   padding: clamp(3px, 0.5vw, 8px);
+}
+
+.slideshow-card-image img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
+  object-position: center;
 }
 
 .slideshow-collage-card figcaption {
