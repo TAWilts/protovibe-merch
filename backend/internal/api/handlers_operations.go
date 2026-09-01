@@ -276,7 +276,12 @@ func (s *Server) updatePlatformSettings(c *gin.Context) {
 		updates["maintenance_message"] = *req.MaintenanceMessage
 	}
 	if req.AnnouncementText != nil {
-		updates["announcement_text"] = *req.AnnouncementText
+		updates["announcement_text"] = strings.TrimSpace(*req.AnnouncementText)
+		// The settings screen currently saves an announcement without a
+		// schedule. Clear a stale expiry so a new text cannot remain invisible.
+		if req.AnnouncementExpiresAt == nil {
+			updates["announcement_expires_at"] = nil
+		}
 	}
 	if req.AnnouncementLevel != nil {
 		switch *req.AnnouncementLevel {

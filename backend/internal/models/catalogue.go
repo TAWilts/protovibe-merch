@@ -142,6 +142,8 @@ type SlideshowSettings struct {
 	Tenant
 
 	CollageShowPrices bool      `gorm:"not null" json:"collage_show_prices"`
+	CollageInterval   int       `gorm:"not null;default:8" json:"collage_interval"`
+	CollageModes      string    `gorm:"size:100;not null;default:'scroll,reveal,filmstrip'" json:"-"`
 	UpdatedAt         time.Time `gorm:"not null" json:"updated_at"`
 }
 

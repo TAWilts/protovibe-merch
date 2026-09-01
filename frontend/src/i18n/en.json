@@ -85,6 +85,13 @@
     "sending": "Sending …",
     "sent": "The message was sent to the administrators."
   },
+  "systemStatus": {
+    "announcement": "Announcement",
+    "maintenanceEyebrow": "Temporarily unavailable",
+    "maintenanceTitle": "Maintenance mode",
+    "maintenanceFallback": "The application is currently undergoing maintenance.",
+    "maintenanceHint": "Please try again later. You can still sign out."
+  },
   "sales": {
     "eyebrow": "Live entry",
     "title": "Sale",
@@ -690,7 +697,27 @@
     "playbackHint": "Gilt für den nächsten Start.",
     "changeRate": "Bildwechsel: alle {seconds} s",
     "animationSpeed": "Animationsgeschwindigkeit: {speed}×",
-    "collagePrices": "Preise in der Abschluss-Collage einblenden",
+    "collagePrices": "Show prices in collages",
+    "collageInterval": "Collage after product photos",
+    "collageIntervalHint": "Only product photos count; standalone slides do not.",
+    "collageModesTitle": "Allowed collage styles",
+    "collageModes": {
+      "scroll": {
+        "title": "Scrolling mosaic",
+        "hint": "All tiles move together from bottom to top."
+      },
+      "reveal": {
+        "title": "Large mosaic",
+        "hint": "All tiles remain visible and slowly enter from every side."
+      },
+      "filmstrip": {
+        "title": "Opposing filmstrips",
+        "hint": "Two tiled rows move calmly in opposite directions."
+      }
+    },
+    "oneCollageModeRequired": "At least one collage style must remain enabled.",
+    "invalidCollageInterval": "The collage interval must be between 1 and 100 product photos.",
+    "settingsSaved": "Slideshow settings saved.",
     "upload": "Bilder hinzufügen",
     "uploadHint": "JPG, PNG oder WebP bis 10 MB. Bilder werden verkleinert und neu kodiert; Kamera-Metadaten bleiben nicht erhalten.",
     "target": "Art der Bilder",
@@ -700,7 +727,7 @@
     "files": "Bilddateien",
     "defaultVariant": "Standardvariante",
     "notOffered": "nicht angeboten",
-    "collage": "Abschluss-Collage",
+    "collage": "Product collage",
     "uploaded": "Bilder hinzugefügt.",
     "removed": "Bild gelöscht.",
     "gallery": "Galerie",

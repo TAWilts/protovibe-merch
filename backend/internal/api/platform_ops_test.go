@@ -3,6 +3,7 @@ package api_test
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
 )
@@ -38,6 +39,11 @@ func TestMaintenanceModeBlocksBandsButNotStaff(t *testing.T) {
 
 	// The band is held off, with the operator's message.
 	h.cookie, h.csrfToken = bandCookie, bandCSRF
+	status := h.do(http.MethodGet, "/api/v1/announcement", nil)
+	maintenance := jsonObject(status.Body["maintenance"])
+	if maintenance["message"] != "Wir aktualisieren gerade." {
+		t.Fatalf("the status endpoint must expose the maintenance page: %d %v", status.Status, status.Body)
+	}
 	blocked := h.do(http.MethodGet, "/api/v1/me", nil)
 	if blocked.Status != http.StatusServiceUnavailable || blocked.Body["code"] != "maintenance" {
 		t.Fatalf("the band must see the maintenance page: %d %v", blocked.Status, blocked.Body)
@@ -58,10 +64,19 @@ func TestAnnouncementReachesTheBands(t *testing.T) {
 	admin, secret := h.platformAdmin(models.RoleSystemAdmin)
 	h.signInPlatform(admin, secret)
 	if res := h.do(http.MethodPut, "/api/v1/platform/settings", map[string]any{
+		"announcement_text":       "Abgelaufener Hinweis",
+		"announcement_level":      "info",
+		"announcement_expires_at": time.Now().UTC().Add(-time.Hour),
+	}); res.Status != http.StatusOK {
+		t.Fatalf("seed expired announcement: %d %v", res.Status, res.Body)
+	}
+	if res := h.do(http.MethodPut, "/api/v1/platform/settings", map[string]any{
 		"announcement_text":  "Am Sonntag ab 22 Uhr kurze Wartung.",
 		"announcement_level": "warning",
 	}); res.Status != http.StatusOK {
 		t.Fatalf("set announcement: %d %v", res.Status, res.Body)
+	} else if res.Body["announcement_expires_at"] != nil {
+		t.Fatalf("saving an unscheduled announcement must clear a stale expiry: %v", res.Body)
 	}
 	t.Cleanup(func() {
 		_ = h.db.Exec("UPDATE platform_settings SET announcement_text = '' WHERE id = 1").Error

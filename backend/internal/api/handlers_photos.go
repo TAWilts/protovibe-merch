@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -354,18 +355,30 @@ func (s *Server) servePhoto(c *gin.Context) {
 	http.ServeContent(c.Writer, c.Request, filename, time.Time{}, reader)
 }
 
+const defaultCollageInterval = 8
+
+var defaultCollageModes = []string{"scroll", "reveal", "filmstrip"}
+
 // slideshowPayload is the shop display: the selected pictures plus the band's
-// display preference.
+// display preferences.
 func (s *Server) slideshowPayload(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// A missing settings row resolves to the safe default of showing prices,
-	// rather than being an error.
+	// A missing settings row resolves to useful display defaults rather than
+	// being an error.
 	collagePrices := true
+	collageInterval := defaultCollageInterval
+	collageModes := append([]string(nil), defaultCollageModes...)
 	var settings models.SlideshowSettings
 	err := s.db.WithContext(ctx).First(&settings).Error
 	if err == nil {
 		collagePrices = settings.CollageShowPrices
+		if settings.CollageInterval > 0 {
+			collageInterval = settings.CollageInterval
+		}
+		if parsed, parseErr := parseCollageModes(settings.CollageModes); parseErr == nil {
+			collageModes = parsed
+		}
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		serverError(c, err)
 		return
@@ -386,11 +399,15 @@ func (s *Server) slideshowPayload(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"photos":              selected,
 		"collage_show_prices": collagePrices,
+		"collage_interval":    collageInterval,
+		"collage_modes":       collageModes,
 	})
 }
 
 type slideshowSettingsRequest struct {
-	CollageShowPrices *bool `json:"collage_show_prices"`
+	CollageShowPrices *bool     `json:"collage_show_prices"`
+	CollageInterval   *int      `json:"collage_interval"`
+	CollageModes      *[]string `json:"collage_modes"`
 }
 
 func (s *Server) updateSlideshowSettings(c *gin.Context) {
@@ -399,9 +416,22 @@ func (s *Server) updateSlideshowSettings(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if req.CollageShowPrices == nil {
+	if req.CollageShowPrices == nil && req.CollageInterval == nil && req.CollageModes == nil {
 		c.Status(http.StatusNoContent)
 		return
+	}
+	if req.CollageInterval != nil && (*req.CollageInterval < 1 || *req.CollageInterval > 100) {
+		fail(c, http.StatusBadRequest, "invalid_collage_interval", "the collage interval must be between 1 and 100")
+		return
+	}
+	var storedModes string
+	if req.CollageModes != nil {
+		modes, err := validateCollageModes(*req.CollageModes)
+		if err != nil {
+			fail(c, http.StatusBadRequest, "invalid_collage_modes", err.Error())
+			return
+		}
+		storedModes = strings.Join(modes, ",")
 	}
 
 	ctx := c.Request.Context()
@@ -409,7 +439,19 @@ func (s *Server) updateSlideshowSettings(c *gin.Context) {
 	err := s.db.WithContext(ctx).First(&settings).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		settings = models.SlideshowSettings{
-			CollageShowPrices: *req.CollageShowPrices, UpdatedAt: time.Now().UTC(),
+			CollageShowPrices: true,
+			CollageInterval:   defaultCollageInterval,
+			CollageModes:      strings.Join(defaultCollageModes, ","),
+			UpdatedAt:         time.Now().UTC(),
+		}
+		if req.CollageShowPrices != nil {
+			settings.CollageShowPrices = *req.CollageShowPrices
+		}
+		if req.CollageInterval != nil {
+			settings.CollageInterval = *req.CollageInterval
+		}
+		if req.CollageModes != nil {
+			settings.CollageModes = storedModes
 		}
 		if err := s.db.WithContext(ctx).Create(&settings).Error; err != nil {
 			serverError(c, err)
@@ -423,16 +465,47 @@ func (s *Server) updateSlideshowSettings(c *gin.Context) {
 		return
 	}
 
+	updates := map[string]any{"updated_at": time.Now().UTC()}
+	if req.CollageShowPrices != nil {
+		updates["collage_show_prices"] = *req.CollageShowPrices
+	}
+	if req.CollageInterval != nil {
+		updates["collage_interval"] = *req.CollageInterval
+	}
+	if req.CollageModes != nil {
+		updates["collage_modes"] = storedModes
+	}
 	err = s.db.WithContext(ctx).Model(&models.SlideshowSettings{}).Where("id = ?", settings.ID).
-		Updates(map[string]any{
-			"collage_show_prices": *req.CollageShowPrices,
-			"updated_at":          time.Now().UTC(),
-		}).Error
+		Updates(updates).Error
 	if err != nil {
 		serverError(c, err)
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+func validateCollageModes(modes []string) ([]string, error) {
+	if len(modes) == 0 {
+		return nil, errors.New("at least one collage mode is required")
+	}
+	allowed := map[string]bool{"scroll": true, "reveal": true, "filmstrip": true}
+	seen := map[string]bool{}
+	result := make([]string, 0, len(modes))
+	for _, raw := range modes {
+		mode := strings.TrimSpace(raw)
+		if !allowed[mode] {
+			return nil, errors.New("collage modes must be scroll, reveal or filmstrip")
+		}
+		if !seen[mode] {
+			seen[mode] = true
+			result = append(result, mode)
+		}
+	}
+	return result, nil
+}
+
+func parseCollageModes(value string) ([]string, error) {
+	return validateCollageModes(strings.Split(value, ","))
 }
 
 func (s *Server) reportPhotoError(c *gin.Context, err error) {

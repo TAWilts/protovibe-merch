@@ -156,6 +156,10 @@ type announcementBanner struct {
 	Level string `json:"level"`
 }
 
+type maintenanceBanner struct {
+	Message string `json:"message"`
+}
+
 // announcement returns the current banner, if any. It is public to any signed
 // in account, because a planned maintenance window concerns everybody.
 func (s *Server) announcement(c *gin.Context) {
@@ -165,12 +169,20 @@ func (s *Server) announcement(c *gin.Context) {
 		return
 	}
 
-	if settings.AnnouncementText == "" ||
-		(settings.AnnouncementExpiresAt != nil && time.Now().UTC().After(*settings.AnnouncementExpiresAt)) {
-		c.JSON(http.StatusOK, gin.H{"announcement": nil})
+	maintenanceEnabled, maintenanceMessage, err := s.maintenanceStatus(c.Request.Context(), stateFrom(c))
+	if err != nil {
+		serverError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"announcement": announcementBanner{
-		Text: settings.AnnouncementText, Level: settings.AnnouncementLevel,
-	}})
+
+	var announcement *announcementBanner
+	if settings.AnnouncementText != "" &&
+		(settings.AnnouncementExpiresAt == nil || time.Now().UTC().Before(*settings.AnnouncementExpiresAt)) {
+		announcement = &announcementBanner{Text: settings.AnnouncementText, Level: settings.AnnouncementLevel}
+	}
+	var maintenance *maintenanceBanner
+	if maintenanceEnabled {
+		maintenance = &maintenanceBanner{Message: maintenanceMessage}
+	}
+	c.JSON(http.StatusOK, gin.H{"announcement": announcement, "maintenance": maintenance})
 }

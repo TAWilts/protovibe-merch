@@ -123,6 +123,9 @@ func TestPhotoGalleryLifecycle(t *testing.T) {
 	if slideshow.Body["collage_show_prices"] != true {
 		t.Fatalf("a missing settings row must default to showing prices: %v", slideshow.Body)
 	}
+	if slideshow.Body["collage_interval"] != float64(8) || len(jsonList(slideshow.Body, "collage_modes")) != 3 {
+		t.Fatalf("a missing settings row must expose useful collage defaults: %v", slideshow.Body)
+	}
 
 	// Opting one out removes it from the display but not from the gallery.
 	if res := h.do(http.MethodPatch, "/api/v1/photos/"+itoa(extraID),
@@ -138,12 +141,27 @@ func TestPhotoGalleryLifecycle(t *testing.T) {
 	}
 
 	if res := h.do(http.MethodPatch, "/api/v1/slideshow/settings",
-		map[string]any{"collage_show_prices": false}); res.Status != http.StatusNoContent {
+		map[string]any{
+			"collage_show_prices": false,
+			"collage_interval":    4,
+			"collage_modes":       []string{"reveal", "filmstrip"},
+		}); res.Status != http.StatusNoContent {
 		t.Fatalf("settings: %d %v", res.Status, res.Body)
 	}
 	slideshow = h.do(http.MethodGet, "/api/v1/slideshow", nil)
 	if slideshow.Body["collage_show_prices"] != false {
 		t.Fatalf("the preference must stick: %v", slideshow.Body)
+	}
+	if slideshow.Body["collage_interval"] != float64(4) || len(jsonList(slideshow.Body, "collage_modes")) != 2 {
+		t.Fatalf("the interval and allowed modes must stick: %v", slideshow.Body)
+	}
+	if res := h.do(http.MethodPatch, "/api/v1/slideshow/settings",
+		map[string]any{"collage_interval": 0}); res.Status != http.StatusBadRequest {
+		t.Fatalf("an unusable interval must be rejected: %d %v", res.Status, res.Body)
+	}
+	if res := h.do(http.MethodPatch, "/api/v1/slideshow/settings",
+		map[string]any{"collage_modes": []string{}}); res.Status != http.StatusBadRequest {
+		t.Fatalf("at least one collage mode is required: %d %v", res.Status, res.Body)
 	}
 
 	if res := h.do(http.MethodDelete, "/api/v1/photos/"+itoa(productID), nil); res.Status != http.StatusNoContent {

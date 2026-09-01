@@ -508,4 +508,17 @@ die Bilder werden serverseitig geprüft, verkleinert und komprimiert. Die Diasho
 im Vollbild, nutzt gegenläufig einfahrende Bild- und Preiskarten, vermeidet direkte
 Wiederholungen und zeigt zwischen den Durchläufen eine bildzahlabhängige Collage.
 
+**Weitergeführt am 01.09.:** Collagen sind jetzt echte, nicht überlappende Kachelansichten.
+Pro Band lassen sich das Intervall in Produktfotos und die erlaubten Darstellungen
+festlegen: gemeinsam scrollendes Mosaik, vollständig sichtbares Großmosaik mit Einflug
+von allen Seiten und zwei gegenläufige Bildreihen. Jede Kachel verwendet `object-fit:
+contain`; kein Produktfoto wird beschnitten oder verzerrt.
+
+Wartungsmodus und Ankündigungen besitzen nun auch den zuvor fehlenden Band-Client:
+Ankündigungen erscheinen als abgestuftes Banner, der Wartungsmodus als eigene Seite mit
+Abmeldemöglichkeit und beide werden regelmäßig aktualisiert. Das erneute Speichern einer
+Ankündigung entfernt außerdem ein altes Ablaufdatum, das neue Texte unsichtbar machen
+konnte. Der Smartphone-Verkauf läuft in drei Schritten (Warenkorb, Zahlungsangaben,
+Bestätigung beziehungsweise QR-Code) und ist separat als Commit `1778a63` abgelegt.
+
 ---

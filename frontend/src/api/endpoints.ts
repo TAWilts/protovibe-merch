@@ -287,7 +287,10 @@ export const supportApi = {
   }) => api.post<{ id: number }>('/support-messages', payload),
   mine: () => api.get<{ messages: SupportMessage[] }>('/support-messages'),
   announcement: () =>
-    api.get<{ announcement: { text: string; level: string } | null }>('/announcement'),
+    api.get<{
+      announcement: { text: string; level: 'info' | 'warning' | 'critical' } | null
+      maintenance: { message: string } | null
+    }>('/announcement'),
 }
 
 /**
@@ -348,6 +351,15 @@ export const attachmentsApi = {
     `/api/v1/purchase-receipts/${encodeURIComponent(receiptId)}/attachments/${attachmentId}`,
 }
 
+export type CollageMode = 'scroll' | 'reveal' | 'filmstrip'
+
+export interface SlideshowPayload {
+  photos: Photo[]
+  collage_show_prices: boolean
+  collage_interval: number
+  collage_modes: CollageMode[]
+}
+
 export const photosApi = {
   list: () => api.get<{ photos: Photo[] }>('/photos'),
   /**
@@ -360,13 +372,15 @@ export const photosApi = {
     if (variantId) body.append('variant_id', String(variantId))
     return api.post<Photo>('/photos', body, { raw: true })
   },
-  slideshow: () =>
-    api.get<{ photos: Photo[]; collage_show_prices: boolean }>('/slideshow'),
+  slideshow: () => api.get<SlideshowPayload>('/slideshow'),
   update: (id: number, payload: { include_in_slideshow?: boolean; show_price?: boolean }) =>
     api.patch<void>(`/photos/${id}`, payload),
   remove: (id: number) => api.delete<void>(`/photos/${id}`),
-  setCollagePrices: (value: boolean) =>
-    api.patch<void>('/slideshow/settings', { collage_show_prices: value }),
+  saveSlideshowSettings: (payload: {
+    collage_show_prices: boolean
+    collage_interval: number
+    collage_modes: CollageMode[]
+  }) => api.patch<void>('/slideshow/settings', payload),
   fileUrl: (id: number) => `/api/v1/photos/${id}/file`,
 }
 

@@ -85,6 +85,13 @@
     "sending": "Wird gesendet …",
     "sent": "Die Nachricht wurde an die Administration gesendet."
   },
+  "systemStatus": {
+    "announcement": "Ankündigung",
+    "maintenanceEyebrow": "Vorübergehend nicht verfügbar",
+    "maintenanceTitle": "Wartungsmodus",
+    "maintenanceFallback": "Die Anwendung wird gerade gewartet.",
+    "maintenanceHint": "Bitte versuche es später erneut. Du kannst dich weiterhin abmelden."
+  },
   "sales": {
     "eyebrow": "Live-Erfassung",
     "title": "Verkauf",
@@ -690,7 +697,27 @@
     "playbackHint": "Gilt für den nächsten Start.",
     "changeRate": "Bildwechsel: alle {seconds} s",
     "animationSpeed": "Animationsgeschwindigkeit: {speed}×",
-    "collagePrices": "Preise in der Abschluss-Collage einblenden",
+    "collagePrices": "Preise in Collagen einblenden",
+    "collageInterval": "Collage nach Produktfotos",
+    "collageIntervalHint": "Nur Produktfotos werden gezählt; eigenständige Dias nicht.",
+    "collageModesTitle": "Erlaubte Collage-Arten",
+    "collageModes": {
+      "scroll": {
+        "title": "Scrollendes Mosaik",
+        "hint": "Alle Kacheln bewegen sich gemeinsam von unten nach oben."
+      },
+      "reveal": {
+        "title": "Großes Mosaik",
+        "hint": "Alle Kacheln bleiben sichtbar und gleiten langsam von allen Seiten ein."
+      },
+      "filmstrip": {
+        "title": "Gegenläufige Bildreihen",
+        "hint": "Zwei Kachelreihen ziehen ruhig in entgegengesetzte Richtungen."
+      }
+    },
+    "oneCollageModeRequired": "Mindestens eine Collage-Art muss aktiviert bleiben.",
+    "invalidCollageInterval": "Die Collage muss nach 1 bis 100 Produktfotos erscheinen.",
+    "settingsSaved": "Diashow-Einstellungen gespeichert.",
     "upload": "Bilder hinzufügen",
     "uploadHint": "JPG, PNG oder WebP bis 10 MB. Bilder werden verkleinert und neu kodiert; Kamera-Metadaten bleiben nicht erhalten.",
     "target": "Art der Bilder",
@@ -700,7 +727,7 @@
     "files": "Bilddateien",
     "defaultVariant": "Standardvariante",
     "notOffered": "nicht angeboten",
-    "collage": "Abschluss-Collage",
+    "collage": "Produkt-Collage",
     "uploaded": "Bilder hinzugefügt.",
     "removed": "Bild gelöscht.",
     "gallery": "Galerie",

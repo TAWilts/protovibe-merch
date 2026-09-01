@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { catalogueApi, photosApi } from '@/api/endpoints'
+import { catalogueApi, photosApi, type CollageMode } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { Article, Photo } from '@/api/types'
 import { useMoney } from '@/composables/useMoney'
@@ -26,7 +26,10 @@ const session = useSessionStore()
 const gallery = ref<Photo[]>([])
 const loading = ref(true)
 const uploading = ref(false)
+const settingsSaving = ref(false)
 const collagePrices = ref(true)
+const collageInterval = ref(8)
+const collageModes = ref<CollageMode[]>(['scroll', 'reveal', 'filmstrip'])
 const articles = ref<Article[]>([])
 const uploadTarget = ref('')
 
@@ -36,6 +39,7 @@ const selected = computed(() => gallery.value.filter((photo) => photo.include_in
 /** Playback state. */
 const playing = ref(false)
 const playbackMode = ref<'slide' | 'collage'>('slide')
+const activeCollageMode = ref<CollageMode>('reveal')
 const current = ref<Photo | null>(null)
 const collagePhotos = ref<Photo[]>([])
 const stage = ref<HTMLElement | null>(null)
@@ -48,9 +52,30 @@ const oppositeDirection = computed(() => ({
 }[direction.value]))
 
 let bag: Photo[] = []
-let cyclePhotos: Photo[] = []
 let timer: number | undefined
 let previousPhotoId: number | null = null
+let productSlidesSinceCollage = 0
+
+const productPhotos = computed(() => selected.value.filter((photo) => photo.article_name))
+const collageDurationSeconds = computed(() => {
+  if (activeCollageMode.value === 'scroll') return Math.max(12, changeSeconds.value * 2.4)
+  return Math.max(8, changeSeconds.value * 1.5)
+})
+const collageColumns = computed(() => Math.max(
+  1,
+  Math.min(5, Math.ceil(Math.sqrt(collagePhotos.value.length * 1.6))),
+))
+const filmstripRows = computed(() => {
+  const midpoint = Math.ceil(collagePhotos.value.length / 2)
+  return [collagePhotos.value.slice(0, midpoint), collagePhotos.value.slice(midpoint)]
+    .filter((row) => row.length)
+})
+const collageStageStyle = computed(() => ({
+  '--collage-columns': String(collageColumns.value),
+  '--scroll-columns': String(Math.min(3, collageColumns.value)),
+  '--collage-duration': `${collageDurationSeconds.value}s`,
+}))
+const collageModeOptions: CollageMode[] = ['scroll', 'reveal', 'filmstrip']
 
 const uploadVariants = computed(() => articles.value.flatMap((article) => article.variants
   .filter((variant) => variant.is_active)
@@ -84,6 +109,8 @@ async function load(silent = false) {
     ])
     gallery.value = all.photos
     collagePrices.value = show.collage_show_prices
+    collageInterval.value = show.collage_interval
+    collageModes.value = [...show.collage_modes]
     articles.value = catalogue.articles
   } catch {
     flash.error(t('errors.generic'))
@@ -169,12 +196,38 @@ async function remove(photo: Photo) {
   }
 }
 
-async function setCollagePrices(value: boolean) {
+function toggleCollageMode(mode: CollageMode, enabled: boolean) {
+  if (enabled) {
+    if (!collageModes.value.includes(mode)) collageModes.value.push(mode)
+    return
+  }
+  if (collageModes.value.length === 1) {
+    // Re-render the controlled checkbox so it visibly remains selected.
+    collageModes.value = [...collageModes.value]
+    flash.error(t('slideshow.oneCollageModeRequired'))
+    return
+  }
+  collageModes.value = collageModes.value.filter((entry) => entry !== mode)
+}
+
+async function saveCollageSettings() {
+  if (settingsSaving.value) return
+  if (!Number.isInteger(collageInterval.value) || collageInterval.value < 1 || collageInterval.value > 100) {
+    flash.error(t('slideshow.invalidCollageInterval'))
+    return
+  }
+  settingsSaving.value = true
   try {
-    await photosApi.setCollagePrices(value)
-    collagePrices.value = value
+    await photosApi.saveSlideshowSettings({
+      collage_show_prices: collagePrices.value,
+      collage_interval: collageInterval.value,
+      collage_modes: collageModes.value,
+    })
+    flash.success(t('slideshow.settingsSaved'))
   } catch (error) {
     report(error)
+  } finally {
+    settingsSaving.value = false
   }
 }
 
@@ -191,36 +244,37 @@ function refillBag() {
     const replacement = Math.floor(Math.random() * (bag.length - 1))
     ;[bag[replacement], bag[bag.length - 1]] = [bag[bag.length - 1], bag[replacement]]
   }
-  cyclePhotos = [...bag].reverse()
 }
 
 const directions: Array<'left' | 'right' | 'top' | 'bottom'> = ['left', 'right', 'top', 'bottom']
 
 function advance() {
   if (!playing.value || !selected.value.length) return
-  if (!bag.length && cyclePhotos.length) {
-    const seen = new Set<string>()
-    collagePhotos.value = cyclePhotos.filter((photo) => photo.article_name).filter((photo) => {
-      const key = photo.article_name || String(photo.variant_id)
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    }).slice(0, 5)
-    cyclePhotos = []
-    if (collagePhotos.value.length) {
-      playbackMode.value = 'collage'
-      timer = window.setTimeout(advance, changeSeconds.value * 1000)
-      return
-    }
+  if (productSlidesSinceCollage >= collageInterval.value && productPhotos.value.length > 1) {
+    showCollage()
+    return
   }
   if (!bag.length) refillBag()
   const next = bag.pop()
   if (!next) return
   current.value = next
   previousPhotoId = next.id
+  if (next.article_name) productSlidesSinceCollage++
   playbackMode.value = 'slide'
   direction.value = directions[Math.floor(Math.random() * directions.length)]
   timer = window.setTimeout(advance, changeSeconds.value * 1000)
+}
+
+function showCollage() {
+  collagePhotos.value = [...productPhotos.value]
+  for (let i = collagePhotos.value.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[collagePhotos.value[i], collagePhotos.value[j]] = [collagePhotos.value[j], collagePhotos.value[i]]
+  }
+  activeCollageMode.value = collageModes.value[Math.floor(Math.random() * collageModes.value.length)] ?? 'reveal'
+  productSlidesSinceCollage = 0
+  playbackMode.value = 'collage'
+  timer = window.setTimeout(advance, collageDurationSeconds.value * 1000)
 }
 
 async function start() {
@@ -247,8 +301,8 @@ function stop(leaveFullscreen = true) {
   window.clearTimeout(timer)
   timer = undefined
   bag = []
-  cyclePhotos = []
   previousPhotoId = null
+  productSlidesSinceCollage = 0
   current.value = null
   collagePhotos.value = []
   document.removeEventListener('keydown', onSlideshowExit)
@@ -261,31 +315,10 @@ function onFullscreenChange() {
   if (playing.value && document.fullscreenElement !== stage.value) stop(false)
 }
 
-interface CollagePlacement { x: number; y: number; rotation: number }
-const collageLayouts: Record<number, CollagePlacement[]> = {
-  1: [{ x: 19, y: 8, rotation: -2 }],
-  2: [{ x: 7, y: 13, rotation: -8 }, { x: 48, y: 29, rotation: 7 }],
-  3: [
-    { x: 7, y: 8, rotation: -8 }, { x: 51, y: 12, rotation: 7 },
-    { x: 28, y: 45, rotation: -3 },
-  ],
-  4: [
-    { x: 4, y: 9, rotation: -9 }, { x: 52, y: 6, rotation: 8 },
-    { x: 8, y: 48, rotation: 6 }, { x: 54, y: 47, rotation: -7 },
-  ],
-  5: [
-    { x: 3, y: 9, rotation: -9 }, { x: 53, y: 5, rotation: 8 },
-    { x: 7, y: 49, rotation: 6 }, { x: 56, y: 47, rotation: -7 },
-    { x: 30, y: 26, rotation: -2 },
-  ],
-}
-
-function collageStyle(index: number) {
-  const layout = collageLayouts[collagePhotos.value.length] ?? collageLayouts[5]
-  const item = layout[index] ?? collageLayouts[5][index]
+function collageCardStyle(index: number) {
   return {
-    '--collage-x': `${item.x}%`, '--collage-y': `${item.y}%`,
-    '--collage-rotation': `${item.rotation}deg`, '--collage-index': index,
+    '--collage-index': index,
+    '--collage-side': index % 4,
     '--animation-seconds': `${animationSeconds.value}s`,
   }
 }
@@ -321,14 +354,34 @@ function collageStyle(index: number) {
           <input v-model.number="animationSpeed" type="range" min="0.1" max="2" step="0.1" />
         </label>
       </div>
-      <label v-if="canManage" class="checkbox-row">
-        <input
-          type="checkbox"
-          :checked="collagePrices"
-          @change="setCollagePrices(($event.target as HTMLInputElement).checked)"
-        />
-        <span>{{ t('slideshow.collagePrices') }}</span>
-      </label>
+      <form v-if="canManage" class="collage-settings" @submit.prevent="saveCollageSettings">
+        <label>
+          {{ t('slideshow.collageInterval') }}
+          <input v-model.number="collageInterval" type="number" min="1" max="100" step="1" />
+          <small>{{ t('slideshow.collageIntervalHint') }}</small>
+        </label>
+        <fieldset>
+          <legend>{{ t('slideshow.collageModesTitle') }}</legend>
+          <label v-for="mode in collageModeOptions" :key="mode" class="checkbox-row">
+            <input
+              type="checkbox"
+              :checked="collageModes.includes(mode)"
+              @change="toggleCollageMode(mode, ($event.target as HTMLInputElement).checked)"
+            />
+            <span>
+              <strong>{{ t(`slideshow.collageModes.${mode}.title`) }}</strong>
+              <small>{{ t(`slideshow.collageModes.${mode}.hint`) }}</small>
+            </span>
+          </label>
+        </fieldset>
+        <label class="checkbox-row">
+          <input v-model="collagePrices" type="checkbox" />
+          <span>{{ t('slideshow.collagePrices') }}</span>
+        </label>
+        <button class="secondary-button" type="submit" :disabled="settingsSaving">
+          {{ settingsSaving ? t('common.loading') : t('common.save') }}
+        </button>
+      </form>
     </section>
 
     <section v-if="canManage" class="table-section">
@@ -425,22 +478,43 @@ function collageStyle(index: number) {
     <section
       v-else-if="playbackMode === 'collage'"
       class="slideshow-collage"
+      :class="`mode-${activeCollageMode}`"
       :data-count="collagePhotos.length"
+      :style="collageStageStyle"
       :aria-label="t('slideshow.collage')"
     >
-      <figure
-        v-for="(photo, index) in collagePhotos"
-        :key="photo.id"
-        class="slideshow-collage-card"
-        :style="collageStyle(index)"
-      >
-        <img :src="photosApi.fileUrl(photo.id)" :alt="photo.original_filename" />
-        <figcaption>
-          <strong>{{ photo.article_name }}</strong>
-          <span>{{ photo.variant_label || t('slideshow.defaultVariant') }}</span>
-          <b v-if="collagePrices && photo.show_price">{{ format(photo.sale_price_cents) }}</b>
-        </figcaption>
-      </figure>
+      <div v-if="activeCollageMode !== 'filmstrip'" class="slideshow-collage-grid">
+        <figure
+          v-for="(photo, index) in collagePhotos"
+          :key="photo.id"
+          class="slideshow-collage-card"
+          :style="collageCardStyle(index)"
+        >
+          <img :src="photosApi.fileUrl(photo.id)" :alt="photo.original_filename" />
+          <figcaption>
+            <strong>{{ photo.article_name }}</strong>
+            <span>{{ photo.variant_label || t('slideshow.defaultVariant') }}</span>
+            <b v-if="collagePrices && photo.show_price">{{ format(photo.sale_price_cents) }}</b>
+          </figcaption>
+        </figure>
+      </div>
+      <div v-else class="slideshow-filmstrip">
+        <div v-for="(row, rowIndex) in filmstripRows" :key="rowIndex" class="slideshow-filmstrip-row">
+          <figure
+            v-for="(photo, index) in row"
+            :key="photo.id"
+            class="slideshow-collage-card"
+            :style="collageCardStyle(index + rowIndex * row.length)"
+          >
+            <img :src="photosApi.fileUrl(photo.id)" :alt="photo.original_filename" />
+            <figcaption>
+              <strong>{{ photo.article_name }}</strong>
+              <span>{{ photo.variant_label || t('slideshow.defaultVariant') }}</span>
+              <b v-if="collagePrices && photo.show_price">{{ format(photo.sale_price_cents) }}</b>
+            </figcaption>
+          </figure>
+        </div>
+      </div>
     </section>
     <p class="slideshow-hint">{{ t('slideshow.stopHint') }}</p>
   </div>
@@ -492,6 +566,46 @@ function collageStyle(index: number) {
 
 .slideshow-upload-controls small {
   color: var(--muted);
+}
+
+.collage-settings {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.45fr) minmax(280px, 1fr);
+  gap: 14px 22px;
+  align-items: start;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.collage-settings > label:first-child small,
+.collage-settings fieldset small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.collage-settings fieldset {
+  display: grid;
+  grid-row: span 2;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.collage-settings legend {
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.collage-settings .checkbox-row span {
+  display: grid;
+  gap: 2px;
+}
+
+.collage-settings button {
+  justify-self: start;
 }
 
 .checkbox-row {
@@ -600,55 +714,103 @@ function collageStyle(index: number) {
 .slideshow-copy.from-bottom { animation: frame-in-bottom var(--animation-seconds) 0.2s ease-out both; }
 
 .slideshow-collage {
-  --collage-width: min(36vw, 480px);
-  position: relative;
-  width: min(92vw, 1360px);
-  height: min(78dvh, 900px);
-  min-height: 250px;
+  width: min(94vw, 1680px);
+  height: min(86dvh, 980px);
+  min-height: 260px;
+  overflow: hidden;
 }
 
-.slideshow-collage[data-count='1'] { --collage-width: min(64vw, 860px); }
-.slideshow-collage[data-count='2'] { --collage-width: min(43vw, 640px); }
-.slideshow-collage[data-count='3'] { --collage-width: min(40vw, 560px); }
+.slideshow-collage-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--collage-columns), minmax(0, 1fr));
+  gap: clamp(8px, 1.2vw, 18px);
+  width: 100%;
+}
+
+.mode-reveal .slideshow-collage-grid {
+  grid-auto-rows: minmax(0, 1fr);
+  height: 100%;
+}
+
+.mode-scroll .slideshow-collage-grid {
+  grid-template-columns: repeat(var(--scroll-columns), minmax(0, 1fr));
+  grid-auto-rows: minmax(250px, 36dvh);
+  animation: collage-scroll var(--collage-duration) linear both;
+}
 
 .slideshow-collage-card {
-  position: absolute;
-  top: var(--collage-y);
-  left: var(--collage-x);
-  width: var(--collage-width);
-  aspect-ratio: 4 / 3;
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
   margin: 0;
   overflow: hidden;
-  border: 2px solid #000;
-  border-radius: 7px;
-  background: #000;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: #101015;
   box-shadow: 0 22px 52px rgba(0, 0, 0, 0.56);
-  transform: rotate(var(--collage-rotation));
-  animation: collage-in var(--animation-seconds) calc(var(--collage-index) * 0.14s) both cubic-bezier(.16, .84, .22, 1);
 }
 
 .slideshow-collage-card img {
+  display: block;
   width: 100%;
   height: 100%;
+  min-height: 0;
+  padding: clamp(3px, 0.5vw, 8px);
   object-fit: contain;
 }
 
 .slideshow-collage-card figcaption {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  left: 8px;
   display: grid;
-  padding: 7px 9px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
   color: #fff;
-  background: rgba(14, 12, 18, 0.76);
-  backdrop-filter: blur(7px);
+  background: rgba(22, 18, 27, 0.95);
 }
 
 .slideshow-collage-card figcaption span { color: rgba(255, 255, 255, 0.75); font-size: 0.78rem; }
 .slideshow-collage-card figcaption b { color: var(--accent-bright); }
+
+.mode-reveal .slideshow-collage-card {
+  animation-duration: var(--animation-seconds);
+  animation-delay: calc(var(--collage-index) * 0.11s);
+  animation-fill-mode: both;
+  animation-timing-function: cubic-bezier(.16, .84, .22, 1);
+}
+
+.mode-reveal .slideshow-collage-card:nth-child(4n + 1) { animation-name: collage-from-left; }
+.mode-reveal .slideshow-collage-card:nth-child(4n + 2) { animation-name: collage-from-top; }
+.mode-reveal .slideshow-collage-card:nth-child(4n + 3) { animation-name: collage-from-right; }
+.mode-reveal .slideshow-collage-card:nth-child(4n + 4) { animation-name: collage-from-bottom; }
+
+.slideshow-filmstrip {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: clamp(10px, 1.8vh, 20px);
+  height: 100%;
+  overflow: hidden;
+}
+
+.slideshow-filmstrip-row {
+  display: flex;
+  gap: clamp(8px, 1.2vw, 18px);
+  width: max-content;
+  min-height: 0;
+}
+
+.slideshow-filmstrip-row .slideshow-collage-card {
+  width: clamp(240px, 31vw, 520px);
+  flex: 0 0 auto;
+}
+
+.slideshow-filmstrip-row:nth-child(odd) {
+  animation: filmstrip-left var(--collage-duration) linear both;
+}
+
+.slideshow-filmstrip-row:nth-child(even) {
+  animation: filmstrip-right var(--collage-duration) linear both;
+}
 
 @keyframes frame-in-left {
   from { opacity: 0; transform: translateX(-14vw) scale(0.96); }
@@ -666,9 +828,21 @@ function collageStyle(index: number) {
   from { opacity: 0; transform: translateY(12vh) scale(0.96); }
   to { opacity: 1; transform: none; }
 }
-@keyframes collage-in {
-  from { opacity: 0; transform: translateY(12vh) rotate(var(--collage-rotation)) scale(0.72); }
-  to { opacity: 1; transform: rotate(var(--collage-rotation)) scale(1); }
+@keyframes collage-scroll {
+  from { transform: translateY(88dvh); }
+  to { transform: translateY(calc(-100% + 2dvh)); }
+}
+@keyframes collage-from-left { from { opacity: 0; transform: translateX(-30vw) scale(0.88); } }
+@keyframes collage-from-right { from { opacity: 0; transform: translateX(30vw) scale(0.88); } }
+@keyframes collage-from-top { from { opacity: 0; transform: translateY(-28vh) scale(0.88); } }
+@keyframes collage-from-bottom { from { opacity: 0; transform: translateY(28vh) scale(0.88); } }
+@keyframes filmstrip-left {
+  from { transform: translateX(70vw); }
+  to { transform: translateX(calc(-100% + 24vw)); }
+}
+@keyframes filmstrip-right {
+  from { transform: translateX(calc(-100% + 24vw)); }
+  to { transform: translateX(70vw); }
 }
 
 .slideshow-hint {
@@ -681,15 +855,24 @@ function collageStyle(index: number) {
 @media (prefers-reduced-motion: reduce) {
   .slideshow-frame,
   .slideshow-copy,
-  .slideshow-collage-card {
+  .slideshow-collage-card,
+  .slideshow-collage-grid,
+  .slideshow-filmstrip-row {
     animation: none;
   }
+
+  .slideshow-collage { overflow: auto; }
 }
 
 @media (max-width: 700px) {
   .slideshow-upload-controls { grid-template-columns: 1fr; }
+  .collage-settings { grid-template-columns: 1fr; }
+  .collage-settings fieldset { grid-row: auto; }
   .slideshow-slide { width: 100%; height: 100%; }
   .slideshow-copy { right: 9px !important; bottom: 8px !important; left: auto !important; top: auto !important; }
   .slideshow-collage { width: 100%; height: min(74dvh, 700px); }
+  .mode-reveal .slideshow-collage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mode-scroll .slideshow-collage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .slideshow-collage-card figcaption span { display: none; }
 }
 </style>

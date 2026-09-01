@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 
 import AppHeader from './AppHeader.vue'
 import SupportGrantBanner from './SupportGrantBanner.vue'
+import SystemStatusBanner from './SystemStatusBanner.vue'
 import FlashStack from '@/components/FlashStack.vue'
 import { useSessionStore } from '@/stores/session'
 
@@ -19,6 +20,7 @@ const viaGrant = computed(
 </script>
 
 <template>
+  <SystemStatusBanner />
   <SupportGrantBanner />
   <AppHeader />
   <p v-if="viaGrant" class="grant-return">

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -95,28 +96,10 @@ func noStore() gin.HandlerFunc {
 // caused the maintenance window.
 func (s *Server) maintenanceGuard() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		settings, err := s.platformSettings(c.Request.Context())
+		maintenanceEnabled, message, err := s.maintenanceStatus(c.Request.Context(), stateFrom(c))
 		if err != nil {
 			serverError(c, err)
 			return
-		}
-		state := stateFrom(c)
-		if state != nil && state.User != nil && state.User.Role.IsPlatformRole() {
-			c.Next()
-			return
-		}
-
-		message := settings.MaintenanceMessage
-		maintenanceEnabled := settings.MaintenanceEnabled
-		if !maintenanceEnabled && state != nil && state.User != nil && state.User.BandID != nil {
-			var band models.Band
-			if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).
-				Select("id", "maintenance_message").First(&band, *state.User.BandID).Error; err != nil {
-				serverError(c, err)
-				return
-			}
-			maintenanceEnabled = strings.TrimSpace(band.MaintenanceMessage) != ""
-			message = band.MaintenanceMessage
 		}
 		if !maintenanceEnabled {
 			c.Next()
@@ -138,6 +121,32 @@ func (s *Server) maintenanceGuard() gin.HandlerFunc {
 			"the service is temporarily unavailable",
 			map[string]string{"message": message})
 	}
+}
+
+// maintenanceStatus is shared by the guard and the status endpoint. Keeping
+// the decision in one place prevents the UI from promising access that the
+// following request then rejects.
+func (s *Server) maintenanceStatus(ctx context.Context, state *RequestState) (bool, string, error) {
+	if state != nil && state.User != nil && state.User.Role.IsPlatformRole() {
+		return false, "", nil
+	}
+	settings, err := s.platformSettings(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	if settings.MaintenanceEnabled {
+		return true, strings.TrimSpace(settings.MaintenanceMessage), nil
+	}
+	if state == nil || state.User == nil || state.User.BandID == nil {
+		return false, "", nil
+	}
+	var band models.Band
+	if err := s.db.WithContext(tenant.WithCrossBandAccess(ctx)).
+		Select("id", "maintenance_message").First(&band, *state.User.BandID).Error; err != nil {
+		return false, "", err
+	}
+	message := strings.TrimSpace(band.MaintenanceMessage)
+	return message != "", message, nil
 }
 
 // featureGuard enforces tenant feature switches on the API. Hiding a link in
