@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
   workflow_call:
 
 jobs:
@@ -55,3 +56,14 @@ jobs:
         run: npm run test:unit
       - working-directory: frontend
         run: npm run build
+
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Synology Compose project
+        run: docker compose --env-file deploy/.env.synology.example -f deploy/docker-compose.synology.yml config --quiet
+      - name: Validate Synology update task
+        run: |
+          sh -n deploy/synology-update.sh deploy/tests/synology-update_test.sh
+          sh deploy/tests/synology-update_test.sh

@@ -77,6 +77,13 @@ cp .env.example .env
 docker compose -f deploy/docker-compose.yml up --build
 ```
 
+## Synology
+
+Für DSM Container Manager gibt es einen Image-basierten Stack, eine
+Konfigurationsvorlage und einen Update-Task, der nur bei tatsächlich neuen
+Images neu startet. Die vollständige Erstinstallation steht in
+[`deploy/SYNOLOGY.md`](deploy/SYNOLOGY.md).
+
 ## Tests
 
 ```bash

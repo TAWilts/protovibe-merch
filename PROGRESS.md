@@ -1,6 +1,6 @@
 # Fortschritt
 
-**Stand:** 2026-09-01 — **aktueller Schritt:** Schritt 6. Backend und Oberfläche sind
+**Stand:** 2026-09-02 — **aktueller Schritt:** Schritt 6. Backend und Oberfläche sind
 funktional deckungsgleich; offen sind der Legacy-Import, die Testportierung und die
 Abnahme (visueller Abgleich, funktionaler Durchlauf, Mandantentest, README).
 
@@ -568,5 +568,22 @@ vorhandene Rollen-Capability nun ausdrücklich mit dem Sitzungsmodus kombiniert.
 bleiben die Verwaltungsfelder verborgen und der gesperrte Artikel-Endpunkt wird auch
 nach einem Reiterwechsel nicht mehr aufgerufen; Fotos und Startknopf werden erneut
 geladen.
+
+**Synology-Testbetrieb am 02.09.:** Der Multi-Tenant-Stack besitzt nun ein eigenes
+Image-basiertes Compose-Projekt für DSM Container Manager. Projektname,
+Persistenzverzeichnis und Port `8090` sind von der bestehenden Legacy-Installation auf
+`8089` getrennt. Auch die GHCR-Pakete tragen den eigenen Namensraum `-multitenant`,
+sodass ein neuer `latest`-Tag niemals vom Legacy-Updater gezogen wird. MariaDB ist nur
+im Compose-Netz erreichbar; DSM kann HTTPS später per Reverse Proxy terminieren. Eine
+ausfüllbare `.env`-Vorlage und die vollständige Erstinstallationsanleitung liegen unter
+`deploy/`.
+
+Die Release-Action veröffentlicht Backend und Web nach bestandener Gesamttestsuite als
+AMD64-/ARM64-Images. SemVer-Releases erhalten zusätzlich `latest`, ein manueller Lauf
+erzeugt standardmäßig `synology-test`. Der DSM-Update-Task vergleicht laufende und
+gezogene Image-IDs, lässt gleiche Container unberührt und legt vor einem echten Update
+einen MariaDB-Dump ab. Compose, beide Images, der parallele Stack sowie `/healthz` und
+`/readyz` wurden lokal vollständig geprüft; der Update-Task besitzt Regressionstests für
+Update und No-Update.
 
 ---

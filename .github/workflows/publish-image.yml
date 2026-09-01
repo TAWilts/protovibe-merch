@@ -3,6 +3,12 @@ name: Publish release images
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Tag for a manually published test image
+        required: true
+        default: synology-test
 
 permissions:
   contents: read
@@ -24,8 +30,11 @@ jobs:
           - name: frontend
             dockerfile: deploy/Dockerfile.frontend
             suffix: "-web"
+    env:
+      RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.image_tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -35,20 +44,26 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}${{ matrix.suffix }}
+          # A separate package namespace keeps the existing legacy install's
+          # ghcr.io/.../protovibe-merch:latest tag untouched.
+          images: ghcr.io/${{ github.repository }}-multitenant${{ matrix.suffix }}
           tags: |
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=raw,value=${{ inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=sha,prefix=sha-
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
-          # The release tag is the single source of truth for the version the
-          # app reports, exactly as in the previous project.
-          build-args: APP_VERSION=${{ github.ref_name }}
+          # The release tag or explicit manual test tag is the version the app
+          # reports.
+          build-args: APP_VERSION=${{ env.RELEASE_VERSION }}
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
