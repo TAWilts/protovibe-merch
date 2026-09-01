@@ -32,6 +32,7 @@ import type {
   SaleResult,
   SupportGrant,
   SupportMessage,
+  SupportAssignee,
 } from './types'
 
 /** Authentication and identity. */
@@ -169,6 +170,8 @@ export const purchasesApi = {
   update: (id: number, payload: { quantity: number; unit_cost_cents: number; comment?: string }) =>
     api.patch<void>(`/purchases/${id}`, payload),
   remove: (id: number) => api.delete<void>(`/purchases/${id}`),
+  removeReceipt: (receiptId: string) =>
+    api.delete<void>(`/purchase-receipts/${encodeURIComponent(receiptId)}`),
   lastCost: (variantId: number) =>
     api.get<{ unit_cost_cents: number; found: boolean }>(`/purchases/last-cost/${variantId}`),
 }
@@ -255,6 +258,10 @@ export const platformApi = {
 
   messages: (openOnly = false) =>
     api.get<{ messages: SupportMessage[] }>(`/platform/messages${openOnly ? '?open=true' : ''}`),
+  messageAssignees: () =>
+    api.get<{ users: SupportAssignee[] }>('/platform/message-assignees'),
+  assignMessage: (id: number, assigneeUserId: number | null) =>
+    api.patch<void>(`/platform/messages/${id}/assignment`, { assignee_user_id: assigneeUserId }),
   resolveMessage: (id: number, resolved: boolean) =>
     api.post<void>(`/platform/messages/${id}/resolve`, { resolved }),
 }
@@ -276,7 +283,7 @@ export const supportApi = {
     message_type: 'issue' | 'question'
     subject: string
     body: string
-    sender_email?: string
+    sender_email: string
   }) => api.post<{ id: number }>('/support-messages', payload),
   mine: () => api.get<{ messages: SupportMessage[] }>('/support-messages'),
   announcement: () =>

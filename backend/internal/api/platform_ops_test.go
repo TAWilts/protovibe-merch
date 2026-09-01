@@ -190,6 +190,24 @@ func TestSupportInboxCrossesBands(t *testing.T) {
 	admin, secret := h.platformAdmin(models.RoleSupportAdmin)
 	h.signInPlatform(admin, secret)
 
+	assignees := h.do(http.MethodGet, "/api/v1/platform/message-assignees", nil)
+	if assignees.Status != http.StatusOK {
+		t.Fatalf("assignees: %d %v", assignees.Status, assignees.Body)
+	}
+	foundAssignee := false
+	for _, raw := range jsonList(assignees.Body, "users") {
+		if int64(jsonObject(raw)["id"].(float64)) == admin.ID {
+			foundAssignee = true
+		}
+	}
+	if !foundAssignee {
+		t.Fatalf("support admin must be assignable: %v", assignees.Body)
+	}
+	if res := h.do(http.MethodPatch, "/api/v1/platform/messages/"+itoa(messageID)+"/assignment",
+		map[string]any{"assignee_user_id": admin.ID}); res.Status != http.StatusNoContent {
+		t.Fatalf("assign: %d %v", res.Status, res.Body)
+	}
+
 	inbox := h.do(http.MethodGet, "/api/v1/platform/messages?open=true", nil)
 	found := false
 	for _, raw := range jsonList(inbox.Body, "messages") {
@@ -198,6 +216,10 @@ func TestSupportInboxCrossesBands(t *testing.T) {
 			found = true
 			if message["sender_username"] != seller.Username || message["band_name"] == "" {
 				t.Fatalf("the message must stay attributable: %v", message)
+			}
+			if int64(message["assigned_to_user_id"].(float64)) != admin.ID ||
+				message["assigned_to_username"] != admin.Username {
+				t.Fatalf("the assignment must appear in the shared inbox: %v", message)
 			}
 		}
 	}
@@ -225,9 +247,13 @@ func TestBandsOnlySeeTheirOwnSupportMessages(t *testing.T) {
 	bandB := h.makeBand()
 
 	h.signInAs(bandA, models.RoleBandAdmin)
-	h.do(http.MethodPost, "/api/v1/support-messages", map[string]any{
+	created := h.do(http.MethodPost, "/api/v1/support-messages", map[string]any{
 		"message_type": "issue", "subject": "Band A", "body": "Etwas ist kaputt.",
+		"sender_email": "banda@example.org",
 	})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("send band A message: %d %v", created.Status, created.Body)
+	}
 
 	h.signInAs(bandB, models.RoleBandAdmin)
 	listed := h.do(http.MethodGet, "/api/v1/support-messages", nil)

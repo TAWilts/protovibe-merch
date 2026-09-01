@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { platformApi } from '@/api/endpoints'
-import type { SupportMessage } from '@/api/types'
+import type { SupportAssignee, SupportMessage } from '@/api/types'
 import { useFlashStore } from '@/stores/flash'
 
 /** The cross-band support inbox. */
@@ -11,6 +11,7 @@ const { t, d } = useI18n()
 const flash = useFlashStore()
 
 const messages = ref<SupportMessage[]>([])
+const assignees = ref<SupportAssignee[]>([])
 const loading = ref(true)
 const openOnly = ref(true)
 
@@ -21,11 +22,31 @@ onMounted(load)
 async function load() {
   loading.value = true
   try {
-    messages.value = (await platformApi.messages(openOnly.value)).messages
+    const [inbox, available] = await Promise.all([
+      platformApi.messages(openOnly.value),
+      platformApi.messageAssignees(),
+    ])
+    messages.value = inbox.messages
+    assignees.value = available.users
   } catch {
     flash.error(t('errors.generic'))
   } finally {
     loading.value = false
+  }
+}
+
+async function assign(message: SupportMessage, event: Event) {
+  const raw = (event.target as HTMLSelectElement).value
+  const assigneeId = raw === '' ? null : Number(raw)
+  try {
+    await platformApi.assignMessage(message.id, assigneeId)
+    const assignee = assignees.value.find((entry) => entry.id === assigneeId)
+    message.assigned_to_user_id = assignee?.id ?? null
+    message.assigned_to_username = assignee?.username ?? ''
+    flash.success(t('platform.messages.assignmentSaved'))
+  } catch {
+    flash.error(t('errors.generic'))
+    await load()
   }
 }
 
@@ -78,6 +99,18 @@ async function resolve(message: SupportMessage, resolved: boolean) {
             {{ message.is_resolved ? t('platform.messages.reopen') : t('platform.messages.resolve') }}
           </button>
         </div>
+        <label class="message-assignee">
+          <span>{{ t('platform.messages.assignee') }}</span>
+          <select
+            :value="message.assigned_to_user_id ?? ''"
+            @change="assign(message, $event)"
+          >
+            <option value="">{{ t('platform.messages.unassigned') }}</option>
+            <option v-for="user in assignees" :key="user.id" :value="user.id">
+              {{ user.username }} · {{ user.role === 'system_admin' ? 'System-Admin' : 'Support-Admin' }}
+            </option>
+          </select>
+        </label>
         <p class="message-body">{{ message.body }}</p>
       </article>
     </section>
@@ -105,6 +138,15 @@ async function resolve(message: SupportMessage, resolved: boolean) {
 .message-body {
   margin: 10px 0 0;
   white-space: pre-wrap;
+}
+
+.message-assignee {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 280px);
+  align-items: center;
+  justify-content: start;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .checkbox-row {

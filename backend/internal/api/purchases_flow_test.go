@@ -157,6 +157,48 @@ func TestInvoiceUploadAndDownload(t *testing.T) {
 	}
 }
 
+// TestReceiptInvoiceBelongsToTheWholeBasket pins the current UI model: one
+// invoice is attached to the receipt, regardless of how many positions it has.
+func TestReceiptInvoiceBelongsToTheWholeBasket(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Basket Invoice Shirt")
+
+	created := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items": []any{
+			map[string]any{"variant_id": variants[0], "quantity": 2, "unit_cost_cents": 800},
+			map[string]any{"variant_id": variants[1], "quantity": 3, "unit_cost_cents": 850},
+		},
+		"purchased_on": "2026-08-27",
+	})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("create: %d %v", created.Status, created.Body)
+	}
+	receiptID := created.Body["receipt_id"].(string)
+	path := "/api/v1/purchase-receipts/" + receiptID + "/attachments"
+	uploaded := h.upload(path, "warenkorb.pdf", "application/pdf", []byte("%PDF-1.4 basket invoice"))
+	if uploaded.Status != http.StatusCreated {
+		t.Fatalf("upload receipt invoice: %d %v", uploaded.Status, uploaded.Body)
+	}
+
+	listed := h.do(http.MethodGet, path, nil)
+	files := jsonList(listed.Body, "attachments")
+	if listed.Status != http.StatusOK || len(files) != 1 {
+		t.Fatalf("receipt invoice should be listed once: %d %v", listed.Status, listed.Body)
+	}
+	if jsonObject(files[0])["original_filename"] != "warenkorb.pdf" {
+		t.Fatalf("unexpected attachment: %v", files[0])
+	}
+
+	if res := h.do(http.MethodDelete, "/api/v1/purchase-receipts/"+receiptID, nil); res.Status != http.StatusNoContent {
+		t.Fatalf("delete receipt: %d %v", res.Status, res.Body)
+	}
+	if listed := h.do(http.MethodGet, "/api/v1/purchases", nil); len(jsonList(listed.Body, "purchases")) != 0 {
+		t.Fatalf("deleting the basket must remove all positions: %v", listed.Body)
+	}
+}
+
 // TestUploadRejectsDisguisedFiles pins that neither an unsupported type nor a
 // mismatched extension reaches the store.
 func TestUploadRejectsDisguisedFiles(t *testing.T) {

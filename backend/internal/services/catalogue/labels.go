@@ -11,6 +11,11 @@ import (
 type Label struct {
 	ArticleName  string `json:"article_name"`
 	VariantLabel string `json:"variant_label"`
+	// OptionPositions preserves the configured value order (for example
+	// S, M, L, XL). It is intentionally not exposed; consumers use it only
+	// when their default order must follow the catalogue rather than the
+	// alphabetically rendered label.
+	OptionPositions []int `json:"-"`
 }
 
 // VariantLabels renders "Farbe: Schwarz · Größe: M" for every variant of the
@@ -45,10 +50,11 @@ func (s *Service) VariantLabels(ctx context.Context) (map[int64]Label, error) {
 		Value     string
 		GroupName string
 		GroupPos  int
+		ValuePos  int
 	}
 	var values []valueRow
 	err = s.db.WithContext(ctx).Model(&models.OptionValue{}).
-		Select(`option_values.id, option_values.value,
+		Select(`option_values.id, option_values.value, option_values.position AS value_pos,
 			option_groups.name AS group_name, option_groups.position AS group_pos`).
 		Joins("JOIN option_groups ON option_groups.id = option_values.option_group_id").
 		Scan(&values).Error
@@ -79,7 +85,13 @@ func (s *Service) VariantLabels(ctx context.Context) (map[int64]Label, error) {
 			}
 			text += part.GroupName + ": " + part.Value
 		}
-		labels[variant.ID] = Label{ArticleName: variant.ArticleName, VariantLabel: text}
+		positions := make([]int, 0, len(parts)*2)
+		for _, part := range parts {
+			positions = append(positions, part.GroupPos, part.ValuePos)
+		}
+		labels[variant.ID] = Label{
+			ArticleName: variant.ArticleName, VariantLabel: text, OptionPositions: positions,
+		}
 	}
 	return labels, nil
 }

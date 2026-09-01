@@ -33,6 +33,8 @@ const receiptId = ref('')
 const purchasedOn = ref(new Date().toISOString().slice(0, 10))
 const supplier = ref('')
 const invoiceReference = ref('')
+const receiptInvoice = ref<File | null>(null)
+const receiptInvoiceInput = ref<HTMLInputElement | null>(null)
 
 const selectedArticleId = ref<number | null>(null)
 const chosenValues = ref<Record<number, number>>({})
@@ -82,15 +84,45 @@ const cartTotalCents = computed(() =>
   cart.value.reduce((sum, line) => sum + line.quantity * line.unitCostCents, 0),
 )
 
-const visiblePurchases = computed(() => {
+interface PurchaseReceipt {
+  receiptId: string
+  purchasedOn: string
+  supplier: string
+  invoiceReference: string
+  positions: Purchase[]
+  totalCostCents: number
+}
+
+const visibleReceipts = computed(() => {
+  const receipts: PurchaseReceipt[] = []
+  const known = new Map<string, PurchaseReceipt>()
+  for (const purchase of purchases.value) {
+    let receipt = known.get(purchase.receipt_id)
+    if (!receipt) {
+      receipt = {
+        receiptId: purchase.receipt_id,
+        purchasedOn: purchase.purchased_on,
+        supplier: purchase.supplier,
+        invoiceReference: purchase.invoice_reference,
+        positions: [],
+        totalCostCents: 0,
+      }
+      known.set(purchase.receipt_id, receipt)
+      receipts.push(receipt)
+    }
+    receipt.positions.push(purchase)
+    receipt.totalCostCents += purchase.total_cost_cents
+  }
   const needle = filter.value.trim().toLowerCase()
-  if (!needle) return purchases.value
-  return purchases.value.filter((purchase) =>
-    `${purchase.receipt_id} ${purchase.article_name} ${purchase.variant_label} ` +
-    `${purchase.supplier} ${purchase.invoice_reference} ${purchase.comment}`
+  if (!needle) return receipts
+  return receipts.filter((receipt) => {
+    const positions = receipt.positions
+      .map((purchase) => `${purchase.article_name} ${purchase.variant_label} ${purchase.comment}`)
+      .join(' ')
+    return `${receipt.receiptId} ${receipt.supplier} ${receipt.invoiceReference} ${positions}`
       .toLowerCase()
-      .includes(needle),
-  )
+      .includes(needle)
+  })
 })
 
 onMounted(async () => {
@@ -200,9 +232,18 @@ async function book() {
       receipt_id: receiptId.value,
     })
     flash.success(t('purchases.booked', { receipt: result.receipt_id }))
+    if (receiptInvoice.value) {
+      try {
+        await attachmentsApi.upload(result.receipt_id, receiptInvoice.value)
+      } catch {
+        flash.error(t('purchases.invoiceUploadAfterBookingFailed', { receipt: result.receipt_id }))
+      }
+    }
     cart.value = []
     supplier.value = ''
     invoiceReference.value = ''
+    receiptInvoice.value = null
+    if (receiptInvoiceInput.value) receiptInvoiceInput.value.value = ''
     await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
   } catch (error) {
     report(error)
@@ -214,52 +255,27 @@ async function book() {
 /**
  * Invoices and receipt attachments.
  *
- * One hidden file input serves every button in the table; `pending` records
- * what the next chosen file is for, so the same element can back both the
- * per-purchase invoice and the per-receipt attachments.
+ * Receipt attachments belong to the whole basket rather than to one position.
  */
 const fileInput = ref<HTMLInputElement | null>(null)
-const pending = ref<{ kind: 'invoice'; purchase: Purchase } | { kind: 'attachment' } | null>(null)
 const attachmentsFor = ref<Purchase | null>(null)
 const attachments = ref<Attachment[]>([])
 
-function pickInvoice(purchase: Purchase) {
-  pending.value = { kind: 'invoice', purchase }
-  fileInput.value?.click()
-}
-
 function pickAttachment() {
-  pending.value = { kind: 'attachment' }
   fileInput.value?.click()
 }
 
 async function onFileChosen(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-  const target = pending.value
   // Cleared straight away so picking the same file twice still fires a change.
   input.value = ''
-  pending.value = null
-  if (!file || !target) return
+  if (!file || !attachmentsFor.value) return
 
   try {
-    if (target.kind === 'invoice') {
-      await attachmentsApi.uploadInvoice(target.purchase.id, file)
-      flash.success(t('purchases.invoiceUploaded'))
-      await loadPurchases()
-    } else if (attachmentsFor.value) {
-      await attachmentsApi.upload(attachmentsFor.value.receipt_id, file)
-      await loadAttachments()
-    }
-  } catch (error) {
-    report(error)
-  }
-}
-
-async function removeInvoice(purchase: Purchase) {
-  try {
-    await attachmentsApi.removeInvoice(purchase.id)
-    await loadPurchases()
+    await attachmentsApi.upload(attachmentsFor.value.receipt_id, file)
+    flash.success(t('purchases.invoiceUploaded'))
+    await loadAttachments()
   } catch (error) {
     report(error)
   }
@@ -302,10 +318,11 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
 }
 
-async function remove(purchase: Purchase) {
+async function removeReceipt(receipt: PurchaseReceipt) {
+  if (!window.confirm(t('purchases.deleteReceiptConfirm', { receipt: receipt.receiptId }))) return
   try {
-    await purchasesApi.remove(purchase.id)
-    flash.success(t('purchases.removed'))
+    await purchasesApi.removeReceipt(receipt.receiptId)
+    flash.success(t('purchases.receiptRemoved'))
     await Promise.all([loadArticles(), loadPurchases()])
   } catch (error) {
     report(error)
@@ -432,6 +449,16 @@ async function remove(purchase: Purchase) {
           <label>{{ t('purchases.supplier') }}<input v-model="supplier" /></label>
         </div>
         <label>{{ t('purchases.invoiceReference') }}<input v-model="invoiceReference" /></label>
+        <label>
+          {{ t('purchases.invoiceFile') }}
+          <input
+            ref="receiptInvoiceInput"
+            type="file"
+            accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+            @change="receiptInvoice = ($event.target as HTMLInputElement).files?.[0] ?? null"
+          />
+          <small class="muted">{{ t('purchases.invoiceFileHint') }}</small>
+        </label>
 
         <button
           class="primary-button full-width large-button"
@@ -456,74 +483,75 @@ async function remove(purchase: Purchase) {
         </label>
       </div>
 
-      <p v-if="!visiblePurchases.length" class="muted">{{ t('purchases.empty') }}</p>
-      <div v-else class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>{{ t('history.receipt') }}</th>
-              <th>{{ t('sales.articles') }}</th>
-              <th>{{ t('common.date') }}</th>
-              <th class="numeric">{{ t('common.quantity') }}</th>
-              <th class="numeric">{{ t('purchases.unitCost') }}</th>
-              <th class="numeric">{{ t('purchases.total') }}</th>
-              <th>{{ t('purchases.supplier') }}</th>
-              <th>{{ t('purchases.invoice') }}</th>
-              <th v-if="canManage"></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="purchase in visiblePurchases" :key="purchase.id">
-              <td><code>{{ purchase.receipt_id }}</code></td>
-              <td>
-                <strong>{{ purchase.article_name }}</strong>
-                <small>{{ purchase.variant_label }}</small>
-              </td>
-              <td>{{ purchase.purchased_on }}</td>
-              <td class="numeric">{{ purchase.quantity }}</td>
-              <td class="numeric">{{ format(purchase.unit_cost_cents) }}</td>
-              <td class="numeric">{{ format(purchase.total_cost_cents) }}</td>
-              <td>{{ purchase.supplier || '—' }}</td>
-              <td>
-                <a
-                  v-if="purchase.has_invoice_file"
-                  :href="attachmentsApi.invoiceUrl(purchase.id)"
-                >{{ t('purchases.download') }}</a>
-                <span v-else>{{ purchase.invoice_reference || '—' }}</span>
-                <div v-if="canManage" class="attachment-actions">
-                  <button class="compact-button" type="button" @click="pickInvoice(purchase)">
-                    {{ purchase.has_invoice_file ? t('purchases.replaceInvoice') : t('purchases.uploadInvoice') }}
-                  </button>
-                  <button
-                    v-if="purchase.has_invoice_file"
-                    class="compact-button danger-button"
-                    type="button"
-                    @click="removeInvoice(purchase)"
-                  >{{ t('purchases.removeInvoice') }}</button>
-                </div>
-              </td>
-              <td v-if="canManage" class="purchase-actions">
-                <button class="compact-button" type="button" @click="openAttachments(purchase)">
-                  {{ t('purchases.attachments') }}
-                </button>
-                <button class="compact-button danger-button" type="button" @click="remove(purchase)">
-                  {{ t('common.delete') }}
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <p v-if="!visibleReceipts.length" class="muted">{{ t('purchases.empty') }}</p>
+      <div v-else class="purchase-receipt-list">
+        <details v-for="receipt in visibleReceipts" :key="receipt.receiptId" class="purchase-receipt-card">
+          <summary>
+            <span class="receipt-summary-main">
+              <code>{{ receipt.receiptId }}</code>
+              <small>{{ receipt.purchasedOn }} · {{ receipt.supplier || t('purchases.noSupplier') }}</small>
+            </span>
+            <span>{{ t('purchases.positionCount', { count: receipt.positions.length }) }}</span>
+            <strong>{{ format(receipt.totalCostCents) }}</strong>
+            <span class="receipt-chevron" aria-hidden="true">⌄</span>
+          </summary>
+          <div class="receipt-details">
+            <div class="receipt-meta">
+              <span><b>{{ t('purchases.supplier') }}:</b> {{ receipt.supplier || '—' }}</span>
+              <span><b>{{ t('purchases.invoiceReference') }}:</b> {{ receipt.invoiceReference || '—' }}</span>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{{ t('sales.articles') }}</th>
+                    <th class="numeric">{{ t('common.quantity') }}</th>
+                    <th class="numeric">{{ t('purchases.unitCost') }}</th>
+                    <th class="numeric">{{ t('purchases.total') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="purchase in receipt.positions" :key="purchase.id">
+                    <td>
+                      <strong>{{ purchase.article_name }}</strong>
+                      <small>{{ purchase.variant_label }}</small>
+                      <a v-if="purchase.has_invoice_file" :href="attachmentsApi.invoiceUrl(purchase.id)">
+                        {{ t('purchases.legacyInvoice') }}
+                      </a>
+                    </td>
+                    <td class="numeric">{{ purchase.quantity }}</td>
+                    <td class="numeric">{{ format(purchase.unit_cost_cents) }}</td>
+                    <td class="numeric">{{ format(purchase.total_cost_cents) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="receipt-actions">
+              <button class="secondary-button" type="button" @click="openAttachments(receipt.positions[0])">
+                {{ t('purchases.invoiceAndAttachments') }}
+              </button>
+              <button v-if="canManage" class="secondary-button danger-button" type="button" @click="removeReceipt(receipt)">
+                {{ t('purchases.deleteReceipt') }}
+              </button>
+            </div>
+          </div>
+        </details>
       </div>
     </section>
 
-    <!-- One hidden input serves every upload button in the table. -->
-    <input ref="fileInput" type="file" hidden @change="onFileChosen" />
+    <input
+      ref="fileInput"
+      type="file"
+      accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+      hidden
+      @change="onFileChosen"
+    />
 
     <dialog v-if="attachmentsFor" class="confirmation-dialog" open>
       <div class="stack-form">
         <div>
           <p class="eyebrow"><code>{{ attachmentsFor.receipt_id }}</code></p>
-          <h2>{{ t('purchases.attachments') }}</h2>
+          <h2>{{ t('purchases.invoiceAndAttachments') }}</h2>
           <p class="muted">{{ t('purchases.attachmentsHint') }}</p>
         </div>
 
@@ -557,6 +585,72 @@ async function remove(purchase: Purchase) {
 </template>
 
 <style scoped>
+.purchase-receipt-list {
+  display: grid;
+  gap: 12px;
+}
+
+.purchase-receipt-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.purchase-receipt-card summary {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto auto;
+  gap: 20px;
+  align-items: center;
+  padding: 16px 18px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.purchase-receipt-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.receipt-summary-main {
+  display: grid;
+  gap: 4px;
+}
+
+.receipt-summary-main code {
+  width: fit-content;
+}
+
+.receipt-summary-main small {
+  color: var(--muted);
+}
+
+.receipt-chevron {
+  font-size: 1.4rem;
+  transition: transform 160ms ease;
+}
+
+.purchase-receipt-card[open] .receipt-chevron {
+  transform: rotate(180deg);
+}
+
+.receipt-details {
+  padding: 0 18px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.receipt-meta,
+.receipt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  padding: 14px 0;
+}
+
+.receipt-actions {
+  justify-content: flex-end;
+  padding-bottom: 0;
+}
+
 .attachment-actions,
 .purchase-actions {
   display: flex;
@@ -626,5 +720,23 @@ async function remove(purchase: Purchase) {
 td small {
   display: block;
   color: var(--muted);
+}
+
+td a {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 700px) {
+  .purchase-receipt-card summary {
+    grid-template-columns: 1fr auto;
+    gap: 8px 12px;
+  }
+
+  .receipt-chevron {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 </style>

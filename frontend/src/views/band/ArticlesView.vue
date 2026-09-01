@@ -138,6 +138,8 @@ function select(id: number) {
 const photosFor = ref<{ id: number; label: string } | null>(null)
 const variantPhotos = ref<Photo[]>([])
 const photoInput = ref<HTMLInputElement | null>(null)
+const photoUploading = ref(false)
+const minimumForAll = ref('')
 
 async function openPhotos(variantId: number, label: string) {
   photosFor.value = { id: variantId, label }
@@ -157,14 +159,25 @@ async function loadPhotos() {
 
 async function onPhotoChosen(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
+  const files = Array.from(input.files ?? [])
   input.value = ''
-  if (!file || !photosFor.value) return
-  try {
-    await photosApi.upload(file, photosFor.value.id)
-    await loadPhotos()
-  } catch (error) {
-    report(error)
+  if (!files.length || !photosFor.value || photoUploading.value) return
+  photoUploading.value = true
+  let failures = 0
+  const variantId = photosFor.value.id
+  for (const file of files) {
+    try {
+      await photosApi.upload(file, variantId)
+    } catch (error) {
+      failures++
+      report(error)
+    }
+  }
+  await Promise.all([loadPhotos(), load(true)])
+  photoUploading.value = false
+  if (failures === 0) {
+    flash.success(t('articles.photos.uploaded', { count: files.length }))
+    photosFor.value = null
   }
 }
 
@@ -348,6 +361,27 @@ function onMinimumChange(variantId: number, raw: string) {
   }
   saveVariant(variantId, { minimum_stock: parsed })
 }
+
+async function applyMinimumToAll() {
+  if (!selected.value || busy.value) return
+  const parsed = Number(minimumForAll.value.trim())
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    flash.error(t('articles.invalidMinimum'))
+    return
+  }
+  busy.value = true
+  try {
+    await catalogueApi.save(selected.value.id, {
+      variants: activeVariants.value.map((variant) => ({ id: variant.id, minimum_stock: parsed })),
+    })
+    flash.success(t('articles.minimumApplied', { count: activeVariants.value.length }))
+    await load(true)
+  } catch (error) {
+    report(error)
+  } finally {
+    busy.value = false
+  }
+}
 </script>
 
 <template>
@@ -457,6 +491,15 @@ function onMinimumChange(variantId: number, raw: string) {
               <h2>{{ t('articles.variants') }}</h2>
               <p>{{ t('articles.variantsHint') }}</p>
             </div>
+            <form class="minimum-for-all" @submit.prevent="applyMinimumToAll">
+              <label>
+                {{ t('articles.minimumForAll') }}
+                <input v-model="minimumForAll" type="number" min="0" step="1" inputmode="numeric" />
+              </label>
+              <button class="secondary-button" type="submit" :disabled="busy || !activeVariants.length">
+                {{ t('articles.applyToAll') }}
+              </button>
+            </form>
           </div>
           <div class="table-scroll">
             <table>
@@ -513,15 +556,26 @@ function onMinimumChange(variantId: number, raw: string) {
                     />
                   </td>
                   <td>
-                    <button
-                      class="compact-button"
-                      type="button"
-                      @click="openPhotos(variant.id, variantLabel(selected, variant.option_value_ids))"
-                    >
-                      {{ variant.photo_ids.length
-                        ? t('articles.photos.count', { count: variant.photo_ids.length })
-                        : t('articles.photos.add') }}
-                    </button>
+                    <div class="variant-photo-cell">
+                      <span v-if="variant.photo_ids.length" class="variant-photo-thumbnails">
+                        <img
+                          v-for="photoId in variant.photo_ids.slice(0, 3)"
+                          :key="photoId"
+                          :src="photosApi.fileUrl(photoId)"
+                          alt=""
+                          loading="lazy"
+                        />
+                      </span>
+                      <button
+                        class="compact-button"
+                        type="button"
+                        @click="openPhotos(variant.id, variantLabel(selected, variant.option_value_ids))"
+                      >
+                        {{ variant.photo_ids.length
+                          ? t('articles.photos.count', { count: variant.photo_ids.length })
+                          : t('articles.photos.add') }}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -541,7 +595,14 @@ function onMinimumChange(variantId: number, raw: string) {
         </section>
       </div>
     </section>
-    <input ref="photoInput" type="file" accept="image/*" hidden @change="onPhotoChosen" />
+    <input
+      ref="photoInput"
+      type="file"
+      accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+      multiple
+      hidden
+      @change="onPhotoChosen"
+    />
 
     <dialog v-if="photosFor" class="confirmation-dialog" open>
       <div class="stack-form">
@@ -564,10 +625,10 @@ function onMinimumChange(variantId: number, raw: string) {
         </div>
 
         <div class="dialog-actions">
-          <button class="secondary-button" type="button" @click="photoInput?.click()">
-            {{ t('articles.photos.upload') }}
+          <button class="secondary-button" type="button" :disabled="photoUploading" @click="photoInput?.click()">
+            {{ photoUploading ? t('articles.photos.uploading') : t('articles.photos.upload') }}
           </button>
-          <button class="primary-button" type="button" @click="photosFor = null; load(true)">
+          <button class="primary-button" type="button" :disabled="photoUploading" @click="photosFor = null; load(true)">
             {{ t('common.close') }}
           </button>
         </div>
@@ -708,6 +769,46 @@ function onMinimumChange(variantId: number, raw: string) {
 
 .variant-photo-manager figcaption {
   margin-top: 6px;
+}
+
+.minimum-for-all {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.minimum-for-all label {
+  gap: 4px;
+  font-size: 0.76rem;
+}
+
+.minimum-for-all input {
+  width: 7rem;
+}
+
+.variant-photo-cell,
+.variant-photo-thumbnails {
+  display: flex;
+  align-items: center;
+}
+
+.variant-photo-cell {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.variant-photo-thumbnails img {
+  width: 34px;
+  height: 34px;
+  margin-left: -7px;
+  border: 2px solid var(--panel);
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+.variant-photo-thumbnails img:first-child {
+  margin-left: 0;
 }
 
 .transaction-import-form {

@@ -165,6 +165,7 @@ export interface Variant {
   default_purchase_price_cents: number
   minimum_stock: number | null
   is_offered: boolean
+  is_available_for_sale: boolean
   no_reorder: boolean
   is_active: boolean
   purchased: number
@@ -279,6 +280,7 @@ export interface BalanceRow {
   sale_price_cents: number
   default_purchase_price_cents: number
   is_offered: boolean
+  is_available_for_sale: boolean
   no_reorder: boolean
   is_active: boolean
 }
@@ -480,6 +482,8 @@ export interface SupportMessage {
   message_type: 'issue' | 'question'
   subject: string
   body: string
+  assigned_to_user_id: number | null
+  assigned_to_username: string
   is_resolved: boolean
   resolved_at: string | null
   resolved_by_username: string
@@ -511,6 +515,12 @@ export interface BandUser {
   last_login_at: string | null
   created_at: string
   is_self: boolean
+}
+
+export interface SupportAssignee {
+  id: number
+  username: string
+  role: 'support_admin' | 'system_admin'
 }
 
 export interface PlatformUser extends BandUser {

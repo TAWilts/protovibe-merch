@@ -8,6 +8,7 @@ import type { BalanceRow, BalancesPayload, RankingEntry } from '@/api/types'
 import { useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import IncomeChart from '@/components/IncomeChart.vue'
+import BalanceTable, { type BalanceSortKey } from '@/components/BalanceTable.vue'
 
 /**
  * The balances page, ported from _old/templates/balances.html.
@@ -23,8 +24,17 @@ const flash = useFlashStore()
 const data = ref<BalancesPayload | null>(null)
 const loading = ref(true)
 const filter = ref('')
+const onlyPurchased = ref(true)
+const grouped = ref(false)
 /** The money rankings toggle between takings and profit, as in the original. */
 const rankingMode = ref<'income' | 'profit'>('income')
+type BalanceView = 'reorder' | 'obsolete'
+type SortState = { key: BalanceSortKey | null; direction: 'default' | 'asc' | 'desc' }
+const sort = ref<Record<BalanceView, SortState>>({
+  reorder: { key: null, direction: 'default' },
+  obsolete: { key: null, direction: 'default' },
+})
+const collator = new Intl.Collator('de-DE', { numeric: true, sensitivity: 'base' })
 
 onMounted(async () => {
   try {
@@ -37,13 +47,131 @@ onMounted(async () => {
 })
 
 function matches(row: BalanceRow) {
-  const needle = filter.value.trim().toLowerCase()
+  const needle = normalise(filter.value).trim()
   if (!needle) return true
-  return `${row.article_name} ${row.variant_label}`.toLowerCase().includes(needle)
+  return normalise(`${row.article_name} ${row.variant_label}`).includes(needle)
 }
 
-const reorderRows = computed(() => (data.value?.reorder_rows ?? []).filter(matches))
-const obsoleteRows = computed(() => (data.value?.obsolete_rows ?? []).filter(matches))
+function normalise(value: string) {
+  return value.toLocaleLowerCase('de-DE').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+}
+
+function sourceRows(view: BalanceView) {
+  return view === 'reorder' ? (data.value?.reorder_rows ?? []) : (data.value?.obsolete_rows ?? [])
+}
+
+function sortableValue(row: BalanceRow, key: BalanceSortKey): string | number | null {
+  if (key === 'article_name') return `${row.article_name}\u0000${row.variant_label}`
+  if (key === 'minimum_stock') return row.minimum_stock
+  if (key === 'below_minimum' || key === 'no_reorder' || key === 'is_available_for_sale') return row[key] ? 1 : 0
+  return row[key]
+}
+
+function sortedRows(view: BalanceView) {
+  const visible = sourceRows(view)
+    .filter((row) => matches(row) && (!onlyPurchased.value || row.purchased > 0))
+    .slice()
+  const current = sort.value[view]
+  if (!current.key || current.direction === 'default') return visible
+  return visible.sort((left, right) => {
+    const leftValue = sortableValue(left, current.key!)
+    const rightValue = sortableValue(right, current.key!)
+    if (leftValue === null || rightValue === null) {
+      if (leftValue === null && rightValue !== null) return 1
+      if (rightValue === null && leftValue !== null) return -1
+    }
+    let comparison = current.key === 'article_name'
+      ? collator.compare(String(leftValue), String(rightValue))
+      : Number(leftValue) - Number(rightValue)
+    if (comparison === 0) {
+      comparison = collator.compare(`${left.article_name} ${left.variant_label}`, `${right.article_name} ${right.variant_label}`)
+    }
+    return current.direction === 'asc' ? comparison : -comparison
+  })
+}
+
+const reorderRows = computed(() => sortedRows('reorder'))
+const obsoleteRows = computed(() => sortedRows('obsolete'))
+const visibleRowCount = computed(() => reorderRows.value.length + obsoleteRows.value.length)
+
+function cycleSort(view: BalanceView, key: BalanceSortKey) {
+  const current = sort.value[view]
+  if (current.key !== key || current.direction === 'default') sort.value[view] = { key, direction: 'asc' }
+  else if (current.direction === 'asc') sort.value[view] = { key, direction: 'desc' }
+  else sort.value[view] = { key: null, direction: 'default' }
+}
+
+function groupsFor(rows: BalanceRow[]) {
+  const groups: BalanceRow[][] = []
+  const known = new Map<string, BalanceRow[]>()
+  for (const row of rows) {
+    let group = known.get(row.article_name)
+    if (!group) {
+      group = []
+      known.set(row.article_name, group)
+      groups.push(group)
+    }
+    group.push(row)
+  }
+  return groups
+}
+
+function csvEscape(value: unknown) {
+  const text = String(value ?? '')
+  return /[;"\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+function downloadCsv(kind: 'inventory' | 'articles') {
+  const columns: Array<[string, (row: BalanceRow) => unknown]> = kind === 'inventory'
+    ? [
+        ['Artikel', (row) => row.article_name], ['Optionen', (row) => row.variant_label],
+        ['Gekauft', (row) => row.purchased], ['Verkauft', (row) => row.sold],
+        ['Aktueller Bestand', (row) => row.on_hand], ['Mindestbestand', (row) => row.minimum_stock ?? ''],
+        ['Mindestbestandswarnung', (row) => row.below_minimum ? 'ja' : 'nein'],
+        ['Nachbestellen', (row) => row.no_reorder ? 'nein' : 'ja'],
+        ['Angeboten', (row) => row.is_available_for_sale ? 'ja' : 'nein'],
+        ['Ausgaben', (row) => format(row.purchase_cost_cents)], ['Umsatz', (row) => format(row.revenue_cents)],
+        ['Spenden', (row) => format(row.donation_cents)],
+      ]
+    : [
+        ['Artikel', (row) => row.article_name], ['Optionen', (row) => row.variant_label],
+        ['Verkaufspreis', (row) => format(row.sale_price_cents)],
+        ['Standard-Einkaufspreis', (row) => format(row.default_purchase_price_cents)],
+        ['Mindestbestand', (row) => row.minimum_stock ?? ''],
+        ['Nachbestellen', (row) => row.no_reorder ? 'nein' : 'ja'],
+        ['Angeboten', (row) => row.is_available_for_sale ? 'ja' : 'nein'],
+        ['Status', (row) => row.is_active ? 'aktiv' : 'inaktiv'],
+      ]
+  const output: unknown[][] = []
+  let hasRows = false
+  for (const view of ['reorder', 'obsolete'] as const) {
+    const rows = sortedRows(view)
+    if (!rows.length) continue
+    if (hasRows) output.push([])
+    output.push([view === 'reorder' ? 'Artikelbilanz' : 'Obsolet'])
+    output.push(columns.map(([label]) => label))
+    const rowGroups = grouped.value ? groupsFor(rows) : [rows]
+    rowGroups.forEach((group, index) => {
+      if (grouped.value && index > 0) output.push([])
+      group.forEach((row) => output.push(columns.map(([, value]) => value(row))))
+    })
+    hasRows = true
+  }
+  if (!hasRows) output.push([t('balances.noRows')])
+  const csv = `\ufeff${output.map((row) => row.map(csvEscape).join(';')).join('\r\n')}\r\n`
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  const now = new Date()
+  const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 10)
+  link.download = `${kind === 'inventory' ? 'bestand' : 'artikel'}-${localDate}.csv`
+  document.body.append(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
 
 function rankingValue(entry: RankingEntry) {
   return rankingMode.value === 'income' ? entry.income_cents : entry.profit_cents
@@ -209,72 +337,35 @@ function rankingValue(entry: RankingEntry) {
               {{ t('common.filter') }}
               <input v-model="filter" type="search" />
             </label>
-            <a class="secondary-button" :href="exportUrls.csv('bestand')">{{ t('balances.exportStock') }}</a>
+            <label class="balance-toggle"><input v-model="onlyPurchased" type="checkbox" /> {{ t('balances.onlyPurchased') }}</label>
+            <label class="balance-toggle"><input v-model="grouped" type="checkbox" /> {{ t('balances.groupByArticle') }}</label>
+            <button class="secondary-button" type="button" @click="downloadCsv('inventory')">{{ t('balances.exportStock') }}</button>
+            <button class="secondary-button" type="button" @click="downloadCsv('articles')">{{ t('balances.exportArticles') }}</button>
           </div>
         </div>
-
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>{{ t('sales.articles') }}</th>
-                <th class="numeric">{{ t('balances.purchased') }}</th>
-                <th class="numeric">{{ t('balances.sold') }}</th>
-                <th class="numeric">{{ t('balances.onHand') }}</th>
-                <th class="numeric">{{ t('balances.minimum') }}</th>
-                <th class="numeric">{{ t('balances.cost') }}</th>
-                <th class="numeric">{{ t('balances.revenue') }}</th>
-                <th>{{ t('balances.offered') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="row in reorderRows"
-                :key="row.variant_id"
-                :class="{ 'low-stock-row': row.below_minimum }"
-              >
-                <td>
-                  <strong>{{ row.article_name }}</strong>
-                  <small>{{ row.variant_label }}</small>
-                </td>
-                <td class="numeric">{{ row.purchased }}</td>
-                <td class="numeric">{{ row.sold }}</td>
-                <td class="numeric" :class="{ 'out-of-stock': row.on_hand <= 0 }">{{ row.on_hand }}</td>
-                <td class="numeric">{{ row.minimum_stock ?? '—' }}</td>
-                <td class="numeric">{{ format(row.purchase_cost_cents) }}</td>
-                <td class="numeric">{{ format(row.collected_cents) }}</td>
-                <td>{{ row.is_offered ? t('common.yes') : t('common.no') }}</td>
-              </tr>
-              <tr v-if="!reorderRows.length">
-                <td colspan="8" class="muted">{{ t('balances.noRows') }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <p class="muted balance-result-count">{{ t('balances.visibleCount', { count: visibleRowCount }) }}</p>
+        <BalanceTable
+          :rows="reorderRows"
+          :grouped="grouped"
+          :sort-key="sort.reorder.key"
+          :sort-direction="sort.reorder.direction"
+          :empty-message="t('balances.noRows')"
+          @sort="cycleSort('reorder', $event)"
+        />
       </section>
 
-      <section v-if="obsoleteRows.length" class="table-section">
+      <section class="table-section">
         <div class="section-heading">
           <div><h2>{{ t('balances.obsolete') }}</h2><p>{{ t('balances.obsoleteHint') }}</p></div>
         </div>
-        <div class="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>{{ t('sales.articles') }}</th>
-                <th class="numeric">{{ t('balances.onHand') }}</th>
-                <th class="numeric">{{ t('balances.revenue') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in obsoleteRows" :key="row.variant_id">
-                <td><strong>{{ row.article_name }}</strong><small>{{ row.variant_label }}</small></td>
-                <td class="numeric">{{ row.on_hand }}</td>
-                <td class="numeric">{{ format(row.collected_cents) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <BalanceTable
+          :rows="obsoleteRows"
+          :grouped="grouped"
+          :sort-key="sort.obsolete.key"
+          :sort-direction="sort.obsolete.direction"
+          :empty-message="t('balances.noObsoleteRows')"
+          @sort="cycleSort('obsolete', $event)"
+        />
       </section>
     </template>
   </main>
@@ -298,5 +389,21 @@ td small {
 
 .metric-card.warning strong {
   color: var(--warning);
+}
+
+.ledger-actions,
+.balance-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ledger-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.balance-result-count {
+  margin: 0 0 12px;
 }
 </style>

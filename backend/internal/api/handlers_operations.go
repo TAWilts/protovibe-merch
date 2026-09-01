@@ -22,7 +22,9 @@ func (s *Server) registerPlatformOpsRoutes(g *gin.RouterGroup) {
 	p.GET("/audit", s.auditLog)
 	p.GET("/settings", s.getPlatformSettings)
 	p.GET("/messages", s.listSupportMessages)
+	p.GET("/message-assignees", s.listSupportMessageAssignees)
 	p.POST("/messages/:id/resolve", s.resolveSupportMessage)
+	p.PATCH("/messages/:id/assignment", s.assignSupportMessage)
 
 	p.GET("/updates", s.checkUpdates)
 
@@ -427,6 +429,83 @@ func (s *Server) listSupportMessages(c *gin.Context) {
 		messages = []supportMessagePayload{}
 	}
 	c.JSON(http.StatusOK, gin.H{"messages": messages})
+}
+
+type supportMessageAssignee struct {
+	ID       int64       `json:"id"`
+	Username string      `json:"username"`
+	Role     models.Role `json:"role"`
+}
+
+// listSupportMessageAssignees returns active platform staff. Support admins
+// may use this narrow list without gaining access to system-only account
+// management.
+func (s *Server) listSupportMessageAssignees(c *gin.Context) {
+	ctx := tenant.WithCrossBandAccess(c.Request.Context())
+	var users []supportMessageAssignee
+	if err := s.db.WithContext(ctx).Model(&models.User{}).
+		Select("id, username, role").
+		Where("band_id IS NULL AND is_active = ? AND role IN ?", true,
+			[]models.Role{models.RoleSupportAdmin, models.RoleSystemAdmin}).
+		Order("username, id").Scan(&users).Error; err != nil {
+		serverError(c, err)
+		return
+	}
+	if users == nil {
+		users = []supportMessageAssignee{}
+	}
+	c.JSON(http.StatusOK, gin.H{"users": users})
+}
+
+func (s *Server) assignSupportMessage(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		AssigneeUserID *int64 `json:"assignee_user_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	ctx := tenant.WithCrossBandAccess(c.Request.Context())
+	updates := map[string]any{
+		"assigned_to_user_id":  nil,
+		"assigned_to_username": "",
+	}
+	if body.AssigneeUserID != nil {
+		var user models.User
+		if err := s.db.WithContext(ctx).
+			Where("id = ? AND band_id IS NULL AND is_active = ? AND role IN ?", *body.AssigneeUserID, true,
+				[]models.Role{models.RoleSupportAdmin, models.RoleSystemAdmin}).
+			First(&user).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				fail(c, http.StatusBadRequest, "invalid_assignee", "assignee must be active platform staff")
+				return
+			}
+			serverError(c, err)
+			return
+		}
+		updates["assigned_to_user_id"] = user.ID
+		updates["assigned_to_username"] = user.Username
+	}
+
+	result := s.db.WithContext(ctx).Model(&models.AdminMessage{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		serverError(c, result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		fail(c, http.StatusNotFound, "not_found", "no such message")
+		return
+	}
+	s.audit.Log(c.Request.Context(), actorFrom(c), audit.Entry{
+		Action: "support_message.assigned", EntityType: "admin_message", EntityID: &id,
+		Details: map[string]any{"assignee_user_id": body.AssigneeUserID},
+	})
+	c.Status(http.StatusNoContent)
 }
 
 func (s *Server) resolveSupportMessage(c *gin.Context) {

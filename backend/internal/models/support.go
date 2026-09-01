@@ -24,6 +24,10 @@ type AdminMessage struct {
 	MessageType    AdminMessageType `gorm:"size:20;not null" json:"message_type"`
 	Subject        string           `gorm:"size:200;not null" json:"subject"`
 	Body           string           `gorm:"type:text;not null" json:"body"`
+	// Assignment is optional and keeps a username snapshot so the inbox stays
+	// understandable even if the platform account is later deactivated.
+	AssignedToUserID   *int64 `gorm:"index" json:"assigned_to_user_id"`
+	AssignedToUsername string `gorm:"size:150;not null;default:''" json:"assigned_to_username"`
 
 	IsResolved         bool       `gorm:"not null;index" json:"is_resolved"`
 	ResolvedAt         *time.Time `json:"resolved_at,omitempty"`

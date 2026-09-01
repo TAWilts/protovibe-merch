@@ -12,6 +12,7 @@ package balances
 import (
 	"context"
 	"sort"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -41,8 +42,11 @@ type Row struct {
 	DefaultPurchasePriceCents int64 `json:"default_purchase_price_cents"`
 
 	IsOffered bool `json:"is_offered"`
-	NoReorder bool `json:"no_reorder"`
-	IsActive  bool `json:"is_active"`
+	// IsAvailableForSale also includes the article-level flags. A variant may
+	// still be marked offered while its whole article is withdrawn.
+	IsAvailableForSale bool `json:"is_available_for_sale"`
+	NoReorder          bool `json:"no_reorder"`
+	IsActive           bool `json:"is_active"`
 }
 
 // Summary is the headline metric row.
@@ -155,6 +159,8 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 		DefaultPurchasePriceCents int64
 		MinimumStock              *int
 		IsOffered                 bool
+		ArticleIsOffered          bool
+		ArticleIsActive           bool
 		NoReorder                 bool
 		IsActive                  bool
 		PurchaseCostCents         int64
@@ -168,6 +174,7 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 		Select(`variants.id AS variant_id, variants.article_id, articles.name AS article_name,
 			variants.sale_price_cents, variants.default_purchase_price_cents,
 			variants.minimum_stock, variants.is_offered, variants.no_reorder, variants.is_active,
+			articles.is_offered AS article_is_offered, articles.is_active AS article_is_active,
 			COALESCE((SELECT SUM(p.quantity * p.unit_cost_cents) FROM purchases p
 				WHERE p.variant_id = variants.id), 0) AS purchase_cost_cents,
 			COALESCE((SELECT SUM(s.amount_due_cents) FROM sales s
@@ -216,16 +223,27 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 			SalePriceCents:            entry.SalePriceCents,
 			DefaultPurchasePriceCents: entry.DefaultPurchasePriceCents,
 			IsOffered:                 entry.IsOffered,
+			IsAvailableForSale:        entry.IsActive && entry.ArticleIsActive && entry.IsOffered && entry.ArticleIsOffered,
 			NoReorder:                 entry.NoReorder,
 			IsActive:                  entry.IsActive,
 		})
 	}
 
 	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].ArticleName != rows[j].ArticleName {
-			return rows[i].ArticleName < rows[j].ArticleName
+		leftName, rightName := strings.ToLower(rows[i].ArticleName), strings.ToLower(rows[j].ArticleName)
+		if leftName != rightName {
+			return leftName < rightName
 		}
-		return rows[i].VariantLabel < rows[j].VariantLabel
+		left, right := labels[rows[i].VariantID].OptionPositions, labels[rows[j].VariantID].OptionPositions
+		for position := 0; position < len(left) && position < len(right); position++ {
+			if left[position] != right[position] {
+				return left[position] < right[position]
+			}
+		}
+		if len(left) != len(right) {
+			return len(left) < len(right)
+		}
+		return rows[i].VariantID < rows[j].VariantID
 	})
 	return rows, nil
 }

@@ -129,6 +129,34 @@ func TestMinimumStockWarnings(t *testing.T) {
 	}
 }
 
+// TestBalanceDefaultOrderFollowsConfiguredOptions keeps the neutral table
+// order useful. Alphabetical sorting would put L before M and S; the default
+// must instead follow the order the band configured on the article.
+func TestBalanceDefaultOrderFollowsConfiguredOptions(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	h.sellableArticle("Configured Order Shirt")
+
+	rows := jsonList(h.do(http.MethodGet, "/api/v1/balances", nil).Body, "reorder_rows")
+	want := []string{
+		"Farbe: Schwarz · Größe: S",
+		"Farbe: Schwarz · Größe: M",
+		"Farbe: Schwarz · Größe: L",
+		"Farbe: Schwarz · Größe: XL",
+		"Farbe: Schwarz · Größe: XXL",
+		"Farbe: Weiß · Größe: S",
+	}
+	if len(rows) < len(want) {
+		t.Fatalf("not enough balance rows: %v", rows)
+	}
+	for index, label := range want {
+		if got := jsonObject(rows[index])["variant_label"]; got != label {
+			t.Fatalf("row %d = %q, want %q; default order must follow option positions", index, got, label)
+		}
+	}
+}
+
 // TestRankingsFoldVariantsIntoArticles pins how the band reads "which shirt
 // sells", and that profit uses the weighted average purchase price.
 func TestRankingsFoldVariantsIntoArticles(t *testing.T) {

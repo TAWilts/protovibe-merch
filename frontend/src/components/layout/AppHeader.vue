@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 
 import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
+import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
 
 /**
  * The sticky application header, ported from _old/templates/base.html.
@@ -42,7 +43,8 @@ const links = computed<NavLink[]>(() => {
   const grant = viaGrant.value
   return [
     { name: 'sales', label: t('nav.sales'), visible: c.can_access_band_workflows || grant },
-    { name: 'orders', label: t('nav.orders'), visible: c.can_access_band_workflows || grant },
+    // Orders stay routable for a future API-backed release, but are no longer
+    // advertised as a current workflow.
     { name: 'history', label: t('nav.history'), visible: c.can_access_member_workflows || grant },
     { name: 'operations', label: t('nav.operations'), visible: c.can_access_member_workflows || grant },
     { name: 'slideshow', label: t('nav.slideshow'), visible: (c.can_access_band_workflows || grant) && flags.value?.slideshow !== false },
@@ -102,6 +104,7 @@ async function signOut() {
     </nav>
 
     <div class="user-menu">
+      <SupportMessageDialog v-if="caps?.can_access_band_workflows" />
       <button
         v-if="caps?.can_access_band_workflows && flags?.offline_sales !== false"
         class="pos-mode-button"

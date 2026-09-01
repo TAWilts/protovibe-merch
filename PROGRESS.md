@@ -492,4 +492,20 @@ Konten anlegen darf nur ein Band-Admin, und der Supportzugriff braucht einen Ban
 der ihn genehmigt. Der neue Endpunkt ist bewusst eng — nur System-Admin, Rolle fest auf
 `band_admin`, Eintrag im Audit-Log **der Band**.
 
+**Nachgezogen am 01.09.:** Bestandslisten, Supportnachrichten, Einkaufshistorie,
+Artikelfotos und Diashow wurden an den Funktionsumfang des Originals angeglichen und
+erweitert. Die beiden Bestandsbereiche sind getrennt, alphanumerisch sortierbar und
+optional nach Artikel gruppiert; der CSV-Export übernimmt Filter, Reihenfolge und
+Gruppierung. Der Bestellungs-Link ist ausgeblendet, seine Route bleibt für eine spätere
+API-Nutzung erhalten.
+
+Bandkonten können über das Kopfzeilen-Symbol Fragen oder Probleme an das gemeinsame
+Supportpostfach senden. Support- und System-Admins sehen dieselben Nachrichten und
+können sie einem aktiven Plattform-Admin zuweisen. Einkäufe erscheinen als aufklappbare
+Belege und nehmen PDF-, JPEG- oder PNG-Rechnungen auf Belegebene an. Bei Artikeln lassen
+sich Mindestbestände über alle Varianten setzen und mehrere Fotos gemeinsam hochladen;
+die Bilder werden serverseitig geprüft, verkleinert und komprimiert. Die Diashow startet
+im Vollbild, nutzt gegenläufig einfahrende Bild- und Preiskarten, vermeidet direkte
+Wiederholungen und zeigt zwischen den Durchläufen eine bildzahlabhängige Collage.
+
 ---
