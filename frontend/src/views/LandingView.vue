@@ -299,7 +299,8 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
           <div class="hero-trust">
             <span>✓ {{ t('landing.hero.mobile') }}</span>
             <span>✓ {{ t('landing.hero.noInstall') }}</span>
-            <span>✓ {{ t('landing.hero.tenantSafe') }}</span>
+            <span>✓ {{ t('landing.hero.onAndOffline') }}</span>
+            <span>✓ {{ t('landing.hero.noVendorLockin') }}</span>
           </div>
         </div>
 

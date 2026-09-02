@@ -822,7 +822,8 @@
       "login": "Go to sign in",
       "mobile": "Made for phones and tablets",
       "noInstall": "Runs in the browser",
-      "tenantSafe": "Strictly separated band data"
+      "onAndOffline": "Online and offline usable",
+      "noVendorLockin": "No vendor lock-in"
     },
     "demo": {
       "article": "Product",

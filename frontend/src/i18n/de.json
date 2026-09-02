@@ -822,7 +822,8 @@
       "login": "Zum Login",
       "mobile": "Für Smartphone und Tablet",
       "noInstall": "Direkt im Browser",
-      "tenantSafe": "Sauber getrennte Banddaten"
+      "onAndOffline": "Online und offline nutzbar",
+      "noVendorLockin": "Keine Bindung an einen Anbieter"
     },
     "demo": {
       "article": "Artikel",
