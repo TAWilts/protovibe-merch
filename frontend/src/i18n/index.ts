@@ -34,3 +34,27 @@ export function setLocale(locale: Locale) {
   i18n.global.locale.value = locale
   document.documentElement.lang = locale
 }
+
+const MARKETING_LOCALE_KEY = 'merch-marketing-locale'
+
+export function marketingLocale(): Locale {
+  if (typeof window === 'undefined') return 'de'
+  try {
+    const stored = window.localStorage.getItem(MARKETING_LOCALE_KEY)
+    if (stored === 'de' || stored === 'en') return stored
+  } catch {
+    // Private browsing may deny storage; browser language still works.
+  }
+  return window.navigator.language.toLowerCase().startsWith('en') ? 'en' : 'de'
+}
+
+export function setMarketingLocale(locale: Locale) {
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(MARKETING_LOCALE_KEY, locale)
+    } catch {
+      // Persisting the preference is optional; the current page still changes.
+    }
+  }
+  setLocale(locale)
+}

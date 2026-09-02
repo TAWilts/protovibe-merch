@@ -32,6 +32,15 @@ func newRequestLimiter(limit int, window time.Duration) *requestLimiter {
 func (l *requestLimiter) allow(key string, now time.Time) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// Public endpoints can see many one-off source addresses. Keep their stale
+	// buckets from growing for the lifetime of the process.
+	if len(l.entries) > 4096 {
+		for candidate, item := range l.entries {
+			if !now.Before(item.reset) {
+				delete(l.entries, candidate)
+			}
+		}
+	}
 
 	entry := l.entries[key]
 	if entry.reset.IsZero() || !now.Before(entry.reset) {
@@ -42,7 +51,7 @@ func (l *requestLimiter) allow(key string, now time.Time) (bool, time.Duration) 
 	if entry.count <= l.limit {
 		return true, 0
 	}
-	return false, time.Until(entry.reset)
+	return false, entry.reset.Sub(now)
 }
 
 // authRateLimit covers every anonymous step that accepts a password, setup

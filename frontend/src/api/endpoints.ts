@@ -33,7 +33,28 @@ import type {
   SupportGrant,
   SupportMessage,
   SupportAssignee,
+  BandRegistrationRequest,
+  PublicRegistrationStatus,
+  RegistrationCreated,
+  RegistrationCredentials,
 } from './types'
+
+/** Anonymous onboarding. Status secrets are always sent in the body. */
+export const registrationApi = {
+  config: () => api.get<{ registration_enabled: boolean }>('/public/registrations/config'),
+  create: (payload: {
+    band_name: string
+    band_slug: string
+    admin_username: string
+    contact_email: string
+    privacy_accepted: boolean
+    website: string
+  }) => api.post<RegistrationCreated>('/public/registrations', payload),
+  status: (token: string) =>
+    api.post<PublicRegistrationStatus>('/public/registrations/status', { token }),
+  claim: (token: string) =>
+    api.post<RegistrationCredentials>('/public/registrations/claim', { token }),
+}
 
 /** Authentication and identity. */
 export const authApi = {
@@ -183,6 +204,21 @@ export const exportUrls = {
 
 /** The control plane. Every call here requires a platform account. */
 export const platformApi = {
+	registrationRequests: (status = '') =>
+		api.get<{ requests: BandRegistrationRequest[] }>(
+			`/platform/registration-requests${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+		),
+	registrationRequest: (id: number) =>
+		api.get<BandRegistrationRequest>(`/platform/registration-requests/${id}`),
+	approveRegistration: (id: number, payload: {
+		band_name: string
+		band_slug: string
+		admin_username: string
+		contact_email: string
+	}) => api.post<BandRegistrationRequest>(`/platform/registration-requests/${id}/approve`, payload),
+	rejectRegistration: (id: number, note: string) =>
+		api.post<BandRegistrationRequest>(`/platform/registration-requests/${id}/reject`, { note }),
+
   bands: (includeDeleted = false) =>
     api.get<{ bands: BandSummary[] }>(`/platform/bands${includeDeleted ? '?include_deleted=true' : ''}`),
   createBand: (payload: { slug: string; name: string; contact_email?: string }) =>

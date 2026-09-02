@@ -88,6 +88,61 @@ export interface PaymentQRSettings {
   bank_bic: string
 }
 
+export type BandRegistrationStatus = 'pending' | 'approved' | 'rejected' | 'expired'
+
+export interface RegistrationCreated {
+  reference: string
+  status: BandRegistrationStatus
+  status_url: string
+  expires_at: string
+}
+
+export interface PublicRegistrationStatus {
+  reference: string
+  status: BandRegistrationStatus
+  band_name: string
+  band_slug: string
+  admin_username: string
+  contact_email: string
+  decision_note: string
+  credentials_available: boolean
+  credentials_retrieved: boolean
+  credentials_available_until: string | null
+  expires_at: string
+}
+
+export interface RegistrationCredentials {
+  band_slug: string
+  username: string
+  setup_code: string
+  setup_code_expires_at: string
+}
+
+export interface BandRegistrationRequest {
+  id: number
+  reference: string
+  requested_band_name: string
+  requested_band_slug: string
+  requested_admin_username: string
+  requested_contact_email: string
+  band_name: string
+  band_slug: string
+  admin_username: string
+  contact_email: string
+  status: BandRegistrationStatus
+  privacy_accepted_at: string
+  decision_note?: string
+  decided_by_username?: string
+  decided_at?: string
+  band_id?: number
+  admin_user_id?: number
+  credentials_available_until?: string
+  claimed_at?: string
+  expires_at: string
+  created_at: string
+  updated_at: string
+}
+
 /** A reserved receipt number with its rendered code. Nothing is booked yet. */
 export interface PaymentQRIntent {
   token: string

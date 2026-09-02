@@ -68,6 +68,8 @@ In `.env` müssen vor dem Start mindestens diese Werte angepasst werden:
 
 - `MERCH_IMAGE_TAG=synology-test`
 - `PUBLIC_BASE_URL=http://<NAS-IP>:8090`
+- `PUBLIC_REGISTRATION_ENABLED=true`, wenn das öffentliche Anfrageformular
+  auf der Landingpage verwendet werden soll
 - `SECRET_KEY` mit dauerhaftem Zufallswert
 - `DB_PASSWORD` und `DB_ROOT_PASSWORD` mit unabhängigen Zufallswerten
 - `BOOTSTRAP_ADMIN_PASSWORD` mit einem einmaligen Initialpasswort

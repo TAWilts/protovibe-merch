@@ -31,7 +31,7 @@ var (
 )
 
 // slugPattern keeps the slug usable in a URL and in a login form.
-var slugPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)
+var slugPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])$`)
 
 // Service owns the control plane.
 type Service struct {
@@ -188,13 +188,19 @@ func (s *Service) Band(ctx context.Context, id int64) (*models.Band, error) {
 
 // CreateBand adds a tenant.
 func (s *Service) CreateBand(ctx context.Context, slug, name, contactEmail string) (*models.Band, error) {
-	slug = strings.ToLower(strings.TrimSpace(slug))
-	if !slugPattern.MatchString(slug) {
-		return nil, ErrInvalidSlug
-	}
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 200 {
-		return nil, ErrInvalidName
+	return s.createBand(s.crossBand(ctx), slug, name, contactEmail)
+}
+
+// CreateBandInTransaction adds a tenant on the caller's transaction. It is
+// used by workflows that must also create the first account atomically.
+func (s *Service) CreateBandInTransaction(ctx context.Context, tx *gorm.DB, slug, name, contactEmail string) (*models.Band, error) {
+	return s.createBand(tx.WithContext(tenant.WithCrossBandAccess(ctx)), slug, name, contactEmail)
+}
+
+func (s *Service) createBand(database *gorm.DB, slug, name, contactEmail string) (*models.Band, error) {
+	slug, name, err := ValidateBandIdentity(slug, name)
+	if err != nil {
+		return nil, err
 	}
 
 	band := &models.Band{
@@ -204,13 +210,54 @@ func (s *Service) CreateBand(ctx context.Context, slug, name, contactEmail strin
 		IsActive:     true,
 		FeatureFlags: models.FeatureFlags{},
 	}
-	if err := s.crossBand(ctx).Create(band).Error; err != nil {
+	if err := database.Create(band).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, ErrSlugTaken
 		}
 		return nil, err
 	}
 	return band, nil
+}
+
+// ValidateBandIdentity normalizes and validates the two public identity
+// fields without creating anything.
+func ValidateBandIdentity(slug, name string) (string, string, error) {
+	slug, err := NormalizeBandSlug(slug)
+	if err != nil {
+		return "", "", err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 200 {
+		return "", "", ErrInvalidName
+	}
+	return slug, name, nil
+}
+
+// NormalizeBandSlug returns the canonical login slug without checking any
+// unrelated band fields.
+func NormalizeBandSlug(slug string) (string, error) {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if !slugPattern.MatchString(slug) {
+		return "", ErrInvalidSlug
+	}
+	return slug, nil
+}
+
+// EnsureSlugAvailable verifies current availability. Approval repeats this
+// check inside its transaction because availability can change meanwhile.
+func (s *Service) EnsureSlugAvailable(ctx context.Context, slug string) error {
+	normalized, err := NormalizeBandSlug(slug)
+	if err != nil {
+		return err
+	}
+	var count int64
+	if err := s.crossBand(ctx).Model(&models.Band{}).Where("slug = ?", normalized).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrSlugTaken
+	}
+	return nil
 }
 
 // BandUpdate carries the fields the admin center can change. A nil field is

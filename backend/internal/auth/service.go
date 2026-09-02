@@ -179,6 +179,16 @@ func (s *Service) findUserForLogin(ctx context.Context, bandID *int64, username 
 // CreateUser adds an account and returns the one-time setup code, which is
 // shown to the administrator exactly once.
 func (s *Service) CreateUser(ctx context.Context, bandID *int64, username string, role models.Role) (*models.User, string, error) {
+	return s.createUser(s.accountsDB(ctx), bandID, username, role)
+}
+
+// CreateUserInTransaction creates an account on the caller's transaction.
+// This keeps multi-step bootstrap workflows all-or-nothing.
+func (s *Service) CreateUserInTransaction(ctx context.Context, tx *gorm.DB, bandID *int64, username string, role models.Role) (*models.User, string, error) {
+	return s.createUser(tx.WithContext(tenant.WithCrossBandAccess(ctx)), bandID, username, role)
+}
+
+func (s *Service) createUser(database *gorm.DB, bandID *int64, username string, role models.Role) (*models.User, string, error) {
 	name, err := NormalizeUsername(username)
 	if err != nil {
 		return nil, "", err
@@ -210,7 +220,7 @@ func (s *Service) CreateUser(ctx context.Context, bandID *int64, username string
 		MFARecoveryCodeHashes: models.JSONSlice{},
 	}
 
-	if err := s.accountsDB(ctx).Create(user).Error; err != nil {
+	if err := database.Create(user).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, "", ErrUsernameTaken
 		}

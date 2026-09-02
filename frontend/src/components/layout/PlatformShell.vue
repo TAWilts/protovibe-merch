@@ -22,6 +22,7 @@ const { t } = useI18n()
 const isSystemAdmin = computed(() => session.capabilities?.is_system_admin ?? false)
 const links = computed(() => [
   { name: 'platform-bands', label: 'platform.nav.bands', systemOnly: false },
+  { name: 'platform-registrations', label: 'platform.nav.registrations', systemOnly: true },
   { name: 'platform-users', label: 'platform.nav.users', systemOnly: true },
   { name: 'platform-support', label: 'platform.nav.support', systemOnly: false },
   { name: 'platform-messages', label: 'platform.nav.messages', systemOnly: false },

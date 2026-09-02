@@ -116,6 +116,9 @@ var PlatformStaffAllowedPrefixes = []string{
 	"/api/v1/mfa",
 	"/api/v1/account",
 	"/api/v1/session",
+	// Anonymous onboarding remains public when a platform session cookie is
+	// present; it never reads band-scoped data.
+	"/api/v1/public",
 	// Deployment information rather than band data.
 	"/api/v1/version",
 	"/api/v1/announcement",

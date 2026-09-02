@@ -62,13 +62,17 @@ docker compose -f deploy/docker-compose.dev.yml up -d   # MariaDB auf Port 3307
 cd backend
 DATABASE_DSN='merch:merch@tcp(127.0.0.1:3307)/merch?charset=utf8mb4&parseTime=true&loc=UTC&multiStatements=true' \
 SECRET_KEY="$(openssl rand -base64 48)" \
-ENVIRONMENT=development COOKIE_SECURE=false \
+ENVIRONMENT=development COOKIE_SECURE=false PUBLIC_REGISTRATION_ENABLED=true \
 go run ./cmd/server
 
 cd ../frontend
 npm install
 npm run dev                   # http://localhost:5173, /api wird auf :8000 geproxyt
 ```
+
+`/` zeigt die öffentliche Landingpage, `/login` führt direkt zur Anmeldung.
+Öffentliche Band-Anfragen bleiben standardmäßig deaktiviert und werden mit
+`PUBLIC_REGISTRATION_ENABLED=true` eingeschaltet.
 
 ## Gesamter Stack
 

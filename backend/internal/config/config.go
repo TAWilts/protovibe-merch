@@ -70,8 +70,9 @@ type Config struct {
 	UpdateCheckCacheTTL   time.Duration
 
 	// Presentation defaults.
-	DisplayTimezone *time.Location
-	PublicBaseURL   string
+	DisplayTimezone           *time.Location
+	PublicBaseURL             string
+	PublicRegistrationEnabled bool
 }
 
 // placeholderValues are the literal strings shipped in .env.example. Booting
@@ -128,7 +129,8 @@ func Load() (*Config, error) {
 		UpdateCheckTimeout:    envDuration("UPDATE_CHECK_TIMEOUT_SECONDS", 3*time.Second),
 		UpdateCheckCacheTTL:   envDuration("UPDATE_CHECK_CACHE_SECONDS", 6*time.Hour),
 
-		PublicBaseURL: strings.TrimRight(env("PUBLIC_BASE_URL", "http://localhost:8000"), "/"),
+		PublicBaseURL:             strings.TrimRight(env("PUBLIC_BASE_URL", "http://localhost:8000"), "/"),
+		PublicRegistrationEnabled: envBool("PUBLIC_REGISTRATION_ENABLED", false),
 	}
 
 	if raw := os.Getenv("TRUSTED_PROXIES"); raw != "" {

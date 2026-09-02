@@ -55,6 +55,7 @@ func New(s *Server) *gin.Engine {
 	api := r.Group(apiPrefix)
 
 	api.GET("/version", s.version)
+	s.registerPublicRegistrationRoutes(api)
 	s.registerAuthRoutes(api)
 	s.registerProfileRoutes(api)
 	s.registerBandRoutes(api)
@@ -67,6 +68,7 @@ func New(s *Server) *gin.Engine {
 	s.registerPaymentQRRoutes(api)
 	s.registerImportRoutes(api)
 	s.registerPlatformRoutes(api)
+	s.registerPlatformRegistrationRoutes(api)
 	s.registerPlatformUserRoutes(api)
 	s.registerPlatformOpsRoutes(api)
 	s.registerSupportInboxRoutes(api)

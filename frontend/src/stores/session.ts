@@ -4,7 +4,7 @@ import { computed, ref } from 'vue'
 import { authApi } from '@/api/endpoints'
 import { ApiError, setCsrfToken } from '@/api/client'
 import type { Identity } from '@/api/types'
-import { setLocale, type Locale } from '@/i18n'
+import { setLocale } from '@/i18n'
 
 /**
  * The session store is the single source of truth for who is signed in.
@@ -26,33 +26,34 @@ export const useSessionStore = defineStore('session', () => {
   const supportGrant = computed(() => identity.value?.support_grant ?? null)
   const isAuthenticated = computed(() => identity.value !== null)
 
-  /** Applies the personal theme and language the account chose. */
+  /** Applies account preferences that are available inside the app. */
   function applyPreferences(next: Identity | null) {
     const theme = next?.user.ui_theme ?? 'aurora'
     document.documentElement.dataset.theme = theme
-    const language = (next?.user.ui_language ?? 'de') as Locale
-    setLocale(language)
+    // Marketing and login are bilingual, but the authenticated application
+    // remains German until its English catalogue is complete.
+    setLocale('de')
   }
 
-  function adopt(next: Identity | null, csrfToken?: string) {
+  function adopt(next: Identity | null, csrfToken?: string, applyUserPreferences = true) {
     identity.value = next
     if (csrfToken) {
       setCsrfToken(csrfToken)
     }
-    applyPreferences(next)
+    if (applyUserPreferences) applyPreferences(next)
   }
 
   /**
    * Restores the session on a page load. A missing session is a normal state,
    * not an error, so it resolves to signed-out rather than throwing.
    */
-  async function restore() {
+  async function restore(applyUserPreferences = true) {
     loading.value = true
     try {
-      adopt(await authApi.me())
+      adopt(await authApi.me(), undefined, applyUserPreferences)
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        adopt(null)
+        adopt(null, undefined, applyUserPreferences)
       } else {
         throw error
       }

@@ -25,6 +25,7 @@ import (
 	"github.com/tawilts/protovibe-merch/backend/internal/services/platform"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/purchases"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/receipt"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/registration"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/sales"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/updates"
 	"github.com/tawilts/protovibe-merch/backend/internal/storage"
@@ -51,6 +52,7 @@ type Server struct {
 	importer        *importer.Service
 	updates         *updates.Service
 	platform        *platform.Service
+	registrations   *registration.Service
 	backups         *backup.Service
 	metrics         *metrics
 	files           storage.Store
@@ -58,10 +60,12 @@ type Server struct {
 	// settingsCache avoids reading the single platform_settings row on every
 	// request. It is refreshed on write and after a short TTL, so a change made
 	// on another instance still lands quickly.
-	settingsMu      sync.RWMutex
-	settings        *models.PlatformSettings
-	settingsFetched time.Time
-	authLimiter     *requestLimiter
+	settingsMu                sync.RWMutex
+	settings                  *models.PlatformSettings
+	settingsFetched           time.Time
+	authLimiter               *requestLimiter
+	registrationCreateLimiter *requestLimiter
+	registrationAccessLimiter *requestLimiter
 }
 
 // settingsTTL is how long a cached copy of platform_settings is trusted.
@@ -78,6 +82,7 @@ func NewServer(cfg *config.Config, database *gorm.DB) (*Server, error) {
 		return nil, err
 	}
 
+	platformService := platform.NewService(database)
 	return &Server{
 		cfg:             cfg,
 		db:              database,
@@ -99,7 +104,8 @@ func NewServer(cfg *config.Config, database *gorm.DB) (*Server, error) {
 			CacheTTL:   cfg.UpdateCheckCacheTTL,
 			Version:    cfg.AppVersion,
 		}),
-		platform: platform.NewService(database),
+		platform:      platformService,
+		registrations: registration.NewService(database, authService, platformService, cfg.PublicBaseURL),
 		backups: backup.NewService(database, backup.Config{
 			DatabaseDSN:   cfg.DatabaseDSN,
 			Root:          cfg.BackupRoot,
@@ -107,9 +113,11 @@ func NewServer(cfg *config.Config, database *gorm.DB) (*Server, error) {
 			MysqldumpPath: cfg.MysqldumpPath,
 			RetentionDays: cfg.BackupRetentionDays,
 		}),
-		metrics:     newMetrics(),
-		files:       files,
-		authLimiter: newRequestLimiter(20, time.Minute),
+		metrics:                   newMetrics(),
+		files:                     files,
+		authLimiter:               newRequestLimiter(20, time.Minute),
+		registrationCreateLimiter: newRequestLimiter(3, time.Hour),
+		registrationAccessLimiter: newRequestLimiter(60, time.Hour),
 	}, nil
 }
 
@@ -245,6 +253,9 @@ func (s *Server) Backups() *backup.Service { return s.backups }
 
 // Platform exposes the control-plane service to the scheduler.
 func (s *Server) Platform() *platform.Service { return s.platform }
+
+// Registrations exposes the public onboarding service to housekeeping.
+func (s *Server) Registrations() *registration.Service { return s.registrations }
 
 // PaymentQR exposes the payment-code service to the scheduler.
 func (s *Server) PaymentQR() *paymentqr.Service { return s.paymentQR }

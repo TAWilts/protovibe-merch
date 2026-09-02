@@ -38,11 +38,13 @@ const (
 	ActionUserDeleted     = "user.deleted"
 	ActionUsernameChanged = "user.username_changed"
 
-	ActionBandCreated     = "band.created"
-	ActionBandUpdated     = "band.updated"
-	ActionBandDeactivated = "band.deactivated"
-	ActionBandDeleted     = "band.deleted"
-	ActionBandRestored    = "band.restored"
+	ActionBandCreated          = "band.created"
+	ActionBandUpdated          = "band.updated"
+	ActionBandDeactivated      = "band.deactivated"
+	ActionBandDeleted          = "band.deleted"
+	ActionBandRestored         = "band.restored"
+	ActionRegistrationApproved = "registration.approved"
+	ActionRegistrationRejected = "registration.rejected"
 
 	ActionSupportAccessRequested = "support_access.requested"
 	ActionSupportAccessApproved  = "support_access.approved"

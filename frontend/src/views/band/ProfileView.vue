@@ -8,7 +8,6 @@ import { ApiError } from '@/api/client'
 import type { ProfilePayload } from '@/api/types'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
-import { setLocale, type Locale } from '@/i18n'
 
 /**
  * The personal account page.
@@ -87,9 +86,6 @@ async function savePersonalization(payload: Record<string, unknown>) {
     // Applied immediately so the change is visible where it was made.
     if (typeof payload.ui_theme === 'string') {
       document.documentElement.dataset.theme = payload.ui_theme
-    }
-    if (typeof payload.ui_language === 'string') {
-      setLocale(payload.ui_language as Locale)
     }
     await session.restore()
     flash.success(t('profile.saved'))
@@ -257,7 +253,7 @@ async function regenerateCodes() {
             <p>{{ t('profile.personalizationHint') }}</p>
           </div>
         </div>
-        <div class="field-grid two-columns">
+        <div class="field-grid">
           <label>
             {{ t('profile.theme') }}
             <select
@@ -267,16 +263,6 @@ async function regenerateCodes() {
               <option v-for="theme in data.available_themes" :key="theme" :value="theme">
                 {{ t(`profile.themes.${theme}`) }}
               </option>
-            </select>
-          </label>
-          <label>
-            {{ t('profile.language') }}
-            <select
-              :value="data.profile.user.ui_language"
-              @change="savePersonalization({ ui_language: ($event.target as HTMLSelectElement).value })"
-            >
-              <option value="de">Deutsch</option>
-              <option value="en">English</option>
             </select>
           </label>
         </div>

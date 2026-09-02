@@ -220,7 +220,14 @@
     "invalid_subject": "Der Betreff darf höchstens 120 Zeichen lang sein.",
     "invalid_message": "Die Nachricht darf höchstens 4000 Zeichen lang sein.",
     "invalid_assignee": "Die Nachricht kann nur einem aktiven Admin-Konto zugewiesen werden.",
-    "last_system_admin": "Mindestens ein aktiver System-Admin muss erhalten bleiben."
+    "last_system_admin": "Mindestens ein aktiver System-Admin muss erhalten bleiben.",
+    "slug_taken": "Dieses Band-Kürzel ist bereits vergeben.",
+    "invalid_slug": "Das Band-Kürzel darf nur Kleinbuchstaben, Zahlen und Bindestriche enthalten.",
+    "invalid_name": "Bitte gib einen gültigen Bandnamen ein.",
+    "registration_decided": "Diese Anfrage wurde bereits bearbeitet.",
+    "registration_expired": "Diese Anfrage ist abgelaufen.",
+    "registration_not_found": "Diese Registrierungsanfrage wurde nicht gefunden.",
+    "invalid_decision_note": "Der Hinweis darf höchstens 1000 Zeichen lang sein."
   },
   "history": {
     "eyebrow": "Belege",
@@ -460,12 +467,44 @@
     "supportAdminNote": "Als Support-Admin kannst du ansehen und Supportzugriff anfordern, aber keine Bands anlegen oder Einstellungen ändern.",
     "nav": {
       "bands": "Bands",
+      "registrations": "Registrierungen",
       "users": "Konten",
       "support": "Supportzugriff",
       "messages": "Postfach",
       "audit": "Audit-Log",
       "backups": "Sicherungen",
       "settings": "Einstellungen"
+    },
+    "registrations": {
+      "title": "Registrierungsanfragen",
+      "intro": "Prüfe neue Bands, korrigiere die Angaben bei Bedarf und erzeuge Band und ersten Admin gemeinsam.",
+      "filter": "Status",
+      "all": "Alle Anfragen",
+      "empty": "Keine passenden Registrierungsanfragen.",
+      "status": {
+        "pending": "Offen",
+        "approved": "Freigegeben",
+        "rejected": "Abgelehnt",
+        "expired": "Abgelaufen"
+      },
+      "received": "Eingegangen:",
+      "expires": "Gültig bis:",
+      "consent": "Einwilligung:",
+      "bandName": "Bandname",
+      "bandSlug": "Band-Kürzel",
+      "adminUsername": "Admin-Benutzername",
+      "contactEmail": "Kontakt-E-Mail",
+      "originalValues": "Ursprünglich übermittelte Angaben",
+      "rejectionNote": "Hinweis bei Ablehnung",
+      "rejectionNoteHint": "Optional für die anfragende Person sichtbar",
+      "approve": "Band freigeben",
+      "reject": "Ablehnen",
+      "approveConfirm": "Anfrage {reference} wirklich freigeben und die Band anlegen?",
+      "rejectConfirm": "Anfrage {reference} wirklich ablehnen?",
+      "approved": "Band und erster Band-Admin wurden angelegt.",
+      "rejected": "Die Anfrage wurde abgelehnt.",
+      "decidedBy": "Bearbeitet von",
+      "claimedAt": "Zugangsdaten abgeholt am {date}."
     },
     "bands": {
       "title": "Bands",
@@ -762,6 +801,149 @@
     "showPrice": "Preis einblenden",
     "other": "Ohne Artikelbezug",
     "noneSelected": "Es ist kein Bild für die Anzeige ausgewählt."
+  },
+  "landing": {
+    "nav": {
+      "label": "Seitennavigation",
+      "features": "Funktionen",
+      "workflow": "Ablauf",
+      "register": "Band anlegen",
+      "login": "Anmelden",
+      "toAdmin": "Zur Administration",
+      "toSales": "Zur Kasse",
+      "home": "Zur Startseite"
+    },
+    "language": { "label": "Sprache auswählen" },
+    "hero": {
+      "kicker": "Merchandising ohne Tabellenchaos",
+      "title": "Merch verkaufen. Bestand im Blick. Bandkasse sauber.",
+      "lead": "Ein gemeinsamer Ort für Verkauf, Bestand, Einkäufe und Auswertungen – gemacht für den Merch-Stand und den Alltag dahinter.",
+      "register": "Eigene Band anlegen",
+      "login": "Zum Login",
+      "mobile": "Für Smartphone und Tablet",
+      "noInstall": "Direkt im Browser",
+      "tenantSafe": "Sauber getrennte Banddaten"
+    },
+    "demo": {
+      "article": "Artikel",
+      "variant": "Variante",
+      "size": "Größe",
+      "color": "Farbe",
+      "add": "Zum Warenkorb",
+      "cart": "Warenkorb",
+      "total": "Summe",
+      "continue": "Weiter zur Zahlung",
+      "items": "Artikel",
+      "payment": "Bezahlart",
+      "done": "Abschluss",
+      "stock": "Aktueller Bestand",
+      "live": "Live aktualisiert",
+      "justNow": "gerade eben"
+    },
+    "demos": {
+      "kicker": "Ein Ablauf statt fünf Insellösungen",
+      "title": "So sieht ruhiger Merch-Verkauf aus.",
+      "lead": "Kleine Einblicke in die Abläufe, die am Stand schnell und hinterher nachvollziehbar bleiben.",
+      "sales": {
+        "title": "Ein Verkauf, Schritt für Schritt",
+        "text": "Artikel und Varianten auswählen, den Warenkorb prüfen, Zahlungsart festlegen und mit Belegnummer oder QR-Code abschließen. Auf kleinen Displays bleibt jeder Schritt übersichtlich."
+      },
+      "inventory": {
+        "title": "Bestand, der sich selbst erklärt",
+        "text": "Verkäufe und Einkäufe bewegen den Bestand automatisch. Mindestmengen machen früh sichtbar, was vor dem nächsten Konzert nachbestellt werden sollte."
+      },
+      "slideshow": {
+        "title": "Die Produktpalette wird zum Schaufenster",
+        "text": "Produktbilder erscheinen vollständig skaliert als Einzelbild oder ruhiges Mosaik. Die Darstellung eignet sich für einen zweiten Bildschirm direkt am Stand."
+      }
+    },
+    "features": {
+      "kicker": "Alles Wichtige an einem Ort",
+      "title": "Vom ersten Shirt bis zur Abrechnung.",
+      "mobile": { "title": "Für den Stand gebaut", "text": "Kurze Wege, große Touch-Ziele und ein geschützter POS-Modus für gemeinsam genutzte Geräte." },
+      "payments": { "title": "Zahlungen zusammenhalten", "text": "Bar, PayPal oder Überweisung erfassen und offene Zahlungen als vollständige Warenkörbe nachverfolgen." },
+      "inventory": { "title": "Bestand und Einkauf", "text": "Varianten, Einkaufspreise, Belege und Mindestbestände bleiben miteinander verbunden." },
+      "roles": { "title": "Klare Zuständigkeiten", "text": "Verkäufer, Mitglieder, Manager und Band-Admins sehen nur die Bereiche, die sie benötigen." },
+      "backups": { "title": "Für Betrieb vorbereitet", "text": "Mandantentrennung, Audit-Log und planbare Sicherungen bilden ein belastbares Fundament." },
+      "support": { "title": "Kontrollierter Support", "text": "Supportzugriff wird von der Band freigegeben, zeitlich begrenzt und nachvollziehbar protokolliert." }
+    },
+    "workflow": {
+      "kicker": "Der Weg zur eigenen Band",
+      "title": "Anfragen, freigeben, loslegen.",
+      "lead": "Da noch keine E-Mails versendet werden, begleitet dich ein sicherer Statuslink durch die Freigabe.",
+      "request": { "title": "Anfrage absenden", "text": "Trage Bandname, Kürzel, Admin-Benutzername und eine Kontaktadresse ein." },
+      "review": { "title": "Prüfung abwarten", "text": "Ein System-Admin prüft die Angaben. Über deinen persönlichen Link siehst du jederzeit den Status." },
+      "start": { "title": "Zugang einrichten", "text": "Nach der Freigabe holst du den Einrichtungscode einmalig ab und setzt beim Login dein Passwort." }
+    },
+    "registration": {
+      "kicker": "Eigene Band",
+      "title": "Bereit für euren Merch?",
+      "lead": "Die Anfrage dauert nur eine Minute. Eine Band wird erst nach manueller Prüfung angelegt.",
+      "noEmailTitle": "Wichtig: Statuslink sichern",
+      "noEmailText": "Solange kein E-Mail-Versand eingerichtet ist, ist dieser Link dein einziger automatischer Weg zurück zur Anfrage.",
+      "formTitle": "Band anfragen",
+      "formText": "Die Angaben können vor der Freigabe noch durch einen System-Admin korrigiert werden.",
+      "bandName": "Bandname",
+      "bandSlug": "Band-Kürzel",
+      "bandSlugHint": "2–64 Kleinbuchstaben, Zahlen oder Bindestriche; wird später beim Login verwendet.",
+      "adminUsername": "Benutzername des ersten Band-Admins",
+      "contactEmail": "Kontakt-E-Mail der Band",
+      "privacy": "Ich bin mit der Speicherung dieser Angaben zur Bearbeitung der Registrierungsanfrage einverstanden.",
+      "submit": "Registrierung anfragen",
+      "sending": "Anfrage wird gesendet …",
+      "created": "Anfrage gespeichert. Sichere jetzt unbedingt deinen Statuslink.",
+      "approved": "Freigabe erteilt",
+      "credentialsTitle": "Eure Zugangsdaten",
+      "credentialsOnce": "Der Einrichtungscode wird nur jetzt angezeigt. Sichere alle Angaben, bevor du zum Login wechselst.",
+      "setupCode": "Einrichtungscode",
+      "validUntil": "Gültig bis",
+      "copyCredentials": "Alles kopieren",
+      "credentialsCopied": "Zugangsdaten kopiert.",
+      "download": "Als Textdatei speichern",
+      "toLogin": "Zum Login",
+      "statusLink": "Persönlicher Statuslink",
+      "copyLink": "Link kopieren",
+      "linkCopied": "Statuslink kopiert.",
+      "copyFailed": "Kopieren war nicht möglich. Bitte markiere den Inhalt von Hand.",
+      "showCredentials": "Zugangsdaten einmalig anzeigen",
+      "refresh": "Status aktualisieren",
+      "newRequest": "Neue Anfrage stellen",
+      "alreadyClaimed": "Die Zugangsdaten wurden bereits abgeholt. Bei Verlust kann ein System-Admin einen neuen Einrichtungscode erzeugen.",
+      "disabledTitle": "Registrierung noch geschlossen",
+      "disabledText": "Öffentliche Registrierungen sind auf dieser Instanz derzeit nicht freigeschaltet. Der Login funktioniert weiterhin.",
+      "configErrorTitle": "Registrierungsstatus nicht erreichbar",
+      "configErrorText": "Die Anwendung konnte den Server gerade nicht erreichen. Bitte versuche es später erneut.",
+      "status": {
+        "pending": { "title": "Anfrage wird geprüft", "text": "Die Angaben sind eingegangen. Bewahre den Statuslink auf und prüfe später erneut." },
+        "approved": { "title": "Eure Band ist bereit", "text": "Die finalen Angaben stehen fest. Rufe den Einrichtungscode nur auf einem sicheren Gerät ab." },
+        "rejected": { "title": "Anfrage nicht freigegeben", "text": "Die Anfrage wurde geprüft, aber nicht freigegeben. Ein Hinweis steht gegebenenfalls unten." },
+        "expired": { "title": "Statuslink abgelaufen", "text": "Diese Anfrage kann über den Link nicht mehr fortgesetzt werden. Stelle bei Bedarf eine neue Anfrage." }
+      },
+      "errors": {
+        "generic": "Die Anfrage konnte nicht verarbeitet werden.",
+        "network": "Der Server ist gerade nicht erreichbar. Bitte prüfe deine Verbindung.",
+        "registration_disabled": "Öffentliche Registrierungen sind derzeit deaktiviert.",
+        "privacy_required": "Bitte bestätige die Einwilligung zur Speicherung der Angaben.",
+        "invalid_email": "Bitte gib eine gültige E-Mail-Adresse ein.",
+        "invalid_slug": "Das Band-Kürzel darf nur Kleinbuchstaben, Zahlen und Bindestriche enthalten.",
+        "slug_taken": "Dieses Band-Kürzel wird bereits verwendet.",
+        "invalid_name": "Bitte gib einen gültigen Bandnamen ein.",
+        "invalid_username": "Der Benutzername muss zwischen 3 und 150 Zeichen lang sein.",
+        "registration_not_found": "Dieser Statuslink ist ungültig oder nicht mehr vorhanden.",
+        "registration_expired": "Diese Registrierungsanfrage ist abgelaufen.",
+        "registration_not_approved": "Die Anfrage wurde noch nicht freigegeben.",
+        "credentials_claimed": "Die Zugangsdaten wurden bereits abgeholt.",
+        "credentials_unavailable": "Die Zugangsdaten sind nicht mehr verfügbar.",
+        "rate_limited": "Zu viele Versuche. Bitte warte etwas und versuche es erneut."
+      }
+    },
+    "faq": {
+      "title": "Noch Fragen?",
+      "email": { "question": "Brauche ich schon eine funktionierende E-Mail-Anbindung?", "answer": "Nein. Die Anfrage und Übergabe funktionieren vorerst über einen sicheren Statuslink. Die Kontaktadresse wird nur gespeichert und noch nicht angeschrieben." },
+      "approval": { "question": "Wird meine Band sofort angelegt?", "answer": "Nein. Ein System-Admin prüft die Anfrage zuerst und kann Schreibfehler korrigieren. Erst die Freigabe erstellt Band und ersten Admin gemeinsam." },
+      "link": { "question": "Was passiert, wenn ich den Statuslink verliere?", "answer": "Ohne E-Mail-Versand lässt sich der Link nicht automatisch wiederherstellen. Nach einer Freigabe kann ein System-Admin bei Bedarf einen neuen Einrichtungscode ausgeben." }
+    },
+    "footer": "Verkauf, Bestand und Bandkasse in einem gemeinsamen Werkzeug."
   },
   "profile": {
     "eyebrow": "Konto",

@@ -17,16 +17,18 @@ import (
 	"github.com/tawilts/protovibe-merch/backend/internal/services/backup"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/paymentqr"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/platform"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/registration"
 )
 
 // Scheduler owns the cron jobs.
 type Scheduler struct {
-	cron      *cron.Cron
-	cfg       *config.Config
-	auth      *auth.Service
-	backups   *backup.Service
-	platform  *platform.Service
-	paymentQR *paymentqr.Service
+	cron          *cron.Cron
+	cfg           *config.Config
+	auth          *auth.Service
+	backups       *backup.Service
+	platform      *platform.Service
+	registrations *registration.Service
+	paymentQR     *paymentqr.Service
 }
 
 // New builds the scheduler.
@@ -35,15 +37,17 @@ func New(
 	authService *auth.Service,
 	backups *backup.Service,
 	platformService *platform.Service,
+	registrationService *registration.Service,
 	paymentQR *paymentqr.Service,
 ) *Scheduler {
 	return &Scheduler{
-		cron:      cron.New(),
-		cfg:       cfg,
-		auth:      authService,
-		backups:   backups,
-		platform:  platformService,
-		paymentQR: paymentQR,
+		cron:          cron.New(),
+		cfg:           cfg,
+		auth:          authService,
+		backups:       backups,
+		platform:      platformService,
+		registrations: registrationService,
+		paymentQR:     paymentQR,
 	}
 }
 
@@ -90,6 +94,11 @@ func (s *Scheduler) housekeeping() {
 
 	if err := s.auth.PurgeExpired(ctx); err != nil {
 		slog.Error("could not purge expired sessions", "error", err)
+	}
+	if expired, err := s.registrations.Expire(ctx); err != nil {
+		slog.Error("could not expire registration requests", "error", err)
+	} else if expired > 0 {
+		slog.Info("registration requests expired", "count", expired)
 	}
 	// A day's grace before removing consumed or abandoned payment codes keeps
 	// them available for a support question about a receipt.

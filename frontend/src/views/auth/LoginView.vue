@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
 import { authApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import { useSessionStore } from '@/stores/session'
 import type { LoginResponse } from '@/api/types'
+import { marketingLocale, setMarketingLocale, type Locale } from '@/i18n'
 
 /**
  * Sign-in, ported from _old/templates/login.html.
@@ -23,8 +24,8 @@ const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
 
-const band = ref('')
-const username = ref('')
+const band = ref(typeof route.query.band === 'string' ? route.query.band : '')
+const username = ref(typeof route.query.username === 'string' ? route.query.username : '')
 const secret = ref('')
 const error = ref('')
 const notice = ref('')
@@ -42,6 +43,13 @@ const recoveryCodes = ref<string[]>([])
 const resetUsername = ref('')
 const resetCode = ref('')
 const resetPassword = ref('')
+const loginLocale = ref<Locale>(marketingLocale())
+setMarketingLocale(loginLocale.value)
+
+function chooseLocale(locale: Locale) {
+  loginLocale.value = locale
+  setMarketingLocale(locale)
+}
 
 function fail(err: unknown) {
   if (err instanceof ApiError) {
@@ -55,7 +63,7 @@ function fail(err: unknown) {
 function complete(response: LoginResponse) {
   if (!response.session) return false
   session.adopt(response.session, response.csrf_token)
-  const target = (route.query.next as string) || '/sales'
+  const target = (route.query.next as string) || (session.capabilities?.is_platform_staff ? '/admin/bands' : '/sales')
   router.replace(target)
   return true
 }
@@ -136,7 +144,7 @@ async function submitEnrollment() {
 }
 
 function finishEnrollment() {
-  router.replace((route.query.next as string) || '/sales')
+  router.replace((route.query.next as string) || (session.capabilities?.is_platform_staff ? '/admin/bands' : '/sales'))
 }
 
 async function requestReset() {
@@ -171,6 +179,13 @@ async function confirmReset() {
 
 <template>
   <main class="login-page">
+    <div class="login-toolbar">
+      <RouterLink :to="{ name: 'landing' }" class="text-button">{{ t('landing.nav.home') }}</RouterLink>
+      <div class="locale-switch" :aria-label="t('landing.language.label')">
+        <button type="button" :class="{ active: loginLocale === 'de' }" @click="chooseLocale('de')">DE</button>
+        <button type="button" :class="{ active: loginLocale === 'en' }" @click="chooseLocale('en')">EN</button>
+      </div>
+    </div>
     <section class="login-card">
       <div class="brand brand-login">
         <span class="brand-mark">P</span><span>{{ t('app.name') }}</span>
@@ -289,6 +304,40 @@ async function confirmReset() {
 </template>
 
 <style scoped>
+.login-toolbar {
+  position: fixed;
+  top: 18px;
+  right: 22px;
+  left: 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.locale-switch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(17, 14, 22, 0.74);
+}
+
+.locale-switch button {
+  min-width: 38px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.locale-switch button.active {
+  color: #250d2e;
+  background: var(--accent-bright);
+}
+
 .recovery-code-list {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

@@ -11,6 +11,7 @@ func AllModels() []any {
 		// Control plane — deliberately not band-scoped.
 		&Band{}, &User{}, &Session{}, &PendingAuth{}, &PasswordResetChallenge{},
 		&SupportAccessGrant{}, &PlatformSettings{}, &BackupRun{}, &AuditLog{},
+		&BandRegistrationRequest{},
 
 		// Band data — every one of these embeds Tenant.
 		&Article{}, &OptionGroup{}, &OptionValue{}, &Variant{},
@@ -29,13 +30,14 @@ func AllModels() []any {
 // Their protection is handler-level authorisation instead. Any table not
 // listed here that carries a NOT NULL band_id must embed Tenant.
 var ControlPlaneTables = map[string]bool{
-	"bands":                 true,
-	"users":                 true,
-	"sessions":              true,
-	"pending_auth":          true,
-	"support_access_grants": true,
-	"platform_settings":     true,
-	"backup_runs":           true,
-	"audit_log":             true,
-	"schema_migrations":     true,
+	"bands":                      true,
+	"users":                      true,
+	"sessions":                   true,
+	"pending_auth":               true,
+	"support_access_grants":      true,
+	"platform_settings":          true,
+	"backup_runs":                true,
+	"audit_log":                  true,
+	"band_registration_requests": true,
+	"schema_migrations":          true,
 }
