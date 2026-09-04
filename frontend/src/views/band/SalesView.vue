@@ -1346,11 +1346,29 @@ function resetAfterSale() {
 
 .till-compose {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px 12px;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--border);
+}
+
+.till-compose > label {
+  min-width: 0;
+}
+
+.till-compose .quantity-control {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+
+.till-compose .stepper {
+  width: 100%;
+  grid-template-columns:
+    minmax(40px, 0.8fr)
+    minmax(0, 1fr)
+    minmax(40px, 0.8fr);
 }
 
 .till-price input {

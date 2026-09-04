@@ -859,13 +859,24 @@ async function applyMinimumToAll() {
 
 @media (max-width: 900px) {
   .article-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .article-layout > * {
+    min-width: 0;
   }
 }
 
 .article-editor {
   display: grid;
   gap: 18px;
+  min-width: 0;
+}
+
+.article-editor > .table-section,
+.article-form-group,
+.option-editor {
+  min-width: 0;
 }
 
 .inline-form {
@@ -885,6 +896,11 @@ async function applyMinimumToAll() {
   margin-bottom: 10px;
 }
 
+.option-editor-head > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .option-editor-values {
   display: flex;
   flex-wrap: wrap;
@@ -895,11 +911,15 @@ async function applyMinimumToAll() {
 .option-value-input {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
   gap: 4px;
 }
 
 .option-value-input input {
   width: 9rem;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .cell-input {
@@ -936,5 +956,80 @@ td input[type='checkbox'] {
 
 .retired-variants {
   margin-top: 16px;
+}
+
+/*
+ * The editor is intentionally a real responsive layout rather than a clipped
+ * desktop panel. Wide variant tables keep their own horizontal scroller while
+ * forms and option controls reflow to the phone width.
+ */
+@media (max-width: 700px) {
+  .page-title-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .inline-form {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .inline-form input {
+    flex: 1 1 12rem;
+    min-width: 0;
+  }
+
+  .article-editor .section-heading {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .field-grid.two-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .option-editor-head {
+    flex-wrap: wrap;
+  }
+
+  .option-editor-head > input {
+    flex: 1 1 12rem;
+  }
+
+  .option-editor-values {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .option-value-input {
+    flex: 1 1 10rem;
+  }
+
+  .option-value-input input {
+    width: 100%;
+  }
+
+  .option-value-input .icon-button {
+    flex: 0 0 auto;
+  }
+
+  .minimum-for-all {
+    width: 100%;
+  }
+
+  .minimum-for-all label {
+    flex: 1 1 9rem;
+    min-width: 0;
+  }
+
+  .minimum-for-all input {
+    width: 100%;
+  }
+
+  .table-scroll {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+  }
 }
 </style>

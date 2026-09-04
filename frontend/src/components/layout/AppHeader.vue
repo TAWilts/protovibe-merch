@@ -164,10 +164,12 @@ async function leavePOSMode() {
         :disabled="!offline.online || offline.syncing"
         @click="offline.sync()"
       >
-        <template v-if="!offline.online">{{ t('sync.offline', { count: offline.queued }) }}</template>
-        <template v-else-if="offline.syncing">{{ t('sync.syncing') }}</template>
-        <template v-else-if="offline.hasQueue">{{ t('sync.pending', { count: offline.queued }) }}</template>
-        <template v-else>{{ t('sync.online') }}</template>
+        <span class="offline-sync-label">
+          <template v-if="!offline.online">{{ t('sync.offline', { count: offline.queued }) }}</template>
+          <template v-else-if="offline.syncing">{{ t('sync.syncing') }}</template>
+          <template v-else-if="offline.hasQueue">{{ t('sync.pending', { count: offline.queued }) }}</template>
+          <template v-else>{{ t('sync.online') }}</template>
+        </span>
       </button>
 
       <span class="user-identity">
@@ -231,6 +233,16 @@ async function leavePOSMode() {
   font-weight: 650;
 }
 
+.offline-sync-status::before {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  content: "";
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent);
+}
+
 .offline-sync-status.has-queue {
   color: var(--warning);
   border-color: var(--warning);
@@ -239,5 +251,43 @@ async function leavePOSMode() {
 .offline-sync-status.is-offline {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+.offline-sync-status.has-queue::before {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 16%, transparent);
+}
+
+.offline-sync-status.is-offline::before {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+/*
+ * On a phone the connection state is a traffic light, not another navigation
+ * label. Keep the text available to assistive technology while only the
+ * coloured marker occupies header space.
+ */
+@media (max-width: 700px) {
+  .offline-sync-status {
+    position: relative;
+    width: 34px;
+    min-width: 34px;
+    min-height: 34px;
+    padding: 5px;
+    justify-content: center;
+  }
+
+  .offline-sync-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    clip-path: inset(50%);
+  }
 }
 </style>
