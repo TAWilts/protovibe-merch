@@ -21,6 +21,7 @@ const { t } = useI18n()
 
 const isSystemAdmin = computed(() => session.capabilities?.is_system_admin ?? false)
 const links = computed(() => [
+  { name: 'platform-dashboard', label: 'Dashboard', systemOnly: false },
   { name: 'platform-bands', label: 'platform.nav.bands', systemOnly: false },
   { name: 'platform-registrations', label: 'platform.nav.registrations', systemOnly: true },
   { name: 'platform-users', label: 'platform.nav.users', systemOnly: true },
@@ -41,7 +42,7 @@ async function signOut() {
   <SupportGrantBanner />
 
   <header class="app-header platform-header">
-    <RouterLink class="brand" :to="{ name: 'platform-bands' }">
+    <RouterLink class="brand" :to="{ name: 'platform-dashboard' }">
       <span class="brand-mark">P</span>
       <span>{{ t('platform.title') }}</span>
     </RouterLink>
@@ -52,7 +53,7 @@ async function signOut() {
         :key="link.name"
         :to="{ name: link.name }"
         :class="{ active: route.name === link.name }"
-      >{{ t(link.label) }}</RouterLink>
+      >{{ link.name === 'platform-dashboard' ? link.label : t(link.label) }}</RouterLink>
     </nav>
 
     <div class="user-menu">

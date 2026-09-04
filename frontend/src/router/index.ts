@@ -50,7 +50,8 @@ const routes: RouteRecordRaw[] = [
     path: '/admin',
     component: () => import('@/components/layout/PlatformShell.vue'),
     children: [
-      { path: '', redirect: { name: 'platform-bands' } },
+      { path: '', redirect: { name: 'platform-dashboard' } },
+      { path: 'dashboard', name: 'platform-dashboard', component: () => import('@/views/platform/DashboardView.vue') },
       { path: 'bands', name: 'platform-bands', component: () => import('@/views/platform/BandsView.vue') },
       { path: 'registrations', name: 'platform-registrations', component: () => import('@/views/platform/RegistrationsView.vue'), meta: { systemAdmin: true } },
       { path: 'users', name: 'platform-users', component: () => import('@/views/platform/UsersView.vue'), meta: { systemAdmin: true } },
@@ -100,7 +101,7 @@ router.beforeEach(async (to) => {
       // no band data, so bouncing it through the sales page only to redirect
       // again made switching accounts look broken.
       const caps = session.capabilities
-      return caps?.is_platform_staff ? { name: 'platform-bands' } : { name: 'sales' }
+      return caps?.is_platform_staff ? { name: 'platform-dashboard' } : { name: 'sales' }
     }
     return true
   }
@@ -118,7 +119,7 @@ router.beforeEach(async (to) => {
   // this only avoids offering doors that are locked.
   const hasBandAccess = caps?.can_access_band_workflows || session.supportGrant !== null
   if (caps && !hasBandAccess && !isPlatformRoute && to.name !== 'profile') {
-    return { name: 'platform-bands' }
+    return { name: 'platform-dashboard' }
   }
   // The reverse: a band account has nothing to do in the control plane.
   if (caps && isPlatformRoute && !caps.can_access_system_administration) {
@@ -129,7 +130,7 @@ router.beforeEach(async (to) => {
   // application. Account preferences remain authoritative there.
   setLocale('de')
   if (to.meta.systemAdmin && !caps?.is_system_admin) {
-    return { name: 'platform-bands' }
+    return { name: 'platform-dashboard' }
   }
 
   const requiredFeature = to.meta.feature as keyof FeatureFlags | undefined
