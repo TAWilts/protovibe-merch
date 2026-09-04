@@ -186,8 +186,8 @@ func (s *Server) completePasswordSetup(c *gin.Context) {
 		audit.Entry{Action: audit.ActionPasswordChanged, EntityType: "user", EntityID: &user.ID})
 
 	// A platform account still has to enrol its second factor before it gets
-	// a usable session.
-	if user.MFARequired() && !user.MFAEnabled {
+	// a usable session, unless the explicit local-development bypass is active.
+	if user.MFARequired() && !user.MFAEnabled && !s.auth.PlatformMFABypassed(user) {
 		token, err := s.auth.NewEnrollmentPending(ctx, user.ID)
 		if err != nil {
 			serverError(c, err)
@@ -314,7 +314,12 @@ func (s *Server) me(c *gin.Context) {
 // filled in when the account actually has band access — a platform account
 // without a live grant deliberately sees no band at all.
 func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *models.SupportAccessGrant) *meResponse {
-	payload := &meResponse{Capabilities: rbac.For(user)}
+	caps := rbac.For(user)
+	if s.auth.PlatformMFABypassed(user) {
+		caps.MFARequired = false
+		caps.SensitiveActionMFARequired = false
+	}
+	payload := &meResponse{Capabilities: caps}
 	payload.User.ID = user.ID
 	payload.User.Username = user.Username
 	payload.User.Role = user.Role

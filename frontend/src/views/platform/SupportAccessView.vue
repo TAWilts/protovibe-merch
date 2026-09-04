@@ -36,6 +36,9 @@ const form = ref({
 const activating = ref<{ grantId: number; code: string } | null>(null)
 
 const activeGrant = computed(() => session.supportGrant)
+const needsActivationMFA = computed(
+  () => session.capabilities?.sensitive_action_mfa_required ?? false,
+)
 const canRequest = computed(
   () => form.value.bandId > 0 && form.value.reason.trim().length >= 5 && !busy.value,
 )
@@ -259,9 +262,9 @@ function statusClass(status: string): string {
         <div>
           <p class="eyebrow">{{ t('platform.support.startEyebrow') }}</p>
           <h2>{{ t('platform.support.startTitle') }}</h2>
-          <p>{{ t('platform.support.startIntro') }}</p>
+          <p v-if="needsActivationMFA">{{ t('platform.support.startIntro') }}</p>
         </div>
-        <label>
+        <label v-if="needsActivationMFA">
           {{ t('auth.code') }}
           <input v-model="activating.code" inputmode="numeric" autocomplete="one-time-code" required />
         </label>

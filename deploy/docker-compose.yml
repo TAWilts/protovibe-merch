@@ -44,6 +44,7 @@ services:
     environment:
       LISTEN_ADDR: ":8000"
       ENVIRONMENT: ${ENVIRONMENT:-production}
+      LOCAL_DEV_MODE: ${LOCAL_DEV_MODE:-false}
       DATABASE_DSN: "${DB_USER:-merch}:${DB_PASSWORD}@tcp(db:3306)/${DB_NAME:-merch}?charset=utf8mb4&parseTime=true&loc=UTC&multiStatements=true"
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
       BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}

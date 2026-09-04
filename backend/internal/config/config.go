@@ -21,6 +21,7 @@ type Config struct {
 	Addr           string
 	AppVersion     string
 	Environment    string // "development" | "production"
+	LocalDevMode   bool   // explicit local-only escape hatch for platform MFA
 	TrustedProxies []string
 
 	// Database
@@ -86,9 +87,10 @@ var placeholderValues = map[string]bool{
 // Load reads the configuration from the process environment and validates it.
 func Load() (*Config, error) {
 	c := &Config{
-		Addr:        env("LISTEN_ADDR", ":8000"),
-		AppVersion:  env("APP_VERSION", "v0.0.0"),
-		Environment: env("ENVIRONMENT", "production"),
+		Addr:         env("LISTEN_ADDR", ":8000"),
+		AppVersion:   env("APP_VERSION", "v0.0.0"),
+		Environment:  env("ENVIRONMENT", "production"),
+		LocalDevMode: envBool("LOCAL_DEV_MODE", false),
 
 		DatabaseDSN:    os.Getenv("DATABASE_DSN"),
 		DBMaxOpenConns: envInt("DB_MAX_OPEN_CONNS", 25),

@@ -226,11 +226,16 @@ func (s *Server) resolveSession() gin.HandlerFunc {
 			}
 		}
 
+		caps := rbac.For(bundle.User)
+		if s.auth.PlatformMFABypassed(bundle.User) {
+			caps.MFARequired = false
+			caps.SensitiveActionMFARequired = false
+		}
 		state := &RequestState{
 			Session: bundle.Session,
 			User:    bundle.User,
 			Grant:   bundle.Grant,
-			Caps:    rbac.For(bundle.User),
+			Caps:    caps,
 		}
 		c.Set(ctxKeyRequestState, state)
 

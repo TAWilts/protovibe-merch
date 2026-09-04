@@ -383,9 +383,9 @@ func (s *Server) decideSupportAccess(c *gin.Context, approve bool) {
 }
 
 type activateAccessRequest struct {
-	// Code is a fresh second factor. The approval alone is not enough: it must
-	// be the approved person, at the keyboard, right now.
-	Code string `json:"code" binding:"required"`
+	// Code is a fresh second factor. The approval alone is not enough in normal
+	// operation; LOCAL_DEV_MODE may explicitly bypass it for platform accounts.
+	Code string `json:"code"`
 }
 
 func (s *Server) activateSupportAccess(c *gin.Context) {
@@ -402,13 +402,19 @@ func (s *Server) activateSupportAccess(c *gin.Context) {
 	state := stateFrom(c)
 	ctx := c.Request.Context()
 
-	if err := s.auth.VerifySecondFactor(state.User, req.Code); err != nil {
-		s.reportAuthError(c, err)
-		return
-	}
-	if err := s.auth.PersistRecoveryCodes(ctx, state.User); err != nil {
-		serverError(c, err)
-		return
+	if !s.auth.PlatformMFABypassed(state.User) {
+		if req.Code == "" {
+			fail(c, http.StatusBadRequest, "invalid_request", "authentication code is required")
+			return
+		}
+		if err := s.auth.VerifySecondFactor(state.User, req.Code); err != nil {
+			s.reportAuthError(c, err)
+			return
+		}
+		if err := s.auth.PersistRecoveryCodes(ctx, state.User); err != nil {
+			serverError(c, err)
+			return
+		}
 	}
 
 	grant, err := s.platform.Activate(ctx, id, state.User)

@@ -30,6 +30,8 @@ type Service struct {
 	db     *gorm.DB
 	cipher *Cipher
 
+	localDevMode bool
+
 	sessionTTL     time.Duration
 	sessionIdleTTL time.Duration
 	reauthWindow   time.Duration
@@ -46,6 +48,7 @@ func NewService(database *gorm.DB, cfg *config.Config) (*Service, error) {
 	return &Service{
 		db:             database,
 		cipher:         box,
+		localDevMode:   cfg.LocalDevMode,
 		sessionTTL:     cfg.SessionTTL,
 		sessionIdleTTL: cfg.SessionIdleTTL,
 		reauthWindow:   cfg.ProfileReauthWindow,
@@ -60,6 +63,13 @@ func (s *Service) Cipher() *Cipher { return s.cipher }
 
 // ReauthWindow is how long a step-up confirmation stays valid.
 func (s *Service) ReauthWindow() time.Duration { return s.reauthWindow }
+
+// PlatformMFABypassed reports whether the explicit local-development escape
+// hatch disables second-factor checks for this platform account. Band accounts
+// are deliberately excluded so LOCAL_DEV_MODE never becomes a global MFA bypass.
+func (s *Service) PlatformMFABypassed(user *models.User) bool {
+	return s.localDevMode && user != nil && user.Role.IsPlatformRole()
+}
 
 // accountsDB returns a handle for the account tables. Those are control-plane
 // tables, so the tenant callback does not apply — but the context is still
@@ -121,11 +131,12 @@ func (s *Service) Authenticate(ctx context.Context, bandID *int64, username, sec
 	case usedSetupCode || user.MustSetPassword:
 		result.NeedsPasswordSetup = true
 		result.PendingToken, err = s.createPendingAuth(ctx, user.ID, models.PendingAuthPasswordSetup, 30*time.Minute)
-	case user.MFAEnabled:
+	case user.MFAEnabled && !s.PlatformMFABypassed(user):
 		result.NeedsMFA = true
 		result.PendingToken, err = s.createPendingAuth(ctx, user.ID, models.PendingAuthMFALogin, 10*time.Minute)
-	case user.MFARequired():
-		// Platform accounts must enrol before they can do anything else.
+	case user.MFARequired() && !s.PlatformMFABypassed(user):
+		// Platform accounts must enrol before they can do anything else, except
+		// when the operator explicitly enabled LOCAL_DEV_MODE.
 		result.NeedsMFAEnrollment = true
 		result.PendingToken, err = s.createPendingAuth(ctx, user.ID, models.PendingAuthMFAEnrollment, 30*time.Minute)
 	}
