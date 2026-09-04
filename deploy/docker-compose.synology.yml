@@ -21,6 +21,8 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      # Money is integer cents and every timestamp is written in UTC; a strict
+      # mode plus UTC keeps MariaDB from silently coercing either.
       - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
       - --default-time-zone=+00:00
     volumes:

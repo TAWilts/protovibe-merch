@@ -353,21 +353,71 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
             <p>{{ t('landing.demos.sales.text') }}</p>
           </div>
           <div class="demo-window wizard-demo" aria-hidden="true">
-            <div class="wizard-steps"><i class="active"></i><i></i><i></i></div>
+            <div class="wizard-steps">
+                <i class="wizard-step-one"></i>
+                <i class="wizard-step-two"></i>
+                <i class="wizard-step-three"></i>
+            </div>
+
+            <!-- Fenster 1: Artikel -->
             <div class="wizard-slide slide-one">
-              <span class="demo-label">1 · {{ t('landing.demo.article') }}</span>
-              <div class="mini-product-grid"><span>Shirt</span><span>Vinyl</span><span>Bag</span></div>
-              <div class="mini-cart"><b>2 {{ t('landing.demo.items') }}</b><strong>47,00 €</strong></div>
+                <span class="demo-label">1 · {{ t('landing.demo.article') }}</span>
+
+                <div class="mini-product-grid">
+                <span class="wizard-product wizard-shirt">Shirt</span>
+                <span class="wizard-product wizard-vinyl">Vinyl</span>
+                <span>Bag</span>
+                </div>
+
+                <div class="mini-cart wizard-cart">
+                <div class="cart-state cart-state-zero">
+                    <b>0 {{ t('landing.demo.items') }}</b>
+                    <strong>0,00 €</strong>
+                </div>
+
+                <div class="cart-state cart-state-one">
+                    <b>1 {{ t('landing.demo.items') }}</b>
+                    <strong>25,00 €</strong>
+                </div>
+
+                <div class="cart-state cart-state-two">
+                    <b>2 {{ t('landing.demo.items') }}</b>
+                    <strong>45,00 €</strong>
+                </div>
+                </div>
             </div>
+
+            <!-- Fenster 2: Zahlung -->
             <div class="wizard-slide slide-two">
-              <span class="demo-label">2 · {{ t('landing.demo.payment') }}</span>
-              <div class="payment-grid"><span>Cash</span><span>PayPal</span><span>Bank</span></div>
+                <span class="demo-label">2 · {{ t('landing.demo.payment') }}</span>
+
+                <div class="payment-grid">
+                <span>Cash</span>
+                <span class="wizard-paypal">PayPal</span>
+                <span>Bank</span>
+                </div>
             </div>
+
+            <!-- Fenster 3: Abschluss -->
             <div class="wizard-slide slide-three">
-              <span class="demo-label">3 · {{ t('landing.demo.done') }}</span>
-              <div class="fake-qr"></div><strong>47,00 €</strong><small>VK-2026-0042</small>
+                <span class="demo-label">3 · {{ t('landing.demo.done') }}</span>
+
+                <div class="wizard-qr">
+                <div class="fake-qr"></div>
+                <strong>45,00 €</strong>
+                <small>VK-2026-0042</small>
+                </div>
+
+                <button class="payment-received-button">
+                Zahlung erhalten
+                </button>
+
+                <div class="purchase-success">
+                <span>✓</span>
+                <strong>Kauf erfolgreich</strong>
+                </div>
             </div>
-          </div>
+            </div>
         </article>
 
         <article v-animate class="story-row story-reverse demo-animated">
@@ -688,23 +738,534 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 .story-number { color: #694a73; font-family: ui-monospace, monospace; font-size: .72rem; }
 .story-copy h3 { margin: 17px 0 12px; font-size: clamp(1.8rem, 3.5vw, 3rem); letter-spacing: -.045em; }
 .story-copy p { margin: 0; color: #aea3b7; line-height: 1.7; }
-.wizard-demo, .inventory-demo, .mosaic-demo { min-height: 340px; }
-.wizard-demo { padding: 23px; }
-.wizard-steps { display: flex; gap: 7px; margin-bottom: 26px; }
-.wizard-steps i { width: 28px; height: 4px; border-radius: 9px; background: #44394d; animation: step-color 9s infinite; }
-.wizard-steps i:nth-child(2) { animation-delay: 3s; }.wizard-steps i:nth-child(3) { animation-delay: 6s; }
-.wizard-slide { position: absolute; inset: 58px 23px 23px; display: flex; flex-direction: column; opacity: 0; transform: translateX(25px); animation: wizard-cycle 9s infinite; }
-.wizard-slide.slide-two { animation-delay: 3s; }.wizard-slide.slide-three { animation-delay: 6s; align-items: center; justify-content: center; }
-.mini-product-grid, .payment-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
-.mini-product-grid span, .payment-grid span { min-height: 105px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.1); border-radius: 11px; color: #d9cedf; background: rgba(255,255,255,.04); font-weight: 750; }
-.payment-grid span { min-height: 130px; }.payment-grid span:nth-child(2) { border-color: #e982f9; background: rgba(217,95,241,.15); }
-.mini-cart { margin-top: auto; padding: 15px; display: flex; justify-content: space-between; border-radius: 10px; background: rgba(217,95,241,.12); }
-.mini-cart strong { color: #f08eff; }
-.fake-qr { width: 130px; height: 130px; margin-bottom: 12px; border: 8px solid white; border-radius: 5px; background: repeating-conic-gradient(#100d16 0 25%, white 0 50%) 0/18px 18px; }
-.slide-three > strong { color: #f08eff; font-size: 1.4rem; }.slide-three > small { margin-top: 5px; color: #9e92a8; font-family: ui-monospace,monospace; }
-@keyframes wizard-cycle { 0%,28% { opacity: 1; transform: none; } 33%,100% { opacity: 0; transform: translateX(-22px); } }
-@keyframes step-color { 0%,28% { background:#e982f9; } 33%,100% { background:#44394d; } }
+.wizard-demo, .inventory-demo, .mosaic-demo {
+  min-height: 340px;
+}
 
+.wizard-demo {
+  padding: 23px;
+}
+
+
+/* ---------------------------------------------------------
+   Fortschrittsanzeige
+   --------------------------------------------------------- */
+
+.wizard-steps {
+  display: flex;
+  gap: 7px;
+  margin-bottom: 26px;
+}
+
+.wizard-steps i {
+  width: 28px;
+  height: 4px;
+  border-radius: 9px;
+  background: #44394d;
+}
+
+.wizard-step-one {
+  animation: wizard-step-one 10s infinite;
+}
+
+.wizard-step-two {
+  animation: wizard-step-two 10s infinite;
+}
+
+.wizard-step-three {
+  animation: wizard-step-three 10s infinite;
+}
+
+
+/* ---------------------------------------------------------
+   Die drei Hauptfenster
+   --------------------------------------------------------- */
+
+.wizard-slide {
+  position: absolute;
+  inset: 58px 23px 23px;
+
+  display: flex;
+  flex-direction: column;
+
+  opacity: 0;
+  transform: translateX(25px);
+  pointer-events: none;
+}
+
+.slide-one {
+  animation: wizard-slide-one 10s infinite;
+}
+
+.slide-two {
+  animation: wizard-slide-two 10s infinite;
+}
+
+.slide-three {
+  align-items: center;
+  justify-content: center;
+  animation: wizard-slide-three 10s infinite;
+}
+
+
+/* ---------------------------------------------------------
+   Artikel- und Zahlungsbuttons
+   --------------------------------------------------------- */
+
+.mini-product-grid,
+.payment-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.mini-product-grid span,
+.payment-grid span {
+  min-height: 105px;
+
+  display: grid;
+  place-items: center;
+
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 11px;
+
+  color: #d9cedf;
+  background: rgba(255,255,255,.04);
+
+  font-weight: 750;
+}
+
+.payment-grid span {
+  min-height: 130px;
+}
+
+
+/* Vinyl wird in Phase 2 ausgewählt */
+
+.wizard-vinyl {
+  animation: wizard-vinyl-highlight 10s infinite;
+}
+
+
+/* Danach Shirt */
+
+.wizard-shirt {
+  animation: wizard-shirt-highlight 10s infinite;
+}
+
+
+/* PayPal in Fenster 2 */
+
+.wizard-paypal {
+  animation: wizard-paypal-highlight 10s infinite;
+}
+
+
+/* ---------------------------------------------------------
+   Warenkorb
+   --------------------------------------------------------- */
+
+.wizard-cart {
+  position: relative;
+  min-height: 52px;
+  margin-top: auto;
+}
+
+.cart-state {
+  position: absolute;
+  inset: 0;
+
+  padding: 15px;
+
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+
+  border-radius: 10px;
+  background: rgba(217,95,241,.12);
+
+  opacity: 0;
+}
+
+.cart-state strong {
+  color: #f08eff;
+}
+
+.cart-state-zero {
+  animation: cart-state-zero 10s infinite;
+}
+
+.cart-state-one {
+  animation: cart-state-one 10s infinite;
+}
+
+.cart-state-two {
+  animation: cart-state-two 10s infinite;
+}
+
+
+/* ---------------------------------------------------------
+   Fenster 3
+   --------------------------------------------------------- */
+
+.wizard-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+
+  opacity: 0;
+  transform: scale(.92);
+
+  animation: wizard-qr-show 10s infinite;
+}
+
+.fake-qr {
+  width: 130px;
+  height: 130px;
+  margin-bottom: 12px;
+
+  border: 8px solid white;
+  border-radius: 5px;
+
+  background:
+    repeating-conic-gradient(
+      #100d16 0 25%,
+      white 0 50%
+    ) 0 / 18px 18px;
+}
+
+.wizard-qr > strong {
+  color: #f08eff;
+  font-size: 1.4rem;
+}
+
+.wizard-qr > small {
+  margin-top: 5px;
+  color: #9e92a8;
+  font-family: ui-monospace, monospace;
+}
+
+
+/* Zahlung-erhalten-Button */
+
+.payment-received-button {
+  margin-top: 14px;
+  padding: 10px 18px;
+
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 9px;
+
+  color: #d9cedf;
+  background: rgba(255,255,255,.05);
+
+  font-size: .72rem;
+  font-weight: 800;
+
+  opacity: 0;
+
+  animation: payment-received-show 10s infinite;
+}
+
+
+/* Erfolgsfenster */
+
+.purchase-success {
+  position: absolute;
+
+  padding: 18px 25px;
+
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  border: 1px solid rgba(101,221,160,.35);
+  border-radius: 13px;
+
+  color: #dff8ea;
+  background: rgba(42,110,74,.92);
+
+  box-shadow: 0 18px 45px rgba(0,0,0,.35);
+
+  opacity: 0;
+  transform: scale(.85) translateY(10px);
+
+  animation: purchase-success-show 10s infinite;
+}
+
+.purchase-success span {
+  color: #65dda0;
+  font-size: 1.4rem;
+}
+
+
+/* =========================================================
+   HAUPTFENSTER
+   ========================================================= */
+
+@keyframes wizard-slide-one {
+  0%, 38% {
+    opacity: 1;
+    transform: none;
+  }
+
+  40%, 100% {
+    opacity: 0;
+    transform: translateX(-22px);
+  }
+}
+
+@keyframes wizard-slide-two {
+  0%, 39% {
+    opacity: 0;
+    transform: translateX(25px);
+  }
+
+  41%, 64% {
+    opacity: 1;
+    transform: none;
+  }
+
+  66%, 100% {
+    opacity: 0;
+    transform: translateX(-22px);
+  }
+}
+
+@keyframes wizard-slide-three {
+  0%, 65% {
+    opacity: 0;
+    transform: translateX(25px);
+  }
+
+  67%, 100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+
+/* =========================================================
+   FORTSCHRITTSBALKEN
+   ========================================================= */
+
+@keyframes wizard-step-one {
+  0%, 39% {
+    background: #e982f9;
+  }
+
+  40%, 100% {
+    background: #44394d;
+  }
+}
+
+@keyframes wizard-step-two {
+  0%, 39% {
+    background: #44394d;
+  }
+
+  40%, 65% {
+    background: #e982f9;
+  }
+
+  66%, 100% {
+    background: #44394d;
+  }
+}
+
+@keyframes wizard-step-three {
+  0%, 65% {
+    background: #44394d;
+  }
+
+  66%, 100% {
+    background: #e982f9;
+  }
+}
+
+
+/* =========================================================
+   FENSTER 1
+   ========================================================= */
+
+/* Vinyl: ungefähr Sekunde 2–4 */
+
+@keyframes wizard-vinyl-highlight {
+  0%, 12% {
+    border-color: rgba(255,255,255,.1);
+    background: rgba(255,255,255,.04);
+  }
+
+  14%, 25% {
+    border-color: #e982f9;
+    background: rgba(217,95,241,.18);
+    color: white;
+  }
+
+  27%, 100% {
+    border-color: rgba(255,255,255,.1);
+    background: rgba(255,255,255,.04);
+  }
+}
+
+
+/* Shirt: ungefähr Sekunde 4–6 */
+
+@keyframes wizard-shirt-highlight {
+  0%, 25% {
+    border-color: rgba(255,255,255,.1);
+    background: rgba(255,255,255,.04);
+  }
+
+  27%, 39% {
+    border-color: #e982f9;
+    background: rgba(217,95,241,.18);
+    color: white;
+  }
+
+  40%, 100% {
+    border-color: rgba(255,255,255,.1);
+    background: rgba(255,255,255,.04);
+  }
+}
+
+
+/* Warenkorb 0 Artikel */
+
+@keyframes cart-state-zero {
+  0%, 12% {
+    opacity: 1;
+  }
+
+  14%, 100% {
+    opacity: 0;
+  }
+}
+
+
+/* Warenkorb 1 Artikel */
+
+@keyframes cart-state-one {
+  0%, 12% {
+    opacity: 0;
+  }
+
+  14%, 25% {
+    opacity: 1;
+  }
+
+  27%, 100% {
+    opacity: 0;
+  }
+}
+
+
+/* Warenkorb 2 Artikel */
+
+@keyframes cart-state-two {
+  0%, 25% {
+    opacity: 0;
+  }
+
+  27%, 39% {
+    opacity: 1;
+  }
+
+  40%, 100% {
+    opacity: 0;
+  }
+}
+
+
+/* =========================================================
+   FENSTER 2
+   ========================================================= */
+
+@keyframes wizard-paypal-highlight {
+  0%, 51% {
+    border-color: rgba(255,255,255,.1);
+    background: rgba(255,255,255,.04);
+  }
+
+  53%, 65% {
+    border-color: #e982f9;
+    background: rgba(217,95,241,.18);
+    color: white;
+  }
+
+  66%, 100% {
+    border-color: rgba(255,255,255,.1);
+    background: rgba(255,255,255,.04);
+  }
+}
+
+
+/* =========================================================
+   FENSTER 3
+   ========================================================= */
+
+/* QR erscheint */
+
+@keyframes wizard-qr-show {
+  0%, 66% {
+    opacity: 0;
+    transform: scale(.92);
+  }
+
+  69%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+
+/* Button erscheint und wird pink */
+
+@keyframes payment-received-show {
+  0%, 78% {
+    opacity: 0;
+    border-color: rgba(255,255,255,.12);
+    background: rgba(255,255,255,.05);
+    color: #d9cedf;
+  }
+
+  80% {
+    opacity: 1;
+  }
+
+  82%, 89% {
+    opacity: 1;
+    border-color: #e982f9;
+    background: #e982f9;
+    color: #260b2e;
+  }
+
+  91%, 100% {
+    opacity: 1;
+    border-color: rgba(255,255,255,.12);
+    background: rgba(255,255,255,.05);
+    color: #d9cedf;
+  }
+}
+
+
+/* Erfolgsfenster am Ende */
+
+@keyframes purchase-success-show {
+  0%, 89% {
+    opacity: 0;
+    transform: scale(.85) translateY(10px);
+  }
+
+  92%, 98% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(.95);
+  }
+}
 .inventory-demo { padding: 25px; display: flex; flex-direction: column; justify-content: center; gap: 21px; }
 .inventory-head { display: flex; justify-content: space-between; }.inventory-head span { color: #65dda0; font-size: .7rem; }
 .stock-row { display: grid; grid-template-columns: 130px 1fr 28px; gap: 15px; align-items: center; color: #d9cfde; font-size: .76rem; }
