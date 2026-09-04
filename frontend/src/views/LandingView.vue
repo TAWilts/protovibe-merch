@@ -38,7 +38,6 @@ const form = reactive({
 })
 
 const features = ['mobile', 'payments', 'inventory', 'roles', 'backups', 'support'] as const
-const steps = ['request', 'review', 'start'] as const
 const faqs = ['email', 'approval', 'link'] as const
 
 const appTarget = computed(() => {
@@ -270,7 +269,6 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
       </a>
       <nav class="landing-nav" :aria-label="t('landing.nav.label')">
         <a href="#features">{{ t('landing.nav.features') }}</a>
-        <a href="#workflow">{{ t('landing.nav.workflow') }}</a>
         <a href="#register">{{ t('landing.nav.register') }}</a>
       </nav>
       <div class="landing-actions">
@@ -468,20 +466,6 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
         </div>
       </section>
 
-      <section id="workflow" class="landing-section workflow-section">
-        <div class="landing-heading">
-          <p class="landing-kicker">{{ t('landing.workflow.kicker') }}</p>
-          <h2>{{ t('landing.workflow.title') }}</h2>
-          <p>{{ t('landing.workflow.lead') }}</p>
-        </div>
-        <ol class="workflow-grid">
-          <li v-for="(step, index) in steps" :key="step" v-animate>
-            <span>{{ String(index + 1).padStart(2, '0') }}</span>
-            <h3>{{ t(`landing.workflow.${step}.title`) }}</h3>
-            <p>{{ t(`landing.workflow.${step}.text`) }}</p>
-          </li>
-        </ol>
-      </section>
 
       <section id="register" class="landing-section registration-section">
         <div class="registration-intro">
