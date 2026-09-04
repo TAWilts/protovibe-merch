@@ -439,16 +439,41 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
             <h3>{{ t('landing.demos.slideshow.title') }}</h3>
             <p>{{ t('landing.demos.slideshow.text') }}</p>
           </div>
-          <div class="demo-window mosaic-demo" aria-hidden="true">
+            <div class="demo-window mosaic-demo" aria-hidden="true">
             <div class="mosaic-track">
-              <div class="merch-tile tile-shirt"><i class="shirt-icon"></i><span>25 €</span></div>
-              <div class="merch-tile tile-record"><i class="record-icon"></i></div>
-              <div class="merch-tile tile-bag"><i class="bag-icon"></i><span>15 €</span></div>
-              <div class="merch-tile tile-cap"><i>★</i></div>
-              <div class="merch-tile tile-shirt alt"><i class="shirt-icon"></i></div>
-              <div class="merch-tile tile-record alt"><i class="record-icon"></i><span>22 €</span></div>
+
+                <div class="merch-tile">
+                <img src="/demo-products/shirt.jpg" alt="" />
+                <span>25 €</span>
+                </div>
+
+                <div class="merch-tile">
+                <img src="/demo-products/vinyl.jpg" alt="" />
+                <span>22 €</span>
+                </div>
+
+                <div class="merch-tile">
+                <img src="/demo-products/tote.jpg" alt="" />
+                <span>15 €</span>
+                </div>
+
+                <div class="merch-tile">
+                <img src="/demo-products/hoodie.jpg" alt="" />
+                <span>45 €</span>
+                </div>
+
+                <div class="merch-tile">
+                <img src="/demo-products/patch.jpg" alt="" />
+                <span>5 €</span>
+                </div>
+
+                <div class="merch-tile">
+                <img src="/demo-products/earrings.jpg" alt="" />
+                <span>12 €</span>
+                </div>
+
             </div>
-          </div>
+            </div>
         </article>
       </section>
 
@@ -1261,16 +1286,192 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 @keyframes stock-pulse { to { width: calc(var(--stock) - 8%); } }
 @keyframes event-pop { 0%,18% { opacity:0; transform:translateY(9px); } 28%,85% { opacity:1; transform:none; } 100% { opacity:0; } }
 
-.mosaic-demo { padding: 13px; }
-.mosaic-track { height: 314px; display: grid; grid-template-columns: 1.2fr .8fr 1fr; grid-template-rows: 1fr 1fr; gap: 8px; animation: mosaic-drift 8s ease-in-out infinite alternate; }
-.merch-tile { --tile-x:-20px;--tile-y:0;position: relative; display: grid; place-items: center; overflow: hidden; border-radius: 10px; background: linear-gradient(145deg,#583264,#201426); animation:tile-reveal 8s ease-in-out infinite; }
-.merch-tile:nth-child(2),.merch-tile:nth-child(5){--tile-x:0;--tile-y:-20px;animation-delay:.3s}.merch-tile:nth-child(3),.merch-tile:nth-child(6){--tile-x:20px;--tile-y:0;animation-delay:.6s}.merch-tile:nth-child(4){--tile-x:0;--tile-y:20px;animation-delay:.9s}
-.merch-tile i { width: 52px; height: 52px; display:grid; place-items:center; border-radius:50%; background:rgba(255,255,255,.07); font-size:1.6rem; }
-.merch-tile span { position:absolute; right:9px; bottom:8px; padding:4px 7px; border-radius:99px; color:#230c2a; background:#f1a0fc; font-size:.64rem; font-weight:850; }
-.tile-record { background:linear-gradient(145deg,#272033,#70407b); }.tile-bag { background:linear-gradient(145deg,#713b63,#291823); }.tile-cap { background:linear-gradient(145deg,#332663,#181528); }.merch-tile.alt { filter:hue-rotate(38deg); }
-@keyframes mosaic-drift { from { transform:scale(1.02) translate3d(-4px,5px,0); } to { transform:scale(1.06) translate3d(5px,-5px,0); } }
-@keyframes tile-reveal { 0%,10%{opacity:.15;transform:translate(var(--tile-x),var(--tile-y))}24%,88%{opacity:1;transform:none}100%{opacity:.2} }
+.mosaic-demo {
+  padding: 13px;
+}
 
+.mosaic-track {
+  height: 314px;
+
+  display: grid;
+  grid-template-columns: 1.2fr .8fr 1fr;
+  grid-template-rows: 1fr 1fr;
+
+  gap: 8px;
+
+  animation: mosaic-drift 8s ease-in-out infinite alternate;
+}
+
+
+/* Einzelne Produktkacheln */
+
+.merch-tile {
+  --tile-x: -20px;
+  --tile-y: 0;
+
+  position: relative;
+
+  overflow: hidden;
+
+  border-radius: 10px;
+
+  background: #201426;
+
+  animation: tile-reveal 8s ease-in-out infinite;
+}
+
+
+/* Unterschiedliche Einflugrichtungen */
+
+.merch-tile:nth-child(2),
+.merch-tile:nth-child(5) {
+  --tile-x: 0;
+  --tile-y: -20px;
+
+  animation-delay: .3s;
+}
+
+.merch-tile:nth-child(3),
+.merch-tile:nth-child(6) {
+  --tile-x: 20px;
+  --tile-y: 0;
+
+  animation-delay: .6s;
+}
+
+.merch-tile:nth-child(4) {
+  --tile-x: 0;
+  --tile-y: 20px;
+
+  animation-delay: .9s;
+}
+
+
+/* Produktfotos */
+
+.merch-tile img {
+  width: 100%;
+  height: 100%;
+
+  display: block;
+
+  object-fit: cover;
+
+  filter:
+    brightness(.72)
+    saturate(.82)
+    contrast(1.05);
+
+  transform: scale(1.04);
+
+  animation: merch-photo-drift 8s ease-in-out infinite alternate;
+}
+
+
+/* Leichter dunkler Verlauf über jedem Bild */
+
+.merch-tile::after {
+  position: absolute;
+
+  inset: 0;
+
+  pointer-events: none;
+
+  content: '';
+
+  background:
+    linear-gradient(
+      to top,
+      rgba(10, 6, 14, .5),
+      transparent 55%
+    );
+}
+
+
+/* Preis-Badge */
+
+.merch-tile span {
+  position: absolute;
+
+  right: 9px;
+  bottom: 8px;
+
+  z-index: 2;
+
+  padding: 4px 7px;
+
+  border-radius: 99px;
+
+  color: #230c2a;
+  background: #f1a0fc;
+
+  font-size: .64rem;
+  font-weight: 850;
+}
+
+
+/* Das helle Shirt-Foto etwas stärker angleichen */
+
+.merch-tile:first-child img {
+  filter:
+    brightness(.62)
+    saturate(.65)
+    contrast(1.08);
+}
+
+
+/* Sehr subtile Bewegung des gesamten Rasters */
+
+@keyframes mosaic-drift {
+  from {
+    transform:
+      scale(1.02)
+      translate3d(-4px, 5px, 0);
+  }
+
+  to {
+    transform:
+      scale(1.06)
+      translate3d(5px, -5px, 0);
+  }
+}
+
+
+/* Produktbilder bewegen sich minimal */
+
+@keyframes merch-photo-drift {
+  from {
+    transform: scale(1.04);
+  }
+
+  to {
+    transform: scale(1.10);
+  }
+}
+
+
+/* Kacheln erscheinen nacheinander */
+
+@keyframes tile-reveal {
+  0%, 10% {
+    opacity: .15;
+
+    transform:
+      translate(
+        var(--tile-x),
+        var(--tile-y)
+      );
+  }
+
+  24%, 88% {
+    opacity: 1;
+    transform: none;
+  }
+
+  100% {
+    opacity: .2;
+  }
+}
 .feature-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 13px; }
 .feature-card { min-height: 220px; padding: 25px; border: 1px solid var(--landing-line); border-radius: 16px; background: var(--landing-panel); opacity: 0; transform: translateY(18px); transition: opacity .5s, transform .5s, border-color .2s; }
 .feature-card.is-visible { opacity: 1; transform: none; }.feature-card:hover { border-color: rgba(240,142,255,.35); }
