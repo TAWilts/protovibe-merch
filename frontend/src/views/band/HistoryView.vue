@@ -5,8 +5,11 @@ import { useI18n } from 'vue-i18n'
 import { operationsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { Receipt } from '@/api/types'
+import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import { useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
+import { datedFilename, downloadCsv } from '@/utils/csvDownload'
+import { isWithinDateRange } from '@/utils/dateRange'
 
 /**
  * The receipt history, ported from _old/templates/history.html.
@@ -22,6 +25,8 @@ const flash = useFlashStore()
 const receipts = ref<Receipt[]>([])
 const loading = ref(true)
 const filter = ref('')
+const dateFrom = ref('')
+const dateTo = ref('')
 const expanded = ref<Set<string>>(new Set())
 
 /** Confirming a cancellation takes three seconds, as in the original — long
@@ -32,9 +37,10 @@ let holdTimer: number | undefined
 
 const visible = computed(() => {
   const needle = filter.value.trim().toLowerCase()
-  if (!needle) return receipts.value
-  return receipts.value.filter((receipt) =>
-    [
+  return receipts.value.filter((receipt) => {
+    if (!isWithinDateRange(receipt.sold_on, dateFrom.value, dateTo.value)) return false
+    if (!needle) return true
+    return [
       receipt.receipt_id,
       receipt.sold_on,
       receipt.customer_name,
@@ -45,14 +51,38 @@ const visible = computed(() => {
     ]
       .join(' ')
       .toLowerCase()
-      .includes(needle),
-  )
+      .includes(needle)
+  })
 })
-
 onMounted(load)
 
-async function load() {
-  loading.value = true
+function exportVisible() {
+  downloadCsv(
+    datedFilename('verkaeufe'),
+    [
+      t('common.date'),
+      t('history.receipt'),
+      t('sales.event'),
+      t('sales.soldBy'),
+      t('sales.paymentMethod'),
+      t('history.amount'),
+      t('history.donation'),
+      t('sales.customerName'),
+    ],
+    visible.value.map((receipt) => [
+      receipt.sold_on,
+      receipt.receipt_id,
+      receipt.event_name,
+      receipt.sold_by,
+      receipt.payment_method,
+      format(receipt.total_due_cents),
+      receipt.donation_cents ? format(receipt.donation_cents) : '',
+      receipt.customer_name,
+    ]),
+  )
+}
+
+async function load() {  loading.value = true
   try {
     receipts.value = (await operationsApi.history()).receipts
   } catch {
@@ -113,10 +143,18 @@ async function confirmCancel() {
         <p class="eyebrow">{{ t('history.eyebrow') }}</p>
         <h1>{{ t('history.title') }}</h1>
       </div>
-      <label class="table-filter">
-        {{ t('common.filter') }}
-        <input v-model="filter" type="search" :placeholder="t('history.filterHint')" />
-      </label>
+      <div class="history-toolbar">
+        <DateRangeFilter
+          v-model:from="dateFrom"
+          v-model:to="dateTo"
+          exportable
+          @export="exportVisible"
+        />
+        <label class="table-filter">
+          {{ t('common.filter') }}
+          <input v-model="filter" type="search" :placeholder="t('history.filterHint')" />
+        </label>
+      </div>
     </div>
 
     <section class="table-section">
@@ -259,6 +297,13 @@ async function confirmCancel() {
 </template>
 
 <style scoped>
+.history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
 .numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;

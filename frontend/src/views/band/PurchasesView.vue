@@ -5,9 +5,12 @@ import { useI18n } from 'vue-i18n'
 import { attachmentsApi, catalogueApi, purchasesApi, salesApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { Article, Attachment, Purchase, Variant } from '@/api/types'
+import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
+import { datedFilename, downloadCsv } from '@/utils/csvDownload'
+import { isWithinDateRange } from '@/utils/dateRange'
 
 /**
  * Goods receipts, ported from _old/templates/purchases.html.
@@ -26,6 +29,8 @@ const purchases = ref<Purchase[]>([])
 const loading = ref(true)
 const busy = ref(false)
 const filter = ref('')
+const dateFrom = ref('')
+const dateTo = ref('')
 
 const canManage = computed(() => session.capabilities?.can_manage_purchases ?? false)
 
@@ -113,9 +118,11 @@ const visibleReceipts = computed(() => {
     receipt.positions.push(purchase)
     receipt.totalCostCents += purchase.total_cost_cents
   }
+
   const needle = filter.value.trim().toLowerCase()
-  if (!needle) return receipts
   return receipts.filter((receipt) => {
+    if (!isWithinDateRange(receipt.purchasedOn, dateFrom.value, dateTo.value)) return false
+    if (!needle) return true
     const positions = receipt.positions
       .map((purchase) => `${purchase.article_name} ${purchase.variant_label} ${purchase.comment}`)
       .join(' ')
@@ -124,9 +131,39 @@ const visibleReceipts = computed(() => {
       .includes(needle)
   })
 })
+function exportVisible() {
+  downloadCsv(
+    datedFilename('einkaeufe'),
+    [
+      t('common.date'),
+      t('history.receipt'),
+      t('sales.articles'),
+      t('articles.variant'),
+      t('common.quantity'),
+      t('purchases.unitCost'),
+      t('purchases.total'),
+      t('purchases.supplier'),
+      t('purchases.invoiceReference'),
+      t('common.comment'),
+    ],
+    visibleReceipts.value.flatMap((receipt) =>
+      receipt.positions.map((purchase) => [
+        receipt.purchasedOn,
+        receipt.receiptId,
+        purchase.article_name,
+        purchase.variant_label,
+        purchase.quantity,
+        format(purchase.unit_cost_cents),
+        format(purchase.total_cost_cents),
+        receipt.supplier,
+        receipt.invoiceReference,
+        purchase.comment,
+      ]),
+    ),
+  )
+}
 
-onMounted(async () => {
-  await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
+onMounted(async () => {  await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
   loading.value = false
 })
 
@@ -477,10 +514,18 @@ async function removeReceipt(receipt: PurchaseReceipt) {
           <h2>{{ t('purchases.history') }}</h2>
           <p>{{ t('purchases.historyHint') }}</p>
         </div>
-        <label class="table-filter">
-          {{ t('common.filter') }}
-          <input v-model="filter" type="search" />
-        </label>
+        <div class="purchase-history-toolbar">
+          <DateRangeFilter
+            v-model:from="dateFrom"
+            v-model:to="dateTo"
+            exportable
+            @export="exportVisible"
+          />
+          <label class="table-filter">
+            {{ t('common.filter') }}
+            <input v-model="filter" type="search" />
+          </label>
+        </div>
       </div>
 
       <p v-if="!visibleReceipts.length" class="muted">{{ t('purchases.empty') }}</p>
@@ -585,6 +630,13 @@ async function removeReceipt(receipt: PurchaseReceipt) {
 </template>
 
 <style scoped>
+.purchase-history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
 .purchase-receipt-list {
   display: grid;
   gap: 12px;

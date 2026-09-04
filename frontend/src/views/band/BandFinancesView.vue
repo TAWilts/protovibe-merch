@@ -5,9 +5,12 @@ import { useI18n } from 'vue-i18n'
 import { reportsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { BandLedger } from '@/api/types'
+import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
+import { datedFilename, downloadCsv } from '@/utils/csvDownload'
+import { isWithinDateRange } from '@/utils/dateRange'
 
 /**
  * The band's own ledger, ported from _old/templates/band_finances.html.
@@ -24,9 +27,51 @@ const session = useSessionStore()
 const ledger = ref<BandLedger | null>(null)
 const loading = ref(true)
 const busy = ref(false)
+const dateFrom = ref('')
+const dateTo = ref('')
 
 const canManage = computed(() => session.capabilities?.can_manage_band_finances ?? false)
 
+const visibleEntries = computed(() =>
+  (ledger.value?.entries ?? []).filter((entry) =>
+    isWithinDateRange(entry.transaction_on, dateFrom.value, dateTo.value),
+  ),
+)
+
+const visibleTotals = computed(() => {
+  let income = 0
+  let expense = 0
+  const categories = new Map<string, {
+    category: string
+    income_cents: number
+    expense_cents: number
+    balance_cents: number
+  }>()
+
+  for (const entry of visibleEntries.value) {
+    if (entry.is_cancelled) continue
+    let category = categories.get(entry.category)
+    if (!category) {
+      category = { category: entry.category, income_cents: 0, expense_cents: 0, balance_cents: 0 }
+      categories.set(entry.category, category)
+    }
+    if (entry.transaction_type === 'income') {
+      income += entry.amount_cents
+      category.income_cents += entry.amount_cents
+    } else {
+      expense += entry.amount_cents
+      category.expense_cents += entry.amount_cents
+    }
+    category.balance_cents = category.income_cents - category.expense_cents
+  }
+
+  return {
+    income_cents: income,
+    expense_cents: expense,
+    balance_cents: income - expense,
+    categories: [...categories.values()],
+  }
+})
 const form = ref({
   transaction_type: 'income' as 'income' | 'expense',
   transaction_on: new Date().toISOString().slice(0, 10),
@@ -47,8 +92,27 @@ const canSubmit = computed(
 
 onMounted(load)
 
-async function load() {
-  loading.value = true
+function exportVisible() {
+  downloadCsv(
+    datedFilename('bandfinanzen'),
+    [
+      t('common.date'),
+      t('bandFinances.type'),
+      t('bandFinances.category'),
+      t('bandFinances.description'),
+      t('bandFinances.amount'),
+    ],
+    visibleEntries.value.map((entry) => [
+      entry.transaction_on,
+      entry.transaction_type === 'income' ? t('bandFinances.income') : t('bandFinances.expense'),
+      entry.category,
+      entry.description,
+      `${entry.transaction_type === 'expense' ? '-' : '+'}${format(entry.amount_cents)}`,
+    ]),
+  )
+}
+
+async function load() {  loading.value = true
   try {
     ledger.value = await reportsApi.bandLedger()
   } catch {
@@ -106,6 +170,7 @@ async function cancelEntry(id: number) {
         <p class="eyebrow">{{ t('bandFinances.eyebrow') }}</p>
         <h1>{{ t('bandFinances.title') }}</h1>
       </div>
+      <DateRangeFilter v-model:from="dateFrom" v-model:to="dateTo" />
     </div>
 
     <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
@@ -114,15 +179,15 @@ async function cancelEntry(id: number) {
       <section class="metric-grid band-finance-metrics">
         <article class="metric-card">
           <span>{{ t('bandFinances.income') }}</span>
-          <strong>{{ format(ledger.income_cents) }}</strong>
+          <strong>{{ format(visibleTotals.income_cents) }}</strong>
         </article>
         <article class="metric-card">
           <span>{{ t('bandFinances.expense') }}</span>
-          <strong>{{ format(ledger.expense_cents) }}</strong>
+          <strong>{{ format(visibleTotals.expense_cents) }}</strong>
         </article>
         <article class="metric-card">
           <span>{{ t('bandFinances.balance') }}</span>
-          <strong>{{ format(ledger.balance_cents) }}</strong>
+          <strong>{{ format(visibleTotals.balance_cents) }}</strong>
         </article>
       </section>
 
@@ -170,7 +235,7 @@ async function cancelEntry(id: number) {
         </form>
       </section>
 
-      <section v-if="ledger.categories.length" class="table-section">
+      <section v-if="visibleTotals.categories.length" class="table-section">
         <div class="section-heading"><div><h2>{{ t('bandFinances.byCategory') }}</h2></div></div>
         <div class="table-scroll">
           <table>
@@ -183,7 +248,7 @@ async function cancelEntry(id: number) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="entry in ledger.categories" :key="entry.category">
+              <tr v-for="entry in visibleTotals.categories" :key="entry.category">
                 <td>{{ entry.category }}</td>
                 <td class="numeric">{{ format(entry.income_cents) }}</td>
                 <td class="numeric">{{ format(entry.expense_cents) }}</td>
@@ -198,10 +263,13 @@ async function cancelEntry(id: number) {
         <div class="section-heading ledger-heading">
           <div>
             <h2>{{ t('bandFinances.allEntries') }}</h2>
-            <p>{{ t('bandFinances.entryCount', { count: ledger.entries.length }) }}</p>
+            <p>{{ t('bandFinances.entryCount', { count: visibleEntries.length }) }}</p>
           </div>
+          <button class="secondary-button" type="button" @click="exportVisible">
+            CSV
+          </button>
         </div>
-        <p v-if="!ledger.entries.length" class="muted">{{ t('bandFinances.empty') }}</p>
+        <p v-if="!visibleEntries.length" class="muted">{{ t('bandFinances.empty') }}</p>
         <div v-else class="table-scroll">
           <table>
             <thead>
@@ -215,7 +283,7 @@ async function cancelEntry(id: number) {
             </thead>
             <tbody>
               <tr
-                v-for="entry in ledger.entries"
+                v-for="entry in visibleEntries"
                 :key="entry.id"
                 :class="{ 'cancelled-row': entry.is_cancelled }"
               >
