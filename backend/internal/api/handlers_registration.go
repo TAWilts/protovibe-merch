@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"github.com/tawilts/protovibe-merch/backend/internal/audit"
 	"github.com/tawilts/protovibe-merch/backend/internal/auth"
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/mailer"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/platform"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/registration"
 	"github.com/tawilts/protovibe-merch/backend/internal/tenant"
@@ -95,12 +99,66 @@ func (s *Server) createRegistration(c *gin.Context) {
 		s.reportRegistrationError(c, err)
 		return
 	}
+	s.sendRegistrationNotification(c.Request.Context(), created.Request)
 	c.JSON(http.StatusCreated, gin.H{
 		"reference":  created.Request.PublicID,
 		"status":     created.Request.Status,
 		"status_url": created.StatusURL,
 		"expires_at": created.Request.ExpiresAt,
 	})
+}
+
+// sendRegistrationNotification alerts the platform operator after a public
+// registration request has been stored. Mail delivery is deliberately
+// best-effort: the database request remains authoritative even when SMTP is
+// unavailable, just like support-inbox notifications.
+func (s *Server) sendRegistrationNotification(ctx context.Context, request *models.BandRegistrationRequest) {
+	if request == nil {
+		return
+	}
+
+	settings, err := s.platformSettings(ctx)
+	if err != nil {
+		slog.Warn("registration notification settings unavailable",
+			"registration_id", request.ID, "error", err)
+		return
+	}
+	recipient := strings.TrimSpace(settings.NotificationEmail)
+	if recipient == "" {
+		return
+	}
+
+	mailSettings, err := s.outgoingMailSettings(ctx)
+	if err != nil {
+		slog.Warn("registration notification settings invalid",
+			"registration_id", request.ID, "error", err)
+		return
+	}
+
+	adminURL := strings.TrimRight(s.cfg.PublicBaseURL, "/") + "/admin/registrations"
+	err = mailer.Send(ctx, mailSettings, mailer.Message{
+		To:      recipient,
+		Subject: "[Merch Manager] Neue Bandregistrierung: " + request.RequestedBandName,
+		Body: fmt.Sprintf(
+			"Eine neue Bandregistrierung wartet auf Pruefung.\n\n"+
+				"Band: %s\n"+
+				"Slug: %s\n"+
+				"Admin-Benutzername: %s\n"+
+				"Kontakt: %s\n"+
+				"Referenz: %s\n\n"+
+				"Registrierung pruefen:\n%s\n",
+			request.RequestedBandName,
+			request.RequestedBandSlug,
+			request.RequestedAdminUsername,
+			request.RequestedContactEmail,
+			request.PublicID,
+			adminURL,
+		),
+	})
+	if err != nil && !errors.Is(err, mailer.ErrNotConfigured) && !errors.Is(err, mailer.ErrNoRecipient) {
+		slog.Warn("registration notification failed",
+			"registration_id", request.ID, "error", err)
+	}
 }
 
 type registrationTokenRequest struct {
