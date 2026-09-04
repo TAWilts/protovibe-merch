@@ -278,12 +278,28 @@ function removeValue(group: DraftGroup, index: number) {
   group.values.splice(index, 1)
 }
 
+function moveItem<T>(items: T[], index: number, delta: number) {
+  const target = index + delta
+  if (target < 0 || target >= items.length) return
+  const [item] = items.splice(index, 1)
+  if (item === undefined) return
+  items.splice(target, 0, item)
+}
+
+function moveValue(group: DraftGroup, index: number, delta: number) {
+  moveItem(group.values, index, delta)
+}
+
 function addGroup() {
   draft.value.groups.push({ id: 0, name: '', values: [{ id: 0, value: '' }] })
 }
 
 function removeGroup(index: number) {
   draft.value.groups.splice(index, 1)
+}
+
+function moveGroup(index: number, delta: number) {
+  moveItem(draft.value.groups, index, delta)
 }
 
 async function save() {
@@ -461,6 +477,24 @@ async function applyMinimumToAll() {
 
             <div v-for="(group, groupIndex) in draft.groups" :key="groupIndex" class="option-editor">
               <div class="option-editor-head">
+                <div class="option-reorder" :aria-label="t('articles.reorderOption')">
+                  <button
+                    class="icon-button"
+                    type="button"
+                    :disabled="groupIndex === 0"
+                    :title="t('articles.moveOptionUp')"
+                    :aria-label="t('articles.moveOptionUp')"
+                    @click="moveGroup(groupIndex, -1)"
+                  >↑</button>
+                  <button
+                    class="icon-button"
+                    type="button"
+                    :disabled="groupIndex === draft.groups.length - 1"
+                    :title="t('articles.moveOptionDown')"
+                    :aria-label="t('articles.moveOptionDown')"
+                    @click="moveGroup(groupIndex, 1)"
+                  >↓</button>
+                </div>
                 <input v-model="group.name" :placeholder="t('articles.optionName')" />
                 <button class="compact-button danger-button" type="button" @click="removeGroup(groupIndex)">
                   {{ t('common.delete') }}
@@ -468,6 +502,24 @@ async function applyMinimumToAll() {
               </div>
               <div class="option-editor-values">
                 <span v-for="(value, valueIndex) in group.values" :key="valueIndex" class="option-value-input">
+                  <span class="value-reorder" :aria-label="t('articles.reorderValue')">
+                    <button
+                      class="icon-button"
+                      type="button"
+                      :disabled="valueIndex === 0"
+                      :title="t('articles.moveValueEarlier')"
+                      :aria-label="t('articles.moveValueEarlier')"
+                      @click="moveValue(group, valueIndex, -1)"
+                    >←</button>
+                    <button
+                      class="icon-button"
+                      type="button"
+                      :disabled="valueIndex === group.values.length - 1"
+                      :title="t('articles.moveValueLater')"
+                      :aria-label="t('articles.moveValueLater')"
+                      @click="moveValue(group, valueIndex, 1)"
+                    >→</button>
+                  </span>
                   <input v-model="value.value" :placeholder="t('articles.optionValue')" />
                   <button class="icon-button" type="button" @click="removeValue(group, valueIndex)">×</button>
                 </span>
@@ -899,6 +951,26 @@ async function applyMinimumToAll() {
 .option-editor-head > input {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.option-reorder,
+.value-reorder {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+}
+
+.option-reorder .icon-button,
+.value-reorder .icon-button {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+}
+
+.option-reorder .icon-button:disabled,
+.value-reorder .icon-button:disabled {
+  opacity: 0.32;
+  cursor: default;
 }
 
 .option-editor-values {
