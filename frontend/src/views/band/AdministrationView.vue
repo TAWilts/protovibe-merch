@@ -531,14 +531,15 @@ function durationLabel(seconds: number): string {
 }
 
 .role-field-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  position: relative;
+  display: block;
+  line-height: inherit;
 }
 
 .role-help {
-  position: relative;
+  position: absolute;
+  top: -4px;
+  right: 0;
   z-index: 3;
 }
 
