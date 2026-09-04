@@ -729,7 +729,15 @@
         "seller": "Seller",
         "member": "Member",
         "manager": "Manager",
-        "band_admin": "Band-Admin"
+        "band_admin": "Band admin"
+      },
+      "roleHelp": "About roles",
+      "roleHelpIntro": "Which role is right for whom?",
+      "roleDescriptions": {
+        "seller": "Sellers are the people helping out at your merch stand. They can ring up sales, but they cannot access your administration, purchasing, or finance areas.",
+        "member": "Members are part of your band. In addition to selling, they can view the shared band areas and ongoing tasks, but they cannot manage products, finances, or user accounts.",
+        "manager": "Managers handle the day-to-day merch operation. They can manage products, purchases, band finances, and the product showcase, but they cannot manage users or approve support access.",
+        "band_admin": "Band admins have full control of the band's workspace. On top of all manager permissions, they manage users and roles, payment details, and support-access requests."
       }
     },
     "paymentQr": {

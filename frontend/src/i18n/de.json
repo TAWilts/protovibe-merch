@@ -730,6 +730,14 @@
         "member": "Member",
         "manager": "Manager",
         "band_admin": "Band-Admin"
+      },
+      "roleHelp": "Rollen erklärt",
+      "roleHelpIntro": "Welche Rolle passt zu wem?",
+      "roleDescriptions": {
+        "seller": "Seller sind eure Helfer am Merch-Stand. Sie können Verkäufe erfassen, kommen aber nicht in eure Verwaltungs-, Einkaufs- oder Finanzbereiche.",
+        "member": "Member sind Mitglieder eurer Band. Sie können neben dem Verkauf auch die gemeinsamen Band-Ansichten und laufenden Vorgänge einsehen, verwalten aber weder Artikel noch Finanzen oder Benutzer.",
+        "manager": "Manager kümmern sich um den laufenden Merch-Betrieb. Sie können Artikel, Einkäufe, Bandfinanzen und die Produktdarstellung verwalten, aber keine Benutzer oder Supportzugriffe administrieren.",
+        "band_admin": "Band-Admins haben die volle Verwaltung über eure Band. Zusätzlich zu allen Manager-Rechten verwalten sie Benutzer und Rollen, Zahlungsdaten und entscheiden über Supportzugriffe."
       }
     },
     "paymentQr": {

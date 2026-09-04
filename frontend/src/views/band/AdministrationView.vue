@@ -362,14 +362,31 @@ function durationLabel(seconds: number): string {
             {{ t('auth.username') }}
             <input v-model="newUser.username" required />
           </label>
-          <label>
-            {{ t('administration.users.role') }}
+          <div class="role-field">
+            <div class="role-field-label">
+              <span>{{ t('administration.users.role') }}</span>
+              <details class="role-help">
+                <summary
+                  :aria-label="t('administration.users.roleHelp')"
+                  :title="t('administration.users.roleHelp')"
+                >?</summary>
+                <div class="role-help-panel">
+                  <p>{{ t('administration.users.roleHelpIntro') }}</p>
+                  <dl class="role-list">
+                    <div v-for="role in assignableRoles" :key="role">
+                      <dt>{{ t(`administration.users.roles.${role}`) }}</dt>
+                      <dd>{{ t(`administration.users.roleDescriptions.${role}`) }}</dd>
+                    </div>
+                  </dl>
+                </div>
+              </details>
+            </div>
             <select v-model="newUser.role">
               <option v-for="role in assignableRoles" :key="role" :value="role">
                 {{ t(`administration.users.roles.${role}`) }}
               </option>
             </select>
-          </label>
+          </div>
         </div>
         <button class="primary-button" type="submit" :disabled="busy">
           {{ t('administration.users.create') }}
@@ -503,6 +520,77 @@ function durationLabel(seconds: number): string {
 </template>
 
 <style scoped>
+.role-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.role-field-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.role-help {
+  position: relative;
+  z-index: 3;
+}
+
+.role-help > summary {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--accent-bright);
+  background: var(--panel-raised);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 850;
+  list-style: none;
+}
+
+.role-help > summary::-webkit-details-marker {
+  display: none;
+}
+
+.role-help[open] > summary {
+  border-color: var(--accent);
+  background: var(--selection-hover);
+}
+
+.role-help-panel {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  width: min(430px, calc(100vw - 44px));
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.role-help-panel > p {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.role-help-panel .role-list {
+  margin-top: 0;
+}
+
 .setup-code-card {
   display: grid;
   gap: 8px;
