@@ -168,6 +168,10 @@ type PlatformSettings struct {
 	// Where support notifications go when no band-specific address applies.
 	NotificationEmail string `gorm:"size:254;not null;default:''" json:"notification_email"`
 
+	// Bands with StorageQuotaBytes == 0 inherit this instance-wide limit.
+	// Five GiB is the safe initial SaaS default; individual bands may override it.
+	DefaultStorageQuotaBytes int64 `gorm:"not null;default:5368709120" json:"default_storage_quota_bytes"`
+
 	UpdatedAt         time.Time `gorm:"not null" json:"updated_at"`
 	UpdatedByUserID   *int64    `json:"updated_by_user_id,omitempty"`
 	UpdatedByUsername string    `gorm:"size:150;not null;default:''" json:"updated_by_username"`

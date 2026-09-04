@@ -52,13 +52,14 @@ func (s *Service) crossBand(ctx context.Context) *gorm.DB {
 // BandSummary is one row of the admin center's band list.
 type BandSummary struct {
 	models.Band
-	UserCount      int64      `json:"user_count"`
-	ArticleCount   int64      `json:"article_count"`
-	SaleCount      int64      `json:"sale_count"`
-	StorageBytes   int64      `json:"storage_bytes"`
-	LastActivityAt *time.Time `json:"last_activity_at"`
-	LastBackupAt   *time.Time `json:"last_backup_at"`
-	ActiveGrantID  *int64     `json:"active_grant_id"`
+	UserCount                  int64      `json:"user_count"`
+	ArticleCount               int64      `json:"article_count"`
+	SaleCount                  int64      `json:"sale_count"`
+	StorageBytes               int64      `json:"storage_bytes"`
+	EffectiveStorageQuotaBytes int64      `json:"effective_storage_quota_bytes"`
+	LastActivityAt             *time.Time `json:"last_activity_at"`
+	LastBackupAt               *time.Time `json:"last_backup_at"`
+	ActiveGrantID              *int64     `json:"active_grant_id"`
 }
 
 // ListBands returns every band with the numbers the admin center displays.

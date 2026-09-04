@@ -30,6 +30,11 @@ const canManage = computed(() => session.capabilities?.is_system_admin ?? false)
 const newBand = ref({ slug: '', name: '', contact_email: '' })
 const creating = ref(false)
 
+const gibibyte = 1024 ** 3
+const globalQuotaGb = ref('5')
+const quotaPrompt = ref<{ band: BandSummary; inherit: boolean; quotaGb: string } | null>(null)
+const quotaBusy = ref(false)
+
 /**
  * Handing a band its first administrator. A band with no account cannot be
  * reached any other way — only a band admin may create accounts, and support
@@ -54,7 +59,9 @@ onMounted(load)
 async function load() {
   loading.value = true
   try {
-    bands.value = (await platformApi.bands(includeDeleted.value)).bands
+    const payload = await platformApi.bands(includeDeleted.value)
+    bands.value = payload.bands
+    globalQuotaGb.value = bytesToGiBInput(payload.default_storage_quota_bytes)
   } catch {
     flash.error(t('errors.generic'))
   } finally {
@@ -141,7 +148,7 @@ async function run(action: () => Promise<unknown>, message: string) {
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes <= 0) return '—'
+  if (bytes <= 0) return bytes === 0 ? '0 B' : '—'
   const units = ['B', 'kB', 'MB', 'GB']
   let value = bytes
   let unit = 0
@@ -150,6 +157,73 @@ function formatBytes(bytes: number): string {
     unit++
   }
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+}
+
+function bytesToGiBInput(bytes: number): string {
+  if (bytes <= 0) return '0'
+  return (bytes / gibibyte).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1')
+}
+
+function quotaBytes(value: string): number | null {
+  const parsed = Number(value.replace(',', '.'))
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  return Math.round(parsed * gibibyte)
+}
+
+function quotaPercent(band: BandSummary): number {
+  if (band.effective_storage_quota_bytes <= 0) return 0
+  return Math.min(100, Math.round((band.storage_bytes / band.effective_storage_quota_bytes) * 100))
+}
+
+function openQuota(band: BandSummary) {
+  quotaPrompt.value = {
+    band,
+    inherit: band.storage_quota_bytes === 0,
+    quotaGb: bytesToGiBInput(
+      band.storage_quota_bytes > 0 ? band.storage_quota_bytes : band.effective_storage_quota_bytes,
+    ),
+  }
+}
+
+async function saveBandQuota() {
+  if (!quotaPrompt.value || quotaBusy.value) return
+  const bytes = quotaPrompt.value.inherit ? 0 : quotaBytes(quotaPrompt.value.quotaGb)
+  if (bytes === null) {
+    flash.error(t('platform.bands.quotaInvalid'))
+    return
+  }
+  quotaBusy.value = true
+  try {
+    await platformApi.updateBand(quotaPrompt.value.band.id, { storage_quota_bytes: bytes })
+    quotaPrompt.value = null
+    flash.success(t('platform.bands.quotaSaved'))
+    await load()
+  } catch (error) {
+    report(error)
+  } finally {
+    quotaBusy.value = false
+  }
+}
+
+async function saveGlobalQuota(applyToAll: boolean) {
+  if (quotaBusy.value) return
+  const bytes = quotaBytes(globalQuotaGb.value)
+  if (bytes === null) {
+    flash.error(t('platform.bands.quotaInvalid'))
+    return
+  }
+  if (applyToAll && !window.confirm(t('platform.bands.quotaApplyAllConfirm'))) return
+
+  quotaBusy.value = true
+  try {
+    await platformApi.setStorageQuotaForAll(bytes, applyToAll)
+    flash.success(t(applyToAll ? 'platform.bands.quotaAppliedAll' : 'platform.bands.quotaSaved'))
+    await load()
+  } catch (error) {
+    report(error)
+  } finally {
+    quotaBusy.value = false
+  }
 }
 
 function formatDate(value: string | null): string {
@@ -195,6 +269,32 @@ function formatDate(value: string | null): string {
       </form>
     </section>
 
+    <section v-if="canManage" class="table-section quota-settings">
+      <div class="section-heading">
+        <div>
+          <h2>{{ t('platform.bands.quotaTitle') }}</h2>
+          <p>{{ t('platform.bands.quotaHint') }}</p>
+        </div>
+      </div>
+      <div class="quota-global-form">
+        <label>
+          {{ t('platform.bands.quotaGb') }}
+          <div class="quota-input">
+            <input v-model="globalQuotaGb" type="text" inputmode="decimal" />
+            <span>GB</span>
+          </div>
+        </label>
+        <div class="quota-global-actions">
+          <button class="secondary-button" type="button" :disabled="quotaBusy" @click="saveGlobalQuota(false)">
+            {{ t('platform.bands.quotaSaveDefault') }}
+          </button>
+          <button class="primary-button" type="button" :disabled="quotaBusy" @click="saveGlobalQuota(true)">
+            {{ t('platform.bands.quotaApplyAll') }}
+          </button>
+        </div>
+      </div>
+    </section>
+
     <section class="table-section">
       <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
       <p v-else-if="!visible.length" class="muted">{{ t('platform.bands.empty') }}</p>
@@ -207,6 +307,7 @@ function formatDate(value: string | null): string {
               <th class="numeric">{{ t('platform.bands.users') }}</th>
               <th class="numeric">{{ t('platform.bands.articles') }}</th>
               <th class="numeric">{{ t('platform.bands.sales') }}</th>
+              <th>{{ t('platform.bands.storage') }}</th>
               <th>{{ t('platform.bands.lastActivity') }}</th>
               <th>{{ t('platform.bands.lastBackup') }}</th>
               <th>{{ t('platform.bands.status') }}</th>
@@ -226,6 +327,21 @@ function formatDate(value: string | null): string {
               <td class="numeric">{{ band.user_count }}</td>
               <td class="numeric">{{ band.article_count }}</td>
               <td class="numeric">{{ band.sale_count }}</td>
+              <td class="storage-cell">
+                <strong :class="{ 'quota-over': band.storage_bytes > band.effective_storage_quota_bytes }">
+                  {{ formatBytes(band.storage_bytes) }} / {{ formatBytes(band.effective_storage_quota_bytes) }}
+                </strong>
+                <progress :value="quotaPercent(band)" max="100" :title="`${quotaPercent(band)} %`" />
+                <small>
+                  {{ band.storage_quota_bytes === 0 ? t('platform.bands.quotaGlobal') : t('platform.bands.quotaIndividual') }}
+                  <span v-if="band.storage_bytes > band.effective_storage_quota_bytes">
+                    · {{ t('platform.bands.quotaExceeded') }}
+                  </span>
+                </small>
+                <button v-if="canManage" class="compact-button" type="button" @click="openQuota(band)">
+                  {{ t('platform.bands.quotaEdit') }}
+                </button>
+              </td>
               <td>{{ formatDate(band.last_activity_at) }}</td>
               <td>{{ formatDate(band.last_backup_at) }}</td>
               <td>
@@ -279,6 +395,30 @@ function formatDate(value: string | null): string {
       </div>
       <p v-if="canManage" class="muted">{{ t('platform.bands.deleteHint') }}</p>
     </section>
+
+    <dialog v-if="quotaPrompt" class="confirmation-dialog" open>
+      <form class="stack-form" @submit.prevent="saveBandQuota">
+        <div>
+          <p class="eyebrow">{{ quotaPrompt.band.name }}</p>
+          <h2>{{ t('platform.bands.quotaEditTitle') }}</h2>
+        </div>
+        <label class="checkbox-row">
+          <input v-model="quotaPrompt.inherit" type="checkbox" />
+          <span>{{ t('platform.bands.quotaInherit') }}</span>
+        </label>
+        <label v-if="!quotaPrompt.inherit">
+          {{ t('platform.bands.quotaGb') }}
+          <div class="quota-input">
+            <input v-model="quotaPrompt.quotaGb" type="text" inputmode="decimal" required />
+            <span>GB</span>
+          </div>
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" @click="quotaPrompt = null">{{ t('common.cancel') }}</button>
+          <button class="primary-button" type="submit" :disabled="quotaBusy">{{ t('common.save') }}</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog v-if="adminPrompt" class="confirmation-dialog" open>
       <form class="stack-form" @submit.prevent="createBandAdmin">
@@ -363,6 +503,51 @@ function formatDate(value: string | null): string {
 .numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.quota-global-form,
+.quota-global-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+
+.quota-global-form {
+  justify-content: space-between;
+}
+
+.quota-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quota-input input {
+  max-width: 9rem;
+}
+
+.storage-cell {
+  min-width: 180px;
+}
+
+.storage-cell strong,
+.storage-cell small,
+.storage-cell progress {
+  display: block;
+}
+
+.storage-cell progress {
+  width: 100%;
+  margin: 5px 0;
+}
+
+.storage-cell .compact-button {
+  margin-top: 6px;
+}
+
+.quota-over {
+  color: var(--danger);
 }
 
 td small {

@@ -22,7 +22,16 @@ func (s *Server) checkStorageQuota(c *gin.Context, incomingBytes, replacingBytes
 		serverError(c, err)
 		return false
 	}
-	if band.StorageQuotaBytes <= 0 {
+	quota := band.StorageQuotaBytes
+	if quota <= 0 {
+		settings, err := s.platformSettings(ctx)
+		if err != nil {
+			serverError(c, err)
+			return false
+		}
+		quota = settings.DefaultStorageQuotaBytes
+	}
+	if quota <= 0 {
 		return true
 	}
 
@@ -35,7 +44,7 @@ func (s *Server) checkStorageQuota(c *gin.Context, incomingBytes, replacingBytes
 	if projected < 0 {
 		projected = incomingBytes
 	}
-	if projected > band.StorageQuotaBytes {
+	if projected > quota {
 		fail(c, http.StatusInsufficientStorage, "storage_quota_exceeded",
 			"the storage quota for this band would be exceeded")
 		return false

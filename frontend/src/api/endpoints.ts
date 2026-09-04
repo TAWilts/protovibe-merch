@@ -220,7 +220,14 @@ export const platformApi = {
 		api.post<BandRegistrationRequest>(`/platform/registration-requests/${id}/reject`, { note }),
 
   bands: (includeDeleted = false) =>
-    api.get<{ bands: BandSummary[] }>(`/platform/bands${includeDeleted ? '?include_deleted=true' : ''}`),
+    api.get<{ bands: BandSummary[]; default_storage_quota_bytes: number }>(
+      `/platform/bands${includeDeleted ? '?include_deleted=true' : ''}`,
+    ),
+  setStorageQuotaForAll: (defaultStorageQuotaBytes: number, applyToAll: boolean) =>
+    api.put<{ default_storage_quota_bytes: number; apply_to_all: boolean }>(
+      '/platform/bands/storage-quota',
+      { default_storage_quota_bytes: defaultStorageQuotaBytes, apply_to_all: applyToAll },
+    ),
   createBand: (payload: { slug: string; name: string; contact_email?: string }) =>
     api.post<Band>('/platform/bands', payload),
   updateBand: (id: number, payload: Record<string, unknown>) =>

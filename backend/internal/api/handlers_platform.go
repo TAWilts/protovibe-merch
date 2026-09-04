@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/audit"
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
@@ -27,6 +28,7 @@ func (s *Server) registerPlatformRoutes(g *gin.RouterGroup) {
 	// support admin may look but not reshape the instance.
 	admin := p.Group("", requireSystemAdmin())
 	admin.POST("/bands", s.createBand)
+	admin.PUT("/bands/storage-quota", s.updateGlobalStorageQuota)
 	admin.PATCH("/bands/:id", s.updateBand)
 	admin.POST("/bands/:id/activate", s.activateBand)
 	admin.POST("/bands/:id/deactivate", s.deactivateBand)
@@ -51,13 +53,36 @@ func (s *Server) registerPlatformRoutes(g *gin.RouterGroup) {
 
 func (s *Server) listBands(c *gin.Context) {
 	includeDeleted := c.Query("include_deleted") == "true"
+	ctx := c.Request.Context()
 
-	bands, err := s.platform.ListBands(c.Request.Context(), includeDeleted)
+	bands, err := s.platform.ListBands(ctx, includeDeleted)
 	if err != nil {
 		s.reportPlatformError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"bands": bands})
+	settings, err := s.platformSettings(ctx)
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+
+	for i := range bands {
+		used, err := s.files.UsageBytes(ctx, bands[i].ID)
+		if err != nil {
+			serverError(c, err)
+			return
+		}
+		bands[i].StorageBytes = used
+		bands[i].EffectiveStorageQuotaBytes = bands[i].StorageQuotaBytes
+		if bands[i].EffectiveStorageQuotaBytes <= 0 {
+			bands[i].EffectiveStorageQuotaBytes = settings.DefaultStorageQuotaBytes
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"bands":                       bands,
+		"default_storage_quota_bytes": settings.DefaultStorageQuotaBytes,
+	})
 }
 
 func (s *Server) getBand(c *gin.Context) {
@@ -163,6 +188,61 @@ func (s *Server) createBandBootstrapAdmin(c *gin.Context) {
 		"id": user.ID, "username": user.Username, "role": user.Role,
 		// Shown once; it is never retrievable afterwards.
 		"setup_code": code,
+	})
+}
+
+type globalStorageQuotaRequest struct {
+	DefaultStorageQuotaBytes int64 `json:"default_storage_quota_bytes"`
+	ApplyToAll               bool  `json:"apply_to_all"`
+}
+
+func (s *Server) updateGlobalStorageQuota(c *gin.Context) {
+	var req globalStorageQuotaRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if req.DefaultStorageQuotaBytes <= 0 {
+		fail(c, http.StatusBadRequest, "invalid_storage_quota", "the storage quota must be greater than zero")
+		return
+	}
+
+	ctx := tenant.WithCrossBandAccess(c.Request.Context())
+	state := stateFrom(c)
+	now := time.Now().UTC()
+
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.PlatformSettings{}).Where("id = ?", 1).Updates(map[string]any{
+			"default_storage_quota_bytes": req.DefaultStorageQuotaBytes,
+			"updated_at":                  now,
+			"updated_by_user_id":          state.User.ID,
+			"updated_by_username":         state.User.Username,
+		}).Error; err != nil {
+			return err
+		}
+		if req.ApplyToAll {
+			if err := tx.Model(&models.Band{}).Where("storage_quota_bytes <> 0").
+				Update("storage_quota_bytes", 0).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		serverError(c, err)
+		return
+	}
+
+	s.invalidateSettings()
+	s.audit.Log(c.Request.Context(), actorFrom(c), audit.Entry{
+		Action: audit.ActionSettingsChanged, EntityType: "platform_settings",
+		Details: map[string]any{
+			"default_storage_quota_bytes": req.DefaultStorageQuotaBytes,
+			"apply_to_all":                req.ApplyToAll,
+		},
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"default_storage_quota_bytes": req.DefaultStorageQuotaBytes,
+		"apply_to_all":                req.ApplyToAll,
 	})
 }
 

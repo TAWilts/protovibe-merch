@@ -452,6 +452,7 @@ export interface BandSummary extends Band {
   article_count: number
   sale_count: number
   storage_bytes: number
+  effective_storage_quota_bytes: number
   last_activity_at: string | null
   last_backup_at: string | null
   active_grant_id: number | null

@@ -75,5 +75,8 @@ func EnsurePlatformSettings(ctx context.Context, database *gorm.DB) error {
 	if count > 0 {
 		return nil
 	}
-	return db.Create(&models.PlatformSettings{ID: 1}).Error
+	return db.Create(&models.PlatformSettings{
+		ID:                       1,
+		DefaultStorageQuotaBytes: 5 * 1024 * 1024 * 1024,
+	}).Error
 }
