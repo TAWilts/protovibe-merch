@@ -40,6 +40,6 @@ var ControlPlaneTables = map[string]bool{
 	"backup_runs":                true,
 	"audit_log":                  true,
 	"band_registration_requests": true,
-	"telemetry_daily":             true,
+	"telemetry_daily":            true,
 	"schema_migrations":          true,
 }

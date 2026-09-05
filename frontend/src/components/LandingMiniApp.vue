@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
+import { marketingLocale } from '@/i18n'
+
 type DemoTab = 'sale' | 'inventory' | 'balances' | 'slideshow'
 
 interface DemoProduct {
@@ -15,7 +17,7 @@ interface DemoProduct {
   image: string
 }
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const tab = ref<DemoTab>('sale')
 const products = reactive<DemoProduct[]>([
@@ -101,7 +103,7 @@ const activeSlide = computed(() => products[slideshowIndex.value % products.leng
 
 function formatMoney(cents: number) {
   return new Intl.NumberFormat(
-    locale.value === 'en' ? 'en-GB' : 'de-DE',
+    marketingLocale() === 'en' ? 'en-GB' : 'de-DE',
     { style: 'currency', currency: 'EUR' },
   ).format(cents / 100)
 }
