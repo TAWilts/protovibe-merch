@@ -22,6 +22,7 @@ func (s *Server) registerReportRoutes(g *gin.RouterGroup) {
 	managers.POST("/:id/cancel", s.cancelBandTransaction)
 	managers.POST("/recurring", s.createRecurringBandTransaction)
 	managers.PATCH("/recurring/:id/active", s.setRecurringBandTransactionActive)
+	managers.DELETE("/recurring/:id", s.deleteRecurringBandTransaction)
 }
 
 // balances is the stock and money overview.
@@ -154,6 +155,26 @@ func (s *Server) setRecurringBandTransactionActive(c *gin.Context) {
 		EntityType: "recurring_band_transaction",
 		EntityID:   &id,
 		Details:    map[string]any{"active": req.Active},
+	})
+	c.Status(http.StatusNoContent)
+}
+
+func (s *Server) deleteRecurringBandTransaction(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+
+	if err := s.bandFinance.DeleteRecurring(c.Request.Context(), id); err != nil {
+		s.reportBandFinanceError(c, err)
+		return
+	}
+
+	s.audit.Log(c.Request.Context(), actorFrom(c), audit.Entry{
+		Action:     "band_transaction.recurring_deleted",
+		EntityType: "recurring_band_transaction",
+		EntityID:   &id,
+		Details:    map[string]any{"historic_bookings_kept": true},
 	})
 	c.Status(http.StatusNoContent)
 }

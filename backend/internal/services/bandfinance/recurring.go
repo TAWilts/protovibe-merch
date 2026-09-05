@@ -105,6 +105,20 @@ func (s *Service) SetRecurringActive(ctx context.Context, id int64, active bool,
 		}).Error
 }
 
+// DeleteRecurring removes only the scheduling rule. Already materialised
+// band_transactions remain ordinary historic ledger entries. The run ledger is
+// removed by its ON DELETE CASCADE foreign key.
+func (s *Service) DeleteRecurring(ctx context.Context, id int64) error {
+	var rule models.RecurringBandTransaction
+	if err := s.db.WithContext(ctx).First(&rule, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return s.db.WithContext(ctx).Delete(&rule).Error
+}
+
 // MaterializeDueForBand catches one band up through the supplied date.
 func (s *Service) MaterializeDueForBand(ctx context.Context, through models.Date) (int, error) {
 	bandID, err := tenant.BandID(ctx)

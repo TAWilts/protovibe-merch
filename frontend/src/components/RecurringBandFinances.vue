@@ -88,6 +88,18 @@ async function setActive(rule: RecurringBandTransaction, active: boolean) {
     report(error)
   }
 }
+
+async function deleteRule(rule: RecurringBandTransaction) {
+  if (!window.confirm(t('bandFinances.recurring.deleteConfirm'))) return
+  try {
+    await reportsApi.deleteRecurringBandEntry(rule.id)
+    flash.success(t('bandFinances.recurring.deleted'))
+    await load()
+    emit('changed')
+  } catch (error) {
+    report(error)
+  }
+}
 </script>
 
 <template>
@@ -177,16 +189,25 @@ async function setActive(rule: RecurringBandTransaction, active: boolean) {
               {{ rule.transaction_type === 'expense' ? '−' : '+' }}{{ format(rule.amount_cents) }}
             </td>
             <td>
-              <button
-                class="compact-button"
-                :class="rule.is_active ? 'secondary-button' : 'primary-button'"
-                type="button"
-                @click="setActive(rule, !rule.is_active)"
-              >
-                {{ rule.is_active
-                  ? t('bandFinances.recurring.pause')
-                  : t('bandFinances.recurring.resume') }}
-              </button>
+              <div class="recurring-actions">
+                <button
+                  class="compact-button"
+                  :class="rule.is_active ? 'secondary-button' : 'primary-button'"
+                  type="button"
+                  @click="setActive(rule, !rule.is_active)"
+                >
+                  {{ rule.is_active
+                    ? t('bandFinances.recurring.pause')
+                    : t('bandFinances.recurring.resume') }}
+                </button>
+                <button
+                  class="compact-button danger-button"
+                  type="button"
+                  @click="deleteRule(rule)"
+                >
+                  {{ t('bandFinances.recurring.delete') }}
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -215,6 +236,12 @@ async function setActive(rule: RecurringBandTransaction, active: boolean) {
 
 .recurring-list small {
   color: var(--muted);
+}
+
+.recurring-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .numeric {

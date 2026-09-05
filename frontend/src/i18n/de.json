@@ -379,6 +379,9 @@
       "next": "Nächste Buchung",
       "pause": "Pausieren",
       "resume": "Fortsetzen",
+      "delete": "Löschen",
+      "deleteConfirm": "Wiederkehrende Buchung wirklich löschen? Bereits erzeugte Buchungen bleiben in den Bandfinanzen erhalten.",
+      "deleted": "Wiederkehrende Buchung gelöscht.",
       "empty": "Noch keine wiederkehrenden Buchungen eingerichtet."
     }
   },

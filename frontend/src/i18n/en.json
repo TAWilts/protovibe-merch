@@ -379,6 +379,9 @@
       "next": "Next booking",
       "pause": "Pause",
       "resume": "Resume",
+      "delete": "Delete",
+      "deleteConfirm": "Delete this recurring booking? Entries already created in band finances will remain.",
+      "deleted": "Recurring booking deleted.",
       "empty": "No recurring bookings configured yet."
     }
   },

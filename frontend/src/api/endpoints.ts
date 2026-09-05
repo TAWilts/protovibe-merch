@@ -191,6 +191,8 @@ export const reportsApi = {
   }) => api.post<RecurringBandTransaction>('/band-finances/recurring', payload),
   setRecurringBandEntryActive: (id: number, active: boolean) =>
     api.patch<void>(`/band-finances/recurring/${id}/active`, { active }),
+  deleteRecurringBandEntry: (id: number) =>
+    api.delete<void>(`/band-finances/recurring/${id}`),
 }
 
 export const purchasesApi = {
