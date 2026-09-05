@@ -6,6 +6,7 @@ import { reportsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { BandLedger } from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
+import RecurringBandFinances from '@/components/RecurringBandFinances.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
@@ -234,6 +235,12 @@ async function cancelEntry(id: number) {
           </button>
         </form>
       </section>
+
+      <RecurringBandFinances
+        v-if="canManage"
+        :suggested-categories="ledger.suggested_categories"
+        @changed="load"
+      />
 
       <section v-if="visibleTotals.categories.length" class="table-section">
         <div class="section-heading"><div><h2>{{ t('bandFinances.byCategory') }}</h2></div></div>

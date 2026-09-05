@@ -227,7 +227,8 @@
     "registration_decided": "This request has already been processed.",
     "registration_expired": "This request has expired.",
     "registration_not_found": "This registration request was not found.",
-    "invalid_decision_note": "The note must not exceed 1000 characters."
+    "invalid_decision_note": "The note must not exceed 1000 characters.",
+    "invalid_interval": "The recurrence interval must be at least 1 day, week, month or year."
   },
   "history": {
     "eyebrow": "Belege",
@@ -345,7 +346,27 @@
     "empty": "Noch keine Buchungen erfasst.",
     "saved": "Buchung gespeichert.",
     "cancel": "Stornieren",
-    "cancelled": "Buchung storniert."
+    "cancelled": "Buchung storniert.",
+    "recurring": {
+      "title": "Recurring income and expenses",
+      "hint": "Rules create ordinary ledger entries when due. Time elapsed while paused is not back-billed when a rule resumes.",
+      "firstDate": "First booking",
+      "every": "Every",
+      "units": {
+        "day": "days",
+        "week": "weeks",
+        "month": "months",
+        "year": "years"
+      },
+      "create": "Create recurrence",
+      "saved": "Recurring booking created.",
+      "interval": "Interval",
+      "intervalLabel": "every {count} {unit}",
+      "next": "Next booking",
+      "pause": "Pause",
+      "resume": "Resume",
+      "empty": "No recurring bookings configured yet."
+    }
   },
   "purchases": {
     "eyebrow": "Wareneingang",

@@ -259,3 +259,6 @@ func (s *Server) Registrations() *registration.Service { return s.registrations 
 
 // PaymentQR exposes the payment-code service to the scheduler.
 func (s *Server) PaymentQR() *paymentqr.Service { return s.paymentQR }
+
+// BandFinance exposes recurring ledger materialisation to the scheduler.
+func (s *Server) BandFinance() *bandfinance.Service { return s.bandFinance }

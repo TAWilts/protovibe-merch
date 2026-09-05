@@ -42,6 +42,7 @@ var bandScopedTables = []string{
 	"payment_qr_settings", "payment_qr_intents",
 	"purchases", "purchase_receipt_attachments",
 	"band_transactions", "band_transaction_attachments",
+	"recurring_band_transactions", "recurring_band_transaction_runs",
 	"admin_messages",
 }
 

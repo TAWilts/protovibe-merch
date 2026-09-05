@@ -48,7 +48,7 @@ func run() error {
 	}
 
 	jobs := scheduler.New(cfg, apiServer.Auth(), apiServer.Backups(),
-		apiServer.Platform(), apiServer.Registrations(), apiServer.PaymentQR())
+		apiServer.Platform(), apiServer.Registrations(), apiServer.PaymentQR(), apiServer.BandFinance())
 	if err := jobs.Start(); err != nil {
 		return err
 	}

@@ -14,7 +14,9 @@ import (
 
 	"github.com/tawilts/protovibe-merch/backend/internal/auth"
 	"github.com/tawilts/protovibe-merch/backend/internal/config"
+	"github.com/tawilts/protovibe-merch/backend/internal/models"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/backup"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/bandfinance"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/paymentqr"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/platform"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/registration"
@@ -29,6 +31,7 @@ type Scheduler struct {
 	platform      *platform.Service
 	registrations *registration.Service
 	paymentQR     *paymentqr.Service
+	bandFinance   *bandfinance.Service
 }
 
 // New builds the scheduler.
@@ -39,6 +42,7 @@ func New(
 	platformService *platform.Service,
 	registrationService *registration.Service,
 	paymentQR *paymentqr.Service,
+	bandFinance *bandfinance.Service,
 ) *Scheduler {
 	return &Scheduler{
 		cron:          cron.New(),
@@ -48,6 +52,7 @@ func New(
 		platform:      platformService,
 		registrations: registrationService,
 		paymentQR:     paymentQR,
+		bandFinance:   bandFinance,
 	}
 }
 
@@ -56,6 +61,12 @@ func (s *Scheduler) Start() error {
 	// Housekeeping runs often because its jobs are cheap and their delay is
 	// user-visible: an expired support grant should close within minutes.
 	if _, err := s.cron.AddFunc("*/5 * * * *", s.housekeeping); err != nil {
+		return err
+	}
+
+	// Recurring finance entries are due on calendar dates. Page loads also
+	// catch up missed runs; this daily job makes them appear without a visit.
+	if _, err := s.cron.AddFunc("7 0 * * *", s.recurringBandFinances); err != nil {
 		return err
 	}
 
@@ -71,6 +82,7 @@ func (s *Scheduler) Start() error {
 	}
 
 	s.cron.Start()
+	go s.recurringBandFinances()
 	slog.Info("scheduler started",
 		"full_backup", s.cfg.BackupCronFull, "per_band_backup", s.cfg.BackupCronPerBand)
 	return nil
@@ -109,6 +121,22 @@ func (s *Scheduler) housekeeping() {
 		slog.Error("could not prune backups", "error", err)
 	} else if removed > 0 {
 		slog.Info("backups pruned", "removed", removed)
+	}
+}
+
+func (s *Scheduler) recurringBandFinances() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	now := time.Now().UTC()
+	today := models.NewDate(now.Year(), now.Month(), now.Day())
+	generated, err := s.bandFinance.MaterializeDueAll(ctx, today)
+	if err != nil {
+		slog.Error("could not materialize recurring band finances", "error", err)
+		return
+	}
+	if generated > 0 {
+		slog.Info("recurring band finances materialized", "entries", generated)
 	}
 }
 

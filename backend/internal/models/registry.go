@@ -20,6 +20,7 @@ func AllModels() []any {
 		&PaymentQRSettings{}, &PaymentQRIntent{},
 		&Purchase{}, &PurchaseReceiptAttachment{},
 		&BandTransaction{}, &BandTransactionAttachment{},
+		&RecurringBandTransaction{}, &RecurringBandTransactionRun{},
 		&AdminMessage{},
 	}
 }

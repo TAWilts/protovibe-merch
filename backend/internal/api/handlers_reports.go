@@ -15,14 +15,21 @@ func (s *Server) registerReportRoutes(g *gin.RouterGroup) {
 	members := g.Group("", requireAuth(), requireBandRole(models.RoleMember))
 	members.GET("/balances", s.balances)
 	members.GET("/band-finances", s.listBandFinances)
+	members.GET("/band-finances/recurring", s.listRecurringBandTransactions)
 
 	managers := g.Group("/band-finances", requireAuth(), requireBandRole(models.RoleManager))
 	managers.POST("", s.createBandTransaction)
 	managers.POST("/:id/cancel", s.cancelBandTransaction)
+	managers.POST("/recurring", s.createRecurringBandTransaction)
+	managers.PATCH("/recurring/:id/active", s.setRecurringBandTransactionActive)
 }
 
 // balances is the stock and money overview.
 func (s *Server) balances(c *gin.Context) {
+	if _, err := s.bandFinance.MaterializeDueForBand(c.Request.Context(), s.today()); err != nil {
+		serverError(c, err)
+		return
+	}
 	payload, err := s.balancesService.Compute(c.Request.Context())
 	if err != nil {
 		serverError(c, err)
@@ -32,6 +39,10 @@ func (s *Server) balances(c *gin.Context) {
 }
 
 func (s *Server) listBandFinances(c *gin.Context) {
+	if _, err := s.bandFinance.MaterializeDueForBand(c.Request.Context(), s.today()); err != nil {
+		serverError(c, err)
+		return
+	}
 	ledger, err := s.bandFinance.List(c.Request.Context())
 	if err != nil {
 		serverError(c, err)
@@ -69,6 +80,84 @@ func (s *Server) createBandTransaction(c *gin.Context) {
 	c.JSON(http.StatusCreated, transaction)
 }
 
+func (s *Server) listRecurringBandTransactions(c *gin.Context) {
+	rules, err := s.bandFinance.ListRecurring(c.Request.Context())
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"recurring": rules})
+}
+
+func (s *Server) createRecurringBandTransaction(c *gin.Context) {
+	var entry bandfinance.RecurringEntry
+	if err := c.ShouldBindJSON(&entry); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if entry.StartOn.IsZero() {
+		entry.StartOn = s.today()
+	}
+
+	state := stateFrom(c)
+	rule, err := s.bandFinance.CreateRecurring(c.Request.Context(), entry, bandfinance.Actor{
+		UserID: state.User.ID, Username: state.User.Username,
+	})
+	if err != nil {
+		s.reportBandFinanceError(c, err)
+		return
+	}
+
+	if _, err := s.bandFinance.MaterializeDueForBand(c.Request.Context(), s.today()); err != nil {
+		serverError(c, err)
+		return
+	}
+	s.audit.Log(c.Request.Context(), actorFrom(c), audit.Entry{
+		Action:     "band_transaction.recurring_created",
+		EntityType: "recurring_band_transaction",
+		EntityID:   &rule.ID,
+		Details: map[string]any{
+			"interval_value": rule.IntervalValue,
+			"interval_unit":  rule.IntervalUnit,
+		},
+	})
+	c.JSON(http.StatusCreated, rule)
+}
+
+func (s *Server) setRecurringBandTransactionActive(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		Active bool `json:"active"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	if err := s.bandFinance.SetRecurringActive(c.Request.Context(), id, req.Active, s.today()); err != nil {
+		s.reportBandFinanceError(c, err)
+		return
+	}
+	if req.Active {
+		if _, err := s.bandFinance.MaterializeDueForBand(c.Request.Context(), s.today()); err != nil {
+			serverError(c, err)
+			return
+		}
+	}
+
+	s.audit.Log(c.Request.Context(), actorFrom(c), audit.Entry{
+		Action:     "band_transaction.recurring_state",
+		EntityType: "recurring_band_transaction",
+		EntityID:   &id,
+		Details:    map[string]any{"active": req.Active},
+	})
+	c.Status(http.StatusNoContent)
+}
+
 func (s *Server) cancelBandTransaction(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -103,6 +192,8 @@ func (s *Server) reportBandFinanceError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "invalid_type", err.Error())
 	case errors.Is(err, bandfinance.ErrMissingFields):
 		fail(c, http.StatusBadRequest, "missing_fields", err.Error())
+	case errors.Is(err, bandfinance.ErrInvalidInterval):
+		fail(c, http.StatusBadRequest, "invalid_interval", err.Error())
 	default:
 		serverError(c, err)
 	}

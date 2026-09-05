@@ -227,7 +227,8 @@
     "registration_decided": "Diese Anfrage wurde bereits bearbeitet.",
     "registration_expired": "Diese Anfrage ist abgelaufen.",
     "registration_not_found": "Diese Registrierungsanfrage wurde nicht gefunden.",
-    "invalid_decision_note": "Der Hinweis darf höchstens 1000 Zeichen lang sein."
+    "invalid_decision_note": "Der Hinweis darf höchstens 1000 Zeichen lang sein.",
+    "invalid_interval": "Das Wiederholungsintervall muss mindestens 1 Tag, Woche, Monat oder Jahr betragen."
   },
   "history": {
     "eyebrow": "Belege",
@@ -345,7 +346,27 @@
     "empty": "Noch keine Buchungen erfasst.",
     "saved": "Buchung gespeichert.",
     "cancel": "Stornieren",
-    "cancelled": "Buchung storniert."
+    "cancelled": "Buchung storniert.",
+    "recurring": {
+      "title": "Wiederkehrende Ein- und Ausgaben",
+      "hint": "Regeln erzeugen zum fälligen Datum normale Buchungen. Pausierte Zeiträume werden beim Fortsetzen nicht nachträglich gebucht.",
+      "firstDate": "Erste Buchung",
+      "every": "Alle",
+      "units": {
+        "day": "Tage",
+        "week": "Wochen",
+        "month": "Monate",
+        "year": "Jahre"
+      },
+      "create": "Wiederholung anlegen",
+      "saved": "Wiederkehrende Buchung angelegt.",
+      "interval": "Intervall",
+      "intervalLabel": "alle {count} {unit}",
+      "next": "Nächste Buchung",
+      "pause": "Pausieren",
+      "resume": "Fortsetzen",
+      "empty": "Noch keine wiederkehrenden Buchungen eingerichtet."
+    }
   },
   "purchases": {
     "eyebrow": "Wareneingang",

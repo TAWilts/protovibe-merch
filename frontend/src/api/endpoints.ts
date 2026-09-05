@@ -9,6 +9,7 @@ import type {
   BalancesPayload,
   BandLedger,
   BandTransaction,
+  RecurringBandTransaction,
   DeliveryStatus,
   Identity,
   LoginResponse,
@@ -176,6 +177,19 @@ export const reportsApi = {
     amount_cents: number
   }) => api.post<BandTransaction>('/band-finances', payload),
   cancelBandEntry: (id: number) => api.post<void>(`/band-finances/${id}/cancel`),
+  recurringBandEntries: () =>
+    api.get<{ recurring: RecurringBandTransaction[] }>('/band-finances/recurring'),
+  createRecurringBandEntry: (payload: {
+    transaction_type: 'income' | 'expense'
+    start_on: string
+    category: string
+    description: string
+    amount_cents: number
+    interval_value: number
+    interval_unit: 'day' | 'week' | 'month' | 'year'
+  }) => api.post<RecurringBandTransaction>('/band-finances/recurring', payload),
+  setRecurringBandEntryActive: (id: number, active: boolean) =>
+    api.patch<void>(`/band-finances/recurring/${id}/active`, { active }),
 }
 
 export const purchasesApi = {

@@ -407,6 +407,19 @@ export interface BandTransaction {
   created_by_username: string
 }
 
+export interface RecurringBandTransaction {
+  id: number
+  transaction_type: 'income' | 'expense'
+  start_on: string
+  next_run_on: string
+  category: string
+  description: string
+  amount_cents: number
+  interval_value: number
+  interval_unit: 'day' | 'week' | 'month' | 'year'
+  is_active: boolean
+}
+
 export interface CategoryTotal {
   category: string
   income_cents: number
