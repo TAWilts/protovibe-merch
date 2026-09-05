@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
 )
@@ -22,18 +23,23 @@ import (
 var (
 	ErrNotFound         = errors.New("bandfinance: no such entry")
 	ErrAlreadyCancelled = errors.New("bandfinance: this entry is already cancelled")
+	ErrAlreadySettled   = errors.New("bandfinance: this entry is already settled")
+	ErrSettledImmutable = errors.New("bandfinance: settled entries cannot be edited")
 	ErrInvalidAmount    = errors.New("bandfinance: the amount must be positive")
 	ErrInvalidType      = errors.New("bandfinance: the type must be income or expense")
+	ErrInvalidDate      = errors.New("bandfinance: the transaction date is required")
 	ErrMissingFields    = errors.New("bandfinance: category and description are required")
 )
 
-// Entry is a new ledger line.
+// Entry is a new or editable ledger line. IsSettled is a pointer so older API
+// clients that omit the field keep the historical default: immediately settled.
 type Entry struct {
 	TransactionType models.BandTransactionType `json:"transaction_type"`
 	TransactionOn   models.Date                `json:"transaction_on"`
 	Category        string                     `json:"category"`
 	Description     string                     `json:"description"`
 	AmountCents     int64                      `json:"amount_cents"`
+	IsSettled       *bool                      `json:"is_settled,omitempty"`
 }
 
 // Actor is who booked the entry.
@@ -50,19 +56,36 @@ type Service struct {
 // NewService builds the ledger service.
 func NewService(database *gorm.DB) *Service { return &Service{db: database} }
 
-// Create books a new income or expense.
-func (s *Service) Create(ctx context.Context, entry Entry, actor Actor) (*models.BandTransaction, error) {
+func settledOrDefault(value *bool) bool {
+	if value == nil {
+		return true
+	}
+	return *value
+}
+
+func validateEntry(entry Entry) (string, string, error) {
 	if entry.TransactionType != models.BandIncome && entry.TransactionType != models.BandExpense {
-		return nil, ErrInvalidType
+		return "", "", ErrInvalidType
+	}
+	if entry.TransactionOn.IsZero() {
+		return "", "", ErrInvalidDate
 	}
 	if entry.AmountCents <= 0 {
-		return nil, ErrInvalidAmount
+		return "", "", ErrInvalidAmount
 	}
-
 	category := strings.TrimSpace(entry.Category)
 	description := strings.TrimSpace(entry.Description)
 	if category == "" || description == "" {
-		return nil, ErrMissingFields
+		return "", "", ErrMissingFields
+	}
+	return category, description, nil
+}
+
+// Create books a new income or expense.
+func (s *Service) Create(ctx context.Context, entry Entry, actor Actor) (*models.BandTransaction, error) {
+	category, description, err := validateEntry(entry)
+	if err != nil {
+		return nil, err
 	}
 
 	now := time.Now().UTC()
@@ -72,11 +95,17 @@ func (s *Service) Create(ctx context.Context, entry Entry, actor Actor) (*models
 		Category:        category,
 		Description:     description,
 		AmountCents:     entry.AmountCents,
+		IsSettled:       settledOrDefault(entry.IsSettled),
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
 	transaction.CreatedByUserID = &actor.UserID
 	transaction.CreatedByUsername = actor.Username
+	if transaction.IsSettled {
+		transaction.SettledAt = &now
+		transaction.SettledByUserID = &actor.UserID
+		transaction.SettledByUsername = actor.Username
+	}
 
 	if err := s.db.WithContext(ctx).Create(transaction).Error; err != nil {
 		return nil, err
@@ -84,11 +113,91 @@ func (s *Service) Create(ctx context.Context, entry Entry, actor Actor) (*models
 	return transaction, nil
 }
 
+// Update changes an open entry. A settled entry is intentionally immutable.
+func (s *Service) Update(ctx context.Context, id int64, entry Entry) (*models.BandTransaction, error) {
+	category, description, err := validateEntry(entry)
+	if err != nil {
+		return nil, err
+	}
+
+	var updated models.BandTransaction
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&updated, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if updated.IsCancelled {
+			return ErrAlreadyCancelled
+		}
+		if updated.IsSettled {
+			return ErrSettledImmutable
+		}
+
+		if err := tx.WithContext(ctx).Model(&models.BandTransaction{}).
+			Where("id = ?", id).
+			Updates(map[string]any{
+				"transaction_type": entry.TransactionType,
+				"transaction_on":   entry.TransactionOn,
+				"category":         category,
+				"description":      description,
+				"amount_cents":     entry.AmountCents,
+				"updated_at":       time.Now().UTC(),
+			}).Error; err != nil {
+			return err
+		}
+		return tx.WithContext(ctx).First(&updated, id).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+// Settle marks an open income as received or an open expense as paid. There is
+// deliberately no reverse operation: once money has changed hands, the entry
+// is immutable and can only be cancelled.
+func (s *Service) Settle(ctx context.Context, id int64, actor Actor) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var transaction models.BandTransaction
+		if err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&transaction, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if transaction.IsCancelled {
+			return ErrAlreadyCancelled
+		}
+		if transaction.IsSettled {
+			return ErrAlreadySettled
+		}
+
+		now := time.Now().UTC()
+		return tx.WithContext(ctx).Model(&models.BandTransaction{}).
+			Where("id = ?", id).
+			Updates(map[string]any{
+				"is_settled":          true,
+				"settled_at":          now,
+				"settled_by_user_id":  actor.UserID,
+				"settled_by_username": actor.Username,
+				"updated_at":          now,
+			}).Error
+	})
+}
+
 // Cancel voids an entry without deleting it, so the ledger stays auditable.
 func (s *Service) Cancel(ctx context.Context, id int64, actor Actor) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var transaction models.BandTransaction
-		if err := tx.WithContext(ctx).First(&transaction, id).Error; err != nil {
+		if err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&transaction, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -104,6 +213,7 @@ func (s *Service) Cancel(ctx context.Context, id int64, actor Actor) error {
 				"cancelled_at":          time.Now().UTC(),
 				"cancelled_by_user_id":  actor.UserID,
 				"cancelled_by_username": actor.Username,
+				"updated_at":            time.Now().UTC(),
 			}).Error
 	})
 }
@@ -124,13 +234,15 @@ type Ledger struct {
 	// itself stays free text so a band can add its own.
 	SuggestedCategories []string `json:"suggested_categories"`
 
-	IncomeCents  int64 `json:"income_cents"`
-	ExpenseCents int64 `json:"expense_cents"`
-	BalanceCents int64 `json:"balance_cents"`
+	IncomeCents      int64 `json:"income_cents"`
+	ExpenseCents     int64 `json:"expense_cents"`
+	BalanceCents     int64 `json:"balance_cents"`
+	OpenIncomeCents  int64 `json:"open_income_cents"`
+	OpenExpenseCents int64 `json:"open_expense_cents"`
 }
 
-// List returns the ledger, newest first, with cancelled entries included but
-// excluded from every total.
+// List returns the ledger, newest first. Cancelled entries are excluded from
+// every total; open entries are shown separately and do not affect cash totals.
 func (s *Service) List(ctx context.Context) (*Ledger, error) {
 	var entries []models.BandTransaction
 	err := s.db.WithContext(ctx).
@@ -154,6 +266,14 @@ func (s *Service) List(ctx context.Context) (*Ledger, error) {
 	order := make([]string, 0)
 	for _, entry := range entries {
 		if entry.IsCancelled {
+			continue
+		}
+		if !entry.IsSettled {
+			if entry.TransactionType == models.BandIncome {
+				ledger.OpenIncomeCents += entry.AmountCents
+			} else {
+				ledger.OpenExpenseCents += entry.AmountCents
+			}
 			continue
 		}
 		total, seen := byCategory[entry.Category]

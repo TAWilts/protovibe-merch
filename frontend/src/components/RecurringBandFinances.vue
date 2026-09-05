@@ -23,6 +23,7 @@ const form = ref({
   category: '',
   description: '',
   amount: '',
+  is_settled: true,
   interval_value: 1,
   interval_unit: 'month' as 'day' | 'week' | 'month' | 'year',
 })
@@ -64,6 +65,7 @@ async function createRule() {
       category: form.value.category.trim(),
       description: form.value.description.trim(),
       amount_cents: amount,
+      is_settled: form.value.is_settled,
       interval_value: Math.trunc(form.value.interval_value),
       interval_unit: form.value.interval_unit,
     })
@@ -145,6 +147,18 @@ async function deleteRule(rule: RecurringBandTransaction) {
         <input v-model="form.description" required />
       </label>
 
+      <label class="checkbox-row settlement-checkbox">
+        <input v-model="form.is_settled" type="checkbox" />
+        <span>
+          {{ form.transaction_type === 'income'
+            ? t('bandFinances.recurring.autoReceived')
+            : t('bandFinances.recurring.autoPaid') }}
+        </span>
+      </label>
+      <p v-if="!form.is_settled" class="muted settlement-hint">
+        {{ t('bandFinances.recurring.openHint') }}
+      </p>
+
       <div class="recurrence-row">
         <span>{{ t('bandFinances.recurring.every') }}</span>
         <input v-model.number="form.interval_value" type="number" min="1" step="1" required />
@@ -169,11 +183,19 @@ async function deleteRule(rule: RecurringBandTransaction) {
             <th>{{ t('bandFinances.recurring.interval') }}</th>
             <th>{{ t('bandFinances.recurring.next') }}</th>
             <th class="numeric">{{ t('bandFinances.amount') }}</th>
+            <th>{{ t('bandFinances.status') }}</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="rule in rules" :key="rule.id" :class="{ 'cancelled-row': !rule.is_active }">
+          <tr
+            v-for="rule in rules"
+            :key="rule.id"
+            :class="{
+              'cancelled-row': !rule.is_active,
+              'unsettled-rule': rule.is_active && !rule.is_settled,
+            }"
+          >
             <td>
               <strong>{{ rule.description }}</strong>
               <small>{{ rule.category }}</small>
@@ -187,6 +209,11 @@ async function deleteRule(rule: RecurringBandTransaction) {
             <td>{{ rule.next_run_on }}</td>
             <td class="numeric" :class="rule.transaction_type">
               {{ rule.transaction_type === 'expense' ? '−' : '+' }}{{ format(rule.amount_cents) }}
+            </td>
+            <td>
+              {{ rule.transaction_type === 'income'
+                ? (rule.is_settled ? t('bandFinances.received') : t('bandFinances.notReceived'))
+                : (rule.is_settled ? t('bandFinances.paid') : t('bandFinances.notPaid')) }}
             </td>
             <td>
               <div class="recurring-actions">
@@ -255,6 +282,49 @@ async function deleteRule(rule: RecurringBandTransaction) {
 
 .numeric.expense {
   color: var(--danger);
+}
+
+.unsettled-rule {
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
+  box-shadow: inset 4px 0 var(--warning);
+}
+
+.stack-form .settlement-checkbox {
+  display: inline-flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  align-self: flex-start;
+  gap: 10px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 4px 0 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel-raised) 82%, transparent);
+  cursor: pointer;
+}
+
+.stack-form .settlement-checkbox input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.stack-form .settlement-checkbox span {
+  line-height: 1.35;
+}
+
+.settlement-hint {
+  max-width: 720px;
+  margin: -6px 0 0 12px;
+  line-height: 1.4;
 }
 
 @media (max-width: 640px) {

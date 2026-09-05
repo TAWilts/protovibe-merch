@@ -176,7 +176,16 @@ export const reportsApi = {
     category: string
     description: string
     amount_cents: number
+    is_settled: boolean
   }) => api.post<BandTransaction>('/band-finances', payload),
+  updateBandEntry: (id: number, payload: {
+    transaction_type: 'income' | 'expense'
+    transaction_on: string
+    category: string
+    description: string
+    amount_cents: number
+  }) => api.patch<BandTransaction>(`/band-finances/${id}`, payload),
+  settleBandEntry: (id: number) => api.patch<void>(`/band-finances/${id}/settle`),
   cancelBandEntry: (id: number) => api.post<void>(`/band-finances/${id}/cancel`),
   recurringBandEntries: () =>
     api.get<{ recurring: RecurringBandTransaction[] }>('/band-finances/recurring'),
@@ -186,6 +195,7 @@ export const reportsApi = {
     category: string
     description: string
     amount_cents: number
+    is_settled: boolean
     interval_value: number
     interval_unit: 'day' | 'week' | 'month' | 'year'
   }) => api.post<RecurringBandTransaction>('/band-finances/recurring', payload),

@@ -282,7 +282,7 @@ func (s *Service) summary(ctx context.Context, rows []Row) (*Summary, error) {
 	}
 	var totals bandTotals
 	err = s.db.WithContext(ctx).Model(&models.BandTransaction{}).
-		Where("is_cancelled = ?", false).
+		Where("is_cancelled = ? AND is_settled = ?", false, true).
 		Select(`COALESCE(SUM(CASE WHEN transaction_type = 'income' THEN amount_cents ELSE 0 END), 0) AS income,
 			COALESCE(SUM(CASE WHEN transaction_type = 'expense' THEN amount_cents ELSE 0 END), 0) AS expense`).
 		Scan(&totals).Error

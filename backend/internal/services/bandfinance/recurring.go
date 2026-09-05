@@ -23,6 +23,7 @@ type RecurringEntry struct {
 	Category        string                     `json:"category"`
 	Description     string                     `json:"description"`
 	AmountCents     int64                      `json:"amount_cents"`
+	IsSettled       *bool                      `json:"is_settled,omitempty"`
 	IntervalValue   int                        `json:"interval_value"`
 	IntervalUnit    models.RecurrenceUnit      `json:"interval_unit"`
 }
@@ -50,6 +51,7 @@ func (s *Service) CreateRecurring(ctx context.Context, entry RecurringEntry, act
 		Category:        strings.TrimSpace(entry.Category),
 		Description:     strings.TrimSpace(entry.Description),
 		AmountCents:     entry.AmountCents,
+		IsSettled:       settledOrDefault(entry.IsSettled),
 		IntervalValue:   entry.IntervalValue,
 		IntervalUnit:    entry.IntervalUnit,
 		IsActive:        true,
@@ -214,12 +216,18 @@ func (s *Service) materializeRule(ctx context.Context, bandID, id int64, through
 					Category:        rule.Category,
 					Description:     rule.Description,
 					AmountCents:     rule.AmountCents,
+					IsSettled:       rule.IsSettled,
 					CreatedAt:       now,
 					UpdatedAt:       now,
 					Actor: models.Actor{
 						CreatedByUserID:   rule.CreatedByUserID,
 						CreatedByUsername: rule.CreatedByUsername,
 					},
+				}
+				if rule.IsSettled {
+					booking.SettledAt = &now
+					booking.SettledByUserID = rule.CreatedByUserID
+					booking.SettledByUsername = rule.CreatedByUsername
 				}
 				if err := tx.WithContext(ctx).Create(booking).Error; err != nil {
 					return err

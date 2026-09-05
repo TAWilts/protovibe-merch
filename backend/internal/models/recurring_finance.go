@@ -25,6 +25,7 @@ type RecurringBandTransaction struct {
 	Category        string              `gorm:"size:120;not null" json:"category"`
 	Description     string              `gorm:"size:500;not null" json:"description"`
 	AmountCents     int64               `gorm:"not null" json:"amount_cents"`
+	IsSettled       bool                `gorm:"not null" json:"is_settled"`
 	IntervalValue   int                 `gorm:"not null" json:"interval_value"`
 	IntervalUnit    RecurrenceUnit      `gorm:"size:10;not null" json:"interval_unit"`
 	IsActive        bool                `gorm:"not null;index" json:"is_active"`

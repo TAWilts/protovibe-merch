@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import { reportsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
-import type { BandLedger } from '@/api/types'
+import type { BandLedger, BandTransaction } from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import RecurringBandFinances from '@/components/RecurringBandFinances.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
@@ -28,6 +28,7 @@ const session = useSessionStore()
 const ledger = ref<BandLedger | null>(null)
 const loading = ref(true)
 const busy = ref(false)
+const editingId = ref<number | null>(null)
 const dateFrom = ref('')
 const dateTo = ref('')
 
@@ -42,6 +43,8 @@ const visibleEntries = computed(() =>
 const visibleTotals = computed(() => {
   let income = 0
   let expense = 0
+  let openIncome = 0
+  let openExpense = 0
   const categories = new Map<string, {
     category: string
     income_cents: number
@@ -51,6 +54,11 @@ const visibleTotals = computed(() => {
 
   for (const entry of visibleEntries.value) {
     if (entry.is_cancelled) continue
+    if (!entry.is_settled) {
+      if (entry.transaction_type === 'income') openIncome += entry.amount_cents
+      else openExpense += entry.amount_cents
+      continue
+    }
     let category = categories.get(entry.category)
     if (!category) {
       category = { category: entry.category, income_cents: 0, expense_cents: 0, balance_cents: 0 }
@@ -70,16 +78,24 @@ const visibleTotals = computed(() => {
     income_cents: income,
     expense_cents: expense,
     balance_cents: income - expense,
+    open_income_cents: openIncome,
+    open_expense_cents: openExpense,
     categories: [...categories.values()],
   }
 })
-const form = ref({
-  transaction_type: 'income' as 'income' | 'expense',
-  transaction_on: new Date().toISOString().slice(0, 10),
-  category: '',
-  description: '',
-  amount: '',
-})
+
+function freshForm() {
+  return {
+    transaction_type: 'income' as 'income' | 'expense',
+    transaction_on: new Date().toISOString().slice(0, 10),
+    category: '',
+    description: '',
+    amount: '',
+    is_settled: true,
+  }
+}
+
+const form = ref(freshForm())
 
 const amountCents = computed(() => parseAmount(form.value.amount))
 const canSubmit = computed(
@@ -102,6 +118,7 @@ function exportVisible() {
       t('bandFinances.category'),
       t('bandFinances.description'),
       t('bandFinances.amount'),
+      t('bandFinances.status'),
     ],
     visibleEntries.value.map((entry) => [
       entry.transaction_on,
@@ -109,6 +126,7 @@ function exportVisible() {
       entry.category,
       entry.description,
       `${entry.transaction_type === 'expense' ? '-' : '+'}${format(entry.amount_cents)}`,
+      statusLabel(entry),
     ]),
   )
 }
@@ -131,20 +149,51 @@ function report(error: unknown) {
   )
 }
 
+function statusLabel(entry: BandTransaction) {
+  if (entry.is_cancelled) return t('bandFinances.statusCancelled')
+  if (entry.transaction_type === 'income') {
+    return entry.is_settled ? t('bandFinances.received') : t('bandFinances.notReceived')
+  }
+  return entry.is_settled ? t('bandFinances.paid') : t('bandFinances.notPaid')
+}
+
+function resetForm() {
+  editingId.value = null
+  form.value = freshForm()
+}
+
+function startEdit(entry: BandTransaction) {
+  if (entry.is_cancelled || entry.is_settled) return
+  editingId.value = entry.id
+  form.value = {
+    transaction_type: entry.transaction_type,
+    transaction_on: entry.transaction_on,
+    category: entry.category,
+    description: entry.description,
+    amount: (entry.amount_cents / 100).toFixed(2).replace('.', ','),
+    is_settled: false,
+  }
+}
+
 async function submit() {
   if (!canSubmit.value || amountCents.value === null) return
   busy.value = true
+  const payload = {
+    transaction_type: form.value.transaction_type,
+    transaction_on: form.value.transaction_on,
+    category: form.value.category.trim(),
+    description: form.value.description.trim(),
+    amount_cents: amountCents.value,
+  }
   try {
-    await reportsApi.createBandEntry({
-      transaction_type: form.value.transaction_type,
-      transaction_on: form.value.transaction_on,
-      category: form.value.category.trim(),
-      description: form.value.description.trim(),
-      amount_cents: amountCents.value,
-    })
-    flash.success(t('bandFinances.saved'))
-    form.value.description = ''
-    form.value.amount = ''
+    if (editingId.value !== null) {
+      await reportsApi.updateBandEntry(editingId.value, payload)
+      flash.success(t('bandFinances.updated'))
+    } else {
+      await reportsApi.createBandEntry({ ...payload, is_settled: form.value.is_settled })
+      flash.success(t('bandFinances.saved'))
+    }
+    resetForm()
     await load()
   } catch (error) {
     report(error)
@@ -153,10 +202,26 @@ async function submit() {
   }
 }
 
+async function settleEntry(entry: BandTransaction) {
+  try {
+    await reportsApi.settleBandEntry(entry.id)
+    flash.success(
+      entry.transaction_type === 'income'
+        ? t('bandFinances.markedReceived')
+        : t('bandFinances.markedPaid'),
+    )
+    if (editingId.value === entry.id) resetForm()
+    await load()
+  } catch (error) {
+    report(error)
+  }
+}
+
 async function cancelEntry(id: number) {
   try {
     await reportsApi.cancelBandEntry(id)
     flash.success(t('bandFinances.cancelled'))
+    if (editingId.value === id) resetForm()
     await load()
   } catch (error) {
     report(error)
@@ -190,13 +255,21 @@ async function cancelEntry(id: number) {
           <span>{{ t('bandFinances.balance') }}</span>
           <strong>{{ format(visibleTotals.balance_cents) }}</strong>
         </article>
+        <article class="metric-card open-metric">
+          <span>{{ t('bandFinances.openIncome') }}</span>
+          <strong>{{ format(visibleTotals.open_income_cents) }}</strong>
+        </article>
+        <article class="metric-card open-metric">
+          <span>{{ t('bandFinances.openExpense') }}</span>
+          <strong>{{ format(visibleTotals.open_expense_cents) }}</strong>
+        </article>
       </section>
 
       <section v-if="canManage" class="table-section">
         <div class="section-heading">
           <div>
-            <h2>{{ t('bandFinances.newEntry') }}</h2>
-            <p>{{ t('bandFinances.newEntryHint') }}</p>
+            <h2>{{ editingId === null ? t('bandFinances.newEntry') : t('bandFinances.editEntry') }}</h2>
+            <p>{{ editingId === null ? t('bandFinances.newEntryHint') : t('bandFinances.editEntryHint') }}</p>
           </div>
         </div>
         <form class="stack-form" @submit.prevent="submit">
@@ -230,9 +303,37 @@ async function cancelEntry(id: number) {
             {{ t('bandFinances.description') }}
             <input v-model="form.description" required />
           </label>
-          <button class="primary-button" type="submit" :disabled="!canSubmit">
-            {{ t('common.save') }}
-          </button>
+
+          <label v-if="editingId === null" class="checkbox-row settlement-checkbox">
+            <input v-model="form.is_settled" type="checkbox" />
+            <span>
+              {{ form.transaction_type === 'income'
+                ? t('bandFinances.alreadyReceived')
+                : t('bandFinances.alreadyPaid') }}
+            </span>
+          </label>
+          <p
+            v-if="editingId === null && !form.is_settled"
+            class="muted settlement-hint"
+          >
+            {{ form.transaction_type === 'income'
+              ? t('bandFinances.openIncomeHint')
+              : t('bandFinances.openExpenseHint') }}
+          </p>
+
+          <div class="form-actions">
+            <button class="primary-button" type="submit" :disabled="!canSubmit">
+              {{ editingId === null ? t('common.save') : t('bandFinances.saveChanges') }}
+            </button>
+            <button
+              v-if="editingId !== null"
+              class="secondary-button"
+              type="button"
+              @click="resetForm"
+            >
+              {{ t('common.cancel') }}
+            </button>
+          </div>
         </form>
       </section>
 
@@ -285,6 +386,7 @@ async function cancelEntry(id: number) {
                 <th>{{ t('bandFinances.category') }}</th>
                 <th>{{ t('bandFinances.description') }}</th>
                 <th class="numeric">{{ t('bandFinances.amount') }}</th>
+                <th>{{ t('bandFinances.status') }}</th>
                 <th v-if="canManage"></th>
               </tr>
             </thead>
@@ -292,7 +394,10 @@ async function cancelEntry(id: number) {
               <tr
                 v-for="entry in visibleEntries"
                 :key="entry.id"
-                :class="{ 'cancelled-row': entry.is_cancelled }"
+                :class="{
+                  'cancelled-row': entry.is_cancelled,
+                  'unsettled-row': !entry.is_cancelled && !entry.is_settled,
+                }"
               >
                 <td>{{ entry.transaction_on }}</td>
                 <td>{{ entry.category }}</td>
@@ -300,15 +405,42 @@ async function cancelEntry(id: number) {
                 <td class="numeric" :class="entry.transaction_type">
                   {{ entry.transaction_type === 'expense' ? '−' : '+' }}{{ format(entry.amount_cents) }}
                 </td>
-                <td v-if="canManage">
-                  <button
-                    v-if="!entry.is_cancelled"
-                    class="compact-button danger-button"
-                    type="button"
-                    @click="cancelEntry(entry.id)"
+                <td>
+                  <span
+                    class="settlement-pill"
+                    :class="{ open: !entry.is_settled && !entry.is_cancelled }"
                   >
-                    {{ t('bandFinances.cancel') }}
-                  </button>
+                    {{ statusLabel(entry) }}
+                  </span>
+                </td>
+                <td v-if="canManage">
+                  <div v-if="!entry.is_cancelled" class="entry-actions">
+                    <template v-if="!entry.is_settled">
+                      <button
+                        class="compact-button secondary-button"
+                        type="button"
+                        @click="startEdit(entry)"
+                      >
+                        {{ t('bandFinances.edit') }}
+                      </button>
+                      <button
+                        class="compact-button primary-button"
+                        type="button"
+                        @click="settleEntry(entry)"
+                      >
+                        {{ entry.transaction_type === 'income'
+                          ? t('bandFinances.markReceived')
+                          : t('bandFinances.markPaid') }}
+                      </button>
+                    </template>
+                    <button
+                      class="compact-button danger-button"
+                      type="button"
+                      @click="cancelEntry(entry.id)"
+                    >
+                      {{ t('bandFinances.cancel') }}
+                    </button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -331,5 +463,74 @@ async function cancelEntry(id: number) {
 
 .numeric.expense {
   color: var(--danger);
+}
+
+.open-metric strong {
+  color: var(--warning);
+}
+
+.unsettled-row {
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  box-shadow: inset 4px 0 var(--warning);
+}
+
+.settlement-pill {
+  display: inline-flex;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--input-bg);
+  font-size: .78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.settlement-pill.open {
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, var(--border));
+}
+
+.entry-actions,
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.stack-form .settlement-checkbox {
+  display: inline-flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  align-self: flex-start;
+  gap: 10px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 4px 0 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel-raised) 82%, transparent);
+  cursor: pointer;
+}
+
+.stack-form .settlement-checkbox input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.stack-form .settlement-checkbox span {
+  line-height: 1.35;
+}
+
+.settlement-hint {
+  max-width: 720px;
+  margin: -2px 0 2px 12px;
+  line-height: 1.4;
 }
 </style>

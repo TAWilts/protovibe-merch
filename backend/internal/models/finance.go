@@ -19,6 +19,10 @@ var DefaultBandCategories = []string{
 // BandTransaction is the band's own ledger for gigs, royalties and equipment.
 // It is deliberately separate from merch purchases and sales so a historic
 // merch balance never changes when band money is booked.
+//
+// IsSettled has a type-specific label in the UI: an income is "received", an
+// expense is "paid". Once settled, the business fields are immutable; only a
+// cancellation remains possible.
 type BandTransaction struct {
 	ID int64 `gorm:"primaryKey" json:"id"`
 	Tenant
@@ -28,6 +32,11 @@ type BandTransaction struct {
 	Category        string              `gorm:"size:120;not null" json:"category"`
 	Description     string              `gorm:"size:500;not null" json:"description"`
 	AmountCents     int64               `gorm:"not null" json:"amount_cents"`
+
+	IsSettled         bool       `gorm:"not null;index" json:"is_settled"`
+	SettledAt         *time.Time `json:"settled_at,omitempty"`
+	SettledByUserID   *int64     `json:"settled_by_user_id,omitempty"`
+	SettledByUsername string     `gorm:"size:150;not null;default:''" json:"settled_by_username"`
 
 	IsCancelled         bool       `gorm:"not null;index" json:"is_cancelled"`
 	CancelledAt         *time.Time `json:"cancelled_at,omitempty"`

@@ -19,6 +19,8 @@ func (s *Server) registerReportRoutes(g *gin.RouterGroup) {
 
 	managers := g.Group("/band-finances", requireAuth(), requireBandRole(models.RoleManager))
 	managers.POST("", s.createBandTransaction)
+	managers.PATCH("/:id", s.updateBandTransaction)
+	managers.PATCH("/:id/settle", s.settleBandTransaction)
 	managers.POST("/:id/cancel", s.cancelBandTransaction)
 	managers.POST("/recurring", s.createRecurringBandTransaction)
 	managers.PATCH("/recurring/:id/active", s.setRecurringBandTransactionActive)
@@ -76,9 +78,59 @@ func (s *Server) createBandTransaction(c *gin.Context) {
 		Action: "band_transaction.created", EntityType: "band_transaction", EntityID: &transaction.ID,
 		Details: map[string]any{
 			"type": string(transaction.TransactionType), "amount_cents": transaction.AmountCents,
+			"is_settled": transaction.IsSettled,
 		},
 	})
 	c.JSON(http.StatusCreated, transaction)
+}
+
+func (s *Server) updateBandTransaction(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+
+	var entry bandfinance.Entry
+	if err := c.ShouldBindJSON(&entry); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	ctx := c.Request.Context()
+	transaction, err := s.bandFinance.Update(ctx, id, entry)
+	if err != nil {
+		s.reportBandFinanceError(c, err)
+		return
+	}
+
+	s.audit.Log(ctx, actorFrom(c), audit.Entry{
+		Action: "band_transaction.updated", EntityType: "band_transaction", EntityID: &id,
+		Details: map[string]any{
+			"type": string(transaction.TransactionType), "amount_cents": transaction.AmountCents,
+		},
+	})
+	c.JSON(http.StatusOK, transaction)
+}
+
+func (s *Server) settleBandTransaction(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+
+	state := stateFrom(c)
+	ctx := c.Request.Context()
+	if err := s.bandFinance.Settle(ctx, id, bandfinance.Actor{
+		UserID: state.User.ID, Username: state.User.Username,
+	}); err != nil {
+		s.reportBandFinanceError(c, err)
+		return
+	}
+
+	s.audit.Log(ctx, actorFrom(c), audit.Entry{
+		Action: "band_transaction.settled", EntityType: "band_transaction", EntityID: &id,
+	})
+	c.Status(http.StatusNoContent)
 }
 
 func (s *Server) listRecurringBandTransactions(c *gin.Context) {
@@ -120,6 +172,7 @@ func (s *Server) createRecurringBandTransaction(c *gin.Context) {
 		Details: map[string]any{
 			"interval_value": rule.IntervalValue,
 			"interval_unit":  rule.IntervalUnit,
+			"is_settled":     rule.IsSettled,
 		},
 	})
 	c.JSON(http.StatusCreated, rule)
@@ -207,6 +260,12 @@ func (s *Server) reportBandFinanceError(c *gin.Context, err error) {
 		fail(c, http.StatusNotFound, "not_found", "no such entry")
 	case errors.Is(err, bandfinance.ErrAlreadyCancelled):
 		fail(c, http.StatusConflict, "already_cancelled", err.Error())
+	case errors.Is(err, bandfinance.ErrAlreadySettled):
+		fail(c, http.StatusConflict, "already_settled", err.Error())
+	case errors.Is(err, bandfinance.ErrSettledImmutable):
+		fail(c, http.StatusConflict, "entry_settled", err.Error())
+	case errors.Is(err, bandfinance.ErrInvalidDate):
+		fail(c, http.StatusBadRequest, "invalid_date", err.Error())
 	case errors.Is(err, bandfinance.ErrInvalidAmount):
 		fail(c, http.StatusBadRequest, "invalid_amount", err.Error())
 	case errors.Is(err, bandfinance.ErrInvalidType):

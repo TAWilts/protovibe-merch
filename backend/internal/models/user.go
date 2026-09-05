@@ -100,7 +100,7 @@ type User struct {
 	// Telemetry is an individual, versioned decision. A nil decision timestamp
 	// or an older consent version means the current explanation has not been
 	// accepted; until then absolutely no telemetry sample is collected.
-	TelemetryEnabled        bool       `gorm:"not null;default:false" json:"telemetry_enabled"`
+	TelemetryEnabled        bool       `gorm:"not null" json:"telemetry_enabled"`
 	TelemetryDecidedAt      *time.Time `json:"telemetry_decided_at,omitempty"`
 	TelemetryConsentVersion int        `gorm:"not null;default:0" json:"-"`
 

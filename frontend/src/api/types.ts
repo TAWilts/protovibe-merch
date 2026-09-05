@@ -405,6 +405,9 @@ export interface BandTransaction {
   category: string
   description: string
   amount_cents: number
+  is_settled: boolean
+  settled_at?: string
+  settled_by_username: string
   is_cancelled: boolean
   created_by_username: string
 }
@@ -417,6 +420,7 @@ export interface RecurringBandTransaction {
   category: string
   description: string
   amount_cents: number
+  is_settled: boolean
   interval_value: number
   interval_unit: 'day' | 'week' | 'month' | 'year'
   is_active: boolean
@@ -436,6 +440,8 @@ export interface BandLedger {
   income_cents: number
   expense_cents: number
   balance_cents: number
+  open_income_cents: number
+  open_expense_cents: number
 }
 
 export interface FeatureFlags {
