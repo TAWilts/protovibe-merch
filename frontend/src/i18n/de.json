@@ -932,6 +932,59 @@
         "text": "Produktbilder erscheinen vollständig skaliert als Einzelbild oder ruhiges Mosaik. Die Darstellung eignet sich für einen zweiten Bildschirm direkt am Stand."
       }
     },
+    "miniApp": {
+      "kicker": "Selbst ausprobieren",
+      "title": "Vier Ansichten. Eine kleine echte Demo.",
+      "lead": "Buche einen Beispielverkauf und schau direkt danach in Bestand und Bilanz. Die Demo läuft ausschließlich lokal in deinem Browser.",
+      "reset": "Demo zurücksetzen",
+      "demoBand": "Demo Band · Tour 2026",
+      "localOnly": "nur Demo-Daten",
+      "navigation": "Demo-Navigation",
+      "tabs": {
+        "sale": "Verkauf",
+        "inventory": "Warenübersicht",
+        "balances": "Bilanzen",
+        "slideshow": "Diashow"
+      },
+      "pieces": "Stück",
+      "inStock": "auf Lager",
+      "sale": {
+        "choose": "Schritt 1",
+        "products": "Artikel auswählen",
+        "current": "Schritt 2",
+        "cart": "Warenkorb",
+        "empty": "Klick links auf einen Artikel und buche deinen ersten Demo-Verkauf.",
+        "total": "Gesamt",
+        "book": "Demo-Verkauf buchen",
+        "success": "Verkauf gespeichert"
+      },
+      "inventory": {
+        "stock": "Bestand",
+        "sold": "Verkauft",
+        "low": "Niedrige Bestände",
+        "article": "Artikel",
+        "variant": "Variante",
+        "level": "Bestand",
+        "status": "Status",
+        "reorder": "Nachbestellen",
+        "ok": "Im Soll"
+      },
+      "balances": {
+        "revenue": "Eingenommen",
+        "cost": "Wareneinsatz",
+        "balance": "Saldo",
+        "demo": "durch deine Demo-Verkäufe",
+        "purchases": "aus den Beispiel-Einkäufen",
+        "current": "inklusive deiner Buchungen",
+        "trend": "Umsatzverlauf",
+        "liveHint": "Dein Demo-Verkauf wirkt sofort auf die Kennzahlen."
+      },
+      "slideshow": {
+        "product": "Am Merch-Stand",
+        "hint": "So kann ein zweiter Bildschirm am Stand automatisch durch eure Produkte wechseln."
+      },
+      "disclaimer": "Diese Mini-App sendet keine Verkäufe an den Server und verändert keine echten Daten."
+    },
     "features": {
       "kicker": "Alles Wichtige an einem Ort",
       "title": "Vom ersten Shirt bis zur Abrechnung.",

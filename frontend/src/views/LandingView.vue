@@ -5,6 +5,7 @@ import { RouterLink } from 'vue-router'
 
 import { ApiError } from '@/api/client'
 import { registrationApi } from '@/api/endpoints'
+import LandingMiniApp from '@/components/LandingMiniApp.vue'
 import type { PublicRegistrationStatus, RegistrationCredentials } from '@/api/types'
 import { marketingLocale, setMarketingLocale, type Locale } from '@/i18n'
 import { useSessionStore } from '@/stores/session'
@@ -476,6 +477,8 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
             </div>
         </article>
       </section>
+
+      <LandingMiniApp />
 
       <section class="landing-section feature-section">
         <div class="landing-heading">

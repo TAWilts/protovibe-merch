@@ -923,6 +923,59 @@
       "inventory": { "title": "Inventory that explains itself", "text": "Sales and purchases move stock automatically. Minimum levels show what should be reordered before the next gig." },
       "slideshow": { "title": "Turn the catalogue into a storefront", "text": "Product photos are fully visible as single slides or calm mosaics – ideal for a second display at the merch table." }
     },
+    "miniApp": {
+      "kicker": "Try it yourself",
+      "title": "Four views. One small interactive demo.",
+      "lead": "Book a sample sale, then look at inventory and balances immediately afterwards. The demo runs entirely in your browser.",
+      "reset": "Reset demo",
+      "demoBand": "Demo Band · Tour 2026",
+      "localOnly": "demo data only",
+      "navigation": "Demo navigation",
+      "tabs": {
+        "sale": "Sale",
+        "inventory": "Inventory",
+        "balances": "Balances",
+        "slideshow": "Slideshow"
+      },
+      "pieces": "items",
+      "inStock": "in stock",
+      "sale": {
+        "choose": "Step 1",
+        "products": "Choose products",
+        "current": "Step 2",
+        "cart": "Cart",
+        "empty": "Click a product on the left and book your first demo sale.",
+        "total": "Total",
+        "book": "Book demo sale",
+        "success": "Sale saved"
+      },
+      "inventory": {
+        "stock": "Stock",
+        "sold": "Sold",
+        "low": "Low stock",
+        "article": "Article",
+        "variant": "Variant",
+        "level": "Stock",
+        "status": "Status",
+        "reorder": "Reorder",
+        "ok": "Healthy"
+      },
+      "balances": {
+        "revenue": "Collected",
+        "cost": "Cost of goods",
+        "balance": "Balance",
+        "demo": "from your demo sales",
+        "purchases": "from sample purchases",
+        "current": "including your bookings",
+        "trend": "Revenue trend",
+        "liveHint": "Your demo sale immediately changes these numbers."
+      },
+      "slideshow": {
+        "product": "At the merch stand",
+        "hint": "A second display at the stand can automatically rotate through your products like this."
+      },
+      "disclaimer": "This mini app never sends a sale to the server and cannot change any real data."
+    },
     "features": {
       "kicker": "Everything important in one place",
       "title": "From the first shirt to the final report.",
