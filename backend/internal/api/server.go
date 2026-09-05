@@ -27,6 +27,7 @@ import (
 	"github.com/tawilts/protovibe-merch/backend/internal/services/receipt"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/registration"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/sales"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/telemetry"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/updates"
 	"github.com/tawilts/protovibe-merch/backend/internal/storage"
 	"github.com/tawilts/protovibe-merch/backend/internal/tenant"
@@ -54,6 +55,7 @@ type Server struct {
 	platform        *platform.Service
 	registrations   *registration.Service
 	backups         *backup.Service
+	telemetry       *telemetry.Service
 	metrics         *metrics
 	files           storage.Store
 
@@ -106,6 +108,7 @@ func NewServer(cfg *config.Config, database *gorm.DB) (*Server, error) {
 		}),
 		platform:      platformService,
 		registrations: registration.NewService(database, authService, platformService, cfg.PublicBaseURL),
+		telemetry:     telemetry.NewService(database),
 		backups: backup.NewService(database, backup.Config{
 			DatabaseDSN:   cfg.DatabaseDSN,
 			Root:          cfg.BackupRoot,

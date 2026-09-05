@@ -80,6 +80,20 @@ async function confirmReauth() {
   }
 }
 
+async function saveTelemetry(enabled: boolean) {
+  try {
+    await profileApi.telemetry(enabled)
+    if (data.value) {
+      data.value.profile.user.telemetry_enabled = enabled
+      data.value.profile.user.telemetry_decided = true
+    }
+    await session.restore(false)
+    flash.success(t('profile.saved'))
+  } catch (error) {
+    report(error)
+  }
+}
+
 async function savePersonalization(payload: Record<string, unknown>) {
   try {
     await profileApi.personalization(payload)
@@ -279,6 +293,28 @@ async function regenerateCodes() {
       <section class="table-section">
         <div class="section-heading">
           <div>
+            <h2>{{ t('profile.telemetry.title') }}</h2>
+            <p>{{ t('profile.telemetry.intro') }}</p>
+          </div>
+        </div>
+        <div class="telemetry-note">
+          <strong>{{ t('profile.telemetry.anonymousTitle') }}</strong>
+          <p>{{ t('profile.telemetry.anonymousText') }}</p>
+        </div>
+        <label class="checkbox-row">
+          <input
+            type="checkbox"
+            :checked="data.profile.user.telemetry_enabled"
+            @change="saveTelemetry(($event.target as HTMLInputElement).checked)"
+          />
+          <span>{{ t('profile.telemetry.allow') }}</span>
+        </label>
+        <p class="muted">{{ t('profile.telemetry.stopHint') }}</p>
+      </section>
+
+      <section class="table-section">
+        <div class="section-heading">
+          <div>
             <h2>{{ t('profile.mfa') }}</h2>
             <p>{{ caps?.mfa_required ? t('profile.mfaRequired') : t('profile.mfaOptional') }}</p>
           </div>
@@ -372,6 +408,18 @@ async function regenerateCodes() {
   background: var(--input-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   text-align: center;
+}
+
+.telemetry-note {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--input-bg);
+}
+
+.telemetry-note p {
+  margin: 5px 0 0;
 }
 
 .checkbox-row {

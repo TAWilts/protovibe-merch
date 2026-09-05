@@ -236,6 +236,9 @@ func (s *Server) createSale(c *gin.Context) {
 				"offline":         offline != nil,
 			},
 		})
+		// PaymentMethod is a closed enum; receipt/customer/article data never
+		// enters the telemetry service.
+		s.recordTelemetryEvent(c, "payment_method", req.PaymentMethod)
 	}
 
 	status := http.StatusCreated

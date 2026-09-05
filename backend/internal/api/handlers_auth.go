@@ -276,6 +276,8 @@ type meResponse struct {
 		UITheme           string      `json:"ui_theme"`
 		UILanguage        string      `json:"ui_language"`
 		ShowVariantPhotos bool        `json:"show_variant_photos"`
+		TelemetryEnabled  bool        `json:"telemetry_enabled"`
+		TelemetryDecided  bool        `json:"telemetry_decided"`
 		MFAEnabled        bool        `json:"mfa_enabled"`
 		ContactEmail      string      `json:"contact_email"`
 	} `json:"user"`
@@ -326,6 +328,8 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 	payload.User.UITheme = user.UITheme
 	payload.User.UILanguage = user.UILanguage
 	payload.User.ShowVariantPhotos = user.ShowVariantPhotos
+	payload.User.TelemetryEnabled = user.TelemetryEnabled
+	payload.User.TelemetryDecided = user.TelemetryDecidedAt != nil
 	payload.User.MFAEnabled = user.MFAEnabled
 	payload.User.ContactEmail = user.ContactEmail
 

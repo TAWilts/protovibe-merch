@@ -71,6 +71,20 @@
     "resetCode": "One-time code from the email",
     "resetDone": "Password changed. You can sign in now."
   },
+  "telemetryConsent": {
+    "eyebrow": "Your choice",
+    "title": "Anonymous usage statistics",
+    "intro": "Help us understand which features are actually useful and where Merch Manager should improve.",
+    "anonymousTitle": "Truly anonymous",
+    "anonymousText": "Only daily aggregates are stored, such as feature areas used, data volumes, roles and payment methods. Band names, usernames, user/band IDs, IP addresses, customer, article, contact or free-text data, and hashes of those values are never stored in telemetry.",
+    "collects": "The data helps us find rarely used features, understand performance and data volumes, and prioritise development.",
+    "allow": "Yes, allow anonymous statistics",
+    "allowHint": "Anonymous collection starts only after you save this choice.",
+    "deny": "No, do not collect",
+    "denyHint": "No telemetry is collected for this account.",
+    "save": "Save choice",
+    "later": "You can change this setting at any time in your account."
+  },
   "support": {
     "active": "Supportzugriff aktiv",
     "detail": "{user} arbeitet gerade mit den Daten dieser Band. Grund: {reason}",
@@ -723,7 +737,16 @@
       "passwordStored": "gespeichert — leer lassen zum Beibehalten",
       "passwordHint": "Das Passwort wird verschlüsselt gespeichert und nie zurückgegeben. Ein leeres Feld behält das gespeicherte bei.",
       "smtpFrom": "Absender",
-      "notificationEmail": "Benachrichtigung an"
+      "notificationEmail": "Benachrichtigung an",
+      "telemetry": {
+        "title": "Anonymous telemetry · last 30 days",
+        "hint": "Only data from accounts that personally opted in.",
+        "requests": "API requests",
+        "requestSize": "Avg. request",
+        "responseSize": "Avg. response",
+        "payment": "Most used payment method",
+        "privacy": "The statistics contain no band/user IDs, names, IP addresses or pseudonymous hashes. Roles are aggregated separately from routes and payment methods."
+      }
     },
     "backToAdmin": "← Back to the admin center"
   },
@@ -1011,6 +1034,14 @@
       "midnight": "Mitternacht"
     },
     "showVariantPhotos": "Variantenfotos im Verkauf anzeigen",
+    "telemetry": {
+      "title": "Anonymous usage statistics",
+      "intro": "This choice applies only to your account and is independent of other members of your band.",
+      "anonymousTitle": "What is stored",
+      "anonymousText": "Only anonymous daily aggregates about feature usage, data volumes, roles and payment methods. No band/user names, IDs, IP addresses, customer/article/contact data, free text, or hashes of those values are stored.",
+      "allow": "Allow anonymous usage statistics",
+      "stopHint": "Turning this off stops all future telemetry for your account. Existing aggregates cannot be linked back to an account."
+    },
     "mfa": "Zwei-Faktor-Authentifizierung",
     "mfaRequired": "Für dieses Konto verpflichtend.",
     "mfaOptional": "Optional, aber empfohlen — kostenlos und lokal über eine Authenticator-App.",

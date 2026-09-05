@@ -93,6 +93,12 @@ type User struct {
 	UILanguage        string `gorm:"size:5;not null;default:'de'" json:"ui_language"`
 	ShowVariantPhotos bool   `gorm:"not null" json:"show_variant_photos"`
 
+	// Anonymous telemetry is an individual decision. A nil decision timestamp
+	// means the person has not answered the first-login prompt yet; until then
+	// absolutely no telemetry sample is collected for this account.
+	TelemetryEnabled   bool       `gorm:"not null;default:false" json:"telemetry_enabled"`
+	TelemetryDecidedAt *time.Time `json:"telemetry_decided_at,omitempty"`
+
 	Timestamps
 }
 

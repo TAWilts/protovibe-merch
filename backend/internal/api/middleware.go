@@ -32,6 +32,9 @@ var maintenanceOpenPrefixes = []string{
 	"/api/v1/mfa",
 	"/api/v1/announcement",
 	"/api/v1/version",
+	// A signed-in user must still be able to answer the first-login privacy
+	// prompt while maintenance is active.
+	"/api/v1/profile/telemetry",
 }
 
 // unsafeMethods require a CSRF token.
@@ -40,6 +43,71 @@ var unsafeMethods = map[string]bool{
 	http.MethodPut:    true,
 	http.MethodPatch:  true,
 	http.MethodDelete: true,
+}
+
+// telemetryMiddleware records only after authentication has resolved and only
+// when this individual user has explicitly opted in.
+func (s *Server) telemetryMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		started := time.Now()
+		c.Next()
+
+		state := stateFrom(c)
+		if state == nil || state.User == nil ||
+			state.User.TelemetryDecidedAt == nil || !state.User.TelemetryEnabled {
+			return
+		}
+
+		path := c.FullPath()
+		// FullPath is the route template, never the concrete URL. Consent and
+		// telemetry-inspection calls are excluded so privacy controls themselves
+		// do not become usage samples.
+		if path == "" ||
+			path == "/api/v1/profile/telemetry" ||
+			path == "/api/v1/platform/telemetry" {
+			return
+		}
+
+		requestBytes := c.Request.ContentLength
+		if requestBytes < 0 {
+			requestBytes = 0
+		}
+		responseBytes := int64(c.Writer.Size())
+		if responseBytes < 0 {
+			responseBytes = 0
+		}
+
+		if err := s.telemetry.RecordRoute(
+			c.Request.Context(),
+			c.Request.Method,
+			path,
+			time.Since(started),
+			requestBytes,
+			responseBytes,
+		); err != nil {
+			// Telemetry must never make a real user operation fail.
+			slog.Warn("anonymous telemetry write failed", "error", err)
+		}
+
+		// Role distribution is deliberately a separate aggregate. It cannot be
+		// cross-joined with one person's routes or payment choices.
+		if path == "/api/v1/me" {
+			s.recordTelemetryEvent(c, "role", string(state.User.Role))
+		}
+	}
+}
+
+// recordTelemetryEvent accepts closed enum values only. Never call this helper
+// with customer data, article names, comments, event names or any free text.
+func (s *Server) recordTelemetryEvent(c *gin.Context, kind, dimension string) {
+	state := stateFrom(c)
+	if state == nil || state.User == nil ||
+		state.User.TelemetryDecidedAt == nil || !state.User.TelemetryEnabled {
+		return
+	}
+	if err := s.telemetry.RecordEvent(c.Request.Context(), kind, dimension); err != nil {
+		slog.Warn("anonymous telemetry event failed", "error", err, "kind", kind)
+	}
 }
 
 // requestLogger tags every request with an ID and emits one structured line

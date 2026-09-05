@@ -21,7 +21,7 @@ func New(s *Server) *gin.Engine {
 	}
 
 	r := gin.New()
-	r.Use(gin.Recovery(), requestLogger(), s.metricsMiddleware())
+	r.Use(gin.Recovery(), requestLogger(), s.telemetryMiddleware(), s.metricsMiddleware())
 
 	if len(s.cfg.TrustedProxies) > 0 {
 		_ = r.SetTrustedProxies(s.cfg.TrustedProxies)

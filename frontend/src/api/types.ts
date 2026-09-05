@@ -37,6 +37,8 @@ export interface CurrentUser {
   ui_theme: string
   ui_language: string
   show_variant_photos: boolean
+  telemetry_enabled: boolean
+  telemetry_decided: boolean
   mfa_enabled: boolean
   contact_email: string
 }

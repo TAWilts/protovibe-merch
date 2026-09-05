@@ -1,4 +1,5 @@
 import { api } from './client'
+import type { TelemetryDaily } from './telemetry-types'
 import type {
   Article,
   AuditEntry,
@@ -301,6 +302,10 @@ export const platformApi = {
     api.post<{ to: string }>('/platform/settings/test-mail', { to }),
   saveSettings: (payload: Record<string, unknown>) =>
     api.put<PlatformSettings>('/platform/settings', payload),
+  telemetry: (days = 30) =>
+    api.get<{ days: number; since: string; rows: TelemetryDaily[] }>(
+      `/platform/telemetry?days=${days}`,
+    ),
 
   backups: (bandId?: number) =>
     api.get<{ runs: BackupRun[] }>(`/platform/backups${bandId ? `?band_id=${bandId}` : ''}`),
@@ -471,6 +476,11 @@ export const profileApi = {
     ui_language?: string
     show_variant_photos?: boolean
   }) => api.patch<void>('/profile/personalization', payload),
+  telemetry: (enabled: boolean) =>
+    api.patch<{ telemetry_enabled: boolean; telemetry_decided: boolean }>(
+      '/profile/telemetry',
+      { enabled },
+    ),
   changePassword: (currentPassword: string, newPassword: string) =>
     api.post<{ signed_out: boolean }>('/profile/password', {
       current_password: currentPassword,

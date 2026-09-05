@@ -29,6 +29,7 @@ func (s *Server) registerPlatformOpsRoutes(g *gin.RouterGroup) {
 	p.GET("/updates", s.checkUpdates)
 
 	admin := p.Group("", requireSystemAdmin())
+	admin.GET("/telemetry", s.telemetryStats)
 	admin.PUT("/settings", s.updatePlatformSettings)
 	admin.POST("/settings/test-mail", s.sendTestMail)
 	admin.POST("/bands/:id/revoke-sessions", s.revokeBandSessions)
@@ -106,6 +107,34 @@ func (s *Server) auditLog(c *gin.Context) {
 		entries = []auditEntry{}
 	}
 	c.JSON(http.StatusOK, gin.H{"entries": entries, "limit": limit})
+}
+
+// telemetryStats exposes anonymous aggregate rows only. There is no endpoint
+// that can drill from a row into a band, user, IP address or stable hash.
+func (s *Server) telemetryStats(c *gin.Context) {
+	days := 30
+	if raw := c.Query("days"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 365 {
+			fail(c, http.StatusBadRequest, "invalid_days", "days must be between 1 and 365")
+			return
+		}
+		days = parsed
+	}
+
+	now := time.Now().UTC()
+	sinceTime := now.AddDate(0, 0, -(days - 1))
+	since := models.NewDate(sinceTime.Year(), sinceTime.Month(), sinceTime.Day())
+	rows, err := s.telemetry.List(c.Request.Context(), since)
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"days":  days,
+		"since": since,
+		"rows":  rows,
+	})
 }
 
 // platformSettingsPayload never exposes the stored SMTP password; it only says

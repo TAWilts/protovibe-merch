@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -24,6 +25,8 @@ func (s *Server) registerProfileRoutes(g *gin.RouterGroup) {
 	// The step-up confirmation itself must be reachable without a fresh
 	// confirmation, otherwise there would be no way to obtain one.
 	g.POST("/profile/reauth", requireAuth(), s.reauthenticate)
+	// This privacy choice must be reachable immediately after first login.
+	g.PATCH("/profile/telemetry", requireAuth(), s.updateTelemetryPreference)
 
 	p := g.Group("/profile", requireAuth(), s.requireFreshReauth())
 	p.GET("", s.getProfile)
@@ -111,6 +114,37 @@ func (s *Server) getProfile(c *gin.Context) {
 		"last_login_at":       state.User.LastLoginAt,
 		"mfa_enrolled_at":     state.User.MFAEnrolledAt,
 		"recovery_codes_left": len(state.User.MFARecoveryCodeHashes),
+	})
+}
+
+type telemetryPreferenceRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+func (s *Server) updateTelemetryPreference(c *gin.Context) {
+	var req telemetryPreferenceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	state := stateFrom(c)
+	now := time.Now().UTC()
+	if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).
+		Model(state.User).
+		Updates(map[string]any{
+			"telemetry_enabled":    req.Enabled,
+			"telemetry_decided_at": now,
+		}).Error; err != nil {
+		serverError(c, err)
+		return
+	}
+	state.User.TelemetryEnabled = req.Enabled
+	state.User.TelemetryDecidedAt = &now
+
+	c.JSON(http.StatusOK, gin.H{
+		"telemetry_enabled": req.Enabled,
+		"telemetry_decided": true,
 	})
 }
 

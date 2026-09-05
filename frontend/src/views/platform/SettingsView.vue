@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { platformApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { PlatformSettings, UpdateStatus } from '@/api/types'
+import type { TelemetryDaily } from '@/api/telemetry-types'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -25,12 +26,57 @@ const loading = ref(true)
 const busy = ref(false)
 /** Write-only: an empty field leaves the stored password untouched. */
 const smtpPassword = ref('')
+const telemetryRows = ref<TelemetryDaily[]>([])
 
 const canEdit = computed(() => session.capabilities?.is_system_admin ?? false)
+const routeTelemetry = computed(() =>
+  telemetryRows.value.filter((row) => row.event_kind === 'api_route'),
+)
+const requestCount = computed(() =>
+  routeTelemetry.value.reduce((sum, row) => sum + row.sample_count, 0),
+)
+const averageRequestKb = computed(() => {
+  const count = requestCount.value
+  if (!count) return '0.0'
+  return (
+    routeTelemetry.value.reduce((sum, row) => sum + row.total_request_bytes, 0) /
+    count /
+    1024
+  ).toFixed(1)
+})
+const averageResponseKb = computed(() => {
+  const count = requestCount.value
+  if (!count) return '0.0'
+  return (
+    routeTelemetry.value.reduce((sum, row) => sum + row.total_response_bytes, 0) /
+    count /
+    1024
+  ).toFixed(1)
+})
+const roleRows = computed(() =>
+  telemetryRows.value
+    .filter((row) => row.event_kind === 'role')
+    .reduce<Record<string, number>>((totals, row) => {
+      totals[row.dimension] = (totals[row.dimension] ?? 0) + row.sample_count
+      return totals
+    }, {}),
+)
+const topPayment = computed(() => {
+  const totals = telemetryRows.value
+    .filter((row) => row.event_kind === 'payment_method')
+    .reduce<Record<string, number>>((acc, row) => {
+      acc[row.dimension] = (acc[row.dimension] ?? 0) + row.sample_count
+      return acc
+    }, {})
+  return Object.entries(totals).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—'
+})
 
 onMounted(async () => {
   try {
     settings.value = await platformApi.settings()
+    if (canEdit.value) {
+      telemetryRows.value = (await platformApi.telemetry(30)).rows
+    }
   } catch {
     flash.error(t('errors.generic'))
   } finally {
@@ -244,6 +290,39 @@ function saveSmtp() {
       <section class="table-section">
         <div class="section-heading">
           <div>
+            <h2>{{ t('platform.settings.telemetry.title') }}</h2>
+            <p>{{ t('platform.settings.telemetry.hint') }}</p>
+          </div>
+        </div>
+        <div class="metric-grid">
+          <article class="metric-card">
+            <span>{{ t('platform.settings.telemetry.requests') }}</span>
+            <strong>{{ requestCount }}</strong>
+          </article>
+          <article class="metric-card">
+            <span>{{ t('platform.settings.telemetry.requestSize') }}</span>
+            <strong>{{ averageRequestKb }} KiB</strong>
+          </article>
+          <article class="metric-card">
+            <span>{{ t('platform.settings.telemetry.responseSize') }}</span>
+            <strong>{{ averageResponseKb }} KiB</strong>
+          </article>
+          <article class="metric-card">
+            <span>{{ t('platform.settings.telemetry.payment') }}</span>
+            <strong>{{ topPayment }}</strong>
+          </article>
+        </div>
+        <p class="muted">{{ t('platform.settings.telemetry.privacy') }}</p>
+        <div v-if="Object.keys(roleRows).length" class="telemetry-role-list">
+          <span v-for="(count, role) in roleRows" :key="role">
+            <strong>{{ role }}</strong> · {{ count }}
+          </span>
+        </div>
+      </section>
+
+      <section class="table-section">
+        <div class="section-heading">
+          <div>
             <h2>{{ t('platform.settings.updates') }}</h2>
             <p>{{ t('platform.settings.updatesHint') }}</p>
           </div>
@@ -309,6 +388,18 @@ function saveSmtp() {
   margin: 0;
 }
 
+.telemetry-role-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.telemetry-role-list span {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
 
 .checkbox-row {
   display: flex;

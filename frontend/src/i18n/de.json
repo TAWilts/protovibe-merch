@@ -71,6 +71,20 @@
     "resetCode": "Einmalcode aus der E-Mail",
     "resetDone": "Passwort geaendert. Du kannst dich jetzt anmelden."
   },
+  "telemetryConsent": {
+    "eyebrow": "Deine Entscheidung",
+    "title": "Anonyme Nutzungsstatistik",
+    "intro": "Hilf uns zu verstehen, welche Funktionen tatsächlich gebraucht werden und wo wir den Merch Manager verbessern sollten.",
+    "anonymousTitle": "Wirklich anonym",
+    "anonymousText": "Gespeichert werden ausschließlich tägliche Summen wie aufgerufene Funktionsbereiche, Datenmengen, verwendete Rollen und Zahlungsarten. Bandname, Benutzername, User-/Band-ID, IP-Adresse, Kunden-, Artikel-, Kontakt- und Freitexte sowie Hashes davon werden nicht in der Telemetrie gespeichert.",
+    "collects": "Die Daten helfen dabei, wenig genutzte Funktionen zu erkennen, Performance und Datenmengen einzuschätzen und die Entwicklung zu priorisieren.",
+    "allow": "Ja, anonyme Statistik erlauben",
+    "allowHint": "Erst nach dem Speichern dieser Auswahl beginnt die anonyme Erhebung.",
+    "deny": "Nein, nicht erfassen",
+    "denyHint": "Für dieses Konto werden keine Telemetriedaten erhoben.",
+    "save": "Auswahl speichern",
+    "later": "Du kannst diese Einstellung später jederzeit in deinem Konto ändern."
+  },
   "support": {
     "active": "Supportzugriff aktiv",
     "detail": "{user} arbeitet gerade mit den Daten dieser Band. Grund: {reason}",
@@ -723,7 +737,16 @@
       "passwordStored": "gespeichert — leer lassen zum Beibehalten",
       "passwordHint": "Das Passwort wird verschlüsselt gespeichert und nie zurückgegeben. Ein leeres Feld behält das gespeicherte bei.",
       "smtpFrom": "Absender",
-      "notificationEmail": "Benachrichtigung an"
+      "notificationEmail": "Benachrichtigung an",
+      "telemetry": {
+        "title": "Anonyme Telemetrie · letzte 30 Tage",
+        "hint": "Nur Daten von Konten, die persönlich zugestimmt haben.",
+        "requests": "API-Aufrufe",
+        "requestSize": "Ø Anfrage",
+        "responseSize": "Ø Antwort",
+        "payment": "Häufigste Zahlungsart",
+        "privacy": "Die Statistik enthält keine Band-/User-ID, Namen, IP-Adressen oder pseudonymen Hashes. Rollen werden getrennt von Routen und Zahlungsarten aggregiert."
+      }
     },
     "backToAdmin": "← Zurück zum Admin Center"
   },
@@ -1020,6 +1043,14 @@
       "midnight": "Mitternacht"
     },
     "showVariantPhotos": "Variantenfotos im Verkauf anzeigen",
+    "telemetry": {
+      "title": "Anonyme Nutzungsstatistik",
+      "intro": "Diese Entscheidung gilt nur für dein eigenes Konto und unabhängig von anderen Bandmitgliedern.",
+      "anonymousTitle": "Was gespeichert wird",
+      "anonymousText": "Nur anonyme Tagesaggregate zu Funktionsnutzung, Datenmengen, Rollen und Zahlungsarten. Es werden keine Band- oder Nutzernamen, IDs, IP-Adressen, Kunden-/Artikel-/Kontaktdaten, Freitexte oder Hashes davon gespeichert.",
+      "allow": "Anonyme Nutzungsstatistik erlauben",
+      "stopHint": "Ausschalten stoppt jede zukünftige Erhebung für dein Konto. Bereits aggregierte Werte sind keinem Konto zuordenbar."
+    },
     "mfa": "Zwei-Faktor-Authentifizierung",
     "mfaRequired": "Für dieses Konto verpflichtend.",
     "mfaOptional": "Optional, aber empfohlen — kostenlos und lokal über eine Authenticator-App.",

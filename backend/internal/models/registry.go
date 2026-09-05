@@ -11,7 +11,7 @@ func AllModels() []any {
 		// Control plane — deliberately not band-scoped.
 		&Band{}, &User{}, &Session{}, &PendingAuth{}, &PasswordResetChallenge{},
 		&SupportAccessGrant{}, &PlatformSettings{}, &BackupRun{}, &AuditLog{},
-		&BandRegistrationRequest{},
+		&BandRegistrationRequest{}, &TelemetryDaily{},
 
 		// Band data — every one of these embeds Tenant.
 		&Article{}, &OptionGroup{}, &OptionValue{}, &Variant{},
@@ -40,5 +40,6 @@ var ControlPlaneTables = map[string]bool{
 	"backup_runs":                true,
 	"audit_log":                  true,
 	"band_registration_requests": true,
+	"telemetry_daily":             true,
 	"schema_migrations":          true,
 }
