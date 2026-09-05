@@ -28,6 +28,7 @@ const links = computed(() => [
   { name: 'platform-support', label: 'platform.nav.support', systemOnly: false },
   { name: 'platform-messages', label: 'platform.nav.messages', systemOnly: false },
   { name: 'platform-audit', label: 'platform.nav.audit', systemOnly: false },
+  { name: 'platform-telemetry', label: 'nav.statistics', systemOnly: true },
   { name: 'platform-backups', label: 'platform.nav.backups', systemOnly: false },
   { name: 'platform-settings', label: 'platform.nav.settings', systemOnly: false },
 ].filter((link) => !link.systemOnly || isSystemAdmin.value))

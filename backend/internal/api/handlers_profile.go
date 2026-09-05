@@ -133,14 +133,16 @@ func (s *Server) updateTelemetryPreference(c *gin.Context) {
 	if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).
 		Model(state.User).
 		Updates(map[string]any{
-			"telemetry_enabled":    req.Enabled,
-			"telemetry_decided_at": now,
+			"telemetry_enabled":         req.Enabled,
+			"telemetry_decided_at":      now,
+			"telemetry_consent_version": models.CurrentTelemetryConsentVersion,
 		}).Error; err != nil {
 		serverError(c, err)
 		return
 	}
 	state.User.TelemetryEnabled = req.Enabled
 	state.User.TelemetryDecidedAt = &now
+	state.User.TelemetryConsentVersion = models.CurrentTelemetryConsentVersion
 
 	c.JSON(http.StatusOK, gin.H{
 		"telemetry_enabled": req.Enabled,

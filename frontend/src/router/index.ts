@@ -58,6 +58,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'support-access', name: 'platform-support', component: () => import('@/views/platform/SupportAccessView.vue') },
       { path: 'messages', name: 'platform-messages', component: () => import('@/views/platform/MessagesView.vue') },
       { path: 'audit', name: 'platform-audit', component: () => import('@/views/platform/AuditView.vue') },
+      { path: 'telemetry', name: 'platform-telemetry', component: () => import('@/views/platform/TelemetryView.vue'), meta: { systemAdmin: true } },
       { path: 'backups', name: 'platform-backups', component: () => import('@/views/platform/BackupsView.vue') },
       { path: 'settings', name: 'platform-settings', component: () => import('@/views/platform/SettingsView.vue') },
     ],

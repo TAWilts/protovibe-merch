@@ -46,7 +46,7 @@ var unsafeMethods = map[string]bool{
 }
 
 // telemetryMiddleware records only after authentication has resolved and only
-// when this individual user has explicitly opted in.
+// when this individual user has explicitly opted in to the current scope.
 func (s *Server) telemetryMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		started := time.Now()
@@ -54,17 +54,18 @@ func (s *Server) telemetryMiddleware() gin.HandlerFunc {
 
 		state := stateFrom(c)
 		if state == nil || state.User == nil ||
-			state.User.TelemetryDecidedAt == nil || !state.User.TelemetryEnabled {
+			state.User.TelemetryDecidedAt == nil ||
+			state.User.TelemetryConsentVersion < models.CurrentTelemetryConsentVersion ||
+			!state.User.TelemetryEnabled {
 			return
 		}
 
 		path := c.FullPath()
-		// FullPath is the route template, never the concrete URL. Consent and
-		// telemetry-inspection calls are excluded so privacy controls themselves
-		// do not become usage samples.
+		// FullPath is the route template, never the concrete URL. Privacy and
+		// telemetry-inspection calls do not become telemetry themselves.
 		if path == "" ||
 			path == "/api/v1/profile/telemetry" ||
-			path == "/api/v1/platform/telemetry" {
+			strings.HasPrefix(path, "/api/v1/platform/telemetry") {
 			return
 		}
 
@@ -76,37 +77,125 @@ func (s *Server) telemetryMiddleware() gin.HandlerFunc {
 		if responseBytes < 0 {
 			responseBytes = 0
 		}
+		duration := time.Since(started)
 
 		if err := s.telemetry.RecordRoute(
 			c.Request.Context(),
 			c.Request.Method,
 			path,
-			time.Since(started),
+			duration,
 			requestBytes,
 			responseBytes,
 		); err != nil {
 			// Telemetry must never make a real user operation fail.
-			slog.Warn("anonymous telemetry write failed", "error", err)
+			slog.Warn("telemetry aggregate write failed", "error", err)
 		}
 
-		// Role distribution is deliberately a separate aggregate. It cannot be
-		// cross-joined with one person's routes or payment choices.
+		// Detailed telemetry is band-account telemetry. A consenting platform
+		// support user must never authorise detailed tracking for a band merely
+		// because a temporary support grant is active.
+		if state.User.BandID == nil {
+			if path == "/api/v1/me" {
+				s.recordTelemetryEvent(c, "role", string(state.User.Role))
+			}
+			return
+		}
+		bandID := *state.User.BandID
+
+		if feature := telemetryFeature(path); feature != "" {
+			s.recordTelemetryEvent(c, "feature", feature)
+			if err := s.telemetry.RecordFeature(
+				c.Request.Context(),
+				bandID,
+				feature,
+				s.currentTelemetryLocation(c.Request.Context()),
+				c.Writer.Status(),
+				duration,
+				requestBytes,
+				responseBytes,
+			); err != nil {
+				slog.Warn("pseudonymous feature telemetry write failed", "error", err)
+			}
+		}
+
 		if path == "/api/v1/me" {
-			s.recordTelemetryEvent(c, "role", string(state.User.Role))
+			role := string(state.User.Role)
+			s.recordTelemetryEvent(c, "role", role)
+			if err := s.telemetry.RecordSession(c.Request.Context(), bandID, role); err != nil {
+				slog.Warn("pseudonymous session telemetry write failed", "error", err)
+			}
+
+			due, err := s.telemetry.StorageSnapshotNeeded(c.Request.Context(), bandID)
+			if err != nil {
+				slog.Warn("could not check storage telemetry snapshot", "error", err)
+			} else if due {
+				used, err := s.files.UsageBytes(c.Request.Context(), bandID)
+				if err != nil {
+					slog.Warn("could not measure storage for telemetry", "error", err)
+				} else if err := s.telemetry.RecordStorageSnapshot(
+					c.Request.Context(), bandID, used,
+				); err != nil {
+					slog.Warn("storage telemetry write failed", "error", err)
+				}
+			}
 		}
 	}
 }
 
+func telemetryFeature(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/api/v1/slideshow"):
+		return "slideshow"
+	case strings.HasPrefix(path, "/api/v1/band-finances"):
+		return "band_finances"
+	case strings.HasPrefix(path, "/api/v1/payment-qr"):
+		return "payment_qr"
+	case strings.HasPrefix(path, "/api/v1/imports"):
+		return "csv_import"
+	case strings.HasPrefix(path, "/api/v1/purchases"):
+		return "purchases"
+	case strings.HasPrefix(path, "/api/v1/articles"),
+		strings.HasPrefix(path, "/api/v1/assortment"):
+		return "catalogue"
+	case path == "/api/v1/balances":
+		return "balances"
+	case path == "/api/v1/history":
+		return "history"
+	case path == "/api/v1/operations":
+		return "operations"
+	case strings.HasPrefix(path, "/api/v1/sales"):
+		return "sales"
+	default:
+		return ""
+	}
+}
+
+// currentTelemetryLocation returns only the band's own currently selected
+// event/location text. There is deliberately no IP/geolocation fallback.
+func (s *Server) currentTelemetryLocation(ctx context.Context) string {
+	var eventState models.SaleEventState
+	if err := s.db.WithContext(ctx).First(&eventState).Error; err != nil {
+		return ""
+	}
+	var event models.SaleEvent
+	if err := s.db.WithContext(ctx).First(&event, eventState.EventID).Error; err != nil {
+		return ""
+	}
+	return strings.TrimSpace(event.Name)
+}
+
 // recordTelemetryEvent accepts closed enum values only. Never call this helper
-// with customer data, article names, comments, event names or any free text.
+// with customer data, article names, comments, event names or other free text.
 func (s *Server) recordTelemetryEvent(c *gin.Context, kind, dimension string) {
 	state := stateFrom(c)
 	if state == nil || state.User == nil ||
-		state.User.TelemetryDecidedAt == nil || !state.User.TelemetryEnabled {
+		state.User.TelemetryDecidedAt == nil ||
+		state.User.TelemetryConsentVersion < models.CurrentTelemetryConsentVersion ||
+		!state.User.TelemetryEnabled {
 		return
 	}
 	if err := s.telemetry.RecordEvent(c.Request.Context(), kind, dimension); err != nil {
-		slog.Warn("anonymous telemetry event failed", "error", err, "kind", kind)
+		slog.Warn("telemetry aggregate write failed", "error", err, "kind", kind)
 	}
 }
 

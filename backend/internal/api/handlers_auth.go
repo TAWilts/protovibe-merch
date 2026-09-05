@@ -329,7 +329,8 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 	payload.User.UILanguage = user.UILanguage
 	payload.User.ShowVariantPhotos = user.ShowVariantPhotos
 	payload.User.TelemetryEnabled = user.TelemetryEnabled
-	payload.User.TelemetryDecided = user.TelemetryDecidedAt != nil
+	payload.User.TelemetryDecided = user.TelemetryDecidedAt != nil &&
+		user.TelemetryConsentVersion >= models.CurrentTelemetryConsentVersion
 	payload.User.MFAEnabled = user.MFAEnabled
 	payload.User.ContactEmail = user.ContactEmail
 

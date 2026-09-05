@@ -56,6 +56,10 @@ var ManagedBandRoles = []Role{RoleSeller, RoleMember, RoleManager, RoleBandAdmin
 // ManagedPlatformRoles are the roles a system admin may assign.
 var ManagedPlatformRoles = []Role{RoleSupportAdmin, RoleSystemAdmin}
 
+// CurrentTelemetryConsentVersion is bumped whenever the scope described to
+// users materially changes. Older decisions are treated as undecided.
+const CurrentTelemetryConsentVersion = 2
+
 // User is an account. Platform accounts have a nil BandID; band accounts are
 // unique per band, so two bands may each have a user called "merch".
 type User struct {
@@ -93,11 +97,12 @@ type User struct {
 	UILanguage        string `gorm:"size:5;not null;default:'de'" json:"ui_language"`
 	ShowVariantPhotos bool   `gorm:"not null" json:"show_variant_photos"`
 
-	// Anonymous telemetry is an individual decision. A nil decision timestamp
-	// means the person has not answered the first-login prompt yet; until then
-	// absolutely no telemetry sample is collected for this account.
-	TelemetryEnabled   bool       `gorm:"not null;default:false" json:"telemetry_enabled"`
-	TelemetryDecidedAt *time.Time `json:"telemetry_decided_at,omitempty"`
+	// Telemetry is an individual, versioned decision. A nil decision timestamp
+	// or an older consent version means the current explanation has not been
+	// accepted; until then absolutely no telemetry sample is collected.
+	TelemetryEnabled        bool       `gorm:"not null;default:false" json:"telemetry_enabled"`
+	TelemetryDecidedAt      *time.Time `json:"telemetry_decided_at,omitempty"`
+	TelemetryConsentVersion int        `gorm:"not null;default:0" json:"-"`
 
 	Timestamps
 }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ func (s *Server) registerPlatformOpsRoutes(g *gin.RouterGroup) {
 
 	admin := p.Group("", requireSystemAdmin())
 	admin.GET("/telemetry", s.telemetryStats)
+	admin.GET("/telemetry/export.json", s.telemetryExport)
 	admin.PUT("/settings", s.updatePlatformSettings)
 	admin.POST("/settings/test-mail", s.sendTestMail)
 	admin.POST("/bands/:id/revoke-sessions", s.revokeBandSessions)
@@ -109,8 +111,8 @@ func (s *Server) auditLog(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"entries": entries, "limit": limit})
 }
 
-// telemetryStats exposes anonymous aggregate rows only. There is no endpoint
-// that can drill from a row into a band, user, IP address or stable hash.
+// telemetryStats exposes aggregate and pseudonymised rows only. It never joins
+// aliases back to the application's band/user/article tables.
 func (s *Server) telemetryStats(c *gin.Context) {
 	days := 30
 	if raw := c.Query("days"); raw != "" {
@@ -125,15 +127,58 @@ func (s *Server) telemetryStats(c *gin.Context) {
 	now := time.Now().UTC()
 	sinceTime := now.AddDate(0, 0, -(days - 1))
 	since := models.NewDate(sinceTime.Year(), sinceTime.Month(), sinceTime.Day())
+
 	rows, err := s.telemetry.List(c.Request.Context(), since)
 	if err != nil {
 		serverError(c, err)
 		return
 	}
+	events, err := s.telemetry.ListEvents(c.Request.Context(), since)
+	if err != nil {
+		serverError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"days":  days,
-		"since": since,
-		"rows":  rows,
+		"days":   days,
+		"since":  since,
+		"rows":   rows,
+		"events": events,
+	})
+}
+
+// telemetryExport downloads everything collected by the opt-in telemetry
+// subsystem, but no source IDs/names/IP/customer/contact data or reverse alias
+// mapping. The product does not forward these rows to third parties.
+func (s *Server) telemetryExport(c *gin.Context) {
+	rows, err := s.telemetry.AllDaily(c.Request.Context())
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+	events, err := s.telemetry.AllEvents(c.Request.Context())
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+
+	now := time.Now().UTC()
+	c.Header(
+		"Content-Disposition",
+		fmt.Sprintf(`attachment; filename="merch-telemetry-%s.json"`, now.Format("20060102")),
+	)
+	c.JSON(http.StatusOK, gin.H{
+		"schema_version": 2,
+		"generated_at":   now,
+		"privacy": gin.H{
+			"mode":                      "pseudonymised",
+			"stable_aliases":            true,
+			"contains_internal_ids":     false,
+			"contains_ip_addresses":     false,
+			"contains_customer_data":    false,
+			"shared_with_third_parties": false,
+		},
+		"daily_aggregates": rows,
+		"events":           events,
 	})
 }
 

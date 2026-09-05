@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/receipt"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/sales"
+	telemetrysvc "github.com/tawilts/protovibe-merch/backend/internal/services/telemetry"
 )
 
 func (s *Server) registerSalesRoutes(g *gin.RouterGroup) {
@@ -96,6 +98,7 @@ func (s *Server) cancelSale(c *gin.Context) {
 		Action: audit.ActionSaleCancelled, EntityType: "sale", EntityID: &id,
 		Details: map[string]any{"scope": string(scope), "cancelled_ids": cancelled},
 	})
+	s.recordSaleTelemetry(c, "sale_status", cancelled)
 	c.JSON(http.StatusOK, gin.H{"cancelled_ids": cancelled})
 }
 
@@ -124,6 +127,7 @@ func (s *Server) setDeliveryStatus(c *gin.Context) {
 		Action: audit.ActionSaleStatus, EntityType: "sale", EntityID: &id,
 		Details: map[string]any{"delivery_status": string(req.Status)},
 	})
+	s.recordSaleTelemetry(c, "sale_status", []int64{id})
 	c.Status(http.StatusNoContent)
 }
 
@@ -143,6 +147,7 @@ func (s *Server) markSalePaid(c *gin.Context) {
 		Action: audit.ActionSaleStatus, EntityType: "sale", EntityID: &id,
 		Details: map[string]any{"is_paid": true},
 	})
+	s.recordSaleReceiptTelemetry(c, "sale_status", id)
 	c.Status(http.StatusNoContent)
 }
 
@@ -236,9 +241,8 @@ func (s *Server) createSale(c *gin.Context) {
 				"offline":         offline != nil,
 			},
 		})
-		// PaymentMethod is a closed enum; receipt/customer/article data never
-		// enters the telemetry service.
 		s.recordTelemetryEvent(c, "payment_method", req.PaymentMethod)
+		s.recordSaleTelemetry(c, "sale_created", result.SaleIDs)
 	}
 
 	status := http.StatusCreated
@@ -248,6 +252,87 @@ func (s *Server) createSale(c *gin.Context) {
 		status = http.StatusOK
 	}
 	c.JSON(status, result)
+}
+
+func (s *Server) recordSaleReceiptTelemetry(c *gin.Context, eventType string, saleID int64) {
+	state := stateFrom(c)
+	if state == nil || state.User == nil || state.User.BandID == nil {
+		return
+	}
+
+	ctx := c.Request.Context()
+	var sale models.Sale
+	if err := s.db.WithContext(ctx).First(&sale, saleID).Error; err != nil {
+		slog.Warn("could not resolve sale receipt for telemetry", "error", err)
+		return
+	}
+	var ids []int64
+	if err := s.db.WithContext(ctx).Model(&models.Sale{}).
+		Where("receipt_id = ?", sale.ReceiptID).
+		Pluck("id", &ids).Error; err != nil {
+		slog.Warn("could not resolve sale receipt positions for telemetry", "error", err)
+		return
+	}
+	s.recordSaleTelemetry(c, eventType, ids)
+}
+
+func (s *Server) recordSaleTelemetry(c *gin.Context, eventType string, saleIDs []int64) {
+	state := stateFrom(c)
+	if state == nil || state.User == nil || state.User.BandID == nil ||
+		state.User.TelemetryDecidedAt == nil ||
+		state.User.TelemetryConsentVersion < models.CurrentTelemetryConsentVersion ||
+		!state.User.TelemetryEnabled || len(saleIDs) == 0 {
+		return
+	}
+
+	ctx := c.Request.Context()
+	var saleRows []models.Sale
+	if err := s.db.WithContext(ctx).Where("id IN ?", saleIDs).Find(&saleRows).Error; err != nil {
+		slog.Warn("could not load sale rows for telemetry", "error", err)
+		return
+	}
+
+	variantIDs := make([]int64, 0, len(saleRows))
+	seenVariants := map[int64]bool{}
+	for _, sale := range saleRows {
+		if !seenVariants[sale.VariantID] {
+			seenVariants[sale.VariantID] = true
+			variantIDs = append(variantIDs, sale.VariantID)
+		}
+	}
+
+	var variants []models.Variant
+	if len(variantIDs) > 0 {
+		if err := s.db.WithContext(ctx).Where("id IN ?", variantIDs).Find(&variants).Error; err != nil {
+			slog.Warn("could not resolve articles for telemetry", "error", err)
+			return
+		}
+	}
+	articleByVariant := make(map[int64]int64, len(variants))
+	for _, variant := range variants {
+		articleByVariant[variant.ID] = variant.ArticleID
+	}
+
+	for _, sale := range saleRows {
+		snapshot := telemetrysvc.SaleSnapshot{
+			BandID:          sale.BandID,
+			SaleID:          sale.ID,
+			ArticleID:       articleByVariant[sale.VariantID],
+			Quantity:        sale.Quantity,
+			UnitPriceCents:  sale.UnitPriceCents,
+			AmountCents:     sale.AmountDueCents,
+			PaymentMethod:   sale.PaymentMethod,
+			IsPaid:          sale.IsPaid,
+			IsReceived:      sale.IsReceived,
+			IsCancelled:     sale.IsCancelled,
+			DeliveryStatus:  string(sale.DeliveryStatus),
+			PaymentFollowUp: sale.PaymentFollowUp,
+			Location:        sale.EventName,
+		}
+		if err := s.telemetry.RecordSale(ctx, eventType, snapshot); err != nil {
+			slog.Warn("pseudonymous sale telemetry write failed", "error", err)
+		}
+	}
 }
 
 // reportSalesError maps booking errors onto stable API codes.

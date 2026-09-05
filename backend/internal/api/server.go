@@ -108,7 +108,7 @@ func NewServer(cfg *config.Config, database *gorm.DB) (*Server, error) {
 		}),
 		platform:      platformService,
 		registrations: registration.NewService(database, authService, platformService, cfg.PublicBaseURL),
-		telemetry:     telemetry.NewService(database),
+		telemetry:     telemetry.NewService(database, cfg.SecretKey),
 		backups: backup.NewService(database, backup.Config{
 			DatabaseDSN:   cfg.DatabaseDSN,
 			Root:          cfg.BackupRoot,

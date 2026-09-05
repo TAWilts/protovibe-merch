@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { TelemetryDaily } from './telemetry-types'
+import type { TelemetryPayload } from './telemetry-types'
 import type {
   Article,
   AuditEntry,
@@ -305,9 +305,8 @@ export const platformApi = {
   saveSettings: (payload: Record<string, unknown>) =>
     api.put<PlatformSettings>('/platform/settings', payload),
   telemetry: (days = 30) =>
-    api.get<{ days: number; since: string; rows: TelemetryDaily[] }>(
-      `/platform/telemetry?days=${days}`,
-    ),
+    api.get<TelemetryPayload>(`/platform/telemetry?days=${days}`),
+  telemetryExportUrl: () => '/api/v1/platform/telemetry/export.json',
 
   backups: (bandId?: number) =>
     api.get<{ runs: BackupRun[] }>(`/platform/backups${bandId ? `?band_id=${bandId}` : ''}`),
