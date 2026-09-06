@@ -1,6 +1,25 @@
+# Environment
 .env
+.env.local
+
+# Runtime data
 data/
-imports/
-__pycache__/
-*.py[cod]
-.pytest_cache/
+backups/
+uploads/
+
+# Go
+backend/bin/
+backend/tmp/
+*.test
+coverage.out
+
+# Node
+node_modules/
+frontend/dist/
+frontend/dev-dist/
+frontend/.vite/
+npm-debug.log*
+
+# Editors / OS
+.DS_Store
+.idea/

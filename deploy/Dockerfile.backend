@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:1.25-alpine AS build
+ARG APP_VERSION=v0.0.0
+WORKDIR /src
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/server ./cmd/server \
+ && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/importlegacy ./cmd/importlegacy
+
+FROM alpine:3.21
+ARG APP_VERSION=v0.0.0
+ENV APP_VERSION=${APP_VERSION}
+# mariadb-client provides mariadb-dump, which the backup scheduler shells out to.
+RUN apk add --no-cache ca-certificates tzdata mariadb-client \
+ && adduser -D -u 10001 merch
+COPY --from=build /out/server /usr/local/bin/server
+COPY --from=build /out/importlegacy /usr/local/bin/importlegacy
+# The named volume inherits this directory's ownership, so it has to exist in
+# the image; otherwise Docker creates the mountpoint as root and the unprivileged
+# process cannot write storage or backups.
+RUN mkdir -p /data/storage /data/backups && chown -R merch:merch /data
+USER merch
+EXPOSE 8000
+ENTRYPOINT ["/usr/local/bin/server"]

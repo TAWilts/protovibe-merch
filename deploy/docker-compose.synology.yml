@@ -1,0 +1,104 @@
+# Synology Container Manager stack. Images are built and published by
+# .github/workflows/publish-image.yml; no source checkout or compiler is needed
+# on the NAS.
+name: protovibe-merch-multitenant-test
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${DB_NAME:-merch}
+      MARIADB_USER: ${DB_USER:-merch}
+      MARIADB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD is required}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      # Money is integer cents and every timestamp is written in UTC; a strict
+      # mode plus UTC keeps MariaDB from silently coercing either.
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+      - --default-time-zone=+00:00
+    volumes:
+      - ${SYNOLOGY_DATA_ROOT:-/volume1/docker/protovibe-merch-multitenant-test/data}/mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    logging: *default-logging
+
+  backend:
+    image: ${MERCH_IMAGE_REPOSITORY:-ghcr.io/tawilts/protovibe-merch-multitenant}:${MERCH_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      LISTEN_ADDR: ":8000"
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      LOCAL_DEV_MODE: ${LOCAL_DEV_MODE:-false}
+      DATABASE_DSN: "${DB_USER:-merch}:${DB_PASSWORD}@tcp(db:3306)/${DB_NAME:-merch}?charset=utf8mb4&parseTime=true&loc=UTC&multiStatements=true"
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+      PUBLIC_REGISTRATION_ENABLED: ${PUBLIC_REGISTRATION_ENABLED:-false}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      STORAGE_ROOT: /data/storage
+      BACKUP_ROOT: /data/backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-90}
+      BACKUP_CRON_FULL: ${BACKUP_CRON_FULL:-0 3 * * *}
+      BACKUP_CRON_PER_BAND: ${BACKUP_CRON_PER_BAND:-30 3 * * *}
+      DISPLAY_TIMEZONE: ${DISPLAY_TIMEZONE:-Europe/Berlin}
+      MFA_ISSUER: ${MFA_ISSUER:-Merch Manager}
+      ACCOUNT_SETUP_CODE_DAYS: ${ACCOUNT_SETUP_CODE_DAYS:-14}
+      PROFILE_REAUTH_SECONDS: ${PROFILE_REAUTH_SECONDS:-600}
+      EMAIL_NOTIFICATIONS_ENABLED: ${EMAIL_NOTIFICATIONS_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_SECURITY: ${SMTP_SECURITY:-ssl}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      UPDATE_CHECK_REPOSITORY: ${UPDATE_CHECK_REPOSITORY:-TAWilts/protovibe-merch}
+      UPDATE_CHECK_TOKEN: ${UPDATE_CHECK_TOKEN:-}
+    volumes:
+      - ${SYNOLOGY_DATA_ROOT:-/volume1/docker/protovibe-merch-multitenant-test/data}/app:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/readyz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    logging: *default-logging
+
+  web:
+    image: ${MERCH_IMAGE_REPOSITORY:-ghcr.io/tawilts/protovibe-merch-multitenant}-web:${MERCH_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      # Synology's reverse proxy terminates public TLS. Caddy stays on plain
+      # HTTP inside the NAS and serves the SPA plus /api on one origin.
+      SITE_ADDRESS: ":80"
+      BACKEND_UPSTREAM: backend:8000
+    ports:
+      - "${HOST_BIND:-0.0.0.0}:${HOST_PORT:-8090}:80"
+    volumes:
+      - ${SYNOLOGY_DATA_ROOT:-/volume1/docker/protovibe-merch-multitenant-test/data}/caddy-data:/data
+      - ${SYNOLOGY_DATA_ROOT:-/volume1/docker/protovibe-merch-multitenant-test/data}/caddy-config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    logging: *default-logging

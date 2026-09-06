@@ -1,0 +1,104 @@
+/*
+ * Design tokens ported verbatim from the Flask original
+ * (_old/static/app.css lines 1-99). Same variable names, same five themes,
+ * same html[data-theme] switch, so the visual identity carries over exactly.
+ */
+:root {
+  --bg: #100d16;
+  --panel: #1a1622;
+  --panel-raised: #211b2b;
+  --panel-muted: #2c2438;
+  --border: #3d334b;
+  --text: #f4f1f7;
+  --muted: #b8b0c3;
+  --accent: #d95ff1;
+  --accent-bright: #f08eff;
+  --accent-dark: #8e2ea8;
+  --success: #52d18b;
+  --warning: #f3b35a;
+  --danger: #f27983;
+  --radius: 14px;
+  --shadow: 0 18px 45px rgba(0, 0, 0, .23);
+  --page-glow: radial-gradient(circle at 18% -10%, #332143 0, transparent 34rem);
+  --header-bg: rgba(16, 13, 22, .91);
+  --input-bg: #110e16;
+  --selection-hover: #392447;
+  --option-bg: #16121d;
+  --option-selected: #4b2856;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+html[data-theme="ocean"] {
+  --bg: #0a171f;
+  --panel: #10232d;
+  --panel-raised: #15303b;
+  --panel-muted: #1d4050;
+  --border: #315665;
+  --text: #edfaff;
+  --muted: #a9c6d1;
+  --accent: #2fc2dc;
+  --accent-bright: #70e9ff;
+  --accent-dark: #177e9a;
+  --page-glow: radial-gradient(circle at 18% -10%, #15536b 0, transparent 34rem);
+  --header-bg: rgba(10, 23, 31, .91);
+  --input-bg: #09141b;
+  --selection-hover: #174453;
+  --option-bg: #0c1b23;
+  --option-selected: #18566a;
+}
+html[data-theme="sunset"] {
+  --bg: #211018;
+  --panel: #301722;
+  --panel-raised: #3c1d2a;
+  --panel-muted: #552636;
+  --border: #704052;
+  --text: #fff2ef;
+  --muted: #ddbbb9;
+  --accent: #f25a92;
+  --accent-bright: #ffb167;
+  --accent-dark: #c33d74;
+  --page-glow: radial-gradient(circle at 18% -10%, #843653 0, transparent 34rem);
+  --header-bg: rgba(33, 16, 24, .91);
+  --input-bg: #1c0c14;
+  --selection-hover: #5b283a;
+  --option-bg: #250f19;
+  --option-selected: #703047;
+}
+html[data-theme="forest"] {
+  --bg: #0d1c17;
+  --panel: #142a22;
+  --panel-raised: #19352b;
+  --panel-muted: #265040;
+  --border: #3a6754;
+  --text: #effcf4;
+  --muted: #b3d1bf;
+  --accent: #45c985;
+  --accent-bright: #91f2bd;
+  --accent-dark: #27885b;
+  --page-glow: radial-gradient(circle at 18% -10%, #286548 0, transparent 34rem);
+  --header-bg: rgba(13, 28, 23, .91);
+  --input-bg: #0b1813;
+  --selection-hover: #24533d;
+  --option-bg: #102018;
+  --option-selected: #286448;
+}
+html[data-theme="midnight"] {
+  --bg: #101627;
+  --panel: #19223a;
+  --panel-raised: #202b46;
+  --panel-muted: #303d60;
+  --border: #4a577b;
+  --text: #f1f4ff;
+  --muted: #bec6df;
+  --accent: #778dfa;
+  --accent-bright: #b3c0ff;
+  --accent-dark: #5063cf;
+  --page-glow: radial-gradient(circle at 18% -10%, #344d9a 0, transparent 34rem);
+  --header-bg: rgba(16, 22, 39, .91);
+  --input-bg: #0d1220;
+  --selection-hover: #303d68;
+  --option-bg: #141b2e;
+  --option-selected: #394a82;
+}

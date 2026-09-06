@@ -1,0 +1,109 @@
+/*
+ * Tablet and touch rules for the whole app.
+ *
+ * The sales terminal runs on a tablet at a merch stand: bad light, a queue,
+ * one hand on the device. Two things follow, and they are separate:
+ *
+ *   - `pointer: coarse` sizes the targets. A finger needs ~48px regardless of
+ *     how wide the screen is, and a tablet in landscape is a coarse pointer at
+ *     desktop width — which is exactly the case the width breakpoints miss.
+ *   - width breakpoints reflow the columns.
+ *
+ * Everything here is additive to base.css; the till's own layout lives with
+ * the view that owns it.
+ */
+
+/* --------------------------------------------------------------- touch --- */
+
+@media (pointer: coarse) {
+  /* 16px is the threshold below which iOS zooms the page on focus, which
+     throws the layout off mid-sale. */
+  input, select, textarea, button { font-size: max(1rem, 0.95em); }
+
+  .primary-button,
+  .secondary-button,
+  .danger-button,
+  .compact-button,
+  .text-button,
+  .selection-button,
+  .option-choice,
+  .main-nav a,
+  .pos-mode-button,
+  .user-message-button,
+  .user-profile-link {
+    min-height: 48px;
+  }
+
+  .compact-button { padding: 10px 16px; }
+  .option-choice { padding: 13px 18px; font-size: 1rem; }
+  .selection-button { padding: 15px 16px; }
+
+  /* Checkboxes are the smallest target in the app and the easiest to miss. */
+  input[type='checkbox'],
+  input[type='radio'] {
+    width: 26px;
+    height: 26px;
+  }
+  .toggle-label { gap: 12px; }
+  .checkbox-row { gap: 22px; }
+
+  /* Table rows are read at arm's length and their controls are tapped. */
+  table th, table td { padding-block: 14px; }
+  .cell-input { min-height: 44px; }
+
+  /* A tap should never be interpreted as a double-tap zoom on a control. */
+  button, a, .option-choice, .selection-button, summary { touch-action: manipulation; }
+
+  summary { min-height: 48px; display: flex; align-items: center; }
+
+  /* Dialogs become sheets: reachable, and never taller than the screen. */
+  .confirmation-dialog {
+    width: min(640px, calc(100vw - 24px));
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+  }
+  .dialog-actions { gap: 12px; }
+  .dialog-actions > button { flex: 1 1 auto; min-height: 52px; }
+}
+
+/* ------------------------------------------------------------- tablet --- */
+
+/* Portrait tablets and small landscape ones: the three-column admin layouts
+   have no room left once the columns are finger-sized. */
+@media (min-width: 761px) and (max-width: 1180px) {
+  .page-shell { padding: 22px 18px 40px; }
+  .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .field-grid.three-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-payment-qr-grid { grid-template-columns: 1fr; }
+  .theme-choice-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* A tablet in portrait is narrow enough that the header nav needs its own
+   line rather than a horizontal scroll nobody notices. */
+@media (pointer: coarse) and (max-width: 1024px) {
+  .app-header { flex-wrap: wrap; padding: 8px 16px; gap: 10px; }
+  .main-nav { order: 3; width: 100%; gap: 2px; }
+  .main-nav a { padding: 0 14px; font-size: .95rem; }
+  .user-menu { margin-left: auto; }
+}
+
+/* Wide tables stay readable by scrolling inside their own box rather than
+   pushing the page sideways. */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* ------------------------------------------------------- no side scroll --- */
+
+/*
+ * The header must never widen the document.
+ *
+ * The navigation and the user menu are both `white-space: nowrap`; once they
+ * together exceed the viewport the page gains a horizontal scrollbar, and on a
+ * tablet that means the whole interface can be panned sideways by accident
+ * mid-sale. The nav is the part that may shrink and scroll inside itself.
+ */
+html, body { overflow-x: hidden; }
+
+.app-header { max-width: 100vw; }
+.main-nav { flex: 1 1 auto; min-width: 0; scrollbar-width: none; }
+.main-nav::-webkit-scrollbar { display: none; }
+.user-menu { flex: 0 0 auto; }

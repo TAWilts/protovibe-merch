@@ -1,0 +1,27 @@
+-- Drop order respects the foreign keys created in 0001_init.up.sql.
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS admin_messages;
+DROP TABLE IF EXISTS band_transaction_attachments;
+DROP TABLE IF EXISTS band_transactions;
+DROP TABLE IF EXISTS purchase_receipt_attachments;
+DROP TABLE IF EXISTS purchases;
+DROP TABLE IF EXISTS payment_qr_intents;
+DROP TABLE IF EXISTS payment_qr_settings;
+DROP TABLE IF EXISTS sync_events;
+DROP TABLE IF EXISTS sales;
+DROP TABLE IF EXISTS sale_event_state;
+DROP TABLE IF EXISTS sale_events;
+DROP TABLE IF EXISTS slideshow_settings;
+DROP TABLE IF EXISTS slideshow_extra_photos;
+DROP TABLE IF EXISTS variant_photos;
+DROP TABLE IF EXISTS variants;
+DROP TABLE IF EXISTS option_values;
+DROP TABLE IF EXISTS option_groups;
+DROP TABLE IF EXISTS articles;
+DROP TABLE IF EXISTS backup_runs;
+DROP TABLE IF EXISTS platform_settings;
+DROP TABLE IF EXISTS pending_auth;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS support_access_grants;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS bands;

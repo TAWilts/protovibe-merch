@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+
+# The Vite output is architecture-independent. Build it natively on the GitHub
+# runner instead of running Node through QEMU once per target architecture.
+ARG BUILDPLATFORM
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
+WORKDIR /src
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# Caddy serves the built SPA and reverse-proxies /api to the Go backend, so the
+# browser sees a single origin and the session cookie stays first-party.
+FROM caddy:2-alpine
+COPY deploy/Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /src/dist /srv
