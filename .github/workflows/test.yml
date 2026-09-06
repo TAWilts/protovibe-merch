@@ -65,5 +65,10 @@ jobs:
         run: docker compose --env-file deploy/.env.synology.example -f deploy/docker-compose.synology.yml config --quiet
       - name: Validate Synology update task
         run: |
-          sh -n deploy/synology-update.sh deploy/tests/synology-update_test.sh
+          sh -n \
+            deploy/synology-update.sh \
+            deploy/synology-update-bootstrap.sh \
+            deploy/tests/synology-update_test.sh \
+            deploy/tests/synology-update-bootstrap_test.sh
           sh deploy/tests/synology-update_test.sh
+          sh deploy/tests/synology-update-bootstrap_test.sh

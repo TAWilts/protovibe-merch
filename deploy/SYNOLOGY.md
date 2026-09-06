@@ -52,8 +52,11 @@ Requests.
 ## 3. Verzeichnisse und Konfiguration anlegen
 
 `docker-compose.synology.yml`, `.env.synology.example` und
-`synology-update.sh` nach `/volume1/docker/protovibe-merch-multitenant-test`
-kopieren. Dann per SSH:
+`synology-update-bootstrap.sh` nach
+`/volume1/docker/protovibe-merch-multitenant-test` kopieren. Der eigentliche
+`synology-update.sh` muss nicht mehr manuell gepflegt werden: Er wird in jedes
+Backend-Image eingebettet und vor jedem Update passend zum konfigurierten
+Image-Tag extrahiert. Dann per SSH:
 
 ```sh
 sudo -i
@@ -129,14 +132,23 @@ In DSM unter **Systemsteuerung → Aufgabenplaner** einen benutzerdefinierten Ta
 als `root` anlegen, zum Beispiel täglich. Befehl:
 
 ```sh
-/bin/sh /volume1/docker/protovibe-merch-multitenant-test/synology-update.sh >> /volume1/docker/protovibe-merch-multitenant-test/update.log 2>&1
+/bin/sh /volume1/docker/protovibe-merch-multitenant-test/synology-update-bootstrap.sh >> /volume1/docker/protovibe-merch-multitenant-test/update.log 2>&1
 ```
 
-Der Task zieht nur Backend und Web. Stimmen deren Image-IDs bereits mit den
-laufenden Containern überein, beendet er sich ohne Neustart. Vor einem echten
-Update schreibt er einen MariaDB-Dump nach `data/pre-update`, ersetzt nur die
-geänderten App-Container und wartet auf beide Healthchecks. Das MariaDB-Major-
-Image wird bewusst nicht automatisch aktualisiert.
+Der kleine Bootstrap ist absichtlich stabil und bleibt auf dem NAS. Er liest
+`MERCH_IMAGE_REPOSITORY` und `MERCH_IMAGE_TAG` aus `.env`, zieht genau dieses
+Backend-Image, extrahiert dessen
+`/usr/local/share/merch-manager/synology-update.sh` atomar nach
+`/volume1/docker/protovibe-merch-multitenant-test/synology-update.sh` und führt
+anschließend diese Datei aus. Dadurch gehören Update-Logik und Backend-Version
+immer zusammen; bei einem fest gesetzten Versionstag wird automatisch auch der
+Updater dieser Version verwendet.
+
+Der extrahierte Updater zieht Backend und Web. Stimmen deren Image-IDs bereits
+mit den laufenden Containern überein, beendet er sich ohne Neustart. Vor einem
+echten Update schreibt er einen MariaDB-Dump nach `data/pre-update`, ersetzt nur
+die geänderten App-Container und wartet auf beide Healthchecks. Das MariaDB-
+Major-Image wird bewusst nicht automatisch aktualisiert.
 
 Für einen festen Rollback `MERCH_IMAGE_TAG` auf einen veröffentlichten
 Versionstag setzen und `pull` plus `up -d` ausführen. Vor einem Downgrade immer
