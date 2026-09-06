@@ -50,6 +50,25 @@ func TestBuildUserPlansRejectsNoActiveUsers(t *testing.T) {
 	}
 }
 
+func TestBuildUserPlansSkipsLegacyPlatformAccounts(t *testing.T) {
+	plans, warnings, err := buildUserPlans([]row{
+		{"id": int64(1), "username": "platform-admin", "role": "system_admin", "is_active": int64(1)},
+		{"id": int64(2), "username": "support", "role": "support_admin", "is_active": int64(1)},
+		{"id": int64(3), "username": "band-admin", "role": "band_admin", "is_active": int64(1)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 || plans[0].legacyID != 3 || plans[0].role != models.RoleBandAdmin {
+		t.Fatalf("platform accounts were not skipped cleanly: %#v", plans)
+	}
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, `platform user "platform-admin"`) ||
+		!strings.Contains(joined, `platform user "support"`) {
+		t.Fatalf("platform-skip warnings missing: %v", warnings)
+	}
+}
+
 func TestResolveLegacyFileConfinesPaths(t *testing.T) {
 	root := t.TempDir()
 	invoiceDir := filepath.Join(root, "invoices")

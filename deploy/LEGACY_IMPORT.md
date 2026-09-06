@@ -37,10 +37,13 @@ users and audit records. Product photos and documents are copied into the new
 band-prefixed storage and verified by SHA-256 after copying.
 
 Legacy passwords, MFA secrets, sessions, setup/reset challenges and SMTP
-credentials are intentionally not copied. Each imported user receives a new
-one-time setup code. Old `support_admin` and `system_admin` accounts are reduced
-to `band_admin`; a legacy account never gains platform access through an import.
-At least one active imported account is guaranteed to be a `band_admin`.
+credentials are intentionally not copied. Each imported band user receives a new
+one-time setup code. Legacy `support_admin` and `system_admin` accounts are
+skipped completely because platform accounts belong to the instance, not to a
+band tenant. Create the platform `system_admin` separately through
+`BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD`; no platform setup code
+is emitted by the band import. At least one active imported band account is
+guaranteed to be a `band_admin`.
 
 Ephemeral payment-QR intents and offline-sync idempotency records are not
 migrated. The dry-run report calls these out when they exist.

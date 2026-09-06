@@ -264,6 +264,15 @@ func buildUserPlans(rows []row) ([]userPlan, []string, error) {
 	seen := map[string]bool{}
 
 	for _, r := range rows {
+		rawRole := strings.ToLower(strings.TrimSpace(stringValue(r, "role")))
+		if rawRole == string(models.RoleSupportAdmin) || rawRole == string(models.RoleSystemAdmin) {
+			warnings = append(warnings, fmt.Sprintf(
+				"legacy platform user %q with role %q was skipped; platform accounts are instance-scoped and must be created separately through bootstrap",
+				stringValue(r, "username"), rawRole,
+			))
+			continue
+		}
+
 		username := stringValue(r, "username")
 		normalized, err := auth.NormalizeUsername(username)
 		if err != nil {
@@ -348,13 +357,15 @@ func preflight(ctx context.Context, snap *snapshot, opts Options) (*Report, erro
 	if len(snap.Users) == 0 {
 		return nil, errors.New("legacy import: users database contains no users")
 	}
-	_, userWarnings, err := buildUserPlans(snap.Users)
+	userPlans, userWarnings, err := buildUserPlans(snap.Users)
 	if err != nil {
 		return nil, err
 	}
+	report.Counts["users"] = len(userPlans)
+	report.Counts["platform_users_skipped"] = len(snap.Users) - len(userPlans)
 	report.Warnings = append(report.Warnings, userWarnings...)
 	report.Warnings = append(report.Warnings,
-		"legacy password hashes, MFA secrets, sessions, setup/reset challenges and SMTP credentials are intentionally not migrated; every imported user receives a new one-time setup code")
+		"legacy password hashes, MFA secrets, sessions, setup/reset challenges and SMTP credentials are intentionally not migrated; every imported band user receives a new one-time setup code")
 
 	articles := idSet(snap.Articles)
 	groups := idSet(snap.OptionGroups)
