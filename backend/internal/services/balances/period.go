@@ -182,10 +182,14 @@ func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, 
 		if leftName != rightName {
 			return leftName < rightName
 		}
-		left := strings.ToLower(rows[i].VariantLabel)
-		right := strings.ToLower(rows[j].VariantLabel)
-		if left != right {
-			return left < right
+		left, right := labels[rows[i].VariantID].OptionPositions, labels[rows[j].VariantID].OptionPositions
+		for position := 0; position < len(left) && position < len(right); position++ {
+			if left[position] != right[position] {
+				return left[position] < right[position]
+			}
+		}
+		if len(left) != len(right) {
+			return len(left) < len(right)
 		}
 		return rows[i].VariantID < rows[j].VariantID
 	})

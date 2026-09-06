@@ -194,8 +194,16 @@ func TestReceiptInvoiceBelongsToTheWholeBasket(t *testing.T) {
 	if res := h.do(http.MethodDelete, "/api/v1/purchase-receipts/"+receiptID, nil); res.Status != http.StatusNoContent {
 		t.Fatalf("delete receipt: %d %v", res.Status, res.Body)
 	}
-	if listed := h.do(http.MethodGet, "/api/v1/purchases", nil); len(jsonList(listed.Body, "purchases")) != 0 {
-		t.Fatalf("deleting the basket must remove all positions: %v", listed.Body)
+	listedPurchases := h.do(http.MethodGet, "/api/v1/purchases", nil)
+	purchases := jsonList(listedPurchases.Body, "purchases")
+	if len(purchases) != 2 {
+		t.Fatalf("cancelling the basket must keep both positions in history: %v", listedPurchases.Body)
+	}
+	for _, raw := range purchases {
+		purchase := jsonObject(raw)
+		if purchase["is_cancelled"] != true {
+			t.Fatalf("every position in a cancelled basket must be marked cancelled: %v", purchase)
+		}
 	}
 }
 

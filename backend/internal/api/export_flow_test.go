@@ -78,7 +78,7 @@ func TestExportHeadersMatchTheOriginal(t *testing.T) {
 		},
 		"einkaeufe": {
 			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Gesamt",
-			"Lieferant", "Rechnung", "Kommentar",
+			"Lieferant", "Rechnung", "Kommentar", "Storniert",
 		},
 		"bestand": {
 			"Artikel", "Optionen", "Gekauft", "Verkauft", "Aktueller Bestand", "Mindestbestand",
