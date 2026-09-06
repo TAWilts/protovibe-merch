@@ -11,7 +11,7 @@ import (
 
 // FinanceReport is the auditable source data for the printable finance report.
 // It deliberately does not calculate tax/VAT because tax rates are not yet
-// modelled in Protovibe.
+// modelled in Merch Manager.
 type FinanceReport struct {
 	BandName    string               `json:"band_name"`
 	From        string               `json:"from"`

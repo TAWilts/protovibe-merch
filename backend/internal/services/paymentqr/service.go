@@ -24,7 +24,7 @@ import (
 const (
 	IntentTTL                 = 20 * time.Minute
 	DefaultBankRemittanceText = "Merch-Kauf"
-	PaymentRemittancePrefix   = "Protovibe Merch"
+	PaymentRemittancePrefix   = "Merch Manager Merch"
 	PayPalMeURLPrefix         = "https://paypal.me/"
 )
 

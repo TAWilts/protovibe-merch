@@ -102,7 +102,7 @@ func Load() (*Config, error) {
 		SessionIdleTTL:      envDuration("SESSION_IDLE_TTL_SECONDS", 14*24*time.Hour),
 		ProfileReauthWindow: envDuration("PROFILE_REAUTH_SECONDS", 600*time.Second),
 		AccountSetupCodeTTL: time.Duration(envInt("ACCOUNT_SETUP_CODE_DAYS", 14)) * 24 * time.Hour,
-		MFAIssuer:           env("MFA_ISSUER", "Protovibe Merch Manager"),
+		MFAIssuer:           env("MFA_ISSUER", "Merch Manager"),
 		CookieSecure:        envBool("COOKIE_SECURE", true),
 		CookieDomain:        os.Getenv("COOKIE_DOMAIN"),
 

@@ -18,7 +18,7 @@ func TestPaymentQRSettingsValidation(t *testing.T) {
 	h.signInAs(band, models.RoleBandAdmin)
 
 	bad := h.do(http.MethodPut, "/api/v1/payment-qr/settings", map[string]any{
-		"bank_account_holder": "Protovibe",
+		"bank_account_holder": "Merch Manager",
 		"bank_iban":           "DE89370400440532013001",
 	})
 	if bad.Status != http.StatusBadRequest || bad.Body["code"] != "invalid_iban" {
@@ -47,7 +47,7 @@ func TestPaymentQRSettingsValidation(t *testing.T) {
 
 	good := h.do(http.MethodPut, "/api/v1/payment-qr/settings", map[string]any{
 		"paypal_me_url":        "https://paypal.me/protovibe",
-		"bank_account_holder":  "Protovibe",
+		"bank_account_holder":  "Merch Manager",
 		"bank_iban":            "DE89 3704 0044 0532 0130 00",
 		"bank_bic":             "COBADEFFXXX",
 		"bank_remittance_text": "Vom Admin bestimmter Text",
@@ -99,7 +99,7 @@ func TestShowingACodeBooksNothing(t *testing.T) {
 	_, variants := h.sellableArticle("QR Shirt")
 
 	h.do(http.MethodPut, "/api/v1/payment-qr/settings", map[string]any{
-		"bank_account_holder": "Protovibe", "bank_iban": testIBAN,
+		"bank_account_holder": "Merch Manager", "bank_iban": testIBAN,
 		"bank_remittance_text": "Merch-Kauf",
 	})
 
@@ -124,7 +124,7 @@ func TestShowingACodeBooksNothing(t *testing.T) {
 	}
 	hint, _ := intent.Body["payload_hint"].(string)
 	receiptID, _ := intent.Body["receipt_id"].(string)
-	if !strings.HasPrefix(hint, "Protovibe Merch "+receiptID+": 2x QR Shirt") {
+	if !strings.HasPrefix(hint, "Merch Manager Merch "+receiptID+": 2x QR Shirt") {
 		t.Fatalf("the server must generate the reference from receipt and basket: %q", hint)
 	}
 	if strings.Contains(hint, "Vom Browser") || strings.Contains(hint, "Merch-Kauf") {

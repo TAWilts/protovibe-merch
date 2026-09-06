@@ -403,7 +403,7 @@
     "receipts": "Receipts",
     "openIncome": "Open band income",
     "openExpense": "Open band expenses",
-    "reportDisclaimer": "Note: This report summarises transactions recorded in Protovibe. It is not a tax calculation or tax advice. VAT, depreciation and tax book values are not shown until those data are modelled in the system.",
+    "reportDisclaimer": "Note: This report summarises transactions recorded in Merch Manager. It is not a tax calculation or tax advice. VAT, depreciation and tax book values are not shown until those data are modelled in the system.",
     "ledger": "Article balance",
     "ledgerHint": "Bestand wird ausschließlich aus Einkaufs- und Verkaufsbewegungen berechnet.",
     "obsolete": "Obsolet",

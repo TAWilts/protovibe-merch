@@ -16,7 +16,7 @@ export default defineConfig({
       srcDir: 'src/offline',
       filename: 'service-worker.ts',
       manifest: {
-        name: 'Protovibe Merch Manager',
+        name: 'Merch Manager',
         short_name: 'Merch',
         start_url: '/sales',
         scope: '/',

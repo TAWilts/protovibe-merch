@@ -13,7 +13,7 @@ const testIBAN = "DE89370400440532013000"
 
 func account() paymentqr.BankAccount {
 	return paymentqr.BankAccount{
-		Holder:     "Protovibe",
+		Holder:     "Merch Manager",
 		IBAN:       testIBAN,
 		BIC:        "COBADEFFXXX",
 		Remittance: "V-20260827-001",
@@ -78,13 +78,13 @@ func TestGeneratedRemittanceMatchesOriginalFormat(t *testing.T) {
 	got := paymentqr.RemittanceText("V-20260827-001", []string{
 		"2x Geometry Shirt Schwarz/M", "1x Cap",
 	})
-	want := "Protovibe Merch V-20260827-001: 2x Geometry Shirt Schwarz/M, 1x Cap"
+	want := "Merch Manager Merch V-20260827-001: 2x Geometry Shirt Schwarz/M, 1x Cap"
 	if got != want {
 		t.Fatalf("remittance = %q, want %q", got, want)
 	}
 
 	long := paymentqr.RemittanceText("V-20260827-001", []string{strings.Repeat("Langer Artikel ", 20)})
-	if !strings.HasPrefix(long, "Protovibe Merch V-20260827-001: ") || len([]rune(long)) > paymentqr.MaxRemittanceLength {
+	if !strings.HasPrefix(long, "Merch Manager Merch V-20260827-001: ") || len([]rune(long)) > paymentqr.MaxRemittanceLength {
 		t.Fatalf("receipt must survive a long description within 140 characters: %q", long)
 	}
 }
@@ -102,7 +102,7 @@ func TestEPCPayloadShape(t *testing.T) {
 	}
 	want := map[int]string{
 		0: "BCD", 1: "002", 2: "1", 3: "SCT",
-		4: "COBADEFFXXX", 5: "Protovibe", 6: testIBAN,
+		4: "COBADEFFXXX", 5: "Merch Manager", 6: testIBAN,
 		7: "EUR54.00", 8: "", 9: "", 10: "V-20260827-001",
 	}
 	for index, expected := range want {
@@ -160,7 +160,7 @@ func TestEPCRejectsUnusableInput(t *testing.T) {
 // transfer and the sale it belongs to.
 func TestRemittanceShorteningKeepsTheReceiptID(t *testing.T) {
 	long := account()
-	long.Holder = strings.Repeat("Protovibe Merchandising GmbH ", 2)
+	long.Holder = strings.Repeat("Merch Manager Merchandising GmbH ", 2)
 	long.Remittance = "V-20260827-001: " + strings.Repeat("Geometry Shirt Schwarz M, ", 12)
 
 	payload, err := paymentqr.EPCPayload(long, 5400)

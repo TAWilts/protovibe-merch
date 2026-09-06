@@ -403,7 +403,7 @@
     "receipts": "Belege",
     "openIncome": "Offene Band-Einnahmen",
     "openExpense": "Offene Band-Ausgaben",
-    "reportDisclaimer": "Hinweis: Dieser Bericht fasst die in Protovibe erfassten Vorgänge zusammen. Er ist keine Steuerberechnung oder Steuerberatung. Umsatzsteuer, Abschreibungen und steuerliche Buchwerte werden erst ausgewiesen, wenn diese Daten im System modelliert sind.",
+    "reportDisclaimer": "Hinweis: Dieser Bericht fasst die im Merch Manager erfassten Vorgänge zusammen. Er ist keine Steuerberechnung oder Steuerberatung. Umsatzsteuer, Abschreibungen und steuerliche Buchwerte werden erst ausgewiesen, wenn diese Daten im System modelliert sind.",
     "ledger": "Artikelbilanz",
     "ledgerHint": "Bestand wird ausschließlich aus Einkaufs- und Verkaufsbewegungen berechnet.",
     "obsolete": "Obsolet",

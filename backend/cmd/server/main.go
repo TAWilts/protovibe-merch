@@ -1,4 +1,4 @@
-// Command server runs the Protovibe Merch Manager API.
+// Command server runs the Merch Manager API.
 package main
 
 import (
