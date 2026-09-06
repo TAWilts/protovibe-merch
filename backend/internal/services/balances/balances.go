@@ -110,41 +110,11 @@ func NewService(database *gorm.DB) *Service {
 	return &Service{db: database, catalogue: catalogue.NewService(database)}
 }
 
-// Compute assembles the full payload for the scoped band.
+// Compute assembles the all-time/current payload. It delegates to the same
+// period-aware implementation used by the date filter so cancellation and
+// stock semantics cannot drift between the two code paths.
 func (s *Service) Compute(ctx context.Context) (*Payload, error) {
-	rows, err := s.variantRows(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	payload := &Payload{ReorderRows: []Row{}, ObsoleteRows: []Row{}}
-	for _, row := range rows {
-		if row.NoReorder {
-			payload.ObsoleteRows = append(payload.ObsoleteRows, row)
-		} else {
-			payload.ReorderRows = append(payload.ReorderRows, row)
-		}
-	}
-
-	summary, err := s.summary(ctx, rows)
-	if err != nil {
-		return nil, err
-	}
-	payload.Summary = *summary
-
-	if payload.TopSellingItems, payload.TopRevenueItems, err = s.itemRankings(ctx); err != nil {
-		return nil, err
-	}
-	if payload.TopEvents, err = s.groupRanking(ctx, "event_name"); err != nil {
-		return nil, err
-	}
-	if payload.TopSellers, err = s.groupRanking(ctx, "sold_by"); err != nil {
-		return nil, err
-	}
-	if payload.DailyIncome, err = s.dailyIncome(ctx); err != nil {
-		return nil, err
-	}
-	return payload, nil
+	return s.ComputePeriod(ctx, Period{})
 }
 
 // variantRows builds one balance line per variant that has any history or is

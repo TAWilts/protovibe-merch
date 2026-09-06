@@ -14,42 +14,70 @@ type Stock struct {
 	OnHand    int64 `json:"on_hand"`
 }
 
-// StockMap calculates stock for every variant of the scoped band.
-//
-// Stock is deliberately never stored. It is the sum of goods received minus
-// the non-cancelled sales, which is why cancelling a receipt cannot leave a
-// stored counter out of step with the ledger, and why a restored backup is
-// automatically consistent.
+// StockMap calculates the current stock for every variant.
 func (s *Service) StockMap(ctx context.Context) (map[int64]Stock, error) {
-	type row struct {
-		VariantID int64
-		Purchased int64
-		Sold      int64
-	}
+	return s.StockMapAt(ctx, nil)
+}
 
-	// The two sides are summed separately and combined in one grouped pass, so
-	// a variant that was only bought or only sold still appears.
-	var rows []row
-	err := s.db.WithContext(ctx).
-		Model(&models.Variant{}).
-		Select(`variants.id AS variant_id,
-			COALESCE((SELECT SUM(p.quantity) FROM purchases p
-				WHERE p.variant_id = variants.id), 0) AS purchased,
-			COALESCE((SELECT SUM(sa.quantity) FROM sales sa
-				WHERE sa.variant_id = variants.id AND sa.is_cancelled = 0), 0) AS sold`).
-		Scan(&rows).Error
-	if err != nil {
+// StockMapAt calculates cumulative stock through an optional end date.
+// Cancelled purchases and sales never contribute.
+func (s *Service) StockMapAt(ctx context.Context, to *models.Date) (map[int64]Stock, error) {
+	var variantIDs []int64
+	if err := s.db.WithContext(ctx).Model(&models.Variant{}).Pluck("id", &variantIDs).Error; err != nil {
 		return nil, err
 	}
 
-	stock := make(map[int64]Stock, len(rows))
-	for _, r := range rows {
-		stock[r.VariantID] = Stock{
-			VariantID: r.VariantID,
-			Purchased: r.Purchased,
-			Sold:      r.Sold,
-			OnHand:    r.Purchased - r.Sold,
-		}
+	stock := make(map[int64]Stock, len(variantIDs))
+	for _, id := range variantIDs {
+		stock[id] = Stock{VariantID: id}
+	}
+
+	type movement struct {
+		VariantID int64
+		Quantity  int64
+	}
+
+	var purchases []movement
+	purchaseQuery := s.db.WithContext(ctx).Model(&models.Purchase{}).
+		Where("is_cancelled = ?", false)
+	if to != nil {
+		purchaseQuery = purchaseQuery.Where("purchased_on <= ?", *to)
+	}
+	if err := purchaseQuery.
+		Select("variant_id, COALESCE(SUM(quantity), 0) AS quantity").
+		Group("variant_id").
+		Scan(&purchases).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range purchases {
+		entry := stock[row.VariantID]
+		entry.VariantID = row.VariantID
+		entry.Purchased = row.Quantity
+		stock[row.VariantID] = entry
+	}
+
+	var sales []movement
+	saleQuery := s.db.WithContext(ctx).Model(&models.Sale{}).
+		Where("is_cancelled = ?", false)
+	if to != nil {
+		saleQuery = saleQuery.Where("sold_on <= ?", *to)
+	}
+	if err := saleQuery.
+		Select("variant_id, COALESCE(SUM(quantity), 0) AS quantity").
+		Group("variant_id").
+		Scan(&sales).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range sales {
+		entry := stock[row.VariantID]
+		entry.VariantID = row.VariantID
+		entry.Sold = row.Quantity
+		stock[row.VariantID] = entry
+	}
+
+	for id, entry := range stock {
+		entry.OnHand = entry.Purchased - entry.Sold
+		stock[id] = entry
 	}
 	return stock, nil
 }

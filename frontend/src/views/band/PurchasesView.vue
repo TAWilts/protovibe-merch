@@ -15,9 +15,8 @@ import { isWithinDateRange } from '@/utils/dateRange'
 /**
  * Goods receipts, ported from _old/templates/purchases.html.
  *
- * Unlike a sale, a purchase may be corrected and deleted: it is the band's own
- * bookkeeping of what they ordered, and leaving a mistyped position behind
- * would distort the stock they rely on at the next gig.
+ * Booked purchases stay in the audit trail. A cancellation reverses their
+ * stock/finance effect without deleting the receipt or its attachments.
  */
 const { t } = useI18n()
 const { format } = useMoney()
@@ -96,6 +95,7 @@ interface PurchaseReceipt {
   invoiceReference: string
   positions: Purchase[]
   totalCostCents: number
+  isCancelled: boolean
 }
 
 const visibleReceipts = computed(() => {
@@ -111,12 +111,17 @@ const visibleReceipts = computed(() => {
         invoiceReference: purchase.invoice_reference,
         positions: [],
         totalCostCents: 0,
+        isCancelled: false,
       }
       known.set(purchase.receipt_id, receipt)
       receipts.push(receipt)
     }
     receipt.positions.push(purchase)
     receipt.totalCostCents += purchase.total_cost_cents
+  }
+  for (const receipt of receipts) {
+    receipt.isCancelled = receipt.positions.length > 0 &&
+      receipt.positions.every((purchase) => purchase.is_cancelled)
   }
 
   const needle = filter.value.trim().toLowerCase()
@@ -145,6 +150,7 @@ function exportVisible() {
       t('purchases.supplier'),
       t('purchases.invoiceReference'),
       t('common.comment'),
+      t('purchases.status'),
     ],
     visibleReceipts.value.flatMap((receipt) =>
       receipt.positions.map((purchase) => [
@@ -158,6 +164,7 @@ function exportVisible() {
         receipt.supplier,
         receipt.invoiceReference,
         purchase.comment,
+        purchase.is_cancelled ? t('purchases.cancelledLabel') : t('purchases.activeLabel'),
       ]),
     ),
   )
@@ -355,11 +362,11 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
 }
 
-async function removeReceipt(receipt: PurchaseReceipt) {
-  if (!window.confirm(t('purchases.deleteReceiptConfirm', { receipt: receipt.receiptId }))) return
+async function cancelReceipt(receipt: PurchaseReceipt) {
+  if (!window.confirm(t('purchases.cancelReceiptConfirm', { receipt: receipt.receiptId }))) return
   try {
-    await purchasesApi.removeReceipt(receipt.receiptId)
-    flash.success(t('purchases.receiptRemoved'))
+    await purchasesApi.cancelReceipt(receipt.receiptId)
+    flash.success(t('purchases.receiptCancelled'))
     await Promise.all([loadArticles(), loadPurchases()])
   } catch (error) {
     report(error)
@@ -530,11 +537,17 @@ async function removeReceipt(receipt: PurchaseReceipt) {
 
       <p v-if="!visibleReceipts.length" class="muted">{{ t('purchases.empty') }}</p>
       <div v-else class="purchase-receipt-list">
-        <details v-for="receipt in visibleReceipts" :key="receipt.receiptId" class="purchase-receipt-card">
+        <details
+          v-for="receipt in visibleReceipts"
+          :key="receipt.receiptId"
+          class="purchase-receipt-card"
+          :class="{ cancelled: receipt.isCancelled }"
+        >
           <summary>
             <span class="receipt-summary-main">
               <code>{{ receipt.receiptId }}</code>
               <small>{{ receipt.purchasedOn }} · {{ receipt.supplier || t('purchases.noSupplier') }}</small>
+              <em v-if="receipt.isCancelled" class="cancelled-badge">{{ t('purchases.cancelledLabel') }}</em>
             </span>
             <span>{{ t('purchases.positionCount', { count: receipt.positions.length }) }}</span>
             <strong>{{ format(receipt.totalCostCents) }}</strong>
@@ -575,8 +588,13 @@ async function removeReceipt(receipt: PurchaseReceipt) {
               <button class="secondary-button" type="button" @click="openAttachments(receipt.positions[0])">
                 {{ t('purchases.invoiceAndAttachments') }}
               </button>
-              <button v-if="canManage" class="secondary-button danger-button" type="button" @click="removeReceipt(receipt)">
-                {{ t('purchases.deleteReceipt') }}
+              <button
+                v-if="canManage && !receipt.isCancelled"
+                class="secondary-button danger-button"
+                type="button"
+                @click="cancelReceipt(receipt)"
+              >
+                {{ t('purchases.cancelReceipt') }}
               </button>
             </div>
           </div>
@@ -647,6 +665,23 @@ async function removeReceipt(receipt: PurchaseReceipt) {
   border: 1px solid var(--border);
   border-radius: 14px;
   background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.purchase-receipt-card.cancelled {
+  opacity: .72;
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+
+.cancelled-badge {
+  width: fit-content;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  font-size: .72rem;
+  font-style: normal;
+  font-weight: 700;
 }
 
 .purchase-receipt-card summary {

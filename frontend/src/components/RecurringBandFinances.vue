@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { reportsApi } from '@/api/endpoints'
@@ -8,7 +8,10 @@ import type { RecurringBandTransaction } from '@/api/types'
 import { parseAmount, useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 
-defineProps<{ suggestedCategories: string[] }>()
+const props = defineProps<{
+  incomeCategories: string[]
+  expenseCategories: string[]
+}>()
 const emit = defineEmits<{ changed: [] }>()
 
 const { t } = useI18n()
@@ -20,12 +23,31 @@ const busy = ref(false)
 const form = ref({
   transaction_type: 'expense' as 'income' | 'expense',
   start_on: new Date().toISOString().slice(0, 10),
-  category: '',
+  category: 'Equipment',
   description: '',
   amount: '',
   is_settled: true,
+  is_asset: true,
   interval_value: 1,
   interval_unit: 'month' as 'day' | 'week' | 'month' | 'year',
+})
+
+const categoriesForType = computed(() =>
+  form.value.transaction_type === 'income' ? props.incomeCategories : props.expenseCategories,
+)
+
+watch(() => form.value.transaction_type, (type) => {
+  const categories = categoriesForType.value
+  if (!categories.includes(form.value.category)) {
+    form.value.category = categories[0] ?? 'Sonstiges'
+  }
+  if (type === 'income') form.value.is_asset = false
+})
+
+watch(() => form.value.category, (category) => {
+  if (form.value.transaction_type === 'expense') {
+    form.value.is_asset = category === 'Equipment'
+  }
 })
 
 onMounted(load)
@@ -66,6 +88,7 @@ async function createRule() {
       description: form.value.description.trim(),
       amount_cents: amount,
       is_settled: form.value.is_settled,
+      is_asset: form.value.transaction_type === 'expense' && form.value.is_asset,
       interval_value: Math.trunc(form.value.interval_value),
       interval_unit: form.value.interval_unit,
     })
@@ -131,10 +154,11 @@ async function deleteRule(rule: RecurringBandTransaction) {
       <div class="field-grid two-columns">
         <label>
           {{ t('bandFinances.category') }}
-          <input v-model="form.category" list="recurring-band-categories" required />
-          <datalist id="recurring-band-categories">
-            <option v-for="entry in suggestedCategories" :key="entry" :value="entry" />
-          </datalist>
+          <select v-model="form.category" required>
+            <option v-for="entry in categoriesForType" :key="entry" :value="entry">
+              {{ entry }}
+            </option>
+          </select>
         </label>
         <label>
           {{ t('bandFinances.amount') }}
@@ -146,6 +170,17 @@ async function deleteRule(rule: RecurringBandTransaction) {
         {{ t('bandFinances.description') }}
         <input v-model="form.description" required />
       </label>
+
+      <label
+        v-if="form.transaction_type === 'expense'"
+        class="checkbox-row settlement-checkbox"
+      >
+        <input v-model="form.is_asset" type="checkbox" />
+        <span>{{ t('bandFinances.asset') }}</span>
+      </label>
+      <p v-if="form.transaction_type === 'expense'" class="muted settlement-hint">
+        {{ t('bandFinances.assetHint') }}
+      </p>
 
       <label class="checkbox-row settlement-checkbox">
         <input v-model="form.is_settled" type="checkbox" />
@@ -198,7 +233,10 @@ async function deleteRule(rule: RecurringBandTransaction) {
           >
             <td>
               <strong>{{ rule.description }}</strong>
-              <small>{{ rule.category }}</small>
+              <small>
+                {{ rule.category }}
+                <template v-if="rule.is_asset"> · {{ t('bandFinances.assetShort') }}</template>
+              </small>
             </td>
             <td>
               {{ t('bandFinances.recurring.intervalLabel', {

@@ -40,6 +40,7 @@ type Entry struct {
 	Description     string                     `json:"description"`
 	AmountCents     int64                      `json:"amount_cents"`
 	IsSettled       *bool                      `json:"is_settled,omitempty"`
+	IsAsset         bool                       `json:"is_asset"`
 }
 
 // Actor is who booked the entry.
@@ -96,6 +97,7 @@ func (s *Service) Create(ctx context.Context, entry Entry, actor Actor) (*models
 		Description:     description,
 		AmountCents:     entry.AmountCents,
 		IsSettled:       settledOrDefault(entry.IsSettled),
+		IsAsset:         entry.TransactionType == models.BandExpense && entry.IsAsset,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -145,6 +147,7 @@ func (s *Service) Update(ctx context.Context, id int64, entry Entry) (*models.Ba
 				"category":         category,
 				"description":      description,
 				"amount_cents":     entry.AmountCents,
+				"is_asset":         entry.TransactionType == models.BandExpense && entry.IsAsset,
 				"updated_at":       time.Now().UTC(),
 			}).Error; err != nil {
 			return err
@@ -230,9 +233,11 @@ type CategoryTotal struct {
 type Ledger struct {
 	Entries    []models.BandTransaction `json:"entries"`
 	Categories []CategoryTotal          `json:"categories"`
-	// SuggestedCategories are the presets offered in the form; the field
-	// itself stays free text so a band can add its own.
-	SuggestedCategories []string `json:"suggested_categories"`
+	// SuggestedCategories remains for older clients. New clients use the
+	// type-specific standardised lists and "Sonstiges" as their fallback.
+	SuggestedCategories        []string `json:"suggested_categories"`
+	SuggestedIncomeCategories  []string `json:"suggested_income_categories"`
+	SuggestedExpenseCategories []string `json:"suggested_expense_categories"`
 
 	IncomeCents      int64 `json:"income_cents"`
 	ExpenseCents     int64 `json:"expense_cents"`
@@ -254,9 +259,11 @@ func (s *Service) List(ctx context.Context) (*Ledger, error) {
 	}
 
 	ledger := &Ledger{
-		Entries:             entries,
-		SuggestedCategories: models.DefaultBandCategories,
-		Categories:          []CategoryTotal{},
+		Entries:                    entries,
+		SuggestedCategories:        models.DefaultBandCategories,
+		SuggestedIncomeCategories:  models.DefaultBandIncomeCategories,
+		SuggestedExpenseCategories: models.DefaultBandExpenseCategories,
+		Categories:                 []CategoryTotal{},
 	}
 	if ledger.Entries == nil {
 		ledger.Entries = []models.BandTransaction{}

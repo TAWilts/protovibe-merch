@@ -10,11 +10,23 @@ const (
 	BandExpense BandTransactionType = "expense"
 )
 
-// DefaultBandCategories are the presets offered in the UI. The field itself is
-// free text, so a band can add its own.
-var DefaultBandCategories = []string{
-	"Gage", "Tantiemen", "Fahrgeld", "Equipment", "Unterkunft", "Verpflegung", "Sonstiges",
+// Standardised categories keep finance reports comparable. "Sonstiges" is
+// the explicit fallback for anything that does not fit the presets.
+var DefaultBandIncomeCategories = []string{
+	"Gage", "Tantiemen", "Spende", "Erstattung", "Sonstiges",
 }
+
+var DefaultBandExpenseCategories = []string{
+	"Equipment", "Fahrtkosten / Sprit", "Verpflegung", "Unterkunft",
+	"Proberaum / Miete", "Werbung / Marketing", "Software / Abos",
+	"Gebühren", "Versicherung", "Personal / Gage", "Versand", "Sonstiges",
+}
+
+// DefaultBandCategories is kept for backwards-compatible API clients.
+var DefaultBandCategories = append(
+	append([]string{}, DefaultBandIncomeCategories...),
+	DefaultBandExpenseCategories...,
+)
 
 // BandTransaction is the band's own ledger for gigs, royalties and equipment.
 // It is deliberately separate from merch purchases and sales so a historic
@@ -34,6 +46,7 @@ type BandTransaction struct {
 	AmountCents     int64               `gorm:"not null" json:"amount_cents"`
 
 	IsSettled         bool       `gorm:"not null;index" json:"is_settled"`
+	IsAsset           bool       `gorm:"not null;index" json:"is_asset"`
 	SettledAt         *time.Time `json:"settled_at,omitempty"`
 	SettledByUserID   *int64     `json:"settled_by_user_id,omitempty"`
 	SettledByUsername string     `gorm:"size:150;not null;default:''" json:"settled_by_username"`

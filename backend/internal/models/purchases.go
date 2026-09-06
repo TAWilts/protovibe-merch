@@ -3,8 +3,8 @@ package models
 import "time"
 
 // Purchase is one line of a goods-receipt receipt. Like sales, several lines
-// can share a ReceiptID, but unlike sales a purchase may be edited and deleted
-// by a manager rather than only cancelled.
+// can share a ReceiptID. Booked purchases are never hard-deleted; corrections
+// remain visible and are removed from stock/finance totals by cancellation.
 type Purchase struct {
 	ID int64 `gorm:"primaryKey" json:"id"`
 	Tenant
@@ -26,6 +26,11 @@ type Purchase struct {
 	InvoiceSizeBytes        int64  `gorm:"not null;default:0" json:"invoice_size_bytes"`
 
 	Comment string `gorm:"size:1000;not null;default:''" json:"comment"`
+
+	IsCancelled         bool       `gorm:"not null;index" json:"is_cancelled"`
+	CancelledAt         *time.Time `json:"cancelled_at,omitempty"`
+	CancelledByUserID   *int64     `json:"cancelled_by_user_id,omitempty"`
+	CancelledByUsername string     `gorm:"size:150;not null;default:''" json:"cancelled_by_username"`
 
 	CreatedAt time.Time `gorm:"not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`

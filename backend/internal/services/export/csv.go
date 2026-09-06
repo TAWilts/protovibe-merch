@@ -377,6 +377,7 @@ func (s *Service) purchaseSheet(ctx context.Context) (*Sheet, error) {
 			purchase.Supplier,
 			purchase.InvoiceReference,
 			purchase.Comment,
+			yesNo(purchase.IsCancelled),
 		})
 	}
 
@@ -384,7 +385,7 @@ func (s *Service) purchaseSheet(ctx context.Context) (*Sheet, error) {
 		Name: string(KindPurchases),
 		Header: []string{
 			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Gesamt",
-			"Lieferant", "Rechnung", "Kommentar",
+			"Lieferant", "Rechnung", "Kommentar", "Storniert",
 		},
 		Rows: rows,
 	}, nil

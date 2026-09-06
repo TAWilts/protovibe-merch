@@ -8,6 +8,7 @@ import type {
   BandSummary,
   BandUser,
   BalancesPayload,
+  FinanceReport,
   BandLedger,
   BandTransaction,
   RecurringBandTransaction,
@@ -167,8 +168,19 @@ export const operationsApi = {
   markPaid: (saleId: number) => api.patch<void>(`/sales/${saleId}/payment-status`),
 }
 
+function periodQuery(from = '', to = '') {
+  const query = new URLSearchParams()
+  if (from) query.set('from', from)
+  if (to) query.set('to', to)
+  const encoded = query.toString()
+  return encoded ? `?${encoded}` : ''
+}
+
 export const reportsApi = {
-  balances: () => api.get<BalancesPayload>('/balances'),
+  balances: (from = '', to = '') =>
+    api.get<BalancesPayload>(`/balances${periodQuery(from, to)}`),
+  financeReport: (from = '', to = '') =>
+    api.get<FinanceReport>(`/finance-report${periodQuery(from, to)}`),
   bandLedger: () => api.get<BandLedger>('/band-finances'),
   createBandEntry: (payload: {
     transaction_type: 'income' | 'expense'
@@ -177,6 +189,7 @@ export const reportsApi = {
     description: string
     amount_cents: number
     is_settled: boolean
+    is_asset: boolean
   }) => api.post<BandTransaction>('/band-finances', payload),
   updateBandEntry: (id: number, payload: {
     transaction_type: 'income' | 'expense'
@@ -184,6 +197,7 @@ export const reportsApi = {
     category: string
     description: string
     amount_cents: number
+    is_asset: boolean
   }) => api.patch<BandTransaction>(`/band-finances/${id}`, payload),
   settleBandEntry: (id: number) => api.patch<void>(`/band-finances/${id}/settle`),
   cancelBandEntry: (id: number) => api.post<void>(`/band-finances/${id}/cancel`),
@@ -196,6 +210,7 @@ export const reportsApi = {
     description: string
     amount_cents: number
     is_settled: boolean
+    is_asset: boolean
     interval_value: number
     interval_unit: 'day' | 'week' | 'month' | 'year'
   }) => api.post<RecurringBandTransaction>('/band-finances/recurring', payload),
@@ -216,9 +231,13 @@ export const purchasesApi = {
   }) => api.post<{ receipt_id: string; purchase_ids: number[]; total_cost_cents: number }>('/purchases', payload),
   update: (id: number, payload: { quantity: number; unit_cost_cents: number; comment?: string }) =>
     api.patch<void>(`/purchases/${id}`, payload),
-  remove: (id: number) => api.delete<void>(`/purchases/${id}`),
+  cancel: (id: number) => api.patch<void>(`/purchases/${id}/cancel`),
+  cancelReceipt: (receiptId: string) =>
+    api.patch<void>(`/purchase-receipts/${encodeURIComponent(receiptId)}/cancel`),
+  // Compatibility aliases for older components: these now cancel as well.
+  remove: (id: number) => api.patch<void>(`/purchases/${id}/cancel`),
   removeReceipt: (receiptId: string) =>
-    api.delete<void>(`/purchase-receipts/${encodeURIComponent(receiptId)}`),
+    api.patch<void>(`/purchase-receipts/${encodeURIComponent(receiptId)}/cancel`),
   lastCost: (variantId: number) =>
     api.get<{ unit_cost_cents: number; found: boolean }>(`/purchases/last-cost/${variantId}`),
 }

@@ -24,6 +24,7 @@ type RecurringEntry struct {
 	Description     string                     `json:"description"`
 	AmountCents     int64                      `json:"amount_cents"`
 	IsSettled       *bool                      `json:"is_settled,omitempty"`
+	IsAsset         bool                       `json:"is_asset"`
 	IntervalValue   int                        `json:"interval_value"`
 	IntervalUnit    models.RecurrenceUnit      `json:"interval_unit"`
 }
@@ -52,6 +53,7 @@ func (s *Service) CreateRecurring(ctx context.Context, entry RecurringEntry, act
 		Description:     strings.TrimSpace(entry.Description),
 		AmountCents:     entry.AmountCents,
 		IsSettled:       settledOrDefault(entry.IsSettled),
+		IsAsset:         entry.TransactionType == models.BandExpense && entry.IsAsset,
 		IntervalValue:   entry.IntervalValue,
 		IntervalUnit:    entry.IntervalUnit,
 		IsActive:        true,
@@ -217,6 +219,7 @@ func (s *Service) materializeRule(ctx context.Context, bandID, id int64, through
 					Description:     rule.Description,
 					AmountCents:     rule.AmountCents,
 					IsSettled:       rule.IsSettled,
+					IsAsset:         rule.IsAsset,
 					CreatedAt:       now,
 					UpdatedAt:       now,
 					Actor: models.Actor{

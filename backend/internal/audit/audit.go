@@ -53,14 +53,15 @@ const (
 	ActionSupportAccessRevoked   = "support_access.revoked"
 	ActionSupportAccessExpired   = "support_access.expired"
 
-	ActionArticleCreated  = "article.created"
-	ActionArticleUpdated  = "article.updated"
-	ActionSaleCreated     = "sale.created"
-	ActionSaleCancelled   = "sale.cancelled"
-	ActionSaleStatus      = "sale.status_changed"
-	ActionPurchaseCreated = "purchase.created"
-	ActionPurchaseUpdated = "purchase.updated"
-	ActionPurchaseDeleted = "purchase.deleted"
+	ActionArticleCreated    = "article.created"
+	ActionArticleUpdated    = "article.updated"
+	ActionSaleCreated       = "sale.created"
+	ActionSaleCancelled     = "sale.cancelled"
+	ActionSaleStatus        = "sale.status_changed"
+	ActionPurchaseCreated   = "purchase.created"
+	ActionPurchaseUpdated   = "purchase.updated"
+	ActionPurchaseCancelled = "purchase.cancelled"
+	ActionPurchaseDeleted   = "purchase.deleted" // legacy identifier; no hard-delete path remains
 
 	ActionBackupStarted   = "backup.started"
 	ActionBackupFinished  = "backup.finished"

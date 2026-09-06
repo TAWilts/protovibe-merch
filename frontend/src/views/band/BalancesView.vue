@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
 import { exportUrls, reportsApi } from '@/api/endpoints'
-import type { BalanceRow, BalancesPayload, RankingEntry } from '@/api/types'
+import type { BalanceRow, BalancesPayload, FinanceReport, RankingEntry } from '@/api/types'
+import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import { useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import IncomeChart from '@/components/IncomeChart.vue'
@@ -23,6 +24,9 @@ const flash = useFlashStore()
 
 const data = ref<BalancesPayload | null>(null)
 const loading = ref(true)
+const financeReportBusy = ref(false)
+const dateFrom = ref('')
+const dateTo = ref('')
 const filter = ref('')
 const onlyPurchased = ref(true)
 const grouped = ref(false)
@@ -36,15 +40,19 @@ const sort = ref<Record<BalanceView, SortState>>({
 })
 const collator = new Intl.Collator('de-DE', { numeric: true, sensitivity: 'base' })
 
-onMounted(async () => {
+async function load() {
+  loading.value = true
   try {
-    data.value = await reportsApi.balances()
+    data.value = await reportsApi.balances(dateFrom.value, dateTo.value)
   } catch {
     flash.error(t('errors.generic'))
   } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(load)
+watch([dateFrom, dateTo], load)
 
 function matches(row: BalanceRow) {
   const needle = normalise(filter.value).trim()
@@ -176,6 +184,148 @@ function downloadCsv(kind: 'inventory' | 'articles') {
 function rankingValue(entry: RankingEntry) {
   return rankingMode.value === 'income' ? entry.income_cents : entry.profit_cents
 }
+
+function escapeHtml(value: unknown) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+function reportPeriodLabel(report: FinanceReport) {
+  if (report.from && report.to) return `${report.from} – ${report.to}`
+  if (report.from) return `${report.from} – ${t('balances.today')}`
+  if (report.to) return `${t('balances.start')} – ${report.to}`
+  return t('balances.allTime')
+}
+
+function reportRows(rows: Array<Array<string | number>>) {
+  return rows.map((row) =>
+    `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`,
+  ).join('')
+}
+
+async function printFinanceReport() {
+  if (financeReportBusy.value) return
+  const popup = window.open('', '_blank')
+  if (!popup) {
+    flash.error(t('balances.reportPopupBlocked'))
+    return
+  }
+  financeReportBusy.value = true
+  try {
+    const report = await reportsApi.financeReport(dateFrom.value, dateTo.value)
+    const s = report.summary
+    const summaryRows = reportRows([
+      [t('balances.reportMerchRevenue'), format(s.merch_revenue_cents)],
+      [t('balances.reportCollected'), format(s.merch_collected_cents)],
+      [t('balances.donation'), format(s.donation_cents)],
+      [t('balances.reportMerchPurchases'), format(s.merch_purchase_cost_cents)],
+      [t('balances.bandIncome'), format(s.band_income_cents)],
+      [t('balances.bandExpense'), format(s.band_expense_cents)],
+      [t('balances.openIncome'), format(s.band_open_income_cents)],
+      [t('balances.openExpense'), format(s.band_open_expense_cents)],
+      [t('balances.outstanding'), format(s.outstanding_customer_cents)],
+      [t('balances.reportCashResult'), format(s.cash_result_cents)],
+      [t('balances.reportStockValue'), format(s.stock_value_cents)],
+      [t('balances.reportAssetAcquisitions'), format(s.asset_acquisition_cents)],
+    ])
+    const paymentRows = reportRows(report.payment_methods.map((row) => [
+      row.payment_method || '—', row.receipt_count, format(row.booked_cents), format(row.collected_cents),
+    ]))
+    const categoryRows = reportRows(report.categories.map((row) => [
+      row.transaction_type === 'income' ? t('bandFinances.income') : t('bandFinances.expense'),
+      row.category, format(row.amount_cents),
+    ]))
+    const inventoryRows = reportRows(report.inventory.map((row) => [
+      row.article_name, row.variant_label || '—', row.on_hand,
+      format(row.unit_cost_cents), format(row.value_cents),
+    ]))
+    const assetRows = reportRows(report.assets.map((row) => [
+      row.date, row.category, row.description, format(row.amount_cents),
+    ]))
+
+    popup.document.open()
+    popup.document.write(`<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(t('balances.financeReport'))}</title>
+<style>
+@page { size: A4; margin: 14mm; }
+body { font: 11px/1.45 Arial, sans-serif; color: #111; }
+h1 { margin: 0 0 4px; font-size: 22px; }
+h2 { margin: 22px 0 7px; font-size: 15px; }
+.meta, .note { color: #555; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+th, td { padding: 5px 6px; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
+th { background: #f3f3f3; font-weight: 700; }
+td:last-child, th:last-child { text-align: right; }
+.keep { break-inside: avoid; }
+.note { margin-top: 24px; padding-top: 8px; border-top: 1px solid #bbb; font-size: 9px; }
+</style>
+</head>
+<body>
+<h1>${escapeHtml(t('balances.financeReport'))}</h1>
+<div class="meta">
+  <strong>${escapeHtml(report.band_name || t('balances.band'))}</strong><br>
+  ${escapeHtml(t('balances.period'))}: ${escapeHtml(reportPeriodLabel(report))}<br>
+  ${escapeHtml(t('balances.reportStockAsOf'))}: ${escapeHtml(report.stock_as_of)}
+</div>
+
+<h2>${escapeHtml(t('balances.reportSummary'))}</h2>
+<table><tbody>${summaryRows}</tbody></table>
+
+<div class="keep">
+<h2>${escapeHtml(t('balances.reportPaymentMethods'))}</h2>
+<table><thead><tr>
+<th>${escapeHtml(t('balances.paymentMethod'))}</th>
+<th>${escapeHtml(t('balances.receipts'))}</th>
+<th>${escapeHtml(t('balances.reportBooked'))}</th>
+<th>${escapeHtml(t('balances.reportCollected'))}</th>
+</tr></thead><tbody>${paymentRows}</tbody></table>
+</div>
+
+<div class="keep">
+<h2>${escapeHtml(t('balances.reportCategories'))}</h2>
+<table><thead><tr>
+<th>${escapeHtml(t('bandFinances.type'))}</th>
+<th>${escapeHtml(t('bandFinances.category'))}</th>
+<th>${escapeHtml(t('bandFinances.amount'))}</th>
+</tr></thead><tbody>${categoryRows}</tbody></table>
+</div>
+
+<h2>${escapeHtml(t('balances.reportInventory'))}</h2>
+<table><thead><tr>
+<th>${escapeHtml(t('articles.title'))}</th>
+<th>${escapeHtml(t('articles.variant'))}</th>
+<th>${escapeHtml(t('balances.onHand'))}</th>
+<th>${escapeHtml(t('balances.reportUnitCost'))}</th>
+<th>${escapeHtml(t('balances.reportValue'))}</th>
+</tr></thead><tbody>${inventoryRows}</tbody></table>
+
+<h2>${escapeHtml(t('balances.reportAssets'))}</h2>
+<table><thead><tr>
+<th>${escapeHtml(t('common.date'))}</th>
+<th>${escapeHtml(t('bandFinances.category'))}</th>
+<th>${escapeHtml(t('bandFinances.description'))}</th>
+<th>${escapeHtml(t('bandFinances.amount'))}</th>
+</tr></thead><tbody>${assetRows}</tbody></table>
+
+<p class="note">${escapeHtml(t('balances.reportDisclaimer'))}</p>
+</body></html>`)
+    popup.document.close()
+    popup.focus()
+    window.setTimeout(() => popup.print(), 250)
+  } catch {
+    popup.close()
+    flash.error(t('errors.generic'))
+  } finally {
+    financeReportBusy.value = false
+  }
+}
 </script>
 
 <template>
@@ -185,8 +335,12 @@ function rankingValue(entry: RankingEntry) {
         <p class="eyebrow">{{ t('balances.eyebrow') }}</p>
         <h1>{{ t('balances.title') }}</h1>
       </div>
-      <a class="secondary-button" :href="exportUrls.zip()">{{ t('balances.exportAll') }}</a>
+      <div class="balance-page-actions">
+        <DateRangeFilter v-model:from="dateFrom" v-model:to="dateTo" />
+        <a class="secondary-button" :href="exportUrls.zip()">{{ t('balances.exportAll') }}</a>
+      </div>
     </div>
+    <p class="muted period-hint">{{ t('balances.periodHint') }}</p>
 
     <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
 
@@ -326,6 +480,23 @@ function rankingValue(entry: RankingEntry) {
         <IncomeChart :points="data.daily_income" />
       </section>
 
+      <section class="table-section finance-report-panel">
+        <div class="section-heading">
+          <div>
+            <h2>{{ t('balances.financeReport') }}</h2>
+            <p>{{ t('balances.financeReportHint') }}</p>
+          </div>
+          <button
+            class="primary-button"
+            type="button"
+            :disabled="financeReportBusy"
+            @click="printFinanceReport"
+          >
+            {{ t('balances.financeReportPdf') }}
+          </button>
+        </div>
+      </section>
+
       <section class="table-section">
         <div class="section-heading ledger-heading">
           <div>
@@ -405,5 +576,21 @@ td small {
 
 .balance-result-count {
   margin: 0 0 12px;
+}
+
+.balance-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.period-hint {
+  margin: -8px 0 18px;
+}
+
+.finance-report-panel {
+  border-style: dashed;
 }
 </style>

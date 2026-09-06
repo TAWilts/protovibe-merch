@@ -1,8 +1,9 @@
 // Package purchases records goods received.
 //
-// Unlike sales, a purchase may be corrected and deleted: it is the band's own
-// bookkeeping of what they ordered, not a customer-facing transaction. Sales
-// stay cancel-only so a receipt handed to a customer is never rewritten.
+// Booked purchases are audit-relevant inventory movements. They can be
+// corrected while active, but they are never hard-deleted; a cancellation
+// keeps the original receipt and attachments visible while reversing its stock
+// and finance effect.
 package purchases
 
 import (
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/receipt"
@@ -20,11 +22,12 @@ import (
 
 // Errors returned by the purchases service.
 var (
-	ErrEmptyReceipt    = errors.New("purchases: the receipt has no positions")
-	ErrInvalidQuantity = errors.New("purchases: quantity must be positive")
-	ErrNegativeCost    = errors.New("purchases: costs cannot be negative")
-	ErrUnknownVariant  = errors.New("purchases: unknown variant")
-	ErrNotFound        = errors.New("purchases: no such purchase")
+	ErrEmptyReceipt     = errors.New("purchases: the receipt has no positions")
+	ErrInvalidQuantity  = errors.New("purchases: quantity must be positive")
+	ErrNegativeCost     = errors.New("purchases: costs cannot be negative")
+	ErrUnknownVariant   = errors.New("purchases: unknown variant")
+	ErrNotFound         = errors.New("purchases: no such purchase")
+	ErrAlreadyCancelled = errors.New("purchases: purchase is already cancelled")
 )
 
 // Item is one position of a goods receipt.
@@ -145,11 +148,16 @@ func (s *Service) Update(ctx context.Context, id int64, item Item) error {
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var purchase models.Purchase
-		if err := tx.WithContext(ctx).First(&purchase, id).Error; err != nil {
+		if err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&purchase, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
 			return err
+		}
+		if purchase.IsCancelled {
+			return ErrAlreadyCancelled
 		}
 		if item.VariantID != 0 && item.VariantID != purchase.VariantID {
 			if err := validateVariants(ctx, tx, []Item{item}); err != nil {
@@ -169,61 +177,89 @@ func (s *Service) Update(ctx context.Context, id int64, item Item) error {
 	})
 }
 
-// Delete removes one position. It returns the stored attachment path, if any,
-// so the caller can clean up the file after the transaction committed.
-func (s *Service) Delete(ctx context.Context, id int64) (attachmentPath string, err error) {
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+// Cancel marks one purchase position as cancelled. The original data and all
+// invoice/receipt attachments remain available for audit.
+func (s *Service) Cancel(ctx context.Context, id int64, actor Actor) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var purchase models.Purchase
-		if err := tx.WithContext(ctx).First(&purchase, id).Error; err != nil {
+		if err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&purchase, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
 			return err
 		}
-		attachmentPath = purchase.InvoiceFilePath
-		return tx.WithContext(ctx).Delete(&models.Purchase{}, id).Error
+		if purchase.IsCancelled {
+			return ErrAlreadyCancelled
+		}
+
+		now := time.Now().UTC()
+		updates := map[string]any{
+			"is_cancelled":          true,
+			"cancelled_at":          now,
+			"cancelled_by_username": actor.Username,
+			"updated_at":            now,
+		}
+		if actor.UserID > 0 {
+			updates["cancelled_by_user_id"] = actor.UserID
+		}
+		return tx.WithContext(ctx).Model(&models.Purchase{}).
+			Where("id = ?", id).
+			Updates(updates).Error
 	})
-	return attachmentPath, err
 }
 
-// DeleteReceipt removes every position of a goods receipt together with its
-// receipt-level attachments, returning all stored file paths for cleanup.
-func (s *Service) DeleteReceipt(ctx context.Context, receiptID string) ([]string, error) {
-	var paths []string
-
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+// CancelReceipt cancels every position of a goods receipt atomically. Files
+// stay attached to the receipt and can still be inspected later.
+func (s *Service) CancelReceipt(ctx context.Context, receiptID string, actor Actor) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var positions []models.Purchase
-		if err := tx.WithContext(ctx).Where("receipt_id = ?", receiptID).Find(&positions).Error; err != nil {
+		if err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("receipt_id = ?", receiptID).
+			Find(&positions).Error; err != nil {
 			return err
 		}
 		if len(positions) == 0 {
 			return ErrNotFound
 		}
+
+		active := false
 		for _, position := range positions {
-			if position.InvoiceFilePath != "" {
-				paths = append(paths, position.InvoiceFilePath)
+			if !position.IsCancelled {
+				active = true
+				break
 			}
 		}
-
-		var attachments []models.PurchaseReceiptAttachment
-		if err := tx.WithContext(ctx).Where("receipt_id = ?", receiptID).Find(&attachments).Error; err != nil {
-			return err
-		}
-		for _, attachment := range attachments {
-			paths = append(paths, attachment.FilePath)
+		if !active {
+			return ErrAlreadyCancelled
 		}
 
-		if err := tx.WithContext(ctx).
-			Where("receipt_id = ?", receiptID).
-			Delete(&models.PurchaseReceiptAttachment{}).Error; err != nil {
-			return err
+		now := time.Now().UTC()
+		updates := map[string]any{
+			"is_cancelled":          true,
+			"cancelled_at":          now,
+			"cancelled_by_username": actor.Username,
+			"updated_at":            now,
 		}
-		return tx.WithContext(ctx).Where("receipt_id = ?", receiptID).Delete(&models.Purchase{}).Error
+		if actor.UserID > 0 {
+			updates["cancelled_by_user_id"] = actor.UserID
+		}
+		return tx.WithContext(ctx).Model(&models.Purchase{}).
+			Where("receipt_id = ? AND is_cancelled = ?", receiptID, false).
+			Updates(updates).Error
 	})
-	if err != nil {
-		return nil, err
-	}
-	return paths, nil
+}
+
+// Delete and DeleteReceipt remain as compatibility shims for older internal
+// callers. Their semantics are intentionally cancellation, never hard delete.
+func (s *Service) Delete(ctx context.Context, id int64) (string, error) {
+	return "", s.Cancel(ctx, id, Actor{})
+}
+
+func (s *Service) DeleteReceipt(ctx context.Context, receiptID string) ([]string, error) {
+	return nil, s.CancelReceipt(ctx, receiptID, Actor{})
 }
 
 // LastUnitCost returns what a variant cost the last time it was bought, which
@@ -231,7 +267,7 @@ func (s *Service) DeleteReceipt(ctx context.Context, receiptID string) ([]string
 func (s *Service) LastUnitCost(ctx context.Context, variantID int64) (int64, bool, error) {
 	var purchase models.Purchase
 	err := s.db.WithContext(ctx).
-		Where("variant_id = ?", variantID).
+		Where("variant_id = ? AND is_cancelled = ?", variantID, false).
 		Order("purchased_on DESC, id DESC").
 		First(&purchase).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {

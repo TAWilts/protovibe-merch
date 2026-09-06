@@ -381,6 +381,62 @@ export interface BalancesPayload {
   daily_income: DailyIncome[]
 }
 
+export interface FinanceReportSummary {
+  merch_revenue_cents: number
+  merch_collected_cents: number
+  donation_cents: number
+  merch_purchase_cost_cents: number
+  band_income_cents: number
+  band_expense_cents: number
+  band_open_income_cents: number
+  band_open_expense_cents: number
+  outstanding_customer_cents: number
+  cash_result_cents: number
+  stock_value_cents: number
+  asset_acquisition_cents: number
+}
+
+export interface FinancePaymentMethod {
+  payment_method: string
+  receipt_count: number
+  booked_cents: number
+  collected_cents: number
+}
+
+export interface FinanceCategory {
+  transaction_type: 'income' | 'expense'
+  category: string
+  amount_cents: number
+}
+
+export interface FinanceInventoryRow {
+  article_name: string
+  variant_label: string
+  on_hand: number
+  unit_cost_cents: number
+  value_cents: number
+}
+
+export interface FinanceAssetRow {
+  date: string
+  category: string
+  description: string
+  amount_cents: number
+}
+
+export interface FinanceReport {
+  band_name: string
+  from: string
+  to: string
+  stock_as_of: string
+  generated_at: string
+  summary: FinanceReportSummary
+  payment_methods: FinancePaymentMethod[]
+  categories: FinanceCategory[]
+  inventory: FinanceInventoryRow[]
+  assets: FinanceAssetRow[]
+}
+
 export interface Purchase {
   id: number
   receipt_id: string
@@ -395,6 +451,9 @@ export interface Purchase {
   invoice_reference: string
   has_invoice_file: boolean
   comment: string
+  is_cancelled: boolean
+  cancelled_at?: string
+  cancelled_by_username: string
   created_by_username: string
 }
 
@@ -406,6 +465,7 @@ export interface BandTransaction {
   description: string
   amount_cents: number
   is_settled: boolean
+  is_asset: boolean
   settled_at?: string
   settled_by_username: string
   is_cancelled: boolean
@@ -421,6 +481,7 @@ export interface RecurringBandTransaction {
   description: string
   amount_cents: number
   is_settled: boolean
+  is_asset: boolean
   interval_value: number
   interval_unit: 'day' | 'week' | 'month' | 'year'
   is_active: boolean
@@ -437,6 +498,8 @@ export interface BandLedger {
   entries: BandTransaction[]
   categories: CategoryTotal[]
   suggested_categories: string[]
+  suggested_income_categories: string[]
+  suggested_expense_categories: string[]
   income_cents: number
   expense_cents: number
   balance_cents: number

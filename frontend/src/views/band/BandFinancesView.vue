@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { reportsApi } from '@/api/endpoints'
@@ -88,14 +88,36 @@ function freshForm() {
   return {
     transaction_type: 'income' as 'income' | 'expense',
     transaction_on: new Date().toISOString().slice(0, 10),
-    category: '',
+    category: 'Gage',
     description: '',
     amount: '',
     is_settled: true,
+    is_asset: false,
   }
 }
 
 const form = ref(freshForm())
+
+const categoriesForType = computed(() => {
+  if (!ledger.value) return []
+  return form.value.transaction_type === 'income'
+    ? ledger.value.suggested_income_categories
+    : ledger.value.suggested_expense_categories
+})
+
+watch(() => form.value.transaction_type, (type) => {
+  const categories = categoriesForType.value
+  if (!categories.includes(form.value.category)) {
+    form.value.category = categories[0] ?? 'Sonstiges'
+  }
+  if (type === 'income') form.value.is_asset = false
+})
+
+watch(() => form.value.category, (category) => {
+  if (form.value.transaction_type === 'expense') {
+    form.value.is_asset = category === 'Equipment'
+  }
+})
 
 const amountCents = computed(() => parseAmount(form.value.amount))
 const canSubmit = computed(
@@ -172,6 +194,7 @@ function startEdit(entry: BandTransaction) {
     description: entry.description,
     amount: (entry.amount_cents / 100).toFixed(2).replace('.', ','),
     is_settled: false,
+    is_asset: entry.is_asset,
   }
 }
 
@@ -184,6 +207,7 @@ async function submit() {
     category: form.value.category.trim(),
     description: form.value.description.trim(),
     amount_cents: amountCents.value,
+    is_asset: form.value.transaction_type === 'expense' && form.value.is_asset,
   }
   try {
     if (editingId.value !== null) {
@@ -289,10 +313,11 @@ async function cancelEntry(id: number) {
           <div class="field-grid two-columns">
             <label>
               {{ t('bandFinances.category') }}
-              <input v-model="form.category" list="band-categories" required />
-              <datalist id="band-categories">
-                <option v-for="entry in ledger.suggested_categories" :key="entry" :value="entry" />
-              </datalist>
+              <select v-model="form.category" required>
+                <option v-for="entry in categoriesForType" :key="entry" :value="entry">
+                  {{ entry }}
+                </option>
+              </select>
             </label>
             <label>
               {{ t('bandFinances.amount') }}
@@ -303,6 +328,17 @@ async function cancelEntry(id: number) {
             {{ t('bandFinances.description') }}
             <input v-model="form.description" required />
           </label>
+
+          <label
+            v-if="form.transaction_type === 'expense'"
+            class="checkbox-row settlement-checkbox asset-checkbox"
+          >
+            <input v-model="form.is_asset" type="checkbox" />
+            <span>{{ t('bandFinances.asset') }}</span>
+          </label>
+          <p v-if="form.transaction_type === 'expense'" class="muted settlement-hint">
+            {{ t('bandFinances.assetHint') }}
+          </p>
 
           <label v-if="editingId === null" class="checkbox-row settlement-checkbox">
             <input v-model="form.is_settled" type="checkbox" />
@@ -339,7 +375,8 @@ async function cancelEntry(id: number) {
 
       <RecurringBandFinances
         v-if="canManage"
-        :suggested-categories="ledger.suggested_categories"
+        :income-categories="ledger.suggested_income_categories"
+        :expense-categories="ledger.suggested_expense_categories"
         @changed="load"
       />
 
@@ -400,7 +437,10 @@ async function cancelEntry(id: number) {
                 }"
               >
                 <td>{{ entry.transaction_on }}</td>
-                <td>{{ entry.category }}</td>
+                <td>
+                  {{ entry.category }}
+                  <small v-if="entry.is_asset" class="asset-label">{{ t('bandFinances.assetShort') }}</small>
+                </td>
                 <td>{{ entry.description }}</td>
                 <td class="numeric" :class="entry.transaction_type">
                   {{ entry.transaction_type === 'expense' ? '−' : '+' }}{{ format(entry.amount_cents) }}

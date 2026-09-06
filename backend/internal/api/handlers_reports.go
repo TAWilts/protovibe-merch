@@ -8,12 +8,14 @@ import (
 
 	"github.com/tawilts/protovibe-merch/backend/internal/audit"
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	balancessvc "github.com/tawilts/protovibe-merch/backend/internal/services/balances"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/bandfinance"
 )
 
 func (s *Server) registerReportRoutes(g *gin.RouterGroup) {
 	members := g.Group("", requireAuth(), requireBandRole(models.RoleMember))
 	members.GET("/balances", s.balances)
+	members.GET("/finance-report", s.financeReport)
 	members.GET("/band-finances", s.listBandFinances)
 	members.GET("/band-finances/recurring", s.listRecurringBandTransactions)
 
@@ -27,18 +29,64 @@ func (s *Server) registerReportRoutes(g *gin.RouterGroup) {
 	managers.DELETE("/recurring/:id", s.deleteRecurringBandTransaction)
 }
 
-// balances is the stock and money overview.
+// balances is the stock and money overview. Flow values follow the selected
+// period; stock is cumulative through the period's end date.
 func (s *Server) balances(c *gin.Context) {
 	if _, err := s.bandFinance.MaterializeDueForBand(c.Request.Context(), s.today()); err != nil {
 		serverError(c, err)
 		return
 	}
-	payload, err := s.balancesService.Compute(c.Request.Context())
+	period, err := reportPeriod(c)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid_period", err.Error())
+		return
+	}
+	payload, err := s.balancesService.ComputePeriod(c.Request.Context(), period)
 	if err != nil {
 		serverError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, payload)
+}
+
+func (s *Server) financeReport(c *gin.Context) {
+	if _, err := s.bandFinance.MaterializeDueForBand(c.Request.Context(), s.today()); err != nil {
+		serverError(c, err)
+		return
+	}
+	period, err := reportPeriod(c)
+	if err != nil {
+		fail(c, http.StatusBadRequest, "invalid_period", err.Error())
+		return
+	}
+	report, err := s.balancesService.FinanceReport(c.Request.Context(), period)
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, report)
+}
+
+func reportPeriod(c *gin.Context) (balancessvc.Period, error) {
+	var period balancessvc.Period
+	if raw := c.Query("from"); raw != "" {
+		value, err := models.ParseDate(raw)
+		if err != nil {
+			return period, err
+		}
+		period.From = &value
+	}
+	if raw := c.Query("to"); raw != "" {
+		value, err := models.ParseDate(raw)
+		if err != nil {
+			return period, err
+		}
+		period.To = &value
+	}
+	if period.From != nil && period.To != nil && period.From.After(period.To.Time) {
+		return period, errors.New("from must not be after to")
+	}
+	return period, nil
 }
 
 func (s *Server) listBandFinances(c *gin.Context) {
@@ -78,7 +126,7 @@ func (s *Server) createBandTransaction(c *gin.Context) {
 		Action: "band_transaction.created", EntityType: "band_transaction", EntityID: &transaction.ID,
 		Details: map[string]any{
 			"type": string(transaction.TransactionType), "amount_cents": transaction.AmountCents,
-			"is_settled": transaction.IsSettled,
+			"is_settled": transaction.IsSettled, "is_asset": transaction.IsAsset,
 		},
 	})
 	c.JSON(http.StatusCreated, transaction)
@@ -107,6 +155,7 @@ func (s *Server) updateBandTransaction(c *gin.Context) {
 		Action: "band_transaction.updated", EntityType: "band_transaction", EntityID: &id,
 		Details: map[string]any{
 			"type": string(transaction.TransactionType), "amount_cents": transaction.AmountCents,
+			"is_asset": transaction.IsAsset,
 		},
 	})
 	c.JSON(http.StatusOK, transaction)
@@ -173,6 +222,7 @@ func (s *Server) createRecurringBandTransaction(c *gin.Context) {
 			"interval_value": rule.IntervalValue,
 			"interval_unit":  rule.IntervalUnit,
 			"is_settled":     rule.IsSettled,
+			"is_asset":       rule.IsAsset,
 		},
 	})
 	c.JSON(http.StatusCreated, rule)

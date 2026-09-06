@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -14,7 +15,7 @@ import (
 
 func (s *Server) registerPurchaseRoutes(g *gin.RouterGroup) {
 	// Members may read the goods-receipt history; only managers may book,
-	// correct or remove entries.
+	// correct or cancel entries.
 	read := g.Group("/purchases", requireAuth(), requireBandRole(models.RoleMember))
 	read.GET("", s.listPurchases)
 	read.GET("/last-cost/:id", s.lastPurchaseCost)
@@ -22,26 +23,33 @@ func (s *Server) registerPurchaseRoutes(g *gin.RouterGroup) {
 	write := g.Group("/purchases", requireAuth(), requireBandRole(models.RoleManager))
 	write.POST("", s.createPurchase)
 	write.PATCH("/:id", s.updatePurchase)
-	write.DELETE("/:id", s.deletePurchase)
+	write.PATCH("/:id/cancel", s.cancelPurchase)
+	// Legacy DELETE endpoints remain for older clients, but their semantics are
+	// cancellation. No purchase row or attachment is hard-deleted.
+	write.DELETE("/:id", s.cancelPurchase)
 
-	g.DELETE("/purchase-receipts/:receiptID", requireAuth(), requireBandRole(models.RoleManager), s.deletePurchaseReceipt)
+	g.PATCH("/purchase-receipts/:receiptID/cancel", requireAuth(), requireBandRole(models.RoleManager), s.cancelPurchaseReceipt)
+	g.DELETE("/purchase-receipts/:receiptID", requireAuth(), requireBandRole(models.RoleManager), s.cancelPurchaseReceipt)
 }
 
 type purchasePayload struct {
-	ID                int64       `json:"id"`
-	ReceiptID         string      `json:"receipt_id"`
-	VariantID         int64       `json:"variant_id"`
-	ArticleName       string      `json:"article_name"`
-	VariantLabel      string      `json:"variant_label"`
-	Quantity          int         `json:"quantity"`
-	UnitCostCents     int64       `json:"unit_cost_cents"`
-	TotalCostCents    int64       `json:"total_cost_cents"`
-	PurchasedOn       models.Date `json:"purchased_on"`
-	Supplier          string      `json:"supplier"`
-	InvoiceReference  string      `json:"invoice_reference"`
-	HasInvoiceFile    bool        `json:"has_invoice_file"`
-	Comment           string      `json:"comment"`
-	CreatedByUsername string      `json:"created_by_username"`
+	ID                  int64       `json:"id"`
+	ReceiptID           string      `json:"receipt_id"`
+	VariantID           int64       `json:"variant_id"`
+	ArticleName         string      `json:"article_name"`
+	VariantLabel        string      `json:"variant_label"`
+	Quantity            int         `json:"quantity"`
+	UnitCostCents       int64       `json:"unit_cost_cents"`
+	TotalCostCents      int64       `json:"total_cost_cents"`
+	PurchasedOn         models.Date `json:"purchased_on"`
+	Supplier            string      `json:"supplier"`
+	InvoiceReference    string      `json:"invoice_reference"`
+	HasInvoiceFile      bool        `json:"has_invoice_file"`
+	Comment             string      `json:"comment"`
+	IsCancelled         bool        `json:"is_cancelled"`
+	CancelledAt         *time.Time  `json:"cancelled_at,omitempty"`
+	CancelledByUsername string      `json:"cancelled_by_username"`
+	CreatedByUsername   string      `json:"created_by_username"`
 }
 
 // listPurchases returns the goods-receipt history, newest first.
@@ -66,20 +74,23 @@ func (s *Server) listPurchases(c *gin.Context) {
 	payload := make([]purchasePayload, 0, len(rows))
 	for _, row := range rows {
 		payload = append(payload, purchasePayload{
-			ID:                row.ID,
-			ReceiptID:         row.ReceiptID,
-			VariantID:         row.VariantID,
-			ArticleName:       labels[row.VariantID].ArticleName,
-			VariantLabel:      labels[row.VariantID].VariantLabel,
-			Quantity:          row.Quantity,
-			UnitCostCents:     row.UnitCostCents,
-			TotalCostCents:    int64(row.Quantity) * row.UnitCostCents,
-			PurchasedOn:       row.PurchasedOn,
-			Supplier:          row.Supplier,
-			InvoiceReference:  row.InvoiceReference,
-			HasInvoiceFile:    row.InvoiceFilePath != "",
-			Comment:           row.Comment,
-			CreatedByUsername: row.CreatedByUsername,
+			ID:                  row.ID,
+			ReceiptID:           row.ReceiptID,
+			VariantID:           row.VariantID,
+			ArticleName:         labels[row.VariantID].ArticleName,
+			VariantLabel:        labels[row.VariantID].VariantLabel,
+			Quantity:            row.Quantity,
+			UnitCostCents:       row.UnitCostCents,
+			TotalCostCents:      int64(row.Quantity) * row.UnitCostCents,
+			PurchasedOn:         row.PurchasedOn,
+			Supplier:            row.Supplier,
+			InvoiceReference:    row.InvoiceReference,
+			HasInvoiceFile:      row.InvoiceFilePath != "",
+			Comment:             row.Comment,
+			IsCancelled:         row.IsCancelled,
+			CancelledAt:         row.CancelledAt,
+			CancelledByUsername: row.CancelledByUsername,
+			CreatedByUsername:   row.CreatedByUsername,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"purchases": payload})
@@ -154,48 +165,46 @@ func (s *Server) updatePurchase(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-func (s *Server) deletePurchase(c *gin.Context) {
+func (s *Server) cancelPurchase(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
 		return
 	}
 
+	state := stateFrom(c)
 	ctx := c.Request.Context()
-	path, err := s.purchases.Delete(ctx, id)
-	if err != nil {
+	if err := s.purchases.Cancel(ctx, id, purchases.Actor{
+		UserID: state.User.ID, Username: state.User.Username,
+	}); err != nil {
 		s.reportPurchaseError(c, err)
 		return
 	}
-	// The attachment is removed only after the row is gone, so a failed
-	// delete never leaves a booking pointing at a missing file.
-	s.removeStoredFile(ctx, path)
 
 	s.audit.Log(ctx, actorFrom(c), audit.Entry{
-		Action: audit.ActionPurchaseDeleted, EntityType: "purchase", EntityID: &id,
+		Action: audit.ActionPurchaseCancelled, EntityType: "purchase", EntityID: &id,
 	})
 	c.Status(http.StatusNoContent)
 }
 
-func (s *Server) deletePurchaseReceipt(c *gin.Context) {
+func (s *Server) cancelPurchaseReceipt(c *gin.Context) {
 	receiptID := c.Param("receiptID")
 	if receiptID == "" {
 		fail(c, http.StatusBadRequest, "invalid_id", "invalid receipt identifier")
 		return
 	}
 
+	state := stateFrom(c)
 	ctx := c.Request.Context()
-	paths, err := s.purchases.DeleteReceipt(ctx, receiptID)
-	if err != nil {
+	if err := s.purchases.CancelReceipt(ctx, receiptID, purchases.Actor{
+		UserID: state.User.ID, Username: state.User.Username,
+	}); err != nil {
 		s.reportPurchaseError(c, err)
 		return
 	}
-	for _, path := range paths {
-		s.removeStoredFile(ctx, path)
-	}
 
 	s.audit.Log(ctx, actorFrom(c), audit.Entry{
-		Action: audit.ActionPurchaseDeleted, EntityType: "purchase_receipt",
-		Details: map[string]any{"receipt_id": receiptID, "attachments": len(paths)},
+		Action: audit.ActionPurchaseCancelled, EntityType: "purchase_receipt",
+		Details: map[string]any{"receipt_id": receiptID, "attachments_kept": true},
 	})
 	c.Status(http.StatusNoContent)
 }
@@ -204,6 +213,8 @@ func (s *Server) reportPurchaseError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, purchases.ErrNotFound):
 		fail(c, http.StatusNotFound, "not_found", "no such purchase")
+	case errors.Is(err, purchases.ErrAlreadyCancelled):
+		fail(c, http.StatusConflict, "already_cancelled", err.Error())
 	case errors.Is(err, purchases.ErrEmptyReceipt):
 		fail(c, http.StatusBadRequest, "empty_receipt", err.Error())
 	case errors.Is(err, purchases.ErrInvalidQuantity):
