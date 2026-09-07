@@ -29,6 +29,7 @@ type FinanceReport struct {
 type FinanceReportSummary struct {
 	MerchRevenueCents        int64 `json:"merch_revenue_cents"`
 	MerchCollectedCents      int64 `json:"merch_collected_cents"`
+	DiscountCents            int64 `json:"discount_cents"`
 	DonationCents            int64 `json:"donation_cents"`
 	MerchPurchaseCostCents   int64 `json:"merch_purchase_cost_cents"`
 	BandIncomeCents          int64 `json:"band_income_cents"`
@@ -103,6 +104,7 @@ func (s *Service) FinanceReport(ctx context.Context, period Period) (*FinanceRep
 
 	report.Summary.MerchRevenueCents = payload.Summary.RevenueCents
 	report.Summary.MerchCollectedCents = payload.Summary.CollectedCents
+	report.Summary.DiscountCents = payload.Summary.DiscountCents
 	report.Summary.DonationCents = payload.Summary.DonationCents
 	report.Summary.MerchPurchaseCostCents = payload.Summary.PurchaseCostCents
 	report.Summary.BandIncomeCents = payload.Summary.BandIncomeCents
@@ -133,8 +135,8 @@ func (s *Service) FinanceReport(ctx context.Context, period Period) (*FinanceRep
 	if err := paymentQuery.
 		Select(`payment_method,
 			COUNT(DISTINCT receipt_id) AS receipt_count,
-			COALESCE(SUM(amount_due_cents + donation_cents), 0) AS booked_cents,
-			COALESCE(SUM(CASE WHEN is_paid = 1 THEN amount_due_cents + donation_cents ELSE 0 END), 0) AS collected_cents`).
+			COALESCE(SUM(amount_due_cents - discount_cents + donation_cents), 0) AS booked_cents,
+			COALESCE(SUM(CASE WHEN is_paid = 1 THEN amount_due_cents - discount_cents + donation_cents ELSE 0 END), 0) AS collected_cents`).
 		Group("payment_method").
 		Order("payment_method").
 		Scan(&report.PaymentMethods).Error; err != nil {

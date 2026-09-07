@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/money"
 )
 
 // Lifecycle errors.
@@ -17,7 +19,20 @@ var (
 	ErrNoDeliveryFlow    = errors.New("sales: this sale was handed over at the counter and has no delivery workflow")
 	ErrInvalidTransition = errors.New("sales: this status change is not allowed")
 	ErrAlreadyPaid       = errors.New("sales: this sale is already marked as paid")
+	ErrShippingClosed    = errors.New("sales: shipping costs can only be changed for an open shipment")
 )
+
+// ShippingAdjustment describes the receipt-level result of a shipping edit.
+type ShippingAdjustment struct {
+	ReceiptID            string  `json:"receipt_id"`
+	SaleIDs              []int64 `json:"sale_ids"`
+	OldShippingCostCents int64   `json:"old_shipping_cost_cents"`
+	ShippingCostCents    int64   `json:"shipping_cost_cents"`
+	TotalDueCents        int64   `json:"total_due_cents"`
+	TotalPaidCents       int64   `json:"total_paid_cents"`
+	DiscountCents        int64   `json:"discount_cents"`
+	DonationCents        int64   `json:"donation_cents"`
+}
 
 // CancelScope selects how much of a receipt a cancellation covers.
 type CancelScope string
@@ -165,6 +180,8 @@ func (s *Service) MarkPaid(ctx context.Context, saleID int64) error {
 				Updates(map[string]any{
 					"is_paid":            true,
 					"payment_follow_up":  true,
+					"discount_cents":     0,
+					"donation_cents":     0,
 					"amount_given_cents": position.AmountDueCents,
 				}).Error; err != nil {
 				return err
@@ -172,4 +189,109 @@ func (s *Service) MarkPaid(ctx context.Context, saleID int64) error {
 		}
 		return nil
 	})
+}
+
+// UpdateShippingCost changes the gross receipt-level shipping charge while an
+// order is still open. Paid receipts keep the amount actually collected; the
+// resulting difference is represented as a discount or donation on the goods.
+func (s *Service) UpdateShippingCost(ctx context.Context, receiptID string, shippingCostCents int64) (*ShippingAdjustment, error) {
+	if shippingCostCents < 0 {
+		return nil, ErrNegativeShipping
+	}
+
+	var result *ShippingAdjustment
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var rows []models.Sale
+		if err := tx.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("receipt_id = ?", receiptID).Order("id").Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return ErrSaleNotFound
+		}
+
+		active := make([]models.Sale, 0, len(rows))
+		for _, row := range rows {
+			if row.IsCancelled {
+				continue
+			}
+			if row.DeliveryStatus != models.DeliveryPending && row.DeliveryStatus != models.DeliveryShipped {
+				return ErrShippingClosed
+			}
+			active = append(active, row)
+		}
+		if len(active) == 0 {
+			return ErrAlreadyCancelled
+		}
+
+		weights := make([]int64, len(active))
+		var oldShipping, collected int64
+		allPaid := active[0].IsPaid
+		ids := make([]int64, 0, len(active))
+		for i, row := range active {
+			weights[i] = row.AmountDueCents - row.ShippingCostCents
+			oldShipping += row.ShippingCostCents
+			ids = append(ids, row.ID)
+			if row.IsPaid != allPaid {
+				return ErrInvalidTransition
+			}
+			if !allPaid {
+				continue
+			}
+			if row.AmountGivenCents != nil {
+				collected += *row.AmountGivenCents
+			} else {
+				collected += row.AmountDueCents - row.DiscountCents + row.DonationCents
+			}
+		}
+
+		shippingShares := money.Distribute(shippingCostCents, weights)
+		newTotal := shippingCostCents
+		for _, value := range weights {
+			newTotal += value
+		}
+
+		var discount, donation int64
+		if allPaid {
+			if collected < newTotal {
+				discount = newTotal - collected
+			} else {
+				donation = collected - newTotal
+			}
+		}
+		discountShares := money.Distribute(discount, weights)
+		donationShares := money.Distribute(donation, weights)
+
+		for i, row := range active {
+			due := weights[i] + shippingShares[i]
+			updates := map[string]any{
+				"shipping_cost_cents": shippingShares[i],
+				"amount_due_cents":    due,
+				"discount_cents":      discountShares[i],
+				"donation_cents":      donationShares[i],
+			}
+			if allPaid {
+				updates["amount_given_cents"] = due - discountShares[i] + donationShares[i]
+			} else {
+				updates["amount_given_cents"] = nil
+			}
+			if err := tx.WithContext(ctx).Model(&models.Sale{}).Where("id = ?", row.ID).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+
+		result = &ShippingAdjustment{
+			ReceiptID: receiptID, SaleIDs: ids, OldShippingCostCents: oldShipping,
+			ShippingCostCents: shippingCostCents, TotalDueCents: newTotal,
+			DiscountCents: discount, DonationCents: donation,
+		}
+		if allPaid {
+			result.TotalPaidCents = collected
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }

@@ -50,6 +50,8 @@ const unitPriceInput = ref('')
 const basket = ref<BasketLine[]>([])
 const paymentMethod = ref('Bar')
 const amountGivenInput = ref('')
+const discountConfirmed = ref(false)
+const discountDialogOpen = ref(false)
 const soldBy = ref('')
 const comment = ref('')
 const busy = ref(false)
@@ -101,6 +103,8 @@ function measureTill() {
 }
 /** null while the inline "new event" row is hidden. */
 const newEventName = ref<string | null>(null)
+const eventToDelete = ref<SaleEvent | null>(null)
+const canDeleteEvents = computed(() => session.capabilities?.can_access_member_workflows ?? false)
 
 /**
  * The payment code flow. Showing a code is deliberately not a sale: the server
@@ -134,19 +138,33 @@ const articleFilter = ref('')
 
 const visibleArticles = computed(() => {
   const needle = articleFilter.value.trim().toLowerCase()
-  if (!needle) return articles.value
-  return articles.value.filter((article) => article.name.toLowerCase().includes(needle))
+  return articles.value.filter((article) => {
+    const sellable = article.is_offered !== false
+      && article.is_active !== false
+      && article.configuration_complete !== false
+      && article.variants.some((variant) => variant.is_offered !== false && variant.is_active !== false)
+    return sellable && (!needle || article.name.toLowerCase().includes(needle))
+  })
 })
 
 const selectedArticle = computed(
   () => articles.value.find((article) => article.id === selectedArticleId.value) ?? null,
 )
 
+const sellableVariants = computed(() =>
+  (selectedArticle.value?.variants ?? [])
+    .filter((variant) => variant.is_offered !== false && variant.is_active !== false),
+)
+
 /** The active option columns of the selected article, in the band's order. */
 const optionGroups = computed(() =>
   (selectedArticle.value?.option_groups ?? [])
     .filter((group) => group.is_active)
-    .map((group) => ({ ...group, values: group.values.filter((value) => value.is_active) })),
+    .map((group) => ({
+      ...group,
+      values: group.values.filter((value) => value.is_active
+        && sellableVariants.value.some((variant) => variant.option_value_ids.includes(value.id))),
+    })),
 )
 
 /**
@@ -163,7 +181,7 @@ const selectedVariant = computed<Variant | null>(() => {
   if (chosen.some((value) => value === undefined)) return null
 
   const wanted = [...chosen].sort((a, b) => a - b).join('|')
-  return article.variants.find((variant) => variant.combination_key === wanted) ?? null
+  return sellableVariants.value.find((variant) => variant.combination_key === wanted) ?? null
 })
 
 const variantLabel = computed(() => {
@@ -191,6 +209,10 @@ const hasOutOfStockItem = computed(() => basket.value.some((line) => line.onHand
 const mobileCartOpen = ref(false)
 
 const amountGivenCents = computed(() => parseAmount(amountGivenInput.value))
+const discountCents = computed(() => {
+  if (amountGivenCents.value === null) return 0
+  return Math.max(0, saleTotalCents.value - amountGivenCents.value)
+})
 
 /**
  * What the customer handed over beyond the amount due.
@@ -209,9 +231,9 @@ const surplusCents = computed(() => {
 const surplusMode = ref<'change' | 'donation'>('donation')
 
 /** Only a kept surplus reaches the server as a donation. */
-const donationCents = computed(() =>
-  surplusMode.value === 'donation' ? surplusCents.value : 0,
-)
+const donationCents = computed(() => (
+  paymentMethod.value !== 'Bar' || surplusMode.value === 'donation' ? surplusCents.value : 0
+))
 
 /** Labels a photo source precisely enough to prevent confusing two variants. */
 function photoVariantLabel(variant: Variant) {
@@ -270,8 +292,8 @@ const canBook = computed(() => basket.value.length > 0 && !busy.value)
 const paymentStepReady = computed(() => {
   if (!basket.value.length || busy.value || (needsShipping.value && !shipReady.value)) return false
   if (needsShipping.value && (shippingCostCents.value === null || shippingCostCents.value < 0)) return false
-  if (paymentMethod.value === 'Bar' && (!needsShipping.value || !shipPayLater.value) && amountGivenCents.value !== null) {
-    return amountGivenCents.value >= saleTotalCents.value
+  if (!needsShipping.value || !shipPayLater.value) {
+    return amountGivenCents.value !== null && amountGivenCents.value >= 0
   }
   return true
 })
@@ -344,8 +366,8 @@ function selectArticle(article: Article) {
   chosenValues.value = {}
   // Pre-select the first value of every column so a single-option article is
   // immediately sellable without extra clicks.
-  for (const group of article.option_groups.filter((entry) => entry.is_active)) {
-    const first = group.values.find((value) => value.is_active)
+  for (const group of optionGroups.value) {
+    const first = group.values[0]
     if (first) chosenValues.value[group.id] = first.id
   }
 }
@@ -360,6 +382,20 @@ watch(selectedVariant, (variant) => {
   if (variant) {
     unitPriceInput.value = (variant.sale_price_cents / 100).toFixed(2).replace('.', ',')
   }
+})
+
+watch(saleTotalCents, (next, previous) => {
+  const current = parseAmount(amountGivenInput.value)
+  if (amountGivenInput.value.trim() === '' || current === previous) {
+    amountGivenInput.value = (next / 100).toFixed(2).replace('.', ',')
+  }
+  discountConfirmed.value = false
+  discountDialogOpen.value = false
+})
+
+watch(amountGivenInput, () => {
+  discountConfirmed.value = false
+  discountDialogOpen.value = false
 })
 
 watch(isOrder, (order) => {
@@ -396,8 +432,9 @@ function salePayload(): BookSalePayload {
     // Handing the surplus back means the band kept the amount due, and that is
     // what the server must record — anything more becomes a donation there.
     amount_given_cents: paid
-      ? (surplusMode.value === 'donation' ? amountGivenCents.value : saleTotalCents.value)
+      ? (paymentMethod.value === 'Bar' && surplusMode.value === 'change' ? saleTotalCents.value : amountGivenCents.value)
       : null,
+    discount_confirmed: paid && discountCents.value > 0 && discountConfirmed.value,
     customer_name: needsShipping.value ? shipName.value.trim() : '',
     customer_address: needsShipping.value ? shipAddress.value.trim() : '',
     event_name: events.value.find((event) => event.id === selectedEventId.value)?.name ?? '',
@@ -466,12 +503,27 @@ function backToBasket() {
   checkoutStep.value = 1
 }
 
-async function goToConfirmation() {
+async function continueToConfirmation() {
   if (!paymentStepReady.value) return
-  if (qrOffered.value && (!needsShipping.value || !shipPayLater.value)) {
+  if (qrOffered.value && (!needsShipping.value || !shipPayLater.value) && (amountGivenCents.value ?? 0) > 0) {
     if (!await showPaymentQr()) return
   }
   checkoutStep.value = 3
+}
+
+async function goToConfirmation() {
+  if (!paymentStepReady.value) return
+  if (discountCents.value > 0 && !discountConfirmed.value) {
+    discountDialogOpen.value = true
+    return
+  }
+  await continueToConfirmation()
+}
+
+async function confirmDiscount() {
+  discountConfirmed.value = true
+  discountDialogOpen.value = false
+  await continueToConfirmation()
 }
 
 async function backToPayment() {
@@ -507,6 +559,23 @@ async function createEvent() {
     events.value = [event, ...events.value.filter((entry) => entry.id !== event.id)]
     selectedEventId.value = event.id
     newEventName.value = null
+  } catch (error) {
+    reportError(error)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function deleteEvent() {
+  const event = eventToDelete.value
+  if (!event || busy.value) return
+  busy.value = true
+  try {
+    await salesApi.deleteEvent(event.id)
+    events.value = events.value.filter((entry) => entry.id !== event.id)
+    if (selectedEventId.value === event.id) selectedEventId.value = 0
+    eventToDelete.value = null
+    flash.success(t('sales.eventDeleted'))
   } catch (error) {
     reportError(error)
   } finally {
@@ -603,6 +672,8 @@ async function book(override?: BookSalePayload): Promise<boolean> {
 function resetAfterSale() {
   basket.value = []
   amountGivenInput.value = ''
+  discountConfirmed.value = false
+  discountDialogOpen.value = false
   comment.value = ''
   quantity.value = 1
   surplusMode.value = 'donation'
@@ -828,17 +899,21 @@ function resetAfterSale() {
           <p v-if="qrSetupMissing" class="notice payment-qr-setup-hint">
             {{ t('sales.paymentQrSetupHint') }}
           </p>
-          <div v-if="paymentMethod === 'Bar' && (!needsShipping || !shipPayLater)" class="till-given">
+          <div v-if="!needsShipping || !shipPayLater" class="till-given">
             <label>
-              <span>{{ t('sales.amountGiven') }}</span>
+              <span>{{ t('sales.amountActuallyPaid') }}</span>
               <input v-model="amountGivenInput" inputmode="decimal" :placeholder="format(saleTotalCents)" />
             </label>
+            <p v-if="discountCents > 0" class="till-change is-discount">
+              <span>{{ t('sales.discountLabel') }}</span>
+              <strong>{{ format(discountCents) }}</strong>
+            </p>
             <div v-if="surplusCents > 0" class="till-surplus">
               <p class="till-change" :class="{ 'is-donation': surplusMode === 'donation' }">
                 <span>{{ surplusMode === 'donation' ? t('sales.donationLabel') : t('sales.changeLabel') }}</span>
                 <strong>{{ format(surplusCents) }}</strong>
               </p>
-              <button class="compact-button till-surplus-toggle" type="button" @click="surplusMode = surplusMode === 'donation' ? 'change' : 'donation'">
+              <button v-if="paymentMethod === 'Bar'" class="compact-button till-surplus-toggle" type="button" @click="surplusMode = surplusMode === 'donation' ? 'change' : 'donation'">
                 {{ surplusMode === 'donation' ? t('sales.giveChange') : t('sales.keepAsDonation') }}
               </button>
             </div>
@@ -855,6 +930,13 @@ function resetAfterSale() {
                 <option v-for="event in events" :key="event.id" :value="event.id">{{ event.name }}</option>
               </select>
               <button v-if="newEventName === null" class="compact-button" type="button" :aria-label="t('sales.newEvent')" @click="newEventName = ''">+</button>
+              <button
+                v-if="canDeleteEvents && selectedEventId"
+                class="compact-button danger-button"
+                type="button"
+                :aria-label="t('sales.deleteEvent')"
+                @click="eventToDelete = events.find((event) => event.id === selectedEventId) ?? null"
+              >{{ t('common.delete') }}</button>
             </span>
           </label>
           <div v-if="newEventName !== null" class="new-event-row">
@@ -933,8 +1015,9 @@ function resetAfterSale() {
             <b>{{ format(shippingCostCents ?? 0) }}</b>
           </div>
           <div class="till-total"><span>{{ t('sales.total') }}</span><strong>{{ format(saleTotalCents) }}</strong></div>
-          <div v-if="paymentMethod === 'Bar' && amountGivenCents !== null" class="checkout-cash-summary">
-            <span>{{ t('sales.amountGiven') }}: <b>{{ format(amountGivenCents) }}</b></span>
+          <div v-if="amountGivenCents !== null" class="checkout-cash-summary">
+            <span>{{ t('sales.amountActuallyPaid') }}: <b>{{ format(amountGivenCents) }}</b></span>
+            <span v-if="discountCents > 0">{{ t('sales.discountLabel') }}: <b>{{ format(discountCents) }}</b></span>
             <span v-if="surplusCents > 0">
               {{ surplusMode === 'donation' ? t('sales.donationLabel') : t('sales.changeLabel') }}:
               <b>{{ format(surplusCents) }}</b>
@@ -960,6 +1043,38 @@ function resetAfterSale() {
         </button>
       </footer>
     </section>
+
+    <dialog v-if="discountDialogOpen" class="confirmation-dialog" open>
+      <div class="stack-form">
+        <div>
+          <p class="eyebrow">{{ t('sales.discountEyebrow') }}</p>
+          <h2>{{ t('sales.discountConfirmTitle') }}</h2>
+          <p>{{ t('sales.discountConfirmIntro', {
+            total: format(saleTotalCents),
+            paid: format(amountGivenCents ?? 0),
+            discount: format(discountCents),
+          }) }}</p>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" @click="discountDialogOpen = false">{{ t('common.cancel') }}</button>
+          <button class="primary-button" type="button" @click="confirmDiscount">{{ t('sales.confirmDiscount') }}</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog v-if="eventToDelete" class="confirmation-dialog" open>
+      <div class="stack-form">
+        <div>
+          <p class="eyebrow">{{ t('sales.eventDeleteEyebrow') }}</p>
+          <h2>{{ t('sales.eventDeleteTitle') }}</h2>
+          <p>{{ t('sales.eventDeleteIntro', { event: eventToDelete.name }) }}</p>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" @click="eventToDelete = null">{{ t('common.cancel') }}</button>
+          <button class="danger-button" type="button" :disabled="busy" @click="deleteEvent">{{ t('common.delete') }}</button>
+        </div>
+      </div>
+    </dialog>
   </main>
 </template>
 
@@ -1686,6 +1801,11 @@ function resetAfterSale() {
 
 .till-change.is-donation {
   color: var(--success);
+}
+
+.till-change.is-discount {
+  color: #ffd69b;
+  background: rgba(243,179,90,.12);
 }
 
 .till-surplus-toggle {

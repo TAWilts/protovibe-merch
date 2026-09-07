@@ -72,7 +72,7 @@ func TestExportHeadersMatchTheOriginal(t *testing.T) {
 		},
 		"verkaeufe": {
 			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Versandkosten",
-			"Gegeben", "Spende", "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus",
+			"Rabatt", "Gegeben", "Spende", "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus",
 			"Storniert", "Kundenname", "Adresse", "Veranstaltung", "Verkauft von", "Kommentar",
 		},
 		"einkaeufe": {

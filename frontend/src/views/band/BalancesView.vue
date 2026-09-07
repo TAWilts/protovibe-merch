@@ -14,7 +14,7 @@ import BalanceTable, { type BalanceSortKey } from '@/components/BalanceTable.vue
 /**
  * The balances page, ported from _old/templates/balances.html.
  *
- * "Saldo" here means collected payments plus donations minus recorded goods
+ * "Saldo" here means collected payments minus recorded goods
  * received. It is deliberately not called profit: a reorder would make a
  * profit figure swing wildly for a week and mislead the band.
  */
@@ -139,6 +139,7 @@ function downloadCsv(kind: 'inventory' | 'articles') {
         ['Nachbestellen', (row) => row.no_reorder ? 'nein' : 'ja'],
         ['Angeboten', (row) => row.is_available_for_sale ? 'ja' : 'nein'],
         ['Ausgaben', (row) => format(row.purchase_cost_cents)], ['Umsatz', (row) => format(row.revenue_cents)],
+        ['Eingenommen', (row) => format(row.collected_cents)], ['Rabatt', (row) => format(row.discount_cents)],
         ['Spenden', (row) => format(row.donation_cents)],
       ]
     : [
@@ -220,6 +221,7 @@ async function printFinanceReport() {
     const summaryRows = reportRows([
       [t('balances.reportMerchRevenue'), format(s.merch_revenue_cents)],
       [t('balances.reportCollected'), format(s.merch_collected_cents)],
+      [t('balances.discount'), format(s.discount_cents)],
       [t('balances.donation'), format(s.donation_cents)],
       [t('balances.reportMerchPurchases'), format(s.merch_purchase_cost_cents)],
       [t('balances.bandIncome'), format(s.band_income_cents)],
@@ -350,8 +352,16 @@ td:last-child, th:last-child { text-align: right; }
           <strong>{{ format(data.summary.purchase_cost_cents) }}</strong>
         </article>
         <article class="metric-card">
+          <span>{{ t('balances.revenue') }}</span>
+          <strong>{{ format(data.summary.revenue_cents) }}</strong>
+        </article>
+        <article class="metric-card">
           <span>{{ t('balances.collected') }}</span>
           <strong>{{ format(data.summary.collected_cents) }}</strong>
+        </article>
+        <article class="metric-card">
+          <span>{{ t('balances.discount') }}</span>
+          <strong>{{ format(data.summary.discount_cents) }}</strong>
         </article>
         <article class="metric-card">
           <span>{{ t('balances.donation') }}</span>

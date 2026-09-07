@@ -3,10 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import SalesView from './SalesView.vue'
 
-const { assortment, book, createPaymentQrIntent } = vi.hoisted(() => ({
+const { assortment, book, createPaymentQrIntent, events, deleteEvent } = vi.hoisted(() => ({
   assortment: vi.fn(),
   book: vi.fn(),
   createPaymentQrIntent: vi.fn(),
+  events: vi.fn(),
+  deleteEvent: vi.fn(),
 }))
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ name: 'sales' }) }))
@@ -28,6 +30,7 @@ vi.mock('@/stores/session', () => ({
   useSessionStore: () => ({
     user: { username: 'seller', show_variant_photos: true },
     featureFlags: { payment_qr: true, offline_sales: true },
+    capabilities: { can_access_member_workflows: true },
   }),
 }))
 vi.mock('@/api/endpoints', () => ({
@@ -36,10 +39,11 @@ vi.mock('@/api/endpoints', () => ({
   },
   photosApi: { fileUrl: (id: number) => `/photos/${id}` },
   salesApi: {
-    events: vi.fn().mockResolvedValue({ events: [], selected_event_id: 0 }),
+    events,
     receiptPreview: vi.fn().mockResolvedValue({ receipt_id: 'V-1' }),
     paymentQrAvailability: vi.fn().mockResolvedValue({ paypal: false, bank: false }),
     createEvent: vi.fn(),
+    deleteEvent,
     createPaymentQrIntent,
     cancelPaymentQrIntent: vi.fn(),
     book,
@@ -66,6 +70,8 @@ describe('SalesView checkout', () => {
   beforeEach(() => {
     book.mockReset().mockResolvedValue({ receipt_id: 'V-1', sale_ids: [1] })
     createPaymentQrIntent.mockReset()
+    deleteEvent.mockReset().mockResolvedValue(undefined)
+    events.mockReset().mockResolvedValue({ events: [], selected_event_id: 0 })
     assortment.mockReset().mockResolvedValue({
       payment_methods: ['Bar'],
       articles: [{
@@ -262,5 +268,67 @@ describe('SalesView checkout', () => {
     await button(wrapper, 'sales.book').trigger('click')
     await flushPromises()
     expect(book).toHaveBeenCalledOnce()
+  })
+
+  it('requires an explicit confirmation before booking a discount', async () => {
+    const wrapper = mount(SalesView)
+    await flushPromises()
+    await button(wrapper, 'Testshirt').trigger('click')
+    await button(wrapper, 'sales.addToCart').trigger('click')
+    await button(wrapper, 'sales.paymentDetails').trigger('click')
+    await field(wrapper, 'sales.amountActuallyPaid').setValue('10,00')
+
+    await button(wrapper, 'common.confirm').trigger('click')
+    expect(wrapper.get('.confirmation-dialog').text()).toContain('sales.discountConfirmTitle')
+    expect(wrapper.find('.checkout-step-2').exists()).toBe(true)
+
+    await button(wrapper, 'sales.confirmDiscount').trigger('click')
+    expect(wrapper.find('.checkout-step-3').exists()).toBe(true)
+    await button(wrapper, 'sales.book').trigger('click')
+    await flushPromises()
+
+    expect(book).toHaveBeenCalledWith(expect.objectContaining({
+      amount_given_cents: 1000,
+      discount_confirmed: true,
+    }))
+  })
+
+  it('hides inactive and withdrawn articles and articles without an offered variant', async () => {
+    assortment.mockResolvedValueOnce({
+      payment_methods: ['Bar'],
+      articles: [
+        { id: 1, name: 'Aktiv', is_active: true, is_offered: true, configuration_complete: true, total_stock: 1, option_groups: [], variants: [{ id: 11, combination_key: '', option_value_ids: [], sale_price_cents: 100, on_hand: 1, photo_ids: [], is_active: true, is_offered: true }] },
+        { id: 2, name: 'Nicht anbieten', is_active: true, is_offered: false, configuration_complete: true, total_stock: 1, option_groups: [], variants: [{ id: 12, combination_key: '', option_value_ids: [], sale_price_cents: 100, on_hand: 1, photo_ids: [], is_active: true, is_offered: true }] },
+        { id: 3, name: 'Inaktiv', is_active: false, is_offered: true, configuration_complete: true, total_stock: 1, option_groups: [], variants: [{ id: 13, combination_key: '', option_value_ids: [], sale_price_cents: 100, on_hand: 1, photo_ids: [], is_active: true, is_offered: true }] },
+        { id: 4, name: 'Keine Variante', is_active: true, is_offered: true, configuration_complete: true, total_stock: 1, option_groups: [], variants: [{ id: 14, combination_key: '', option_value_ids: [], sale_price_cents: 100, on_hand: 1, photo_ids: [], is_active: true, is_offered: false }] },
+      ],
+    })
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+    expect(wrapper.text()).toContain('Aktiv')
+    expect(wrapper.text()).not.toContain('Nicht anbieten')
+    expect(wrapper.text()).not.toContain('Inaktiv')
+    expect(wrapper.text()).not.toContain('Keine Variante')
+  })
+
+  it('deletes the selected event only after confirmation', async () => {
+    events.mockResolvedValueOnce({
+      events: [{ id: 7, name: 'Sommerfest', last_selected_at: '2026-09-07' }],
+      selected_event_id: 7,
+    })
+    const wrapper = mount(SalesView)
+    await flushPromises()
+    await button(wrapper, 'Testshirt').trigger('click')
+    await button(wrapper, 'sales.addToCart').trigger('click')
+    await button(wrapper, 'sales.paymentDetails').trigger('click')
+
+    await wrapper.get('button[aria-label="sales.deleteEvent"]').trigger('click')
+    expect(wrapper.get('.confirmation-dialog').text()).toContain('sales.eventDeleteTitle')
+    await wrapper.get('.confirmation-dialog .danger-button').trigger('click')
+    await flushPromises()
+
+    expect(deleteEvent).toHaveBeenCalledWith(7)
+    expect(wrapper.find('button[aria-label="sales.deleteEvent"]').exists()).toBe(false)
   })
 })

@@ -115,6 +115,33 @@ func TestShipmentChargesGrossShippingCosts(t *testing.T) {
 	}
 }
 
+func TestDiscountNeedsConfirmationForEveryImmediatePaymentMethod(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Discount Shirt")
+
+	for _, method := range []string{"Bar", "PayPal", "Überweisung"} {
+		t.Run(method, func(t *testing.T) {
+			basket := map[string]any{
+				"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+				"payment_method": method, "is_paid": true, "is_received": true,
+				"amount_given_cents": 1000, "sold_on": "2026-09-07",
+			}
+			unconfirmed := h.do(http.MethodPost, "/api/v1/sales", basket)
+			if unconfirmed.Status != http.StatusConflict || unconfirmed.Body["code"] != "discount_confirmation_required" {
+				t.Fatalf("discount must require confirmation: %d %v", unconfirmed.Status, unconfirmed.Body)
+			}
+
+			basket["discount_confirmed"] = true
+			booked := h.do(http.MethodPost, "/api/v1/sales", basket)
+			if booked.Status != http.StatusCreated || booked.Body["discount_cents"] != float64(800) || booked.Body["total_paid_cents"] != float64(1000) {
+				t.Fatalf("confirmed discount must be booked: %d %v", booked.Status, booked.Body)
+			}
+		})
+	}
+}
+
 // TestUnpaidSaleNeedsContactDetails pins the rule that the band always knows
 // who still owes money.
 func TestUnpaidSaleNeedsContactDetails(t *testing.T) {
@@ -151,13 +178,15 @@ func TestOfflineQueueSyncsExactlyOnce(t *testing.T) {
 	_, variants := h.sellableArticle("Offline Shirt")
 
 	queued := map[string]any{
-		"items":            []any{map[string]any{"variant_id": variants[0], "quantity": 2}},
-		"payment_method":   "Bar",
-		"is_paid":          true,
-		"is_received":      true,
-		"sold_on":          "2026-08-27",
-		"client_event_id":  "evt-offline-1",
-		"client_device_id": "phone-1",
+		"items":              []any{map[string]any{"variant_id": variants[0], "quantity": 2}},
+		"payment_method":     "Bar",
+		"is_paid":            true,
+		"is_received":        true,
+		"amount_given_cents": 0,
+		"discount_confirmed": true,
+		"sold_on":            "2026-08-27",
+		"client_event_id":    "evt-offline-1",
+		"client_device_id":   "phone-1",
 	}
 
 	first := h.do(http.MethodPost, "/api/v1/sales", queued)
@@ -166,6 +195,9 @@ func TestOfflineQueueSyncsExactlyOnce(t *testing.T) {
 	}
 	if first.Body["replayed"] != false {
 		t.Fatalf("the first submission is not a replay: %v", first.Body)
+	}
+	if first.Body["total_paid_cents"] != float64(0) || first.Body["discount_cents"] != float64(3600) {
+		t.Fatalf("a confirmed zero-payment discount must survive offline booking: %v", first.Body)
 	}
 
 	second := h.do(http.MethodPost, "/api/v1/sales", queued)
@@ -216,6 +248,40 @@ func TestSaleEventsAreSharedAcrossTheBand(t *testing.T) {
 	}
 	if got := len(jsonList(listed.Body, "events")); got != 1 {
 		t.Fatalf("expected one event, got %d", got)
+	}
+}
+
+func TestMembersCanDeleteEventsWithoutChangingHistoricalSales(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Event Shirt")
+	created := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{
+		"name": "Sommerfest 2026", "select": true,
+	})
+	eventID := int64(created.Body["id"].(float64))
+	booked := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+		"payment_method": "Bar", "is_paid": true, "is_received": true,
+		"event_name": "Sommerfest 2026", "sold_on": "2026-09-07",
+	})
+	if booked.Status != http.StatusCreated {
+		t.Fatalf("book historical sale: %d %v", booked.Status, booked.Body)
+	}
+
+	h.signInAs(band, models.RoleMember)
+	deleted := h.do(http.MethodDelete, "/api/v1/sale-events/"+itoa(eventID), nil)
+	if deleted.Status != http.StatusNoContent {
+		t.Fatalf("member delete: %d %v", deleted.Status, deleted.Body)
+	}
+	listed := h.do(http.MethodGet, "/api/v1/sale-events", nil)
+	if len(jsonList(listed.Body, "events")) != 0 || listed.Body["selected_event_id"] != float64(0) {
+		t.Fatalf("deleted event must disappear and clear the selection: %v", listed.Body)
+	}
+	history := h.do(http.MethodGet, "/api/v1/history", nil)
+	receipt := jsonObject(jsonList(history.Body, "receipts")[0])
+	if receipt["event_name"] != "Sommerfest 2026" {
+		t.Fatalf("historical event name must remain: %v", receipt)
 	}
 }
 

@@ -21,15 +21,16 @@ import (
 
 // Validation errors. They map onto stable API codes in the HTTP layer.
 var (
-	ErrEmptyBasket       = errors.New("sales: the basket is empty")
-	ErrInvalidQuantity   = errors.New("sales: quantity must be positive")
-	ErrNegativePrice     = errors.New("sales: prices cannot be negative")
-	ErrNegativeShipping  = errors.New("sales: shipping costs cannot be negative")
-	ErrShippingOnCounter = errors.New("sales: shipping costs require a shipment")
-	ErrContactRequired   = errors.New("sales: name and address are required when a sale is unpaid or not handed over")
-	ErrUnknownPayment    = errors.New("sales: unknown payment method")
-	ErrAmountTooLow      = errors.New("sales: the amount given is less than the amount due")
-	ErrVariantNotOffered = errors.New("sales: this variant is not currently offered")
+	ErrEmptyBasket                  = errors.New("sales: the basket is empty")
+	ErrInvalidQuantity              = errors.New("sales: quantity must be positive")
+	ErrNegativePrice                = errors.New("sales: prices cannot be negative")
+	ErrNegativeShipping             = errors.New("sales: shipping costs cannot be negative")
+	ErrShippingOnCounter            = errors.New("sales: shipping costs require a shipment")
+	ErrContactRequired              = errors.New("sales: name and address are required when a sale is unpaid or not handed over")
+	ErrUnknownPayment               = errors.New("sales: unknown payment method")
+	ErrNegativeAmount               = errors.New("sales: the amount given cannot be negative")
+	ErrDiscountConfirmationRequired = errors.New("sales: a payment below the amount due requires explicit discount confirmation")
+	ErrVariantNotOffered            = errors.New("sales: this variant is not currently offered")
 	// ErrUnknownVariant covers both a typo and a variant belonging to another
 	// band — the tenant filter simply makes the row invisible here.
 	ErrUnknownVariant = errors.New("sales: unknown variant")
@@ -50,9 +51,10 @@ type Request struct {
 	PaymentMethod string       `json:"payment_method"`
 	IsPaid        bool         `json:"is_paid"`
 	IsReceived    bool         `json:"is_received"`
-	// AmountGivenCents is what the customer handed over. Anything above the
-	// amount due becomes a donation.
-	AmountGivenCents *int64 `json:"amount_given_cents"`
+	// AmountGivenCents is what the band actually keeps. Anything above the
+	// amount due becomes a donation; anything below it is a confirmed discount.
+	AmountGivenCents  *int64 `json:"amount_given_cents"`
+	DiscountConfirmed bool   `json:"discount_confirmed"`
 	// ShippingCostCents is the gross amount charged for a shipment.
 	ShippingCostCents int64 `json:"shipping_cost_cents"`
 
@@ -76,6 +78,7 @@ type Line struct {
 	UnitPriceCents    int64
 	AmountDueCents    int64
 	ShippingCostCents int64
+	DiscountCents     int64
 	AmountGivenCents  *int64
 	DonationCents     int64
 }
@@ -84,6 +87,8 @@ type Line struct {
 type Prepared struct {
 	Lines           []Line
 	TotalDueCents   int64
+	TotalPaidCents  int64
+	DiscountCents   int64
 	DonationCents   int64
 	PaymentMethod   string
 	IsPaid          bool
@@ -174,23 +179,21 @@ func Prepare(req Request, prices map[int64]VariantPrice) (*Prepared, error) {
 	}
 	totalDue += req.ShippingCostCents
 
-	given, donation, err := resolveAmounts(req, totalDue)
+	given, discount, donation, err := resolveAmounts(req, totalDue)
 	if err != nil {
 		return nil, err
 	}
 
-	weights := make([]int64, len(lines))
-	for i, line := range lines {
-		weights[i] = line.AmountDueCents
-	}
-	shares := money.Distribute(donation, weights)
+	discountShares := money.Distribute(discount, goodsWeights)
+	donationShares := money.Distribute(donation, goodsWeights)
 
 	for i := range lines {
-		lines[i].DonationCents = shares[i]
+		lines[i].DiscountCents = discountShares[i]
+		lines[i].DonationCents = donationShares[i]
 		if given != nil {
-			// Each row carries its own share of the overpayment, so cancelling
-			// one position removes exactly its part of the donation too.
-			rowGiven := lines[i].AmountDueCents + shares[i]
+			// Each row carries its own adjustment shares, so cancelling one
+			// position removes exactly its part of the discount or donation too.
+			rowGiven := lines[i].AmountDueCents - discountShares[i] + donationShares[i]
 			lines[i].AmountGivenCents = &rowGiven
 		}
 	}
@@ -205,6 +208,8 @@ func Prepare(req Request, prices map[int64]VariantPrice) (*Prepared, error) {
 	return &Prepared{
 		Lines:           lines,
 		TotalDueCents:   totalDue,
+		TotalPaidCents:  totalDue - discount + donation,
+		DiscountCents:   discount,
 		DonationCents:   donation,
 		PaymentMethod:   req.PaymentMethod,
 		IsPaid:          req.IsPaid,
@@ -221,30 +226,29 @@ func Prepare(req Request, prices map[int64]VariantPrice) (*Prepared, error) {
 
 // resolveAmounts decides what was actually handed over and how much of it is a
 // donation.
-func resolveAmounts(req Request, totalDue int64) (given *int64, donation int64, err error) {
+func resolveAmounts(req Request, totalDue int64) (given *int64, discount, donation int64, err error) {
 	// An unpaid booking must never count as a donation just because a stale
 	// cash field was still filled in on the client.
 	if !req.IsPaid {
-		return nil, 0, nil
-	}
-
-	// A code-based payment settles the exact amount. Trusting the client's
-	// cash field here would let a stale value become a phantom donation.
-	if models.QRPaymentMethods[req.PaymentMethod] {
-		exact := totalDue
-		return &exact, 0, nil
+		return nil, 0, 0, nil
 	}
 
 	if req.AmountGivenCents == nil {
 		exact := totalDue
-		return &exact, 0, nil
+		return &exact, 0, 0, nil
 	}
-	if *req.AmountGivenCents < totalDue {
-		return nil, 0, ErrAmountTooLow
+	if *req.AmountGivenCents < 0 {
+		return nil, 0, 0, ErrNegativeAmount
+	}
+	if *req.AmountGivenCents < totalDue && !req.DiscountConfirmed {
+		return nil, 0, 0, ErrDiscountConfirmationRequired
 	}
 
 	value := *req.AmountGivenCents
-	return &value, value - totalDue, nil
+	if value < totalDue {
+		return &value, totalDue - value, 0, nil
+	}
+	return &value, 0, value - totalDue, nil
 }
 
 func isKnownPaymentMethod(method string) bool {

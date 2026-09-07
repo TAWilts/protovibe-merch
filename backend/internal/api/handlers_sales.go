@@ -34,6 +34,8 @@ func (s *Server) registerSalesRoutes(g *gin.RouterGroup) {
 	members.PATCH("/sales/:id/cancel", s.cancelSale)
 	members.PATCH("/sales/:id/delivery-status", s.setDeliveryStatus)
 	members.PATCH("/sales/:id/payment-status", s.markSalePaid)
+	members.PATCH("/sales/receipt/:receiptID/shipping-cost", s.updateSaleShippingCost)
+	members.DELETE("/sale-events/:id", s.deleteSaleEvent)
 }
 
 // saleHistory returns the receipts, newest first. Cancelled positions stay
@@ -151,6 +153,39 @@ func (s *Server) markSalePaid(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+func (s *Server) updateSaleShippingCost(c *gin.Context) {
+	receiptID := strings.TrimSpace(c.Param("receiptID"))
+	if receiptID == "" {
+		fail(c, http.StatusBadRequest, "invalid_receipt", "receipt identifier is required")
+		return
+	}
+	var req struct {
+		ShippingCostCents int64 `json:"shipping_cost_cents"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	ctx := c.Request.Context()
+	result, err := s.sales.UpdateShippingCost(ctx, receiptID, req.ShippingCostCents)
+	if err != nil {
+		s.reportSalesError(c, err)
+		return
+	}
+	s.audit.Log(ctx, actorFrom(c), audit.Entry{
+		Action: audit.ActionSaleShippingChanged, EntityType: "sale_receipt",
+		Details: map[string]any{
+			"receipt_id": receiptID, "sale_ids": result.SaleIDs,
+			"old_shipping_cost_cents": result.OldShippingCostCents,
+			"shipping_cost_cents":     result.ShippingCostCents,
+			"discount_cents":          result.DiscountCents, "donation_cents": result.DonationCents,
+		},
+	})
+	s.recordSaleTelemetry(c, "sale_shipping_changed", result.SaleIDs)
+	c.JSON(http.StatusOK, result)
+}
+
 // receiptPreview proposes the ID the seller can already read out to a customer.
 //
 // It is explicitly only a proposal: a concurrent sale may take the number
@@ -234,11 +269,13 @@ func (s *Server) createSale(c *gin.Context) {
 		s.audit.Log(ctx, actorFrom(c), audit.Entry{
 			Action: audit.ActionSaleCreated, EntityType: "sale",
 			Details: map[string]any{
-				"receipt_id":      result.ReceiptID,
-				"total_due_cents": result.TotalDueCents,
-				"donation_cents":  result.DonationCents,
-				"positions":       len(result.SaleIDs),
-				"offline":         offline != nil,
+				"receipt_id":       result.ReceiptID,
+				"total_due_cents":  result.TotalDueCents,
+				"total_paid_cents": result.TotalPaidCents,
+				"discount_cents":   result.DiscountCents,
+				"donation_cents":   result.DonationCents,
+				"positions":        len(result.SaleIDs),
+				"offline":          offline != nil,
 			},
 		})
 		s.recordTelemetryEvent(c, "payment_method", req.PaymentMethod)
@@ -320,7 +357,7 @@ func (s *Server) recordSaleTelemetry(c *gin.Context, eventType string, saleIDs [
 			ArticleID:       articleByVariant[sale.VariantID],
 			Quantity:        sale.Quantity,
 			UnitPriceCents:  sale.UnitPriceCents,
-			AmountCents:     sale.AmountDueCents,
+			AmountCents:     sale.AmountDueCents - sale.DiscountCents,
 			PaymentMethod:   sale.PaymentMethod,
 			IsPaid:          sale.IsPaid,
 			IsReceived:      sale.IsReceived,
@@ -348,8 +385,8 @@ func (s *Server) reportSalesError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "empty_basket", err.Error())
 	case errors.Is(err, sales.ErrContactRequired):
 		fail(c, http.StatusBadRequest, "contact_required", err.Error())
-	case errors.Is(err, sales.ErrAmountTooLow):
-		fail(c, http.StatusBadRequest, "amount_too_low", err.Error())
+	case errors.Is(err, sales.ErrDiscountConfirmationRequired):
+		fail(c, http.StatusConflict, "discount_confirmation_required", err.Error())
 	case errors.Is(err, sales.ErrSaleNotFound):
 		fail(c, http.StatusNotFound, "not_found", "no such sale")
 	case errors.Is(err, sales.ErrAlreadyCancelled):
@@ -358,6 +395,8 @@ func (s *Server) reportSalesError(c *gin.Context, err error) {
 		fail(c, http.StatusConflict, "already_paid", err.Error())
 	case errors.Is(err, sales.ErrNoDeliveryFlow):
 		fail(c, http.StatusConflict, "no_delivery_flow", err.Error())
+	case errors.Is(err, sales.ErrShippingClosed):
+		fail(c, http.StatusConflict, "shipping_closed", err.Error())
 	case errors.Is(err, sales.ErrInvalidTransition):
 		fail(c, http.StatusConflict, "invalid_transition", err.Error())
 	case errors.Is(err, sales.ErrUnknownVariant):
@@ -366,7 +405,7 @@ func (s *Server) reportSalesError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "variant_not_offered", err.Error())
 	case errors.Is(err, sales.ErrUnknownPayment):
 		fail(c, http.StatusBadRequest, "unknown_payment_method", err.Error())
-	case errors.Is(err, sales.ErrInvalidQuantity), errors.Is(err, sales.ErrNegativePrice),
+	case errors.Is(err, sales.ErrInvalidQuantity), errors.Is(err, sales.ErrNegativePrice), errors.Is(err, sales.ErrNegativeAmount),
 		errors.Is(err, sales.ErrNegativeShipping), errors.Is(err, sales.ErrShippingOnCounter):
 		fail(c, http.StatusBadRequest, "invalid_basket", err.Error())
 	default:
@@ -492,6 +531,46 @@ func (s *Server) selectSaleEvent(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, saleEventPayload{ID: event.ID, Name: event.Name, IsSelected: true})
+}
+
+func (s *Server) deleteSaleEvent(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	ctx := c.Request.Context()
+	var event models.SaleEvent
+	wasSelected := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.WithContext(ctx).First(&event, id).Error; err != nil {
+			return err
+		}
+		var selectedCount int64
+		if err := tx.WithContext(ctx).Model(&models.SaleEventState{}).Where("event_id = ?", id).Count(&selectedCount).Error; err != nil {
+			return err
+		}
+		wasSelected = selectedCount > 0
+		if err := tx.WithContext(ctx).Where("event_id = ?", id).Delete(&models.SaleEventState{}).Error; err != nil {
+			return err
+		}
+		return tx.WithContext(ctx).Delete(&event).Error
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			fail(c, http.StatusNotFound, "not_found", "no such event")
+			return
+		}
+		serverError(c, err)
+		return
+	}
+	s.audit.Log(ctx, actorFrom(c), audit.Entry{
+		Action: audit.ActionSaleEventDeleted, EntityType: "sale_event", EntityID: &id,
+		Details: map[string]any{
+			"old": map[string]any{"id": event.ID, "name": event.Name, "selected": wasSelected},
+			"new": nil,
+		},
+	})
+	c.Status(http.StatusNoContent)
 }
 
 // selectEvent stores the band-wide selection and refreshes the event's

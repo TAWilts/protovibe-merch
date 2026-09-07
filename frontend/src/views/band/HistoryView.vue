@@ -66,6 +66,8 @@ function exportVisible() {
       t('sales.soldBy'),
       t('sales.paymentMethod'),
       t('history.amount'),
+      t('history.discount'),
+      t('sales.amountActuallyPaid'),
       t('history.donation'),
       t('sales.customerName'),
     ],
@@ -76,6 +78,8 @@ function exportVisible() {
       receipt.sold_by,
       receipt.payment_method,
       format(receipt.total_due_cents),
+      receipt.discount_cents ? format(receipt.discount_cents) : '',
+      format(receipt.total_given_cents),
       receipt.donation_cents ? format(receipt.donation_cents) : '',
       receipt.customer_name,
     ]),
@@ -172,6 +176,8 @@ async function confirmCancel() {
               <th>{{ t('sales.soldBy') }}</th>
               <th>{{ t('sales.paymentMethod') }}</th>
               <th class="numeric">{{ t('history.amount') }}</th>
+              <th class="numeric">{{ t('history.discount') }}</th>
+              <th class="numeric">{{ t('sales.amountActuallyPaid') }}</th>
               <th class="numeric">{{ t('history.donation') }}</th>
               <th></th>
             </tr>
@@ -190,6 +196,8 @@ async function confirmCancel() {
                 <td>{{ receipt.sold_by || '—' }}</td>
                 <td>{{ receipt.payment_method }}</td>
                 <td class="numeric">{{ format(receipt.total_due_cents) }}</td>
+                <td class="numeric">{{ receipt.discount_cents ? format(receipt.discount_cents) : '—' }}</td>
+                <td class="numeric">{{ format(receipt.total_given_cents) }}</td>
                 <td class="numeric">{{ receipt.donation_cents ? format(receipt.donation_cents) : '—' }}</td>
                 <td>
                   <button
@@ -205,7 +213,7 @@ async function confirmCancel() {
 
               <tr v-if="expanded.has(receipt.receipt_id)" class="expanded-row">
                 <td></td>
-                <td colspan="8">
+                <td colspan="10">
                   <div class="receipt-detail">
                     <table class="nested-table">
                       <tbody>
@@ -250,6 +258,14 @@ async function confirmCancel() {
                       <template v-if="receipt.shipping_cost_cents > 0">
                         <dt>{{ t('sales.shippingCostGross') }}</dt>
                         <dd>{{ format(receipt.shipping_cost_cents) }}</dd>
+                      </template>
+                      <template v-if="receipt.discount_cents > 0">
+                        <dt>{{ t('history.discount') }}</dt>
+                        <dd>{{ format(receipt.discount_cents) }}</dd>
+                      </template>
+                      <template v-if="receipt.donation_cents > 0">
+                        <dt>{{ t('history.donation') }}</dt>
+                        <dd>{{ format(receipt.donation_cents) }}</dd>
                       </template>
                       <template v-if="receipt.customer_name">
                         <dt>{{ t('sales.customerName') }}</dt>

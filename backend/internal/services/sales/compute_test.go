@@ -107,9 +107,9 @@ func TestUnpaidSaleRecordsNoMoney(t *testing.T) {
 	}
 }
 
-// TestCodePaymentsIgnoreTheCashField pins the same protection for PayPal and
-// bank transfer, where the exact amount is settled by the code itself.
-func TestCodePaymentsIgnoreTheCashField(t *testing.T) {
+// TestEveryImmediatePaymentHonoursTheCollectedAmount keeps QR and cash sales
+// on the same accounting rules: a surplus is a donation.
+func TestEveryImmediatePaymentHonoursTheCollectedAmount(t *testing.T) {
 	for _, method := range []string{models.PaymentMethodPayPal, models.PaymentMethodTransfer} {
 		t.Run(method, func(t *testing.T) {
 			given := int64(9900)
@@ -121,11 +121,11 @@ func TestCodePaymentsIgnoreTheCashField(t *testing.T) {
 			if err != nil {
 				t.Fatalf("prepare: %v", err)
 			}
-			if got.DonationCents != 0 {
-				t.Fatalf("a stale cash field must not become a donation, got %d", got.DonationCents)
+			if got.DonationCents != 8100 {
+				t.Fatalf("the surplus must become a donation, got %d", got.DonationCents)
 			}
-			if *got.Lines[0].AmountGivenCents != 1800 {
-				t.Fatalf("the exact amount must be recorded, got %d", *got.Lines[0].AmountGivenCents)
+			if *got.Lines[0].AmountGivenCents != 9900 {
+				t.Fatalf("the collected amount must be recorded, got %d", *got.Lines[0].AmountGivenCents)
 			}
 		})
 	}
@@ -281,7 +281,7 @@ func TestPrepareRejectsBadInput(t *testing.T) {
 		"zero quantity":     {func(r *sales.Request) { r.Items[0].Quantity = 0 }, sales.ErrInvalidQuantity},
 		"negative quantity": {func(r *sales.Request) { r.Items[0].Quantity = -1 }, sales.ErrInvalidQuantity},
 		"unknown method":    {func(r *sales.Request) { r.PaymentMethod = "Bitcoin" }, sales.ErrUnknownPayment},
-		"underpaid":         {func(r *sales.Request) { r.AmountGivenCents = &tooLittle }, sales.ErrAmountTooLow},
+		"underpaid":         {func(r *sales.Request) { r.AmountGivenCents = &tooLittle }, sales.ErrDiscountConfirmationRequired},
 		"not offered":       {func(r *sales.Request) { r.Items[0].VariantID = 3 }, sales.ErrVariantNotOffered},
 	}
 
@@ -293,6 +293,32 @@ func TestPrepareRejectsBadInput(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestConfirmedDiscountIsSplitCentExactly(t *testing.T) {
+	paid := int64(2501)
+	req := counterSale(
+		sales.BasketItem{VariantID: 1, Quantity: 1},
+		sales.BasketItem{VariantID: 2, Quantity: 1},
+	)
+	req.AmountGivenCents = &paid
+	req.DiscountConfirmed = true
+
+	got, err := sales.Prepare(req, priceList())
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if got.TotalDueCents != 3000 || got.TotalPaidCents != paid || got.DiscountCents != 499 {
+		t.Fatalf("unexpected totals: %+v", got)
+	}
+	var discount, collected int64
+	for _, line := range got.Lines {
+		discount += line.DiscountCents
+		collected += *line.AmountGivenCents
+	}
+	if discount != 499 || collected != paid {
+		t.Fatalf("line values must add back up exactly: %+v", got.Lines)
 	}
 }
 

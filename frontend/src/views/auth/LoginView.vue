@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
@@ -24,8 +24,26 @@ const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
 
-const band = ref(typeof route.query.band === 'string' ? route.query.band : '')
-const username = ref(typeof route.query.username === 'string' ? route.query.username : '')
+const rememberedLoginKey = 'protovibe.remembered-login.v1'
+
+function loadRememberedLogin(): { band: string; username: string } | null {
+  try {
+    const raw = window.localStorage.getItem(rememberedLoginKey)
+    if (!raw) return null
+    const value = JSON.parse(raw) as { band?: unknown; username?: unknown }
+    if (typeof value.band !== 'string' || typeof value.username !== 'string') return null
+    return { band: value.band, username: value.username }
+  } catch {
+    return null
+  }
+}
+
+const rememberedLogin = loadRememberedLogin()
+const queryBand = typeof route.query.band === 'string' ? route.query.band : null
+const queryUsername = typeof route.query.username === 'string' ? route.query.username : null
+const band = ref(queryBand ?? rememberedLogin?.band ?? '')
+const username = ref(queryUsername ?? rememberedLogin?.username ?? '')
+const rememberCredentials = ref(true)
 const secret = ref('')
 const error = ref('')
 const notice = ref('')
@@ -45,6 +63,34 @@ const resetCode = ref('')
 const resetPassword = ref('')
 const loginLocale = ref<Locale>(marketingLocale())
 setMarketingLocale(loginLocale.value)
+
+watch(rememberCredentials, (remember) => {
+  if (!remember) clearRememberedLogin()
+})
+
+function clearRememberedLogin() {
+  try {
+    window.localStorage.removeItem(rememberedLoginKey)
+  } catch {
+    // Storage can be disabled by the browser; login must still work.
+  }
+}
+
+function saveRememberedLogin() {
+  if (!rememberCredentials.value) {
+    clearRememberedLogin()
+    return
+  }
+  try {
+    window.localStorage.setItem(
+      rememberedLoginKey,
+      JSON.stringify({ band: band.value.trim(), username: username.value.trim() }),
+    )
+  } catch {
+    // Private browsing or a full quota must not turn accepted credentials into
+    // an apparent login failure.
+  }
+}
 
 function chooseLocale(locale: Locale) {
   loginLocale.value = locale
@@ -73,6 +119,7 @@ async function submitCredentials() {
   error.value = ''
   try {
     const response = await authApi.login(band.value.trim(), username.value.trim(), secret.value)
+    saveRememberedLogin()
     if (complete(response)) return
 
     pendingToken.value = response.pending_token ?? ''
@@ -220,6 +267,10 @@ async function confirmReset() {
             {{ t('auth.secret') }}
             <input v-model="secret" type="password" autocomplete="current-password" required />
           </label>
+          <label class="checkbox-row remember-login">
+            <input v-model="rememberCredentials" type="checkbox" />
+            <span>{{ t('auth.rememberCredentials') }}</span>
+          </label>
           <button class="primary-button full-width" type="submit" :disabled="busy">
             {{ t('auth.signIn') }}
           </button>
@@ -336,6 +387,16 @@ async function confirmReset() {
 .locale-switch button.active {
   color: #250d2e;
   background: var(--accent-bright);
+}
+
+.remember-login {
+  align-items: center;
+}
+
+.remember-login input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent-bright);
 }
 
 .recovery-code-list {

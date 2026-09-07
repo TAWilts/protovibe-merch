@@ -106,7 +106,7 @@ func TestShowingACodeBooksNothing(t *testing.T) {
 	basket := map[string]any{
 		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 2}},
 		"payment_method": "Überweisung", "is_paid": true, "is_received": true,
-		"sold_on": "2026-08-27",
+		"amount_given_cents": 3000, "discount_confirmed": true, "sold_on": "2026-08-27",
 	}
 
 	intent := h.do(http.MethodPost, "/api/v1/payment-qr/intents", map[string]any{
@@ -115,8 +115,8 @@ func TestShowingACodeBooksNothing(t *testing.T) {
 	if intent.Status != http.StatusCreated {
 		t.Fatalf("create intent: %d %v", intent.Status, intent.Body)
 	}
-	if intent.Body["amount_cents"] != float64(3600) {
-		t.Fatalf("the amount must come from the catalogue: %v", intent.Body)
+	if intent.Body["amount_cents"] != float64(3000) {
+		t.Fatalf("the QR code must use the confirmed actual payment: %v", intent.Body)
 	}
 	image, _ := intent.Body["image_data_uri"].(string)
 	if !strings.HasPrefix(image, "data:image/png;base64,") || len(image) < 200 {
@@ -154,6 +154,9 @@ func TestShowingACodeBooksNothing(t *testing.T) {
 	if booked.Body["receipt_id"] != receiptID {
 		t.Fatalf("the scanned receipt ID must be the booked one: %v vs %v",
 			booked.Body["receipt_id"], receiptID)
+	}
+	if booked.Body["total_paid_cents"] != float64(3000) || booked.Body["discount_cents"] != float64(600) {
+		t.Fatalf("the QR payment and booked discount must match the intent: %v", booked.Body)
 	}
 	if h.onHand(variants[0]) != -2 {
 		t.Fatalf("confirming must book the sale, got %d", h.onHand(variants[0]))

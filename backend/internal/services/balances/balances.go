@@ -2,7 +2,7 @@
 //
 // Two conventions carry over from the original and shape everything here:
 //
-//   - "Saldo" means collected payments plus donations minus recorded goods
+//   - "Saldo" means collected payments minus recorded goods
 //     received. It is deliberately not called profit, because a reorder would
 //     make a profit figure swing wildly for a week.
 //   - Cancelled sales disappear from every total, exactly as they already do
@@ -37,6 +37,7 @@ type Row struct {
 	PurchaseCostCents int64 `json:"purchase_cost_cents"`
 	RevenueCents      int64 `json:"revenue_cents"`
 	CollectedCents    int64 `json:"collected_cents"`
+	DiscountCents     int64 `json:"discount_cents"`
 	DonationCents     int64 `json:"donation_cents"`
 	SalePriceCents    int64 `json:"sale_price_cents"`
 
@@ -53,8 +54,10 @@ type Summary struct {
 	PurchaseCostCents int64 `json:"purchase_cost_cents"`
 	RevenueCents      int64 `json:"revenue_cents"`
 	CollectedCents    int64 `json:"collected_cents"`
+	DiscountCents     int64 `json:"discount_cents"`
 	DonationCents     int64 `json:"donation_cents"`
-	// CashBalanceCents is collected + donations − goods received.
+	// CollectedCents already includes donations actually received.
+	// CashBalanceCents is collected − goods received.
 	CashBalanceCents int64 `json:"cash_balance_cents"`
 	// OutstandingCents is what customers still owe.
 	OutstandingCents     int64 `json:"outstanding_cents"`
@@ -134,6 +137,7 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 		PurchaseCostCents int64
 		RevenueCents      int64
 		CollectedCents    int64
+		DiscountCents     int64
 		DonationCents     int64
 	}
 
@@ -145,10 +149,12 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 			articles.is_offered AS article_is_offered, articles.is_active AS article_is_active,
 			COALESCE((SELECT SUM(p.quantity * p.unit_cost_cents) FROM purchases p
 				WHERE p.variant_id = variants.id), 0) AS purchase_cost_cents,
-			COALESCE((SELECT SUM(s.amount_due_cents) FROM sales s
+			COALESCE((SELECT SUM(s.amount_due_cents - s.discount_cents) FROM sales s
 				WHERE s.variant_id = variants.id AND s.is_cancelled = 0), 0) AS revenue_cents,
-			COALESCE((SELECT SUM(s.amount_due_cents) FROM sales s
+			COALESCE((SELECT SUM(s.amount_due_cents - s.discount_cents + s.donation_cents) FROM sales s
 				WHERE s.variant_id = variants.id AND s.is_cancelled = 0 AND s.is_paid = 1), 0) AS collected_cents,
+			COALESCE((SELECT SUM(s.discount_cents) FROM sales s
+				WHERE s.variant_id = variants.id AND s.is_cancelled = 0), 0) AS discount_cents,
 			COALESCE((SELECT SUM(s.donation_cents) FROM sales s
 				WHERE s.variant_id = variants.id AND s.is_cancelled = 0 AND s.is_paid = 1), 0) AS donation_cents`).
 		Joins("JOIN articles ON articles.id = variants.article_id").
@@ -187,6 +193,7 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 			PurchaseCostCents:  entry.PurchaseCostCents,
 			RevenueCents:       entry.RevenueCents,
 			CollectedCents:     entry.CollectedCents,
+			DiscountCents:      entry.DiscountCents,
 			DonationCents:      entry.DonationCents,
 			SalePriceCents:     entry.SalePriceCents,
 			IsOffered:          entry.IsOffered,
@@ -222,17 +229,18 @@ func (s *Service) summary(ctx context.Context, rows []Row) (*Summary, error) {
 		summary.PurchaseCostCents += row.PurchaseCostCents
 		summary.RevenueCents += row.RevenueCents
 		summary.CollectedCents += row.CollectedCents
+		summary.DiscountCents += row.DiscountCents
 		summary.DonationCents += row.DonationCents
 		summary.StockCount += row.OnHand
 		if row.BelowMinimum {
 			summary.MinimumStockWarnings++
 		}
 	}
-	summary.CashBalanceCents = summary.CollectedCents + summary.DonationCents - summary.PurchaseCostCents
+	summary.CashBalanceCents = summary.CollectedCents - summary.PurchaseCostCents
 
 	err := s.db.WithContext(ctx).Model(&models.Sale{}).
 		Where("is_paid = ? AND is_cancelled = ?", false, false).
-		Select("COALESCE(SUM(amount_due_cents), 0)").Scan(&summary.OutstandingCents).Error
+		Select("COALESCE(SUM(amount_due_cents - discount_cents), 0)").Scan(&summary.OutstandingCents).Error
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +320,7 @@ func (s *Service) itemRankings(ctx context.Context) (bySales, byRevenue []Rankin
 		Select(`articles.name AS article_name, sales.variant_id,
 			SUM(sales.quantity) AS quantity,
 			COALESCE(SUM(CASE WHEN sales.is_paid = 1
-				THEN sales.amount_due_cents + sales.donation_cents ELSE 0 END), 0) AS income_cents`).
+				THEN sales.amount_due_cents - sales.discount_cents ELSE 0 END), 0) AS income_cents`).
 		Joins("JOIN variants ON variants.id = sales.variant_id").
 		Joins("JOIN articles ON articles.id = variants.article_id").
 		Where("sales.is_cancelled = ?", false).
@@ -376,7 +384,7 @@ func (s *Service) groupRanking(ctx context.Context, column string) ([]RankingEnt
 		Select(column+` AS label, variant_id,
 			SUM(quantity) AS quantity,
 			COALESCE(SUM(CASE WHEN is_paid = 1
-				THEN amount_due_cents + donation_cents ELSE 0 END), 0) AS income_cents`).
+				THEN amount_due_cents - discount_cents ELSE 0 END), 0) AS income_cents`).
 		Where("is_cancelled = ? AND "+column+" <> ''", false).
 		Group(column + ", variant_id").
 		Scan(&rows).Error
@@ -418,7 +426,7 @@ func (s *Service) dailyIncome(ctx context.Context) ([]DailyIncome, error) {
 	var points []DailyIncome
 	err := s.db.WithContext(ctx).Model(&models.Sale{}).
 		Select(`sold_on AS date,
-			COALESCE(SUM(amount_due_cents + donation_cents), 0) AS income_cents,
+			COALESCE(SUM(amount_due_cents - discount_cents + donation_cents), 0) AS income_cents,
 			COUNT(*) AS sale_count`).
 		Where("is_cancelled = ? AND is_paid = ?", false, true).
 		Group("sold_on").

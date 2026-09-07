@@ -118,7 +118,7 @@ func (s *Server) createPaymentQRIntent(c *gin.Context) {
 
 	// The amount is computed from the catalogue rather than taken from the
 	// client, so a tampered request cannot show a customer the wrong total.
-	amountCents, err := s.sales.QuoteTotal(ctx, req.Sale)
+	amountCents, err := s.sales.QuotePaymentTotal(ctx, req.Sale)
 	if err != nil {
 		s.reportSalesError(c, err)
 		return

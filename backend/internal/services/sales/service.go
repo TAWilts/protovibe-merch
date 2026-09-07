@@ -43,10 +43,12 @@ type OfflineEvent struct {
 
 // Result is what the client gets back after a successful booking.
 type Result struct {
-	ReceiptID     string  `json:"receipt_id"`
-	SaleIDs       []int64 `json:"sale_ids"`
-	TotalDueCents int64   `json:"total_due_cents"`
-	DonationCents int64   `json:"donation_cents"`
+	ReceiptID      string  `json:"receipt_id"`
+	SaleIDs        []int64 `json:"sale_ids"`
+	TotalDueCents  int64   `json:"total_due_cents"`
+	TotalPaidCents int64   `json:"total_paid_cents"`
+	DiscountCents  int64   `json:"discount_cents"`
+	DonationCents  int64   `json:"donation_cents"`
 	// Replayed marks an answer that came from the sync log rather than from a
 	// fresh booking, so the device can tell the two apart.
 	Replayed bool `json:"replayed"`
@@ -114,6 +116,7 @@ func (s *Service) Book(ctx context.Context, req Request, actor Actor, offline *O
 				UnitPriceCents:    line.UnitPriceCents,
 				AmountDueCents:    line.AmountDueCents,
 				ShippingCostCents: line.ShippingCostCents,
+				DiscountCents:     line.DiscountCents,
 				AmountGivenCents:  line.AmountGivenCents,
 				DonationCents:     line.DonationCents,
 				PaymentMethod:     prepared.PaymentMethod,
@@ -139,10 +142,12 @@ func (s *Service) Book(ctx context.Context, req Request, actor Actor, offline *O
 		}
 
 		result = &Result{
-			ReceiptID:     receiptID,
-			SaleIDs:       saleIDs,
-			TotalDueCents: prepared.TotalDueCents,
-			DonationCents: prepared.DonationCents,
+			ReceiptID:      receiptID,
+			SaleIDs:        saleIDs,
+			TotalDueCents:  prepared.TotalDueCents,
+			TotalPaidCents: prepared.TotalPaidCents,
+			DiscountCents:  prepared.DiscountCents,
+			DonationCents:  prepared.DonationCents,
 		}
 
 		if intent != nil {
@@ -213,31 +218,33 @@ func (s *Service) recordSyncEvent(ctx context.Context, tx *gorm.DB, event Offlin
 // different ID on the first attempt.
 func payloadHash(req Request) string {
 	fingerprint := struct {
-		Items           []BasketItem `json:"items"`
-		PaymentMethod   string       `json:"payment_method"`
-		IsPaid          bool         `json:"is_paid"`
-		IsReceived      bool         `json:"is_received"`
-		AmountGiven     *int64       `json:"amount_given_cents"`
-		ShippingCost    int64        `json:"shipping_cost_cents"`
-		CustomerName    string       `json:"customer_name"`
-		CustomerAddress string       `json:"customer_address"`
-		EventName       string       `json:"event_name"`
-		SoldBy          string       `json:"sold_by"`
-		Comment         string       `json:"comment"`
-		SoldOn          string       `json:"sold_on"`
+		Items             []BasketItem `json:"items"`
+		PaymentMethod     string       `json:"payment_method"`
+		IsPaid            bool         `json:"is_paid"`
+		IsReceived        bool         `json:"is_received"`
+		AmountGiven       *int64       `json:"amount_given_cents"`
+		ShippingCost      int64        `json:"shipping_cost_cents"`
+		DiscountConfirmed bool         `json:"discount_confirmed"`
+		CustomerName      string       `json:"customer_name"`
+		CustomerAddress   string       `json:"customer_address"`
+		EventName         string       `json:"event_name"`
+		SoldBy            string       `json:"sold_by"`
+		Comment           string       `json:"comment"`
+		SoldOn            string       `json:"sold_on"`
 	}{
-		Items:           req.Items,
-		PaymentMethod:   req.PaymentMethod,
-		IsPaid:          req.IsPaid,
-		IsReceived:      req.IsReceived,
-		AmountGiven:     req.AmountGivenCents,
-		ShippingCost:    req.ShippingCostCents,
-		CustomerName:    req.CustomerName,
-		CustomerAddress: req.CustomerAddress,
-		EventName:       req.EventName,
-		SoldBy:          req.SoldBy,
-		Comment:         req.Comment,
-		SoldOn:          req.SoldOn.String(),
+		Items:             req.Items,
+		PaymentMethod:     req.PaymentMethod,
+		IsPaid:            req.IsPaid,
+		IsReceived:        req.IsReceived,
+		AmountGiven:       req.AmountGivenCents,
+		ShippingCost:      req.ShippingCostCents,
+		DiscountConfirmed: req.DiscountConfirmed,
+		CustomerName:      req.CustomerName,
+		CustomerAddress:   req.CustomerAddress,
+		EventName:         req.EventName,
+		SoldBy:            req.SoldBy,
+		Comment:           req.Comment,
+		SoldOn:            req.SoldOn.String(),
 	}
 
 	encoded, err := json.Marshal(fingerprint)
@@ -305,11 +312,12 @@ func loadPrices(ctx context.Context, tx *gorm.DB, items []BasketItem) (map[int64
 		SalePriceCents int64
 		IsOffered      bool
 		ArticleOffered bool
+		ArticleActive  bool
 		IsActive       bool
 	}
 	var rows []row
 	err := tx.WithContext(ctx).Model(&models.Variant{}).
-		Select("variants.id, variants.sale_price_cents, variants.is_offered, variants.is_active, articles.is_offered AS article_offered").
+		Select("variants.id, variants.sale_price_cents, variants.is_offered, variants.is_active, articles.is_offered AS article_offered, articles.is_active AS article_active").
 		Joins("JOIN articles ON articles.id = variants.article_id").
 		Where("variants.id IN ?", ids).
 		Scan(&rows).Error
@@ -323,18 +331,18 @@ func loadPrices(ctx context.Context, tx *gorm.DB, items []BasketItem) (map[int64
 			SalePriceCents: r.SalePriceCents,
 			// A variant is sellable only when it and its article are both
 			// active and still part of the assortment.
-			IsOffered: r.IsOffered && r.ArticleOffered && r.IsActive,
+			IsOffered: r.IsOffered && r.ArticleOffered && r.IsActive && r.ArticleActive,
 		}
 	}
 	return prices, nil
 }
 
-// QuoteTotal computes what a basket costs without booking anything.
+// QuotePaymentTotal computes what the customer actually pays without booking anything.
 //
-// The payment-code flow needs the exact amount before a sale exists, and it
-// must come from the catalogue rather than from the request — otherwise a
-// tampered client could show a customer a code for the wrong total.
-func (s *Service) QuoteTotal(ctx context.Context, req Request) (int64, error) {
+// The payment-code flow needs the exact amount before a sale exists. The
+// catalogue determines the amount due; a confirmed amount_given_cents then
+// applies the same discount or donation rules as the later booking.
+func (s *Service) QuotePaymentTotal(ctx context.Context, req Request) (int64, error) {
 	prices, err := loadPrices(ctx, s.db.WithContext(ctx), req.Items)
 	if err != nil {
 		return 0, err
@@ -343,7 +351,7 @@ func (s *Service) QuoteTotal(ctx context.Context, req Request) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return prepared.TotalDueCents, nil
+	return prepared.TotalPaidCents, nil
 }
 
 // PaymentQRDescriptions builds compact, server-owned basket labels for an EPC

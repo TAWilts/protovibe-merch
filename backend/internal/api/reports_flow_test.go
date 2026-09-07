@@ -50,12 +50,13 @@ func TestBalancesReflectTheLedger(t *testing.T) {
 
 	checks := map[string]float64{
 		"purchase_cost_cents": 18000,
-		// Revenue counts both sales; collected counts only the paid one.
+		// Revenue counts both sales; collected is the actual paid amount,
+		// including the donation that also stays visible separately.
 		"revenue_cents":   5400 + 1800,
-		"collected_cents": 5400,
+		"collected_cents": 6000,
 		"donation_cents":  600,
-		// 5400 collected + 600 donated − 18000 spent.
-		"cash_balance_cents": 5400 + 600 - 18000,
+		// 6000 actually collected − 18000 spent.
+		"cash_balance_cents": 6000 - 18000,
 		"outstanding_cents":  1800,
 		"stock_count":        16,
 	}
@@ -92,6 +93,62 @@ func TestCancelledSalesLeaveTheBalances(t *testing.T) {
 	after := jsonObject(h.do(http.MethodGet, "/api/v1/balances", nil).Body["summary"])
 	if after["collected_cents"] != float64(0) || after["revenue_cents"] != float64(0) {
 		t.Fatalf("a cancelled sale must leave the balances: %v", after)
+	}
+}
+
+func TestBalancesSeparateDiscountRevenueDonationAndCollectedCash(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Discount Balance Shirt")
+
+	res := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+		"payment_method": "Bar", "is_paid": true, "is_received": true,
+		"amount_given_cents": 1000, "discount_confirmed": true, "sold_on": "2026-09-07",
+	})
+	if res.Status != http.StatusCreated {
+		t.Fatalf("sale: %d %v", res.Status, res.Body)
+	}
+	summary := jsonObject(h.do(http.MethodGet, "/api/v1/balances", nil).Body["summary"])
+	if summary["revenue_cents"] != float64(1000) || summary["collected_cents"] != float64(1000) ||
+		summary["discount_cents"] != float64(800) || summary["donation_cents"] != float64(0) {
+		t.Fatalf("discount accounting must stay separated: %v", summary)
+	}
+}
+
+func TestNoReorderOnlyBecomesObsoleteAtZeroStock(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	articleID, variants := h.sellableArticle("Retiring Shirt")
+	h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items":        []any{map[string]any{"variant_id": variants[0], "quantity": 2, "unit_cost_cents": 500}},
+		"purchased_on": "2026-09-07",
+	})
+	if saved := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"variants": []any{map[string]any{"id": variants[0], "no_reorder": true}},
+	}); saved.Status != http.StatusOK {
+		t.Fatalf("set no-reorder: %d %v", saved.Status, saved.Body)
+	}
+
+	balances := h.do(http.MethodGet, "/api/v1/balances", nil).Body
+	if len(jsonList(balances, "obsolete_rows")) != 0 {
+		t.Fatalf("stocked goods must remain in the normal balance: %v", balances["obsolete_rows"])
+	}
+	h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 2}},
+		"payment_method": "Bar", "is_paid": true, "is_received": true, "sold_on": "2026-09-07",
+	})
+	balances = h.do(http.MethodGet, "/api/v1/balances", nil).Body
+	found := false
+	for _, raw := range jsonList(balances, "obsolete_rows") {
+		if int64(jsonObject(raw)["variant_id"].(float64)) == variants[0] {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("depleted no-reorder goods must be obsolete: %v", balances["obsolete_rows"])
 	}
 }
 

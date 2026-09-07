@@ -16,6 +16,8 @@ export type BalanceSortKey =
   | 'is_available_for_sale'
   | 'purchase_cost_cents'
   | 'revenue_cents'
+  | 'collected_cents'
+  | 'discount_cents'
   | 'donation_cents'
 
 const props = defineProps<{
@@ -41,6 +43,8 @@ const headers: Array<{ key: BalanceSortKey; label: string; numeric?: boolean }> 
   { key: 'is_available_for_sale', label: 'balances.offered' },
   { key: 'purchase_cost_cents', label: 'balances.cost', numeric: true },
   { key: 'revenue_cents', label: 'balances.revenue', numeric: true },
+  { key: 'collected_cents', label: 'balances.collected', numeric: true },
+  { key: 'discount_cents', label: 'balances.discount', numeric: true },
   { key: 'donation_cents', label: 'balances.donation', numeric: true },
 ]
 
@@ -122,6 +126,8 @@ function sortIcon(key: BalanceSortKey) {
             <td><span class="status" :class="row.is_available_for_sale ? 'good' : 'warning'">{{ row.is_available_for_sale ? t('common.yes') : t('common.no') }}</span></td>
             <td class="numeric">{{ format(row.purchase_cost_cents) }}</td>
             <td class="numeric">{{ format(row.revenue_cents) }}</td>
+            <td class="numeric">{{ format(row.collected_cents) }}</td>
+            <td class="numeric">{{ format(row.discount_cents) }}</td>
             <td class="numeric">{{ format(row.donation_cents) }}</td>
           </tr>
         </tbody>

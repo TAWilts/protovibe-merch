@@ -758,6 +758,14 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             </span>
             <span>{{ t('purchases.positionCount', { count: receipt.positions.length }) }}</span>
             <strong>{{ format(receipt.totalCostCents) }}</strong>
+            <button
+              v-if="purchaseEditingEnabled && canManage && !receipt.isCancelled"
+              class="compact-button"
+              type="button"
+              @click.stop.prevent="startEdit(receipt)"
+            >
+              {{ t('purchases.edit') }}
+            </button>
             <span class="receipt-chevron" aria-hidden="true">⌄</span>
           </summary>
           <div class="receipt-details">
@@ -793,14 +801,6 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
               </table>
             </div>
             <div class="receipt-actions">
-              <button
-                v-if="purchaseEditingEnabled && canManage && !receipt.isCancelled"
-                class="secondary-button"
-                type="button"
-                @click="startEdit(receipt)"
-              >
-                {{ t('purchases.edit') }}
-              </button>
               <button class="secondary-button" type="button" @click="openAttachments(receipt.positions[0])">
                 {{ t('purchases.invoiceAndAttachments') }}
               </button>

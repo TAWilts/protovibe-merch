@@ -28,6 +28,7 @@ type Position struct {
 	UnitPriceCents    int64  `json:"unit_price_cents"`
 	AmountDueCents    int64  `json:"amount_due_cents"`
 	ShippingCostCents int64  `json:"shipping_cost_cents"`
+	DiscountCents     int64  `json:"discount_cents"`
 	AmountGivenCents  *int64 `json:"amount_given_cents"`
 	DonationCents     int64  `json:"donation_cents"`
 
@@ -52,6 +53,7 @@ type Receipt struct {
 
 	TotalDueCents     int64 `json:"total_due_cents"`
 	TotalGivenCents   int64 `json:"total_given_cents"`
+	DiscountCents     int64 `json:"discount_cents"`
 	DonationCents     int64 `json:"donation_cents"`
 	ShippingCostCents int64 `json:"shipping_cost_cents"`
 	// IsFullyCancelled is true when every position was cancelled, which is what
@@ -147,6 +149,7 @@ func (r *saleRow) position() Position {
 		UnitPriceCents:    r.UnitPriceCents,
 		AmountDueCents:    r.AmountDueCents,
 		ShippingCostCents: r.ShippingCostCents,
+		DiscountCents:     r.DiscountCents,
 		AmountGivenCents:  r.AmountGivenCents,
 		DonationCents:     r.DonationCents,
 		IsPaid:            r.IsPaid,
@@ -222,6 +225,7 @@ func groupIntoReceipts(rows []saleRow) []Receipt {
 			receipt.IsFullyCancelled = false
 			receipt.TotalDueCents += row.AmountDueCents
 			receipt.ShippingCostCents += row.ShippingCostCents
+			receipt.DiscountCents += row.DiscountCents
 			receipt.DonationCents += row.DonationCents
 			if row.AmountGivenCents != nil {
 				receipt.TotalGivenCents += *row.AmountGivenCents

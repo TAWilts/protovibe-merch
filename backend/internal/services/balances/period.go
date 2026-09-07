@@ -40,7 +40,7 @@ func (s *Service) ComputePeriod(ctx context.Context, period Period) (*Payload, e
 
 	payload := &Payload{ReorderRows: []Row{}, ObsoleteRows: []Row{}}
 	for _, row := range rows {
-		if row.NoReorder {
+		if row.NoReorder && row.OnHand <= 0 {
 			payload.ObsoleteRows = append(payload.ObsoleteRows, row)
 		} else {
 			payload.ReorderRows = append(payload.ReorderRows, row)
@@ -125,6 +125,7 @@ func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, 
 		VariantID      int64
 		RevenueCents   int64
 		CollectedCents int64
+		DiscountCents  int64
 		DonationCents  int64
 	}
 	var saleRows []saleAggregate
@@ -133,8 +134,9 @@ func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, 
 	saleQuery = period.apply(saleQuery, "sold_on")
 	if err := saleQuery.
 		Select(`variant_id,
-			COALESCE(SUM(amount_due_cents), 0) AS revenue_cents,
-			COALESCE(SUM(CASE WHEN is_paid = 1 THEN amount_due_cents ELSE 0 END), 0) AS collected_cents,
+			COALESCE(SUM(amount_due_cents - discount_cents), 0) AS revenue_cents,
+			COALESCE(SUM(CASE WHEN is_paid = 1 THEN amount_due_cents - discount_cents + donation_cents ELSE 0 END), 0) AS collected_cents,
+			COALESCE(SUM(discount_cents), 0) AS discount_cents,
 			COALESCE(SUM(CASE WHEN is_paid = 1 THEN donation_cents ELSE 0 END), 0) AS donation_cents`).
 		Group("variant_id").
 		Scan(&saleRows).Error; err != nil {
@@ -166,6 +168,7 @@ func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, 
 			PurchaseCostCents:  purchaseCost[variant.ID],
 			RevenueCents:       sale.RevenueCents,
 			CollectedCents:     sale.CollectedCents,
+			DiscountCents:      sale.DiscountCents,
 			DonationCents:      sale.DonationCents,
 			SalePriceCents:     variant.SalePriceCents,
 			IsOffered:          variant.IsOffered,
@@ -200,6 +203,7 @@ func (s *Service) summaryPeriod(ctx context.Context, period Period, rows []Row) 
 		summary.PurchaseCostCents += row.PurchaseCostCents
 		summary.RevenueCents += row.RevenueCents
 		summary.CollectedCents += row.CollectedCents
+		summary.DiscountCents += row.DiscountCents
 		summary.DonationCents += row.DonationCents
 		summary.StockCount += row.OnHand
 		if row.BelowMinimum {
@@ -222,13 +226,13 @@ func (s *Service) summaryPeriod(ctx context.Context, period Period, rows []Row) 
 		summary.PurchaseCostCents += row.ShippingCostCents
 	}
 
-	summary.CashBalanceCents = summary.CollectedCents + summary.DonationCents - summary.PurchaseCostCents
+	summary.CashBalanceCents = summary.CollectedCents - summary.PurchaseCostCents
 
 	openQuery := s.db.WithContext(ctx).Model(&models.Sale{}).
 		Where("is_paid = ? AND is_cancelled = ?", false, false)
 	openQuery = period.apply(openQuery, "sold_on")
 	if err := openQuery.
-		Select("COALESCE(SUM(amount_due_cents), 0)").
+		Select("COALESCE(SUM(amount_due_cents - discount_cents), 0)").
 		Scan(&summary.OutstandingCents).Error; err != nil {
 		return nil, err
 	}
@@ -316,7 +320,7 @@ func (s *Service) itemRankingsPeriod(ctx context.Context, period Period) (bySale
 		Select(`articles.name AS article_name, sales.variant_id,
 			SUM(sales.quantity) AS quantity,
 			COALESCE(SUM(CASE WHEN sales.is_paid = 1
-				THEN sales.amount_due_cents + sales.donation_cents ELSE 0 END), 0) AS income_cents`).
+				THEN sales.amount_due_cents - sales.discount_cents ELSE 0 END), 0) AS income_cents`).
 		Group("articles.name, sales.variant_id").
 		Scan(&rows).Error; err != nil {
 		return nil, nil, err
@@ -371,7 +375,7 @@ func (s *Service) groupRankingPeriod(ctx context.Context, period Period, column 
 		Select(column + ` AS label, variant_id,
 			SUM(quantity) AS quantity,
 			COALESCE(SUM(CASE WHEN is_paid = 1
-				THEN amount_due_cents + donation_cents ELSE 0 END), 0) AS income_cents`).
+				THEN amount_due_cents - discount_cents ELSE 0 END), 0) AS income_cents`).
 		Group(column + ", variant_id").
 		Scan(&rows).Error; err != nil {
 		return nil, err
@@ -411,7 +415,7 @@ func (s *Service) dailyIncomePeriod(ctx context.Context, period Period) ([]Daily
 	query = period.apply(query, "sold_on")
 	if err := query.
 		Select(`sold_on AS date,
-			COALESCE(SUM(amount_due_cents + donation_cents), 0) AS income_cents,
+			COALESCE(SUM(amount_due_cents - discount_cents + donation_cents), 0) AS income_cents,
 			COUNT(*) AS sale_count`).
 		Group("sold_on").
 		Order("sold_on").

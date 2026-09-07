@@ -20,13 +20,6 @@ var PaymentMethods = []string{
 	PaymentMethodOther,
 }
 
-// QRPaymentMethods are settled by showing a code rather than by handing over
-// cash, so the client's "amount given" field is ignored for them.
-var QRPaymentMethods = map[string]bool{
-	PaymentMethodPayPal:   true,
-	PaymentMethodTransfer: true,
-}
-
 // DeliveryStatus tracks a sale that was not handed over at the counter.
 type DeliveryStatus string
 
@@ -54,7 +47,11 @@ type Sale struct {
 	// ShippingCostCents is this position's deterministic share of the
 	// receipt-level shipping charge. All shares add up to the checkout amount.
 	ShippingCostCents int64 `gorm:"not null;default:0" json:"shipping_cost_cents"`
-	// AmountGivenCents is nil while a sale is unpaid.
+	// DiscountCents is this position's share of an explicitly confirmed
+	// receipt-level discount.
+	DiscountCents int64 `gorm:"not null;default:0" json:"discount_cents"`
+	// AmountGivenCents is nil while a sale is unpaid. For a paid position it is
+	// the amount the band actually kept after discount, change and donation.
 	AmountGivenCents *int64 `json:"amount_given_cents"`
 	// DonationCents is the overpayment, distributed across the basket's lines
 	// to the cent so a single position can be cancelled without distorting the

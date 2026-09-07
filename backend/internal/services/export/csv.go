@@ -322,6 +322,7 @@ func (s *Service) salesSheet(ctx context.Context) (*Sheet, error) {
 			money.FormatCSV(sale.UnitPriceCents),
 			money.FormatCSV(sale.AmountDueCents),
 			money.FormatCSV(sale.ShippingCostCents),
+			money.FormatCSV(sale.DiscountCents),
 			given,
 			money.FormatCSV(sale.DonationCents),
 			sale.PaymentMethod,
@@ -341,7 +342,7 @@ func (s *Service) salesSheet(ctx context.Context) (*Sheet, error) {
 		Name: string(KindSales),
 		Header: []string{
 			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Versandkosten",
-			"Gegeben", "Spende", "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus",
+			"Rabatt", "Gegeben", "Spende", "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus",
 			"Storniert", "Kundenname", "Adresse", "Veranstaltung", "Verkauft von", "Kommentar",
 		},
 		Rows: rows,

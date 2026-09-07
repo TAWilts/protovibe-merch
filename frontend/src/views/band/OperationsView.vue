@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { operationsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { DeliveryStatus, Position, Queues } from '@/api/types'
-import { useMoney } from '@/composables/useMoney'
+import { parseAmount, useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 
 /**
@@ -61,6 +61,8 @@ interface Shipment {
   paymentMethod: string
   status: DeliveryStatus
   totalCents: number
+  shippingCostCents: number
+  isPaid: boolean
   positions: Position[]
 }
 
@@ -79,12 +81,16 @@ function groupByReceipt(positions: Position[]): Shipment[] {
         paymentMethod: position.payment_method,
         status: position.delivery_status,
         totalCents: 0,
+        shippingCostCents: 0,
+        isPaid: true,
         positions: [],
       }
       byReceipt.set(position.receipt_id, shipment)
     }
     shipment.positions.push(position)
     shipment.totalCents += position.amount_due_cents
+    shipment.shippingCostCents += position.shipping_cost_cents
+    shipment.isPaid = shipment.isPaid && position.is_paid
   }
   return [...byReceipt.values()]
 }
@@ -94,6 +100,7 @@ const openPayments = computed(() => groupByReceipt(queues.value.open_payments))
 
 /** Copies an address in one go; nobody retypes a street from a screen. */
 const copiedReceipt = ref('')
+const shippingEdit = ref<{ shipment: Shipment; input: string } | null>(null)
 
 async function copyAddress(shipment: Shipment) {
   const text = `${shipment.customerName}\n${shipment.customerAddress}`.trim()
@@ -149,6 +156,39 @@ async function settle(payment: Shipment) {
   try {
     await operationsApi.markPaid(firstPosition.id)
     flash.success(t('operations.paymentSaved'))
+    await load(true)
+  } catch (error) {
+    report(error)
+  }
+}
+
+function startShippingEdit(shipment: Shipment) {
+  shippingEdit.value = {
+    shipment,
+    input: (shipment.shippingCostCents / 100).toFixed(2).replace('.', ','),
+  }
+}
+
+async function saveShippingCost() {
+  if (!shippingEdit.value) return
+  const shippingCostCents = parseAmount(shippingEdit.value.input)
+  if (shippingCostCents === null || shippingCostCents < 0) {
+    flash.error(t('errors.invalid_basket'))
+    return
+  }
+  try {
+    const result = await operationsApi.updateShippingCost(
+      shippingEdit.value.shipment.receiptId,
+      shippingCostCents,
+    )
+    let message = t('operations.shippingSaved')
+    if (result.discount_cents > 0) {
+      message += ` ${t('operations.shippingResultDiscount', { amount: format(result.discount_cents) })}`
+    } else if (result.donation_cents > 0) {
+      message += ` ${t('operations.shippingResultDonation', { amount: format(result.donation_cents) })}`
+    }
+    flash.success(message)
+    shippingEdit.value = null
     await load(true)
   } catch (error) {
     report(error)
@@ -212,6 +252,14 @@ async function settle(payment: Shipment) {
             <p v-if="shipment.eventName || shipment.comment" class="shipment-note muted">
               {{ [shipment.eventName, shipment.comment].filter(Boolean).join(' · ') }}
             </p>
+
+            <div class="shipping-cost-row">
+              <span>{{ t('operations.shippingCost') }}</span>
+              <b>{{ format(shipment.shippingCostCents) }}</b>
+              <button class="compact-button" type="button" @click="startShippingEdit(shipment)">
+                {{ t('operations.editShipping') }}
+              </button>
+            </div>
 
             <footer>
               <span class="shipment-total">{{ format(shipment.totalCents) }}</span>
@@ -333,6 +381,26 @@ async function settle(payment: Shipment) {
         </ul>
       </section>
     </template>
+
+    <dialog v-if="shippingEdit" class="confirmation-dialog" open>
+      <form class="stack-form" @submit.prevent="saveShippingCost">
+        <div>
+          <p class="eyebrow">{{ shippingEdit.shipment.receiptId }}</p>
+          <h2>{{ t('operations.editShipping') }}</h2>
+          <p v-if="shippingEdit.shipment.isPaid">{{ t('operations.shippingAdjustmentHint') }}</p>
+        </div>
+        <label>
+          {{ t('operations.shippingCost') }}
+          <input v-model="shippingEdit.input" inputmode="decimal" required autofocus />
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" @click="shippingEdit = null">
+            {{ t('common.cancel') }}
+          </button>
+          <button class="primary-button" type="submit">{{ t('operations.saveShipping') }}</button>
+        </div>
+      </form>
+    </dialog>
   </main>
 </template>
 
@@ -421,6 +489,14 @@ async function settle(payment: Shipment) {
 .shipment-note {
   margin: 0;
   font-size: 0.85rem;
+}
+
+.shipping-cost-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .shipment-card footer {

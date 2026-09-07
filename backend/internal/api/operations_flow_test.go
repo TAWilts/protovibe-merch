@@ -285,3 +285,119 @@ func TestSellersCannotReachTheWorkQueues(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenPaidShipmentKeepsCollectedAmountWhenShippingChanges(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Adjust Shipping Shirt")
+	booked := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+		"payment_method": "Überweisung", "is_paid": true, "is_received": false,
+		"shipping_cost_cents": 500, "customer_name": "Alex Muster",
+		"customer_address": "Musterweg 1", "sold_on": "2026-09-07",
+	})
+	receiptID := booked.Body["receipt_id"].(string)
+	path := "/api/v1/sales/receipt/" + receiptID + "/shipping-cost"
+
+	h.signInAs(band, models.RoleSeller)
+	if res := h.do(http.MethodPatch, path, map[string]any{"shipping_cost_cents": 700}); res.Status != http.StatusForbidden {
+		t.Fatalf("seller must not edit shipping: %d %v", res.Status, res.Body)
+	}
+
+	h.signInAs(band, models.RoleMember)
+	increased := h.do(http.MethodPatch, path, map[string]any{"shipping_cost_cents": 700})
+	if increased.Status != http.StatusOK || increased.Body["total_due_cents"] != float64(2500) ||
+		increased.Body["total_paid_cents"] != float64(2300) || increased.Body["discount_cents"] != float64(200) {
+		t.Fatalf("higher shipping must become a discount: %d %v", increased.Status, increased.Body)
+	}
+	decreased := h.do(http.MethodPatch, path, map[string]any{"shipping_cost_cents": 300})
+	if decreased.Status != http.StatusOK || decreased.Body["total_due_cents"] != float64(2100) ||
+		decreased.Body["total_paid_cents"] != float64(2300) || decreased.Body["donation_cents"] != float64(200) {
+		t.Fatalf("lower shipping must become a donation: %d %v", decreased.Status, decreased.Body)
+	}
+
+	saleID := int64(jsonList(booked.Body, "sale_ids")[0].(float64))
+	if res := h.do(http.MethodPatch, "/api/v1/sales/"+itoa(saleID)+"/delivery-status", map[string]any{"status": "received"}); res.Status != http.StatusNoContent {
+		t.Fatalf("deliver: %d %v", res.Status, res.Body)
+	}
+	closed := h.do(http.MethodPatch, path, map[string]any{"shipping_cost_cents": 400})
+	if closed.Status != http.StatusConflict || closed.Body["code"] != "shipping_closed" {
+		t.Fatalf("delivered shipping must be immutable: %d %v", closed.Status, closed.Body)
+	}
+}
+
+func TestOpenUnpaidShipmentUpdatesTheOutstandingAmount(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Unpaid Shipping Shirt")
+	booked := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items": []any{
+			map[string]any{"variant_id": variants[0], "quantity": 1},
+			map[string]any{"variant_id": variants[1], "quantity": 1},
+		},
+		"payment_method": "Überweisung", "is_paid": false, "is_received": false,
+		"shipping_cost_cents": 500, "customer_name": "Alex Muster",
+		"customer_address": "Musterweg 1", "sold_on": "2026-09-07",
+	})
+	receiptID := booked.Body["receipt_id"].(string)
+	h.signInAs(band, models.RoleMember)
+	adjusted := h.do(http.MethodPatch, "/api/v1/sales/receipt/"+receiptID+"/shipping-cost", map[string]any{"shipping_cost_cents": 701})
+	if adjusted.Status != http.StatusOK || adjusted.Body["total_due_cents"] != float64(4301) ||
+		adjusted.Body["total_paid_cents"] != float64(0) || adjusted.Body["discount_cents"] != float64(0) ||
+		adjusted.Body["donation_cents"] != float64(0) {
+		t.Fatalf("unpaid amount must follow shipping exactly: %d %v", adjusted.Status, adjusted.Body)
+	}
+
+	history := h.do(http.MethodGet, "/api/v1/history", nil)
+	receipt := jsonObject(jsonList(history.Body, "receipts")[0])
+	if receipt["shipping_cost_cents"] != float64(701) || receipt["total_due_cents"] != float64(4301) {
+		t.Fatalf("history must expose the new cent-exact total: %v", receipt)
+	}
+}
+
+func TestShippingEditLeavesCancelledPositionsUntouchedAndIsTenantScoped(t *testing.T) {
+	h := newHarness(t)
+	bandA := h.makeBand()
+	bandB := h.makeBand()
+	h.signInAs(bandA, models.RoleManager)
+	_, variants := h.sellableArticle("Partial Shipping Shirt")
+	booked := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items": []any{
+			map[string]any{"variant_id": variants[0], "quantity": 1},
+			map[string]any{"variant_id": variants[1], "quantity": 1},
+		},
+		"payment_method": "Bar", "is_paid": true, "is_received": false,
+		"shipping_cost_cents": 500, "customer_name": "Alex Muster",
+		"customer_address": "Musterweg 1", "sold_on": "2026-09-07",
+	})
+	saleIDs := jsonList(booked.Body, "sale_ids")
+	cancelledID := int64(saleIDs[0].(float64))
+	if res := h.do(http.MethodPatch, "/api/v1/sales/"+itoa(cancelledID)+"/cancel", map[string]any{"scope": "item"}); res.Status != http.StatusOK {
+		t.Fatalf("cancel: %d %v", res.Status, res.Body)
+	}
+	var before models.Sale
+	if err := h.db.WithContext(h.ctx()).First(&before, cancelledID).Error; err != nil {
+		t.Fatalf("read cancelled row: %v", err)
+	}
+	receiptID := booked.Body["receipt_id"].(string)
+	path := "/api/v1/sales/receipt/" + receiptID + "/shipping-cost"
+
+	h.signInAs(bandB, models.RoleMember)
+	if res := h.do(http.MethodPatch, path, map[string]any{"shipping_cost_cents": 700}); res.Status != http.StatusNotFound {
+		t.Fatalf("another tenant must not reach the receipt: %d %v", res.Status, res.Body)
+	}
+	h.signInAs(bandA, models.RoleMember)
+	if res := h.do(http.MethodPatch, path, map[string]any{"shipping_cost_cents": 700}); res.Status != http.StatusOK {
+		t.Fatalf("adjust active remainder: %d %v", res.Status, res.Body)
+	}
+	var after models.Sale
+	if err := h.db.WithContext(h.ctx()).First(&after, cancelledID).Error; err != nil {
+		t.Fatalf("reload cancelled row: %v", err)
+	}
+	if after.ShippingCostCents != before.ShippingCostCents || after.AmountDueCents != before.AmountDueCents ||
+		after.DiscountCents != before.DiscountCents || after.DonationCents != before.DonationCents {
+		t.Fatalf("cancelled row changed: before=%+v after=%+v", before, after)
+	}
+}

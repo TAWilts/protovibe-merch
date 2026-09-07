@@ -264,6 +264,8 @@ export interface SaleResult {
   receipt_id: string
   sale_ids: number[]
   total_due_cents: number
+  total_paid_cents: number
+  discount_cents: number
   donation_cents: number
   replayed: boolean
 }
@@ -287,6 +289,7 @@ export interface Position {
   unit_price_cents: number
   amount_due_cents: number
   shipping_cost_cents: number
+  discount_cents: number
   amount_given_cents: number | null
   donation_cents: number
   is_paid: boolean
@@ -307,6 +310,7 @@ export interface Receipt {
   comment: string
   total_due_cents: number
   total_given_cents: number
+  discount_cents: number
   donation_cents: number
   shipping_cost_cents: number
   is_fully_cancelled: boolean
@@ -318,6 +322,17 @@ export interface Queues {
   delivered_shipments: Position[]
   open_payments: Position[]
   settled_payments: Position[]
+}
+
+export interface ShippingAdjustment {
+  receipt_id: string
+  sale_ids: number[]
+  old_shipping_cost_cents: number
+  shipping_cost_cents: number
+  total_due_cents: number
+  total_paid_cents: number
+  discount_cents: number
+  donation_cents: number
 }
 
 export interface BalanceRow {
@@ -333,6 +348,7 @@ export interface BalanceRow {
   purchase_cost_cents: number
   revenue_cents: number
   collected_cents: number
+  discount_cents: number
   donation_cents: number
   sale_price_cents: number
   is_offered: boolean
@@ -345,6 +361,7 @@ export interface BalanceSummary {
   purchase_cost_cents: number
   revenue_cents: number
   collected_cents: number
+  discount_cents: number
   donation_cents: number
   cash_balance_cents: number
   outstanding_cents: number
@@ -384,6 +401,7 @@ export interface BalancesPayload {
 export interface FinanceReportSummary {
   merch_revenue_cents: number
   merch_collected_cents: number
+  discount_cents: number
   donation_cents: number
   merch_purchase_cost_cents: number
   band_income_cents: number

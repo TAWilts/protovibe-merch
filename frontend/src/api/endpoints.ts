@@ -33,6 +33,7 @@ import type {
   Receipt,
   SaleEvent,
   SaleResult,
+  ShippingAdjustment,
   SupportGrant,
   SupportMessage,
   SupportAssignee,
@@ -110,6 +111,7 @@ export interface BookSalePayload {
   is_received: boolean
   shipping_cost_cents?: number
   amount_given_cents?: number | null
+  discount_confirmed?: boolean
   customer_name?: string
   customer_address?: string
   event_name?: string
@@ -155,6 +157,7 @@ export const salesApi = {
   createEvent: (name: string, select = true) =>
     api.post<SaleEvent>('/sale-events', { name, select }),
   selectEvent: (id: number) => api.post<SaleEvent>(`/sale-events/${id}/select`),
+  deleteEvent: (id: number) => api.delete<void>(`/sale-events/${id}`),
 }
 
 export const operationsApi = {
@@ -166,6 +169,10 @@ export const operationsApi = {
   setDeliveryStatus: (saleId: number, status: DeliveryStatus) =>
     api.patch<void>(`/sales/${saleId}/delivery-status`, { status }),
   markPaid: (saleId: number) => api.patch<void>(`/sales/${saleId}/payment-status`),
+  updateShippingCost: (receiptId: string, shippingCostCents: number) =>
+    api.patch<ShippingAdjustment>(`/sales/receipt/${encodeURIComponent(receiptId)}/shipping-cost`, {
+      shipping_cost_cents: shippingCostCents,
+    }),
 }
 
 function periodQuery(from = '', to = '') {
