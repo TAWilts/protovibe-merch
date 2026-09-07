@@ -659,13 +659,12 @@ func (i *destinationImporter) importArticles(ctx context.Context, rows []row) er
 			updated = created
 		}
 		record := models.Article{
-			Tenant:                    models.Tenant{BandID: i.bandID},
-			Name:                      stringValue(r, "name"),
-			DefaultSalePriceCents:     int64Value(r, "default_sale_price_cents"),
-			DefaultPurchasePriceCents: int64Value(r, "default_purchase_price_cents"),
-			IsOffered:                 boolValue(r, "is_offered", true),
-			IsActive:                  boolValue(r, "is_active", true),
-			Timestamps:                models.Timestamps{CreatedAt: created, UpdatedAt: updated},
+			Tenant:                models.Tenant{BandID: i.bandID},
+			Name:                  stringValue(r, "name"),
+			DefaultSalePriceCents: int64Value(r, "default_sale_price_cents"),
+			IsOffered:             boolValue(r, "is_offered", true),
+			IsActive:              boolValue(r, "is_active", true),
+			Timestamps:            models.Timestamps{CreatedAt: created, UpdatedAt: updated},
 		}
 		if err := i.scoped(ctx).Create(&record).Error; err != nil {
 			return fmt.Errorf("import article %d: %w", int64Value(r, "id"), err)
@@ -755,17 +754,16 @@ func (i *destinationImporter) importVariants(ctx context.Context, rows []row) er
 			updated = created
 		}
 		record := models.Variant{
-			Tenant:                    models.Tenant{BandID: i.bandID},
-			ArticleID:                 i.articleIDs[int64Value(r, "article_id")],
-			OptionValueIDs:            models.JSONInt64Slice(newValues),
-			CombinationKey:            combinationKey(newValues),
-			SalePriceCents:            int64Value(r, "sale_price_cents"),
-			DefaultPurchasePriceCents: int64Value(r, "default_purchase_price_cents"),
-			MinimumStock:              nullableInt(r, "minimum_stock"),
-			IsOffered:                 boolValue(r, "is_offered", true),
-			NoReorder:                 boolValue(r, "no_reorder", false),
-			IsActive:                  boolValue(r, "is_active", true),
-			Timestamps:                models.Timestamps{CreatedAt: created, UpdatedAt: updated},
+			Tenant:         models.Tenant{BandID: i.bandID},
+			ArticleID:      i.articleIDs[int64Value(r, "article_id")],
+			OptionValueIDs: models.JSONInt64Slice(newValues),
+			CombinationKey: combinationKey(newValues),
+			SalePriceCents: int64Value(r, "sale_price_cents"),
+			MinimumStock:   nullableInt(r, "minimum_stock"),
+			IsOffered:      boolValue(r, "is_offered", true),
+			NoReorder:      boolValue(r, "no_reorder", false),
+			IsActive:       boolValue(r, "is_active", true),
+			Timestamps:     models.Timestamps{CreatedAt: created, UpdatedAt: updated},
 		}
 		if err := i.scoped(ctx).Create(&record).Error; err != nil {
 			return fmt.Errorf("import variant %d: %w", int64Value(r, "id"), err)

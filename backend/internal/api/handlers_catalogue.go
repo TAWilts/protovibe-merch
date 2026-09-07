@@ -309,7 +309,7 @@ func (s *Server) createArticle(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	// Purchase prices are transaction data, never article defaults.
-	article, err := s.catalogue.CreateArticle(ctx, req.Name, req.DefaultSalePriceCents, 0)
+	article, err := s.catalogue.CreateArticle(ctx, req.Name, req.DefaultSalePriceCents)
 	if err != nil {
 		s.reportCatalogueError(c, err)
 		return

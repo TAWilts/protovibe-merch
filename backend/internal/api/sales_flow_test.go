@@ -13,7 +13,7 @@ func (h *harness) sellableArticle(name string) (int64, []int64) {
 	h.t.Helper()
 
 	created := h.do(http.MethodPost, "/api/v1/articles", map[string]any{
-		"name": name, "default_sale_price_cents": 1800, "default_purchase_price_cents": 900,
+		"name": name, "default_sale_price_cents": 1800,
 	})
 	if created.Status != http.StatusCreated {
 		h.t.Fatalf("create article: %d %v", created.Status, created.Body)
@@ -80,6 +80,38 @@ func TestSellAtTheStand(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestShipmentChargesGrossShippingCosts(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Shipping Shirt")
+	h.signInAs(band, models.RoleSeller)
+
+	booked := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items":               []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+		"payment_method":      "Bar",
+		"is_paid":             true,
+		"is_received":         false,
+		"shipping_cost_cents": 499,
+		"customer_name":       "Alex Muster",
+		"customer_address":    "Musterweg 1",
+		"sold_on":             "2026-09-07",
+	})
+	if booked.Status != http.StatusCreated {
+		t.Fatalf("book shipment: %d %v", booked.Status, booked.Body)
+	}
+	if booked.Body["total_due_cents"] != float64(2299) {
+		t.Fatalf("shipping must be included in the total: %v", booked.Body)
+	}
+
+	h.signInAs(band, models.RoleMember)
+	history := h.do(http.MethodGet, "/api/v1/history", nil)
+	receipt := jsonObject(jsonList(history.Body, "receipts")[0])
+	if receipt["shipping_cost_cents"] != float64(499) || receipt["total_due_cents"] != float64(2299) {
+		t.Fatalf("history must expose gross shipping separately: %v", receipt)
 	}
 }
 

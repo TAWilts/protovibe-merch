@@ -26,6 +26,7 @@ func TestCapabilityMatrix(t *testing.T) {
 			want: rbac.Capabilities{
 				CanAccessBandWorkflows:   true,
 				CanAccessMemberWorkflows: true,
+				CanCreateBandFinances:    true,
 			},
 		},
 		{
@@ -34,6 +35,7 @@ func TestCapabilityMatrix(t *testing.T) {
 				CanAccessBandWorkflows:   true,
 				CanAccessMemberWorkflows: true,
 				CanManagePurchases:       true,
+				CanCreateBandFinances:    true,
 				CanManageBandFinances:    true,
 				CanManageArticles:        true,
 				CanManageSlideshow:       true,
@@ -46,6 +48,7 @@ func TestCapabilityMatrix(t *testing.T) {
 				CanAccessBandWorkflows:   true,
 				CanAccessMemberWorkflows: true,
 				CanManagePurchases:       true,
+				CanCreateBandFinances:    true,
 				CanManageBandFinances:    true,
 				CanManageArticles:        true,
 				CanManageSlideshow:       true,
@@ -98,7 +101,7 @@ func TestPlatformStaffHaveNoBandAccess(t *testing.T) {
 		caps := rbac.For(&models.User{Role: role})
 		if caps.CanAccessBandWorkflows || caps.CanAccessMemberWorkflows ||
 			caps.CanManageArticles || caps.CanManagePurchases ||
-			caps.CanManageBandFinances || caps.CanAccessBandAdmin {
+			caps.CanCreateBandFinances || caps.CanManageBandFinances || caps.CanAccessBandAdmin {
 			t.Errorf("%s has band capabilities: %+v", role, caps)
 		}
 	}

@@ -18,9 +18,9 @@ func (s *Server) registerReportRoutes(g *gin.RouterGroup) {
 	members.GET("/finance-report", s.financeReport)
 	members.GET("/band-finances", s.listBandFinances)
 	members.GET("/band-finances/recurring", s.listRecurringBandTransactions)
+	members.POST("/band-finances", s.createBandTransaction)
 
 	managers := g.Group("/band-finances", requireAuth(), requireBandRole(models.RoleManager))
-	managers.POST("", s.createBandTransaction)
 	managers.PATCH("/:id", s.updateBandTransaction)
 	managers.PATCH("/:id/settle", s.settleBandTransaction)
 	managers.POST("/:id/cancel", s.cancelBandTransaction)

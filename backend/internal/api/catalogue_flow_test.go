@@ -15,9 +15,8 @@ func TestArticleLifecycleOverHTTP(t *testing.T) {
 	h.signInAs(band, models.RoleManager)
 
 	created := h.do(http.MethodPost, "/api/v1/articles", map[string]any{
-		"name":                         "Geometry Shirt",
-		"default_sale_price_cents":     1800,
-		"default_purchase_price_cents": 900,
+		"name":                     "Geometry Shirt",
+		"default_sale_price_cents": 1800,
 	})
 	if created.Status != http.StatusCreated {
 		t.Fatalf("create article: %d %v", created.Status, created.Body)

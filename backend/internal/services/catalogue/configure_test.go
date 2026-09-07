@@ -39,7 +39,7 @@ func (f *fixture) valuesOf(groupID int64) []models.OptionValue {
 func TestRenamingAnOptionValueIsRetroactive(t *testing.T) {
 	f := newFixture(t)
 
-	article, err := f.svc.CreateArticle(f.ctx, unique("Shirt "), 1800, 900)
+	article, err := f.svc.CreateArticle(f.ctx, unique("Shirt "), 1800)
 	if err != nil {
 		t.Fatalf("create article: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestRenamingAnOptionValueIsRetroactive(t *testing.T) {
 func TestDroppingAnOptionValueDeactivatesIt(t *testing.T) {
 	f := newFixture(t)
 
-	article, err := f.svc.CreateArticle(f.ctx, unique("Shirt "), 1800, 900)
+	article, err := f.svc.CreateArticle(f.ctx, unique("Shirt "), 1800)
 	if err != nil {
 		t.Fatalf("create article: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestAddingADimensionKeepsExistingVariants(t *testing.T) {
 func TestVariantOverrides(t *testing.T) {
 	f := newFixture(t)
 
-	article, err := f.svc.CreateArticle(f.ctx, unique("Hoodie "), 4500, 2500)
+	article, err := f.svc.CreateArticle(f.ctx, unique("Hoodie "), 4500)
 	if err != nil {
 		t.Fatalf("create article: %v", err)
 	}
@@ -215,11 +215,11 @@ func TestVariantOverrides(t *testing.T) {
 func TestConfigurationRejectsForeignEntities(t *testing.T) {
 	f := newFixture(t)
 
-	first, err := f.svc.CreateArticle(f.ctx, unique("A "), 1000, 500)
+	first, err := f.svc.CreateArticle(f.ctx, unique("A "), 1000)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	second, err := f.svc.CreateArticle(f.ctx, unique("B "), 1000, 500)
+	second, err := f.svc.CreateArticle(f.ctx, unique("B "), 1000)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestConfigurationRejectsForeignEntities(t *testing.T) {
 func TestConfigurationIsAtomic(t *testing.T) {
 	f := newFixture(t)
 
-	article, err := f.svc.CreateArticle(f.ctx, unique("Shirt "), 1800, 900)
+	article, err := f.svc.CreateArticle(f.ctx, unique("Shirt "), 1800)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestConfigurationIsAtomic(t *testing.T) {
 func TestWithdrawingAnArticleKeepsItsHistory(t *testing.T) {
 	f := newFixture(t)
 
-	article, err := f.svc.CreateArticle(f.ctx, unique("Retired "), 1800, 900)
+	article, err := f.svc.CreateArticle(f.ctx, unique("Retired "), 1800)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -322,7 +322,7 @@ func inputsFrom(values []models.OptionValue) []catalogue.OptionValueInput {
 func TestStandardPriceFollowsThroughToUntouchedVariants(t *testing.T) {
 	f := newFixture(t)
 
-	article, err := f.svc.CreateArticle(f.ctx, unique("Cap "), 0, 0)
+	article, err := f.svc.CreateArticle(f.ctx, unique("Cap "), 0)
 	if err != nil {
 		t.Fatalf("create article: %v", err)
 	}

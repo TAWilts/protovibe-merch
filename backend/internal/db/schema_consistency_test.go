@@ -145,6 +145,23 @@ func TestEveryModelFieldHasItsColumn(t *testing.T) {
 	}
 }
 
+func TestCatalogueHasNoDefaultPurchasePriceColumns(t *testing.T) {
+	gdb := openTestDB(t)
+
+	var count int64
+	if err := gdb.Raw(`
+		SELECT COUNT(*) FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE()
+		  AND TABLE_NAME IN ('articles', 'variants')
+		  AND COLUMN_NAME = 'default_purchase_price_cents'
+	`).Scan(&count).Error; err != nil {
+		t.Fatalf("inspect catalogue columns: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("default purchase price still exists in %d catalogue tables", count)
+	}
+}
+
 func embedsTenant(t reflect.Type) bool {
 	for t.Kind() == reflect.Ptr {
 		t = t.Elem()

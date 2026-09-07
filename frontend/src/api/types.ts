@@ -18,6 +18,7 @@ export interface Capabilities {
   can_access_band_workflows: boolean
   can_access_member_workflows: boolean
   can_manage_purchases: boolean
+  can_create_band_finances: boolean
   can_manage_band_finances: boolean
   can_manage_articles: boolean
   can_manage_slideshow: boolean
@@ -285,6 +286,7 @@ export interface Position {
   quantity: number
   unit_price_cents: number
   amount_due_cents: number
+  shipping_cost_cents: number
   amount_given_cents: number | null
   donation_cents: number
   is_paid: boolean
@@ -306,6 +308,7 @@ export interface Receipt {
   total_due_cents: number
   total_given_cents: number
   donation_cents: number
+  shipping_cost_cents: number
   is_fully_cancelled: boolean
   positions: Position[]
 }

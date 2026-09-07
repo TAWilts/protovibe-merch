@@ -33,6 +33,7 @@ const dateFrom = ref('')
 const dateTo = ref('')
 
 const canManage = computed(() => session.capabilities?.can_manage_band_finances ?? false)
+const canCreate = computed(() => session.capabilities?.can_create_band_finances ?? false)
 
 const visibleEntries = computed(() =>
   (ledger.value?.entries ?? []).filter((entry) =>
@@ -200,6 +201,7 @@ function startEdit(entry: BandTransaction) {
 
 async function submit() {
   if (!canSubmit.value || amountCents.value === null) return
+  if (editingId.value !== null ? !canManage.value : !canCreate.value) return
   busy.value = true
   const payload = {
     transaction_type: form.value.transaction_type,
@@ -289,7 +291,7 @@ async function cancelEntry(id: number) {
         </article>
       </section>
 
-      <section v-if="canManage" class="table-section">
+      <section v-if="canCreate" class="table-section">
         <div class="section-heading">
           <div>
             <h2>{{ editingId === null ? t('bandFinances.newEntry') : t('bandFinances.editEntry') }}</h2>

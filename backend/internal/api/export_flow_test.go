@@ -68,11 +68,10 @@ func TestExportHeadersMatchTheOriginal(t *testing.T) {
 	expected := map[string][]string{
 		"artikel": {
 			"Artikel-ID", "Artikel", "Varianten-ID", "Optionen", "Bestand", "Mindestbestand",
-			"Mindestbestandswarnung", "Verkaufspreis", "Standard-Einkaufspreis",
-			"Nachbestellen", "Angeboten", "Status",
+			"Mindestbestandswarnung", "Verkaufspreis", "Nachbestellen", "Angeboten", "Status",
 		},
 		"verkaeufe": {
-			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag",
+			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Versandkosten",
 			"Gegeben", "Spende", "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus",
 			"Storniert", "Kundenname", "Adresse", "Veranstaltung", "Verkauft von", "Kommentar",
 		},

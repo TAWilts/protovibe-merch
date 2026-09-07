@@ -209,6 +209,8 @@
     "saleDetails": "Weitere Angaben",
     "book": "Verkauf speichern",
     "bookShipment": "Als Versand buchen",
+    "shippingCostGross": "Versandkosten (inkl. MwSt.)",
+    "invalidShippingCost": "Bitte gültige Versandkosten eingeben.",
     "createOrder": "Bestellung anlegen",
     "shipmentTitle": "Wohin geht die Sendung?",
     "shipmentIntro": "Der Verkauf wird gebucht, die Ware bleibt offen — er erscheint unter „Offene Vorgänge“, bis er versendet ist.",

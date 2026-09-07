@@ -267,9 +267,8 @@ func (s *Service) summary(ctx context.Context, rows []Row) (*Summary, error) {
 
 // costBasis is the weighted average purchase price per variant.
 //
-// A variant that was never bought falls back to its maintained standard
-// purchase price, which keeps pre-order rankings useful without pretending the
-// current stock is consumed in strict FIFO order.
+// A variant that was never bought has no defensible cost basis and therefore
+// stays at zero until the first actual purchase is booked.
 func (s *Service) costBasis(ctx context.Context) (map[int64]int64, error) {
 	type row struct {
 		VariantID     int64
@@ -285,7 +284,7 @@ func (s *Service) costBasis(ctx context.Context) (map[int64]int64, error) {
 					(SELECT SUM(p.quantity * p.unit_cost_cents) FROM purchases p WHERE p.variant_id = variants.id)
 					/ (SELECT SUM(p.quantity) FROM purchases p WHERE p.variant_id = variants.id)
 				) AS SIGNED)
-				ELSE variants.default_purchase_price_cents
+				ELSE 0
 			END AS unit_cost_cents`).
 		Scan(&rows).Error
 	if err != nil {

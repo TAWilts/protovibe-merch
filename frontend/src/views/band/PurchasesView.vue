@@ -675,7 +675,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
           </label>
           <label>
             {{ t('purchases.vatRate') }}
-            <input v-model="vatRateInput" inputmode="decimal" :disabled="pricesIncludeVat" />
+            <input v-model="vatRateInput" inputmode="decimal" />
           </label>
         </div>
 
@@ -758,9 +758,6 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             </span>
             <span>{{ t('purchases.positionCount', { count: receipt.positions.length }) }}</span>
             <strong>{{ format(receipt.totalCostCents) }}</strong>
-            <button v-if="purchaseEditingEnabled && canManage && !receipt.isCancelled" class="compact-button" type="button" @click.stop.prevent="startEdit(receipt)">
-              {{ t('purchases.edit') }}
-            </button>
             <span class="receipt-chevron" aria-hidden="true">⌄</span>
           </summary>
           <div class="receipt-details">
@@ -796,6 +793,14 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
               </table>
             </div>
             <div class="receipt-actions">
+              <button
+                v-if="purchaseEditingEnabled && canManage && !receipt.isCancelled"
+                class="secondary-button"
+                type="button"
+                @click="startEdit(receipt)"
+              >
+                {{ t('purchases.edit') }}
+              </button>
               <button class="secondary-button" type="button" @click="openAttachments(receipt.positions[0])">
                 {{ t('purchases.invoiceAndAttachments') }}
               </button>
@@ -835,7 +840,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
         <label>{{ t('purchases.invoiceReference') }}<input v-model="editInvoiceReference" /></label>
         <div class="field-grid two-columns">
           <label class="checkbox-row"><input v-model="editPricesIncludeVat" type="checkbox" /><span>{{ t('purchases.priceIncludesVat') }}</span></label>
-          <label>{{ t('purchases.vatRate') }}<input v-model="editVatRateInput" inputmode="decimal" :disabled="editPricesIncludeVat" /></label>
+          <label>{{ t('purchases.vatRate') }}<input v-model="editVatRateInput" inputmode="decimal" /></label>
         </div>
         <label>{{ t('purchases.shippingCost') }}<input v-model="editShippingCostInput" inputmode="decimal" /></label>
         <div class="edit-purchase-lines">

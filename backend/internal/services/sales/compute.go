@@ -24,6 +24,8 @@ var (
 	ErrEmptyBasket       = errors.New("sales: the basket is empty")
 	ErrInvalidQuantity   = errors.New("sales: quantity must be positive")
 	ErrNegativePrice     = errors.New("sales: prices cannot be negative")
+	ErrNegativeShipping  = errors.New("sales: shipping costs cannot be negative")
+	ErrShippingOnCounter = errors.New("sales: shipping costs require a shipment")
 	ErrContactRequired   = errors.New("sales: name and address are required when a sale is unpaid or not handed over")
 	ErrUnknownPayment    = errors.New("sales: unknown payment method")
 	ErrAmountTooLow      = errors.New("sales: the amount given is less than the amount due")
@@ -51,6 +53,8 @@ type Request struct {
 	// AmountGivenCents is what the customer handed over. Anything above the
 	// amount due becomes a donation.
 	AmountGivenCents *int64 `json:"amount_given_cents"`
+	// ShippingCostCents is the gross amount charged for a shipment.
+	ShippingCostCents int64 `json:"shipping_cost_cents"`
 
 	CustomerName    string `json:"customer_name"`
 	CustomerAddress string `json:"customer_address"`
@@ -67,12 +71,13 @@ type Request struct {
 
 // Line is one prepared ledger row.
 type Line struct {
-	VariantID        int64
-	Quantity         int
-	UnitPriceCents   int64
-	AmountDueCents   int64
-	AmountGivenCents *int64
-	DonationCents    int64
+	VariantID         int64
+	Quantity          int
+	UnitPriceCents    int64
+	AmountDueCents    int64
+	ShippingCostCents int64
+	AmountGivenCents  *int64
+	DonationCents     int64
 }
 
 // Prepared is a booking that passed every rule and is ready to persist.
@@ -150,6 +155,24 @@ func Prepare(req Request, prices map[int64]VariantPrice) (*Prepared, error) {
 			AmountDueCents: due,
 		})
 	}
+
+	if req.ShippingCostCents < 0 {
+		return nil, ErrNegativeShipping
+	}
+	if req.IsReceived && req.ShippingCostCents != 0 {
+		return nil, ErrShippingOnCounter
+	}
+
+	goodsWeights := make([]int64, len(lines))
+	for i, line := range lines {
+		goodsWeights[i] = line.AmountDueCents
+	}
+	shippingShares := money.Distribute(req.ShippingCostCents, goodsWeights)
+	for i := range lines {
+		lines[i].ShippingCostCents = shippingShares[i]
+		lines[i].AmountDueCents += shippingShares[i]
+	}
+	totalDue += req.ShippingCostCents
 
 	given, donation, err := resolveAmounts(req, totalDue)
 	if err != nil {

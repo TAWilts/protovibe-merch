@@ -74,6 +74,7 @@ const shipOpen = ref(false)
 const shipName = ref('')
 const shipAddress = ref('')
 const shipPayLater = ref(false)
+const shippingCostInput = ref('0,00')
 
 const shipReady = computed(
   () => shipName.value.trim() !== '' && shipAddress.value.trim() !== '',
@@ -181,6 +182,11 @@ const basketTotalCents = computed(() =>
 const basketItemCount = computed(() =>
   basket.value.reduce((sum, line) => sum + line.quantity, 0),
 )
+const shippingCostCents = computed(() => needsShipping.value ? parseAmount(shippingCostInput.value) : 0)
+const saleTotalCents = computed(() =>
+  basketTotalCents.value + Math.max(0, shippingCostCents.value ?? 0),
+)
+const hasOutOfStockItem = computed(() => basket.value.some((line) => line.onHand <= 0))
 /** The mobile receipt rail starts closed so it never covers article controls. */
 const mobileCartOpen = ref(false)
 
@@ -197,7 +203,7 @@ const amountGivenCents = computed(() => parseAmount(amountGivenInput.value))
  */
 const surplusCents = computed(() => {
   if (amountGivenCents.value === null) return 0
-  return Math.max(0, amountGivenCents.value - basketTotalCents.value)
+  return Math.max(0, amountGivenCents.value - saleTotalCents.value)
 })
 
 const surplusMode = ref<'change' | 'donation'>('donation')
@@ -263,8 +269,9 @@ const canAddToCart = computed(
 const canBook = computed(() => basket.value.length > 0 && !busy.value)
 const paymentStepReady = computed(() => {
   if (!basket.value.length || busy.value || (needsShipping.value && !shipReady.value)) return false
+  if (needsShipping.value && (shippingCostCents.value === null || shippingCostCents.value < 0)) return false
   if (paymentMethod.value === 'Bar' && (!needsShipping.value || !shipPayLater.value) && amountGivenCents.value !== null) {
-    return amountGivenCents.value >= basketTotalCents.value
+    return amountGivenCents.value >= saleTotalCents.value
   }
   return true
 })
@@ -385,10 +392,11 @@ function salePayload(): BookSalePayload {
     // a sale that is settled later is corrected under "Offene Vorgänge".
     is_paid: paid,
     is_received: !needsShipping.value,
+    shipping_cost_cents: needsShipping.value ? (shippingCostCents.value ?? 0) : 0,
     // Handing the surplus back means the band kept the amount due, and that is
     // what the server must record — anything more becomes a donation there.
     amount_given_cents: paid
-      ? (surplusMode.value === 'donation' ? amountGivenCents.value : basketTotalCents.value)
+      ? (surplusMode.value === 'donation' ? amountGivenCents.value : saleTotalCents.value)
       : null,
     customer_name: needsShipping.value ? shipName.value.trim() : '',
     customer_address: needsShipping.value ? shipAddress.value.trim() : '',
@@ -601,6 +609,7 @@ function resetAfterSale() {
   shipName.value = ''
   shipAddress.value = ''
   shipPayLater.value = false
+  shippingCostInput.value = '0,00'
   shipOpen.value = isOrder.value
   mobileCartOpen.value = false
   checkoutStep.value = 1
@@ -687,6 +696,9 @@ function resetAfterSale() {
               :title="selectedVariant.on_hand <= 0 ? t('sales.stockWarning') : ''"
             >{{ t('sales.inStock', { count: selectedVariant.on_hand }) }}</span>
           </p>
+          <p v-if="selectedVariant && selectedVariant.on_hand <= 0" class="stock-sale-warning" role="status">
+            {{ t('sales.stockWarning') }}
+          </p>
           <div v-if="variantPhotos.length" class="variant-photo-preview">
             <p class="variant-photo-caption">
               {{ variantPhotoSelection?.isFallback
@@ -738,7 +750,7 @@ function resetAfterSale() {
               <b>{{ t('sales.cart') }}</b>
               <small>{{ t('sales.cartCount', { count: basketItemCount }) }}</small>
             </span>
-            <strong>{{ format(basketTotalCents) }}</strong>
+            <strong>{{ format(saleTotalCents) }}</strong>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <path d="m6 9 6 6 6-6" />
             </svg>
@@ -775,10 +787,11 @@ function resetAfterSale() {
                 <span class="till-line-qty">{{ line.quantity }}</span>
                 <button type="button" :aria-label="t('common.increase')" @click="stepLine(index, 1)">+</button>
               </span>
+              <small v-if="line.onHand <= 0" class="stock-sale-warning till-line-warning">{{ t('sales.stockWarning') }}</small>
             </div>
           </div>
           <footer class="till-foot">
-            <div class="till-total"><span>{{ t('sales.total') }}</span><strong>{{ format(basketTotalCents) }}</strong></div>
+            <div class="till-total"><span>{{ t('sales.total') }}</span><strong>{{ format(saleTotalCents) }}</strong></div>
             <button class="primary-button full-width till-book" type="button" :disabled="!basket.length" @click="goToPayment">
               {{ t('sales.paymentDetails') }}
             </button>
@@ -793,7 +806,7 @@ function resetAfterSale() {
           <p class="eyebrow">{{ t('sales.receiptId') }} {{ receiptId || t('sales.receiptLoading') }}</p>
           <h2>{{ t('sales.paymentDetails') }}</h2>
         </div>
-        <strong>{{ format(basketTotalCents) }}</strong>
+        <strong>{{ format(saleTotalCents) }}</strong>
       </header>
 
       <div class="checkout-payment-grid till-scroll">
@@ -818,7 +831,7 @@ function resetAfterSale() {
           <div v-if="paymentMethod === 'Bar' && (!needsShipping || !shipPayLater)" class="till-given">
             <label>
               <span>{{ t('sales.amountGiven') }}</span>
-              <input v-model="amountGivenInput" inputmode="decimal" :placeholder="format(basketTotalCents)" />
+              <input v-model="amountGivenInput" inputmode="decimal" :placeholder="format(saleTotalCents)" />
             </label>
             <div v-if="surplusCents > 0" class="till-surplus">
               <p class="till-change" :class="{ 'is-donation': surplusMode === 'donation' }">
@@ -863,6 +876,13 @@ function resetAfterSale() {
             <p class="muted">{{ t('sales.shipmentIntro') }}</p>
             <label>{{ t('sales.customerName') }}<input v-model="shipName" autocomplete="name" /></label>
             <label>{{ t('sales.customerAddress') }}<textarea v-model="shipAddress" rows="3" autocomplete="street-address" /></label>
+            <label>
+              {{ t('sales.shippingCostGross') }}
+              <input v-model="shippingCostInput" inputmode="decimal" placeholder="0,00" />
+            </label>
+            <small v-if="shippingCostCents === null || shippingCostCents < 0" class="field-error">
+              {{ t('sales.invalidShippingCost') }}
+            </small>
             <label class="checkbox-row">
               <input v-model="shipPayLater" type="checkbox" />
               <span>{{ t('sales.payLater') }}</span>
@@ -890,7 +910,7 @@ function resetAfterSale() {
             <strong>{{ qrIntent?.receipt_id || receiptId || t('sales.receiptLoading') }}</strong>
           </p>
         </div>
-        <strong>{{ format(basketTotalCents) }}</strong>
+        <strong>{{ format(saleTotalCents) }}</strong>
       </header>
 
       <div class="checkout-confirm-grid till-scroll">
@@ -903,11 +923,16 @@ function resetAfterSale() {
         </div>
 
         <section class="checkout-review">
+          <p v-if="hasOutOfStockItem" class="stock-sale-warning" role="status">{{ t('sales.stockWarning') }}</p>
           <div v-for="line in basket" :key="line.variantId" class="checkout-review-line">
             <span>{{ line.quantity }}× {{ line.label }}</span>
             <b>{{ format(line.quantity * line.unitPriceCents) }}</b>
           </div>
-          <div class="till-total"><span>{{ t('sales.total') }}</span><strong>{{ format(basketTotalCents) }}</strong></div>
+          <div v-if="needsShipping && (shippingCostCents ?? 0) > 0" class="checkout-review-line">
+            <span>{{ t('sales.shippingCostGross') }}</span>
+            <b>{{ format(shippingCostCents ?? 0) }}</b>
+          </div>
+          <div class="till-total"><span>{{ t('sales.total') }}</span><strong>{{ format(saleTotalCents) }}</strong></div>
           <div v-if="paymentMethod === 'Bar' && amountGivenCents !== null" class="checkout-cash-summary">
             <span>{{ t('sales.amountGiven') }}: <b>{{ format(amountGivenCents) }}</b></span>
             <span v-if="surplusCents > 0">
@@ -1487,6 +1512,24 @@ function resetAfterSale() {
   gap: 8px 14px;
   padding: 16px 0;
   border-bottom: 1px dashed var(--border);
+}
+
+.stock-sale-warning {
+  margin: 8px 0 0;
+  color: var(--warning);
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.till-line-warning {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.field-error {
+  color: var(--danger);
+  font-weight: 650;
 }
 
 .till-line-stepper {

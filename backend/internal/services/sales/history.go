@@ -21,14 +21,15 @@ type Position struct {
 	EventName       string      `json:"event_name"`
 	Comment         string      `json:"comment"`
 
-	VariantID        int64  `json:"variant_id"`
-	ArticleName      string `json:"article_name"`
-	VariantLabel     string `json:"variant_label"`
-	Quantity         int    `json:"quantity"`
-	UnitPriceCents   int64  `json:"unit_price_cents"`
-	AmountDueCents   int64  `json:"amount_due_cents"`
-	AmountGivenCents *int64 `json:"amount_given_cents"`
-	DonationCents    int64  `json:"donation_cents"`
+	VariantID         int64  `json:"variant_id"`
+	ArticleName       string `json:"article_name"`
+	VariantLabel      string `json:"variant_label"`
+	Quantity          int    `json:"quantity"`
+	UnitPriceCents    int64  `json:"unit_price_cents"`
+	AmountDueCents    int64  `json:"amount_due_cents"`
+	ShippingCostCents int64  `json:"shipping_cost_cents"`
+	AmountGivenCents  *int64 `json:"amount_given_cents"`
+	DonationCents     int64  `json:"donation_cents"`
 
 	IsPaid          bool                  `json:"is_paid"`
 	PaymentFollowUp bool                  `json:"payment_follow_up"`
@@ -49,9 +50,10 @@ type Receipt struct {
 	SoldBy          string      `json:"sold_by"`
 	Comment         string      `json:"comment"`
 
-	TotalDueCents   int64 `json:"total_due_cents"`
-	TotalGivenCents int64 `json:"total_given_cents"`
-	DonationCents   int64 `json:"donation_cents"`
+	TotalDueCents     int64 `json:"total_due_cents"`
+	TotalGivenCents   int64 `json:"total_given_cents"`
+	DonationCents     int64 `json:"donation_cents"`
+	ShippingCostCents int64 `json:"shipping_cost_cents"`
 	// IsFullyCancelled is true when every position was cancelled, which is what
 	// lets the history grey out a whole receipt rather than each line.
 	IsFullyCancelled bool `json:"is_fully_cancelled"`
@@ -138,19 +140,20 @@ func (r *saleRow) position() Position {
 		EventName:       r.EventName,
 		Comment:         r.Comment,
 
-		VariantID:        r.VariantID,
-		ArticleName:      r.ArticleName,
-		VariantLabel:     r.VariantLabel,
-		Quantity:         r.Quantity,
-		UnitPriceCents:   r.UnitPriceCents,
-		AmountDueCents:   r.AmountDueCents,
-		AmountGivenCents: r.AmountGivenCents,
-		DonationCents:    r.DonationCents,
-		IsPaid:           r.IsPaid,
-		PaymentFollowUp:  r.PaymentFollowUp,
-		IsReceived:       r.IsReceived,
-		DeliveryStatus:   r.DeliveryStatus,
-		IsCancelled:      r.IsCancelled,
+		VariantID:         r.VariantID,
+		ArticleName:       r.ArticleName,
+		VariantLabel:      r.VariantLabel,
+		Quantity:          r.Quantity,
+		UnitPriceCents:    r.UnitPriceCents,
+		AmountDueCents:    r.AmountDueCents,
+		ShippingCostCents: r.ShippingCostCents,
+		AmountGivenCents:  r.AmountGivenCents,
+		DonationCents:     r.DonationCents,
+		IsPaid:            r.IsPaid,
+		PaymentFollowUp:   r.PaymentFollowUp,
+		IsReceived:        r.IsReceived,
+		DeliveryStatus:    r.DeliveryStatus,
+		IsCancelled:       r.IsCancelled,
 	}
 }
 
@@ -218,6 +221,7 @@ func groupIntoReceipts(rows []saleRow) []Receipt {
 		if !row.IsCancelled {
 			receipt.IsFullyCancelled = false
 			receipt.TotalDueCents += row.AmountDueCents
+			receipt.ShippingCostCents += row.ShippingCostCents
 			receipt.DonationCents += row.DonationCents
 			if row.AmountGivenCents != nil {
 				receipt.TotalGivenCents += *row.AmountGivenCents

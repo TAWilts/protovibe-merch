@@ -63,7 +63,7 @@ func newFixture(t *testing.T) *fixture {
 	ctx := tenant.WithBand(context.Background(), band.ID)
 
 	cat := catalogue.NewService(database)
-	article, err := cat.CreateArticle(ctx, "Shirt "+suffix, 1800, 900)
+	article, err := cat.CreateArticle(ctx, "Shirt "+suffix, 1800)
 	if err != nil {
 		t.Fatalf("create article: %v", err)
 	}

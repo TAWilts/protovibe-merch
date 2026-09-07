@@ -366,7 +366,8 @@ func (s *Server) reportSalesError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "variant_not_offered", err.Error())
 	case errors.Is(err, sales.ErrUnknownPayment):
 		fail(c, http.StatusBadRequest, "unknown_payment_method", err.Error())
-	case errors.Is(err, sales.ErrInvalidQuantity), errors.Is(err, sales.ErrNegativePrice):
+	case errors.Is(err, sales.ErrInvalidQuantity), errors.Is(err, sales.ErrNegativePrice),
+		errors.Is(err, sales.ErrNegativeShipping), errors.Is(err, sales.ErrShippingOnCounter):
 		fail(c, http.StatusBadRequest, "invalid_basket", err.Error())
 	default:
 		serverError(c, err)

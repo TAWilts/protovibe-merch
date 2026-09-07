@@ -217,11 +217,7 @@ func (s *Service) PreserveVariantsForNewOptionGroups(ctx context.Context, articl
 
 // CreateArticle adds an article together with the default option grid and its
 // resulting variants, in one transaction.
-//
-// The final int64 argument is retained temporarily for source compatibility
-// with older internal callers. It is intentionally ignored: purchase prices
-// are derived exclusively from actual purchase transactions.
-func (s *Service) CreateArticle(ctx context.Context, name string, defaultSaleCents, _ int64) (*models.Article, error) {
+func (s *Service) CreateArticle(ctx context.Context, name string, defaultSaleCents int64) (*models.Article, error) {
 	cleaned := strings.TrimSpace(name)
 	if cleaned == "" || len(cleaned) > 200 {
 		return nil, fmt.Errorf("%w: 1 to 200 characters required", ErrInvalidName)

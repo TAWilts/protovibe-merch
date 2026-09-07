@@ -108,6 +108,7 @@ export interface BookSalePayload {
   payment_method: string
   is_paid: boolean
   is_received: boolean
+  shipping_cost_cents?: number
   amount_given_cents?: number | null
   customer_name?: string
   customer_address?: string

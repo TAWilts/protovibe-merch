@@ -247,6 +247,10 @@ async function confirmCancel() {
                     </table>
 
                     <dl class="receipt-meta">
+                      <template v-if="receipt.shipping_cost_cents > 0">
+                        <dt>{{ t('sales.shippingCostGross') }}</dt>
+                        <dd>{{ format(receipt.shipping_cost_cents) }}</dd>
+                      </template>
                       <template v-if="receipt.customer_name">
                         <dt>{{ t('sales.customerName') }}</dt>
                         <dd>{{ receipt.customer_name }}</dd>

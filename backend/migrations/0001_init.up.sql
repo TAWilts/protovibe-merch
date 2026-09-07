@@ -204,7 +204,6 @@ CREATE TABLE articles (
     band_id                      BIGINT       NOT NULL,
     name                         VARCHAR(200) NOT NULL,
     default_sale_price_cents     BIGINT       NOT NULL DEFAULT 0,
-    default_purchase_price_cents BIGINT       NOT NULL DEFAULT 0,
     -- is_offered is independent of is_active: an article can leave the sales
     -- assortment while its bookings, stock and future purchases stay intact.
     is_offered                   TINYINT(1)   NOT NULL DEFAULT 1,
@@ -213,8 +212,7 @@ CREATE TABLE articles (
     updated_at                   DATETIME(3)  NOT NULL,
     UNIQUE KEY uq_articles_band_name (band_id, name),
     CONSTRAINT fk_articles_band FOREIGN KEY (band_id) REFERENCES bands (id),
-    CONSTRAINT ck_articles_sale_price CHECK (default_sale_price_cents >= 0),
-    CONSTRAINT ck_articles_purchase_price CHECK (default_purchase_price_cents >= 0)
+    CONSTRAINT ck_articles_sale_price CHECK (default_sale_price_cents >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE option_groups (
@@ -256,7 +254,6 @@ CREATE TABLE variants (
     -- unique inside its article.
     combination_key              VARCHAR(255) NOT NULL,
     sale_price_cents             BIGINT       NOT NULL DEFAULT 0,
-    default_purchase_price_cents BIGINT       NOT NULL DEFAULT 0,
     -- NULL means no minimum-stock warning is configured, which keeps an
     -- explicit 0 meaningful: warn only once the variant is actually sold out.
     minimum_stock                INT          NULL,
@@ -270,7 +267,6 @@ CREATE TABLE variants (
     CONSTRAINT fk_variants_band FOREIGN KEY (band_id) REFERENCES bands (id),
     CONSTRAINT fk_variants_article FOREIGN KEY (article_id) REFERENCES articles (id),
     CONSTRAINT ck_variants_sale_price CHECK (sale_price_cents >= 0),
-    CONSTRAINT ck_variants_purchase_price CHECK (default_purchase_price_cents >= 0),
     CONSTRAINT ck_variants_minimum_stock CHECK (minimum_stock IS NULL OR minimum_stock >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

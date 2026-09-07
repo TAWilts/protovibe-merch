@@ -40,6 +40,7 @@ type Capabilities struct {
 	CanAccessBandWorkflows   bool `json:"can_access_band_workflows"`
 	CanAccessMemberWorkflows bool `json:"can_access_member_workflows"`
 	CanManagePurchases       bool `json:"can_manage_purchases"`
+	CanCreateBandFinances    bool `json:"can_create_band_finances"`
 	CanManageBandFinances    bool `json:"can_manage_band_finances"`
 	CanManageArticles        bool `json:"can_manage_articles"`
 	CanManageSlideshow       bool `json:"can_manage_slideshow"`
@@ -74,6 +75,7 @@ func For(user *models.User) Capabilities {
 		CanAccessBandWorkflows:   role.IsBandRole(),
 		CanAccessMemberWorkflows: role.AtLeast(models.RoleMember),
 		CanManagePurchases:       role.AtLeast(models.RoleManager),
+		CanCreateBandFinances:    role.AtLeast(models.RoleMember),
 		CanManageBandFinances:    role.AtLeast(models.RoleManager),
 		CanManageArticles:        role.AtLeast(models.RoleManager),
 		CanManageSlideshow:       role.AtLeast(models.RoleManager),

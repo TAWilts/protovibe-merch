@@ -131,7 +131,7 @@ func (f *fixture) addOptionGroup(articleID int64, name string, position int, val
 func TestCreateArticleSeedsDefaultGrid(t *testing.T) {
 	f := newFixture(t)
 
-	article, err := f.svc.CreateArticle(f.ctx, "Geometry Shirt", 1800, 900)
+	article, err := f.svc.CreateArticle(f.ctx, "Geometry Shirt", 1800)
 	if err != nil {
 		t.Fatalf("create article: %v", err)
 	}
@@ -144,9 +144,6 @@ func TestCreateArticleSeedsDefaultGrid(t *testing.T) {
 		if variant.SalePriceCents != 1800 {
 			t.Fatalf("variant %d did not inherit the article sale price: %+v", variant.ID, variant)
 		}
-		if variant.DefaultPurchasePriceCents != 0 {
-			t.Fatalf("variant %d must not inherit a stable purchase price: %+v", variant.ID, variant)
-		}
 		if len(variant.OptionValueIDs) != 2 {
 			t.Fatalf("variant %d should carry one value per group, got %v", variant.ID, variant.OptionValueIDs)
 		}
@@ -158,10 +155,10 @@ func TestCreateArticleSeedsDefaultGrid(t *testing.T) {
 func TestArticleNamesAreUniquePerBand(t *testing.T) {
 	f := newFixture(t)
 
-	if _, err := f.svc.CreateArticle(f.ctx, "Hoodie", 4500, 2500); err != nil {
+	if _, err := f.svc.CreateArticle(f.ctx, "Hoodie", 4500); err != nil {
 		t.Fatalf("create article: %v", err)
 	}
-	if _, err := f.svc.CreateArticle(f.ctx, "hoodie", 4500, 2500); err == nil {
+	if _, err := f.svc.CreateArticle(f.ctx, "hoodie", 4500); err == nil {
 		t.Fatal("a duplicate article name must be rejected regardless of case")
 	}
 }
@@ -339,7 +336,7 @@ func TestPreserveVariantsForNewOptionGroups(t *testing.T) {
 func TestStockIsDerivedFromMovements(t *testing.T) {
 	f := newFixture(t)
 
-	article, err := f.svc.CreateArticle(f.ctx, unique("Beanie "), 1500, 700)
+	article, err := f.svc.CreateArticle(f.ctx, unique("Beanie "), 1500)
 	if err != nil {
 		t.Fatalf("create article: %v", err)
 	}

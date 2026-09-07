@@ -177,6 +177,37 @@ func TestNotReceivedStartsTheShippingQueue(t *testing.T) {
 	}
 }
 
+func TestShipmentAddsGrossShippingToTheAmountDue(t *testing.T) {
+	req := counterSale(
+		sales.BasketItem{VariantID: 1, Quantity: 1},
+		sales.BasketItem{VariantID: 2, Quantity: 1},
+	)
+	req.IsReceived = false
+	req.CustomerName = "Alex Muster"
+	req.CustomerAddress = "Musterweg 1"
+	req.ShippingCostCents = 500
+
+	got, err := sales.Prepare(req, priceList())
+	if err != nil {
+		t.Fatalf("prepare shipment: %v", err)
+	}
+	if got.TotalDueCents != 3500 {
+		t.Fatalf("goods plus shipping = %d, want 3500", got.TotalDueCents)
+	}
+	if got.Lines[0].ShippingCostCents+got.Lines[1].ShippingCostCents != 500 {
+		t.Fatalf("shipping shares must add up exactly: %+v", got.Lines)
+	}
+	if got.Lines[0].AmountDueCents+got.Lines[1].AmountDueCents != 3500 {
+		t.Fatalf("line totals must include shipping: %+v", got.Lines)
+	}
+
+	counter := counterSale(sales.BasketItem{VariantID: 1, Quantity: 1})
+	counter.ShippingCostCents = 100
+	if _, err := sales.Prepare(counter, priceList()); !errors.Is(err, sales.ErrShippingOnCounter) {
+		t.Fatalf("counter shipping must be rejected, got %v", err)
+	}
+}
+
 // TestStockNeverBlocksASale is the deliberate business rule: the till must
 // take money even when the recorded stock says there is nothing left.
 func TestStockNeverBlocksASale(t *testing.T) {

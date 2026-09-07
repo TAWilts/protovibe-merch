@@ -81,6 +81,10 @@ func TestGoodsReceiptLifecycle(t *testing.T) {
 	if created.Body["total_cost_cents"] != float64(20*900+10*850) {
 		t.Fatalf("unexpected total %v", created.Body["total_cost_cents"])
 	}
+	listed := h.do(http.MethodGet, "/api/v1/purchases", nil)
+	if listed.Body["editing_enabled"] != true {
+		t.Fatalf("the enabled feature flag must reach the purchase UI payload: %v", listed.Body)
+	}
 	positionID := int64(jsonList(created.Body, "purchase_ids")[0].(float64))
 
 	if got := h.onHand(variants[0]); got != 20 {
@@ -104,6 +108,64 @@ func TestGoodsReceiptLifecycle(t *testing.T) {
 	}
 	if got := h.onHand(variants[0]); got != 0 {
 		t.Fatalf("expected 0 in stock after the removal, got %d", got)
+	}
+}
+
+func TestReceiptEditingUsesTheFeatureFlagAndUpdatesSharedTerms(t *testing.T) {
+	t.Setenv("PURCHASE_EDITING_ENABLED", "true")
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Editable Stock")
+
+	created := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items": []any{
+			map[string]any{"variant_id": variants[0], "quantity": 2, "unit_cost_cents": 800},
+			map[string]any{"variant_id": variants[1], "quantity": 3, "unit_cost_cents": 850},
+		},
+		"purchased_on": "2026-09-01",
+	})
+	ids := jsonList(created.Body, "purchase_ids")
+	receiptID := created.Body["receipt_id"].(string)
+
+	updated := h.do(http.MethodPatch, "/api/v1/purchases/receipt/"+receiptID, map[string]any{
+		"items": []any{
+			map[string]any{"id": ids[0], "quantity": 4, "unit_cost_cents": 1000},
+			map[string]any{"id": ids[1], "quantity": 1, "unit_cost_cents": 500},
+		},
+		"purchased_on":          "2026-09-07",
+		"supplier":              "Neue Druckerei",
+		"invoice_reference":     "R-42",
+		"prices_include_vat":    false,
+		"vat_rate_basis_points": 1900,
+		"shipping_cost_cents":   200,
+	})
+	if updated.Status != http.StatusOK || updated.Body["total_cost_cents"] != float64(4*1190+595+238) {
+		t.Fatalf("edit receipt: %d %v", updated.Status, updated.Body)
+	}
+
+	listed := h.do(http.MethodGet, "/api/v1/purchases", nil)
+	first := jsonObject(jsonList(listed.Body, "purchases")[0])
+	if first["supplier"] != "Neue Druckerei" || first["vat_rate_basis_points"] != float64(1900) ||
+		first["shipping_cost_cents"] != float64(238) {
+		t.Fatalf("shared purchase terms were not updated: %v", first)
+	}
+}
+
+func TestReceiptEditingIsReadOnlyWhenTheFlagIsDisabled(t *testing.T) {
+	t.Setenv("PURCHASE_EDITING_ENABLED", "false")
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Read-only Stock")
+	created := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items":        []any{map[string]any{"variant_id": variants[0], "quantity": 1, "unit_cost_cents": 800}},
+		"purchased_on": "2026-09-07",
+	})
+	receiptID := created.Body["receipt_id"].(string)
+	res := h.do(http.MethodPatch, "/api/v1/purchases/receipt/"+receiptID, map[string]any{})
+	if res.Status != http.StatusForbidden || res.Body["code"] != "feature_disabled" {
+		t.Fatalf("disabled editing must stay read-only: %d %v", res.Status, res.Body)
 	}
 }
 

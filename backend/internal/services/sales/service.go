@@ -108,25 +108,26 @@ func (s *Service) Book(ctx context.Context, req Request, actor Actor, offline *O
 		saleIDs := make([]int64, 0, len(prepared.Lines))
 		for _, line := range prepared.Lines {
 			sale := &models.Sale{
-				ReceiptID:        receiptID,
-				VariantID:        line.VariantID,
-				Quantity:         line.Quantity,
-				UnitPriceCents:   line.UnitPriceCents,
-				AmountDueCents:   line.AmountDueCents,
-				AmountGivenCents: line.AmountGivenCents,
-				DonationCents:    line.DonationCents,
-				PaymentMethod:    prepared.PaymentMethod,
-				IsPaid:           prepared.IsPaid,
-				PaymentFollowUp:  prepared.PaymentFollowUp,
-				IsReceived:       prepared.IsReceived,
-				DeliveryStatus:   prepared.DeliveryStatus,
-				CustomerName:     prepared.CustomerName,
-				CustomerAddress:  prepared.CustomerAddress,
-				EventName:        prepared.EventName,
-				SoldBy:           prepared.SoldBy,
-				Comment:          prepared.Comment,
-				SoldOn:           req.SoldOn,
-				CreatedAt:        now,
+				ReceiptID:         receiptID,
+				VariantID:         line.VariantID,
+				Quantity:          line.Quantity,
+				UnitPriceCents:    line.UnitPriceCents,
+				AmountDueCents:    line.AmountDueCents,
+				ShippingCostCents: line.ShippingCostCents,
+				AmountGivenCents:  line.AmountGivenCents,
+				DonationCents:     line.DonationCents,
+				PaymentMethod:     prepared.PaymentMethod,
+				IsPaid:            prepared.IsPaid,
+				PaymentFollowUp:   prepared.PaymentFollowUp,
+				IsReceived:        prepared.IsReceived,
+				DeliveryStatus:    prepared.DeliveryStatus,
+				CustomerName:      prepared.CustomerName,
+				CustomerAddress:   prepared.CustomerAddress,
+				EventName:         prepared.EventName,
+				SoldBy:            prepared.SoldBy,
+				Comment:           prepared.Comment,
+				SoldOn:            req.SoldOn,
+				CreatedAt:         now,
 			}
 			sale.CreatedByUserID = &actor.UserID
 			sale.CreatedByUsername = actor.Username
@@ -217,6 +218,7 @@ func payloadHash(req Request) string {
 		IsPaid          bool         `json:"is_paid"`
 		IsReceived      bool         `json:"is_received"`
 		AmountGiven     *int64       `json:"amount_given_cents"`
+		ShippingCost    int64        `json:"shipping_cost_cents"`
 		CustomerName    string       `json:"customer_name"`
 		CustomerAddress string       `json:"customer_address"`
 		EventName       string       `json:"event_name"`
@@ -229,6 +231,7 @@ func payloadHash(req Request) string {
 		IsPaid:          req.IsPaid,
 		IsReceived:      req.IsReceived,
 		AmountGiven:     req.AmountGivenCents,
+		ShippingCost:    req.ShippingCostCents,
 		CustomerName:    req.CustomerName,
 		CustomerAddress: req.CustomerAddress,
 		EventName:       req.EventName,

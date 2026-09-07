@@ -51,6 +51,9 @@ type Sale struct {
 	Quantity       int   `gorm:"not null" json:"quantity"`
 	UnitPriceCents int64 `gorm:"not null" json:"unit_price_cents"`
 	AmountDueCents int64 `gorm:"not null" json:"amount_due_cents"`
+	// ShippingCostCents is this position's deterministic share of the
+	// receipt-level shipping charge. All shares add up to the checkout amount.
+	ShippingCostCents int64 `gorm:"not null;default:0" json:"shipping_cost_cents"`
 	// AmountGivenCents is nil while a sale is unpaid.
 	AmountGivenCents *int64 `json:"amount_given_cents"`
 	// DonationCents is the overpayment, distributed across the basket's lines

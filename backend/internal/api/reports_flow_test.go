@@ -259,7 +259,8 @@ func TestBandLedgerIsSeparateButAddsUp(t *testing.T) {
 	}
 }
 
-// TestBandFinanceRoles pins that members read and managers write.
+// TestBandFinanceRoles pins that members may add entries while management of
+// existing entries remains a manager responsibility.
 func TestBandFinanceRoles(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()
@@ -270,9 +271,22 @@ func TestBandFinanceRoles(t *testing.T) {
 	}
 	res := h.do(http.MethodPost, "/api/v1/band-finances", map[string]any{
 		"transaction_type": "income", "category": "Gage",
-		"description": "Nope", "amount_cents": 100,
+		"description": "Mitgliedsbuchung", "amount_cents": 100,
 	})
-	if res.Status != http.StatusForbidden {
-		t.Fatalf("a member must not book: %d %v", res.Status, res.Body)
+	if res.Status != http.StatusCreated {
+		t.Fatalf("a member must be able to book income and expenses: %d %v", res.Status, res.Body)
+	}
+	if expense := h.do(http.MethodPost, "/api/v1/band-finances", map[string]any{
+		"transaction_type": "expense", "category": "Sonstiges",
+		"description": "Mitgliedsausgabe", "amount_cents": 50,
+	}); expense.Status != http.StatusCreated {
+		t.Fatalf("a member must also be able to book expenses: %d %v", expense.Status, expense.Body)
+	}
+	entryID := int64(res.Body["id"].(float64))
+	if changed := h.do(http.MethodPatch, "/api/v1/band-finances/"+itoa(entryID), map[string]any{
+		"transaction_type": "income", "transaction_on": "2026-09-07", "category": "Gage",
+		"description": "Manipuliert", "amount_cents": 200,
+	}); changed.Status != http.StatusForbidden {
+		t.Fatalf("a member must not edit existing entries: %d %v", changed.Status, changed.Body)
 	}
 }

@@ -54,6 +54,14 @@ function button(wrapper: ReturnType<typeof mount>, text: string) {
   return found
 }
 
+function field(wrapper: ReturnType<typeof mount>, labelText: string) {
+  const label = wrapper.findAll('label').find((entry) => entry.text().includes(labelText))
+  if (!label) throw new Error(`label ${labelText} not found`)
+  const input = label.find('input, textarea')
+  if (!input.exists()) throw new Error(`field ${labelText} not found`)
+  return input
+}
+
 describe('SalesView checkout', () => {
   beforeEach(() => {
     book.mockReset().mockResolvedValue({ receipt_id: 'V-1', sale_ids: [1] })
@@ -190,6 +198,66 @@ describe('SalesView checkout', () => {
     await button(wrapper, 'common.confirm').trigger('click')
     expect(wrapper.find('.checkout-step-3').exists()).toBe(true)
     expect(createPaymentQrIntent).not.toHaveBeenCalled()
+
+    await button(wrapper, 'sales.book').trigger('click')
+    await flushPromises()
+    expect(book).toHaveBeenCalledOnce()
+  })
+
+  it('adds gross shipping costs to a sale booked for shipping', async () => {
+    const wrapper = mount(SalesView)
+    await flushPromises()
+    await button(wrapper, 'Testshirt').trigger('click')
+    await button(wrapper, 'sales.addToCart').trigger('click')
+    await button(wrapper, 'sales.paymentDetails').trigger('click')
+
+    await field(wrapper, 'sales.bookShipment').setValue(true)
+    await field(wrapper, 'sales.customerName').setValue('Alex Muster')
+    await field(wrapper, 'sales.customerAddress').setValue('Musterweg 1')
+    await field(wrapper, 'sales.shippingCostGross').setValue('4,99')
+
+    await button(wrapper, 'common.confirm').trigger('click')
+    expect(wrapper.text()).toContain('sales.shippingCostGross')
+    await button(wrapper, 'sales.book').trigger('click')
+    await flushPromises()
+
+    expect(book).toHaveBeenCalledWith(expect.objectContaining({
+      is_received: false,
+      shipping_cost_cents: 499,
+      customer_name: 'Alex Muster',
+      customer_address: 'Musterweg 1',
+    }))
+  })
+
+  it('warns visibly for sold-out variants without blocking the sale', async () => {
+    assortment.mockResolvedValueOnce({
+      payment_methods: ['Bar'],
+      articles: [{
+        id: 1,
+        name: 'Ausverkauftes Shirt',
+        total_stock: 0,
+        option_groups: [],
+        variants: [{
+          id: 11,
+          combination_key: '',
+          option_value_ids: [],
+          sale_price_cents: 2000,
+          on_hand: 0,
+          photo_ids: [],
+        }],
+      }],
+    })
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+    await button(wrapper, 'Ausverkauftes Shirt').trigger('click')
+    expect(wrapper.get('.stock-sale-warning').text()).toContain('sales.stockWarning')
+
+    await button(wrapper, 'sales.addToCart').trigger('click')
+    expect(wrapper.findAll('.stock-sale-warning').length).toBeGreaterThan(0)
+    await button(wrapper, 'sales.paymentDetails').trigger('click')
+    await button(wrapper, 'common.confirm').trigger('click')
+    expect(wrapper.get('.stock-sale-warning').text()).toContain('sales.stockWarning')
 
     await button(wrapper, 'sales.book').trigger('click')
     await flushPromises()
