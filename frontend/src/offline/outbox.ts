@@ -1,6 +1,5 @@
-import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-
 import type { BookSalePayload } from '@/api/endpoints'
+import { offlineDB, type QueuedSaleRecord } from './database'
 
 /**
  * The offline sales queue.
@@ -11,46 +10,8 @@ import type { BookSalePayload } from '@/api/endpoints'
  * retry, so a phone can synchronise as often as it likes without double-booking.
  */
 
-export interface QueuedSale {
-  /** The durable event ID. It is what makes the transmission idempotent. */
-  eventId: string
-  payload: BookSalePayload
-  createdAt: string
-  attempts: number
-  lastError?: string
-  /** Set when the server refused the sale for good, e.g. a price conflict. */
-  failedPermanently?: boolean
-}
-
-interface OutboxSchema extends DBSchema {
-  sales: {
-    key: string
-    value: QueuedSale
-    indexes: { 'by-created': string }
-  }
-  meta: {
-    key: string
-    value: string
-  }
-}
-
-const DB_NAME = 'merch-offline'
-const DB_VERSION = 1
-
-let database: Promise<IDBPDatabase<OutboxSchema>> | null = null
-
-function db() {
-  if (!database) {
-    database = openDB<OutboxSchema>(DB_NAME, DB_VERSION, {
-      upgrade(instance) {
-        const sales = instance.createObjectStore('sales', { keyPath: 'eventId' })
-        sales.createIndex('by-created', 'createdAt')
-        instance.createObjectStore('meta')
-      },
-    })
-  }
-  return database
-}
+/** A durable sale whose event ID makes repeated transmission idempotent. */
+export type QueuedSale = QueuedSaleRecord
 
 /**
  * Returns this device's stable identifier, creating one on first use.
@@ -59,7 +20,7 @@ function db() {
  * which helps when two devices sold at the same stand.
  */
 export async function deviceId(): Promise<string> {
-  const instance = await db()
+  const instance = await offlineDB()
   const existing = await instance.get('meta', 'device-id')
   if (existing) return existing
 
@@ -76,27 +37,27 @@ export async function enqueue(payload: BookSalePayload): Promise<QueuedSale> {
     createdAt: new Date().toISOString(),
     attempts: 0,
   }
-  const instance = await db()
+  const instance = await offlineDB()
   await instance.put('sales', entry)
   return entry
 }
 
 /** Returns the queued sales, oldest first, so they book in the order made. */
 export async function pending(): Promise<QueuedSale[]> {
-  const instance = await db()
+  const instance = await offlineDB()
   const all = await instance.getAllFromIndex('sales', 'by-created')
   return all.filter((entry) => !entry.failedPermanently)
 }
 
 /** Returns the entries the server rejected outright, which need a person. */
 export async function failed(): Promise<QueuedSale[]> {
-  const instance = await db()
+  const instance = await offlineDB()
   const all = await instance.getAll('sales')
   return all.filter((entry) => entry.failedPermanently)
 }
 
 export async function remove(eventId: string): Promise<void> {
-  const instance = await db()
+  const instance = await offlineDB()
   await instance.delete('sales', eventId)
 }
 
@@ -105,7 +66,7 @@ export async function markAttempt(
   error?: string,
   permanent = false,
 ): Promise<void> {
-  const instance = await db()
+  const instance = await offlineDB()
   const entry = await instance.get('sales', eventId)
   if (!entry) return
 

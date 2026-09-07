@@ -57,6 +57,7 @@ func newHarness(t *testing.T) *harness {
 	t.Setenv("SECRET_KEY", "test-secret-key-that-is-long-enough-for-config")
 	t.Setenv("ENVIRONMENT", "development")
 	t.Setenv("COOKIE_SECURE", "false")
+	t.Setenv("STORAGE_ROOT", t.TempDir())
 	// An empty bootstrap password keeps the tests from creating a stray
 	// platform account; each test makes the accounts it needs.
 	t.Setenv("BOOTSTRAP_ADMIN_PASSWORD", "")
@@ -194,6 +195,11 @@ func (h *harness) makeBand() *models.Band {
 	h.t.Cleanup(func() {
 		_ = h.db.Exec("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE band_id = ?)", band.ID).Error
 		_ = h.db.Exec("DELETE FROM audit_log WHERE band_id = ?", band.ID).Error
+		_ = h.db.Exec("DELETE FROM packing_sync_events WHERE band_id = ?", band.ID).Error
+		_ = h.db.Exec("DELETE FROM packing_photos WHERE band_id = ?", band.ID).Error
+		_ = h.db.Exec("DELETE FROM packing_items WHERE band_id = ?", band.ID).Error
+		_ = h.db.Exec("DELETE FROM packing_bags WHERE band_id = ?", band.ID).Error
+		_ = h.db.Exec("DELETE FROM packing_list_states WHERE band_id = ?", band.ID).Error
 		_ = h.db.Exec("DELETE FROM users WHERE band_id = ?", band.ID).Error
 		_ = h.db.Exec("DELETE FROM bands WHERE id = ?", band.ID).Error
 	})

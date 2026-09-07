@@ -14,7 +14,9 @@ import { setLocale } from '@/i18n'
  * gains nothing.
  */
 export const useSessionStore = defineStore('session', () => {
+  const OFFLINE_IDENTITY_KEY = 'protovibe.offline-identity.v1'
   const identity = ref<Identity | null>(null)
+  const offlineIdentity = ref(false)
   const loading = ref(false)
   const ready = ref(false)
 
@@ -35,12 +37,35 @@ export const useSessionStore = defineStore('session', () => {
     setLocale('de')
   }
 
-  function adopt(next: Identity | null, csrfToken?: string, applyUserPreferences = true) {
+  function adopt(
+    next: Identity | null,
+    csrfToken?: string,
+    applyUserPreferences = true,
+    fromOfflineCache = false,
+  ) {
     identity.value = next
+    offlineIdentity.value = fromOfflineCache
+    if (next?.band && !fromOfflineCache) {
+      // This deliberately stores only the already-public session identity.
+      // Passwords, MFA secrets and recovery codes never enter this object.
+      localStorage.setItem(OFFLINE_IDENTITY_KEY, JSON.stringify(next))
+    } else if (!next) {
+      localStorage.removeItem(OFFLINE_IDENTITY_KEY)
+    }
     if (csrfToken) {
       setCsrfToken(csrfToken)
     }
     if (applyUserPreferences) applyPreferences(next)
+  }
+
+  function cachedOfflineIdentity(): Identity | null {
+    try {
+      const cached = JSON.parse(localStorage.getItem(OFFLINE_IDENTITY_KEY) ?? 'null') as Identity | null
+      if (!cached?.band || !cached.user?.id || !cached.capabilities?.can_access_band_workflows) return null
+      return cached
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -55,7 +80,9 @@ export const useSessionStore = defineStore('session', () => {
       if (error instanceof ApiError && error.status === 401) {
         adopt(null, undefined, applyUserPreferences)
       } else {
-        throw error
+        const cached = cachedOfflineIdentity()
+        if (!cached) throw error
+        adopt(cached, undefined, applyUserPreferences, true)
       }
     } finally {
       loading.value = false
@@ -81,6 +108,7 @@ export const useSessionStore = defineStore('session', () => {
 
   return {
     identity,
+    offlineIdentity,
     user,
     band,
     featureFlags,

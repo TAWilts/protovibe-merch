@@ -38,6 +38,9 @@ vi.mock('@/stores/session', () => ({ useSessionStore: () => session }))
 vi.mock('@/stores/offline', () => ({
   useOfflineStore: () => ({ online: true, hasQueue: false, syncing: false, queued: 0, sync: vi.fn() }),
 }))
+vi.mock('@/stores/packing', () => ({
+  usePackingStore: () => ({ online: true, syncing: false, queued: 0, sync: vi.fn() }),
+}))
 vi.mock('@/stores/flash', () => ({
   useFlashStore: () => ({ success: vi.fn(), error: vi.fn() }),
 }))

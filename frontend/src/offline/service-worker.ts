@@ -6,7 +6,7 @@ declare const self: ServiceWorkerGlobalScope
 /**
  * A deliberately small service worker.
  *
- * It caches the application shell and the last successful sales view, and
+ * It caches the application shell and the last successful offline-work views, and
  * nothing else. Administration, balances and profile pages are never stored:
  * a device taken to a gig should carry the till, not the band's books.
  *
@@ -16,8 +16,8 @@ declare const self: ServiceWorkerGlobalScope
  */
 precacheAndRoute(self.__WB_MANIFEST)
 
-const SALES_CACHE = 'merch-sales-view-v1'
-const SALES_PATH = '/sales'
+const OFFLINE_VIEW_CACHE = 'merch-offline-views-v2'
+const OFFLINE_PATHS = new Set(['/sales', '/packing-list'])
 
 self.addEventListener('install', () => {
   void self.skipWaiting()
@@ -29,7 +29,9 @@ self.addEventListener('activate', (event) => {
       // Drop any cache from an earlier version of this worker.
       const names = await caches.keys()
       await Promise.all(
-        names.filter((name) => name.startsWith('merch-sales-view-') && name !== SALES_CACHE)
+        names.filter((name) => (
+          name.startsWith('merch-sales-view-') || name.startsWith('merch-offline-views-')
+        ) && name !== OFFLINE_VIEW_CACHE)
           .map((name) => caches.delete(name)),
       )
       await self.clients.claim()
@@ -48,21 +50,22 @@ self.addEventListener('fetch', (event) => {
   // against prices that have since changed.
   if (url.pathname.startsWith('/api/')) return
 
-  // Only the sales document is kept, and only after it loaded successfully.
-  if (request.mode === 'navigate' && url.pathname === SALES_PATH) {
+  // Only the two explicitly offline-capable documents are kept, and only
+  // after they loaded successfully.
+  if (request.mode === 'navigate' && OFFLINE_PATHS.has(url.pathname)) {
     event.respondWith(
       (async () => {
         try {
           const response = await fetch(request)
           if (response.ok) {
-            const cache = await caches.open(SALES_CACHE)
-            await cache.put(SALES_PATH, response.clone())
+            const cache = await caches.open(OFFLINE_VIEW_CACHE)
+            await cache.put(url.pathname, response.clone())
           }
           return response
         } catch {
-          const cached = await caches.match(SALES_PATH)
+          const cached = await caches.match(url.pathname)
           if (cached) return cached
-          throw new Error('offline and no cached sales view')
+          throw new Error('offline and no cached offline view')
         }
       })(),
     )

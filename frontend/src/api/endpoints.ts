@@ -41,6 +41,8 @@ import type {
   PublicRegistrationStatus,
   RegistrationCreated,
   RegistrationCredentials,
+  PackingSnapshot,
+  PackingOperation,
 } from './types'
 
 /** Anonymous onboarding. Status secrets are always sent in the body. */
@@ -173,6 +175,32 @@ export const operationsApi = {
     api.patch<ShippingAdjustment>(`/sales/receipt/${encodeURIComponent(receiptId)}/shipping-cost`, {
       shipping_cost_cents: shippingCostCents,
     }),
+}
+
+export const packingApi = {
+  snapshot: () => api.get<PackingSnapshot>('/packing-list'),
+  apply: (operation: PackingOperation) => api.post<PackingSnapshot>('/packing-list/operations', operation),
+  uploadPhoto: (input: {
+    eventId: string
+    deviceId: string
+    clientCreatedAt: string
+    photoId: string
+    bagId?: string
+    itemId?: string
+    file: Blob
+    filename: string
+  }) => {
+    const body = new FormData()
+    body.append('event_id', input.eventId)
+    body.append('device_id', input.deviceId)
+    body.append('client_created_at', input.clientCreatedAt)
+    body.append('photo_id', input.photoId)
+    if (input.bagId) body.append('bag_id', input.bagId)
+    if (input.itemId) body.append('item_id', input.itemId)
+    body.append('file', input.file, input.filename)
+    return api.post<PackingSnapshot>('/packing-list/photos', body, { raw: true })
+  },
+  photoUrl: (id: string) => `/api/v1/packing-list/photos/${encodeURIComponent(id)}/file`,
 }
 
 function periodQuery(from = '', to = '') {

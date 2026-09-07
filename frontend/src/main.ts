@@ -1,5 +1,6 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import { watch } from 'vue'
 
 import App from './App.vue'
 import router from './router'
@@ -10,6 +11,8 @@ import './assets/base.css'
 import './assets/tablet.css'
 
 import { useOfflineStore } from './stores/offline'
+import { usePackingStore } from './stores/packing'
+import { useSessionStore } from './stores/session'
 
 const app = createApp(App)
 app.use(createPinia()).use(router).use(i18n)
@@ -18,6 +21,14 @@ app.mount('#app')
 // Wired after mounting so the connection listeners and the first queue flush
 // do not delay the first paint.
 useOfflineStore().start()
+const packingStore = usePackingStore()
+packingStore.start()
+const sessionStore = useSessionStore()
+watch(() => sessionStore.identity, (identity) => {
+  if (identity?.band && identity.band.feature_flags.packing_list !== false) {
+    void packingStore.prepare(identity)
+  }
+}, { immediate: true })
 
 /**
  * Installs the service worker that carries the app shell.

@@ -22,6 +22,8 @@ export interface Capabilities {
   can_manage_band_finances: boolean
   can_manage_articles: boolean
   can_manage_slideshow: boolean
+  can_use_packing_list: boolean
+  can_manage_packing_list: boolean
   can_access_band_administration: boolean
   can_access_system_administration: boolean
   can_manage_platform_staff: boolean
@@ -535,6 +537,62 @@ export interface FeatureFlags {
   payment_qr?: boolean
   offline_sales?: boolean
   csv_import?: boolean
+  packing_list?: boolean
+}
+
+export type PackingStatus = 'open' | 'packed' | 'stays_here'
+
+export interface PackingPhoto {
+  id: string
+  bag_id?: string
+  item_id?: string
+  original_filename: string
+  size_bytes: number
+  position: number
+}
+
+export interface PackingItem {
+  id: string
+  bag_id: string
+  name: string
+  position: number
+  status: PackingStatus
+  photos: PackingPhoto[]
+}
+
+export interface PackingBag {
+  id: string
+  name: string
+  position: number
+  status: PackingStatus
+  photos: PackingPhoto[]
+  items: PackingItem[]
+}
+
+export interface PackingSnapshot {
+  revision: number
+  generation: number
+  bags: PackingBag[]
+  replayed?: boolean
+}
+
+export type PackingOperationType =
+  | 'create_bag' | 'rename_bag' | 'delete_bag' | 'reorder_bags'
+  | 'create_item' | 'rename_item' | 'delete_item' | 'reorder_items'
+  | 'set_bag_status' | 'set_item_status' | 'delete_photo' | 'reset'
+
+export interface PackingOperation {
+  event_id: string
+  device_id: string
+  client_created_at: string
+  base_generation: number
+  type: PackingOperationType
+  bag_id?: string
+  item_id?: string
+  photo_id?: string
+  name?: string
+  status?: PackingStatus
+  order_ids?: string[]
 }
 
 export interface Band {

@@ -4,7 +4,7 @@ import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // The PWA config mirrors _old/static/manifest.webmanifest. Offline support is
-// deliberately limited to the sales view; admin and profile pages are never
+// deliberately limited to sales and the packing list; admin and profile pages are never
 // cached, exactly as the original service worker did.
 export default defineConfig({
   plugins: [

@@ -152,6 +152,8 @@ func telemetryFeature(path string) string {
 		return "payment_qr"
 	case strings.HasPrefix(path, "/api/v1/imports"):
 		return "csv_import"
+	case strings.HasPrefix(path, "/api/v1/packing-list"):
+		return "packing_list"
 	case strings.HasPrefix(path, "/api/v1/purchases"):
 		return "purchases"
 	case strings.HasPrefix(path, "/api/v1/articles"),
@@ -334,6 +336,8 @@ func (s *Server) featureGuard() gin.HandlerFunc {
 			feature, enabled = "payment_qr", func(f models.FeatureFlags) bool { return f.PaymentQREnabled() }
 		case strings.HasPrefix(path, "/api/v1/imports"):
 			feature, enabled = "csv_import", func(f models.FeatureFlags) bool { return f.CSVImportEnabled() }
+		case strings.HasPrefix(path, "/api/v1/packing-list"):
+			feature, enabled = "packing_list", func(f models.FeatureFlags) bool { return f.PackingListEnabled() }
 		default:
 			c.Next()
 			return

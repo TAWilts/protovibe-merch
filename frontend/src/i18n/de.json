@@ -1,6 +1,7 @@
 {
   "app": { "name": "Merch Manager" },
   "nav": {
+    "packingList": "Packliste",
     "label": "Hauptnavigation",
     "sales": "Verkauf",
     "orders": "Bestellungen",
@@ -125,6 +126,7 @@
     "status": "Status",
     "location": "Ort / Event",
     "featureLabels": {
+      "packing_list": "Digitale Packliste",
       "sales": "Verkauf",
       "operations": "Offene Vorgänge",
       "slideshow": "Produktpalette / Diashow",
@@ -972,6 +974,50 @@
       "bic": "BIC",
       "remittanceHint": "Der Verwendungszweck wird bei jedem Verkauf automatisch aus Verkaufs-ID, Stückzahl, Artikel und Variante erzeugt.",
       "saved": "Zahlungsziele gespeichert."
+    }
+  },
+  "packing": {
+    "eyebrow": "Vor dem Gig",
+    "title": "Digitale Packliste",
+    "intro": "Gemeinsam abhaken, was mitkommt. Änderungen bleiben offline erhalten und werden bei Verbindung automatisch synchronisiert.",
+    "progress": "Packfortschritt",
+    "packed": "eingepackt",
+    "staysHere": "Bleibt hier",
+    "staysShort": "bleibt hier",
+    "open": "noch offen",
+    "bagPacked": "Gigbag fertig",
+    "pending": "{count} ausstehend",
+    "syncNow": "Jetzt synchronisieren",
+    "reset": "Zurücksetzen",
+    "resetTitle": "Packzustand zurücksetzen?",
+    "resetConfirm": "Alle Häkchen und Markierungen „Bleibt hier“ werden entfernt. Gigbags, Einträge, Reihenfolge und Fotos bleiben bestehen.",
+    "addBag": "Gigbag hinzufügen",
+    "addItem": "Eintrag hinzufügen",
+    "addBagPhotos": "Themenfotos hinzufügen",
+    "addItemPhotos": "Einzelfotos hinzufügen",
+    "rename": "Umbenennen",
+    "name": "Name",
+    "moveUp": "Nach oben verschieben",
+    "moveDown": "Nach unten verschieben",
+    "empty": "Noch keine Gigbags vorhanden. Lege das erste Gigbag an, um die gemeinsame Packliste zu beginnen.",
+    "deleteTitle": "Wirklich löschen?",
+    "deleteConfirm": "„{name}“ wird samt zugeordneten Einträgen oder Fotos gelöscht.",
+    "localError": "Die Änderung konnte auf diesem Gerät nicht gespeichert werden.",
+    "photoError": "Das Foto „{name}“ konnte nicht vorgemerkt werden.",
+    "authenticationRequired": "Deine Sitzung ist abgelaufen. Die lokalen Änderungen bleiben erhalten.",
+    "signInAgain": "Erneut anmelden",
+    "conflictsTitle": "Nicht übertragene Änderungen",
+    "conflictsIntro": "Diese Änderungen hat der Server dauerhaft abgelehnt. Du kannst sie erneut versuchen oder die lokale Änderung verwerfen.",
+    "unknownChange": "Unbekannte Änderung",
+    "retry": "Erneut versuchen",
+    "discard": "Lokal verwerfen",
+    "discardTitle": "Lokale Änderung verwerfen?",
+    "discardConfirm": "Die lokale Änderung wird entfernt und anschließend durch den aktuellen Serverstand ersetzt.",
+    "editor": {
+      "create_bag": "Neues Gigbag",
+      "rename_bag": "Gigbag umbenennen",
+      "create_item": "Neuer Eintrag",
+      "rename_item": "Eintrag umbenennen"
     }
   },
   "sync": {

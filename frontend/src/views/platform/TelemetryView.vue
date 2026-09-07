@@ -25,6 +25,7 @@ const featureKeys = [
   'balances',
   'payment_qr',
   'csv_import',
+  'packing_list',
 ] as const
 
 const events = computed(() => payload.value?.events ?? [])

@@ -21,6 +21,7 @@ func AllModels() []any {
 		&Purchase{}, &PurchaseReceiptAttachment{},
 		&BandTransaction{}, &BandTransactionAttachment{},
 		&RecurringBandTransaction{}, &RecurringBandTransactionRun{},
+		&PackingListState{}, &PackingBag{}, &PackingItem{}, &PackingPhoto{}, &PackingSyncEvent{},
 		&AdminMessage{},
 	}
 }

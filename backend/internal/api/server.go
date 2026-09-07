@@ -21,6 +21,7 @@ import (
 	"github.com/tawilts/protovibe-merch/backend/internal/services/catalogue"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/export"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/importer"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/packing"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/paymentqr"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/platform"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/purchases"
@@ -50,6 +51,7 @@ type Server struct {
 	bandFinance     *bandfinance.Service
 	exports         *export.Service
 	paymentQR       *paymentqr.Service
+	packing         *packing.Service
 	importer        *importer.Service
 	updates         *updates.Service
 	platform        *platform.Service
@@ -98,6 +100,7 @@ func NewServer(cfg *config.Config, database *gorm.DB) (*Server, error) {
 		bandFinance:     bandfinance.NewService(database),
 		exports:         export.NewService(database),
 		paymentQR:       paymentqr.NewService(database),
+		packing:         packing.NewService(database),
 		importer:        importer.NewService(database),
 		updates: updates.NewService(updates.Config{
 			Repository: cfg.UpdateCheckRepository,

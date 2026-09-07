@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { useOfflineStore } from '@/stores/offline'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
+import { usePackingStore } from '@/stores/packing'
 import { ApiError } from '@/api/client'
 import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
 
@@ -18,6 +19,7 @@ import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
  */
 const session = useSessionStore()
 const offline = useOfflineStore()
+const packing = usePackingStore()
 const flash = useFlashStore()
 const router = useRouter()
 const route = useRoute()
@@ -32,6 +34,14 @@ const platformOnly = computed(
 const viaGrant = computed(() => session.supportGrant !== null)
 const posExitPrompt = ref<{ password: string; code: string } | null>(null)
 const posBusy = ref(false)
+const combinedQueued = computed(() => offline.queued + packing.queued)
+const combinedSyncing = computed(() => offline.syncing || packing.syncing)
+const combinedOnline = computed(() => offline.online && packing.online)
+
+function syncOfflineData() {
+  void offline.sync()
+  void packing.sync()
+}
 
 interface NavLink {
   name: string
@@ -52,6 +62,7 @@ const links = computed<NavLink[]>(() => {
     // advertised as a current workflow.
     { name: 'history', label: t('nav.history'), visible: c.can_access_member_workflows || grant },
     { name: 'operations', label: t('nav.operations'), visible: c.can_access_member_workflows || grant },
+    { name: 'packing-list', label: t('nav.packingList'), visible: (c.can_use_packing_list || grant) && flags.value?.packing_list !== false },
     { name: 'slideshow', label: t('nav.slideshow'), visible: (c.can_access_band_workflows || grant) && flags.value?.slideshow !== false },
     { name: 'articles', label: t('nav.articles'), visible: c.can_manage_articles || grant, posRestricted: true },
     { name: 'purchases', label: t('nav.purchases'), visible: c.can_access_member_workflows || grant, posRestricted: true },
@@ -157,17 +168,17 @@ async function leavePOSMode() {
       <!-- The sync state is always visible while selling: a seller at a stand
            must be able to tell at a glance whether their sales have landed. -->
       <button
-        v-if="caps?.can_access_band_workflows && flags?.offline_sales !== false"
+        v-if="caps?.can_access_band_workflows && (flags?.offline_sales !== false || flags?.packing_list !== false)"
         class="offline-sync-status"
-        :class="{ 'is-offline': !offline.online, 'has-queue': offline.hasQueue }"
+        :class="{ 'is-offline': !combinedOnline, 'has-queue': combinedQueued > 0 }"
         type="button"
-        :disabled="!offline.online || offline.syncing"
-        @click="offline.sync()"
+        :disabled="!combinedOnline || combinedSyncing"
+        @click="syncOfflineData"
       >
         <span class="offline-sync-label">
-          <template v-if="!offline.online">{{ t('sync.offline', { count: offline.queued }) }}</template>
-          <template v-else-if="offline.syncing">{{ t('sync.syncing') }}</template>
-          <template v-else-if="offline.hasQueue">{{ t('sync.pending', { count: offline.queued }) }}</template>
+          <template v-if="!combinedOnline">{{ t('sync.offline', { count: combinedQueued }) }}</template>
+          <template v-else-if="combinedSyncing">{{ t('sync.syncing') }}</template>
+          <template v-else-if="combinedQueued > 0">{{ t('sync.pending', { count: combinedQueued }) }}</template>
           <template v-else>{{ t('sync.online') }}</template>
         </span>
       </button>

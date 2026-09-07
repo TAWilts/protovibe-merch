@@ -368,6 +368,7 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 					PaymentQR:    band.FeatureFlags.PaymentQREnabled(),
 					OfflineSales: band.FeatureFlags.OfflineSalesEnabled(),
 					CSVImport:    band.FeatureFlags.CSVImportEnabled(),
+					PackingList:  band.FeatureFlags.PackingListEnabled(),
 				},
 				MaintenanceMessage: band.MaintenanceMessage,
 			}

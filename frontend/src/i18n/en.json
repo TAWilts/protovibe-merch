@@ -1,6 +1,7 @@
 {
   "app": { "name": "Merch Manager" },
   "nav": {
+    "packingList": "Packing list",
     "label": "Main navigation",
     "sales": "Sales",
     "orders": "Bestellungen",
@@ -125,6 +126,7 @@
     "status": "Status",
     "location": "Location / event",
     "featureLabels": {
+      "packing_list": "Digital packing list",
       "sales": "Sales",
       "operations": "Open operations",
       "slideshow": "Product range / slideshow",
@@ -972,6 +974,50 @@
       "bic": "BIC",
       "remittanceHint": "The payment reference is generated automatically for every sale from its sale ID, quantity, article and variant.",
       "saved": "Zahlungsziele gespeichert."
+    }
+  },
+  "packing": {
+    "eyebrow": "Before the gig",
+    "title": "Digital packing list",
+    "intro": "Check off what comes along. Changes remain available offline and synchronize automatically when connected.",
+    "progress": "Packing progress",
+    "packed": "packed",
+    "staysHere": "Stays here",
+    "staysShort": "stays here",
+    "open": "still open",
+    "bagPacked": "Gigbag complete",
+    "pending": "{count} pending",
+    "syncNow": "Synchronize now",
+    "reset": "Reset",
+    "resetTitle": "Reset packing state?",
+    "resetConfirm": "All checkmarks and ‘Stays here’ markers are removed. Gigbags, entries, order and photos remain.",
+    "addBag": "Add gigbag",
+    "addItem": "Add entry",
+    "addBagPhotos": "Add theme photos",
+    "addItemPhotos": "Add item photos",
+    "rename": "Rename",
+    "name": "Name",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "empty": "There are no gigbags yet. Add the first gigbag to start the shared packing list.",
+    "deleteTitle": "Delete permanently?",
+    "deleteConfirm": "‘{name}’ and any associated entries or photos will be deleted.",
+    "localError": "The change could not be stored on this device.",
+    "photoError": "The photo ‘{name}’ could not be queued.",
+    "authenticationRequired": "Your session has expired. Local changes remain stored.",
+    "signInAgain": "Sign in again",
+    "conflictsTitle": "Changes not transmitted",
+    "conflictsIntro": "The server permanently rejected these changes. You can retry them or discard the local change.",
+    "unknownChange": "Unknown change",
+    "retry": "Retry",
+    "discard": "Discard locally",
+    "discardTitle": "Discard local change?",
+    "discardConfirm": "The local change will be removed and then replaced with the current server state.",
+    "editor": {
+      "create_bag": "New gigbag",
+      "rename_bag": "Rename gigbag",
+      "create_item": "New entry",
+      "rename_item": "Rename entry"
     }
   },
   "sync": {

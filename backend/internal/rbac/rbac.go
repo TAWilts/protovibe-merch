@@ -44,6 +44,8 @@ type Capabilities struct {
 	CanManageBandFinances    bool `json:"can_manage_band_finances"`
 	CanManageArticles        bool `json:"can_manage_articles"`
 	CanManageSlideshow       bool `json:"can_manage_slideshow"`
+	CanUsePackingList        bool `json:"can_use_packing_list"`
+	CanManagePackingList     bool `json:"can_manage_packing_list"`
 	CanAccessBandAdmin       bool `json:"can_access_band_administration"`
 	CanAccessSystemAdmin     bool `json:"can_access_system_administration"`
 	CanManagePlatformStaff   bool `json:"can_manage_platform_staff"`
@@ -79,6 +81,8 @@ func For(user *models.User) Capabilities {
 		CanManageBandFinances:    role.AtLeast(models.RoleManager),
 		CanManageArticles:        role.AtLeast(models.RoleManager),
 		CanManageSlideshow:       role.AtLeast(models.RoleManager),
+		CanUsePackingList:        role.IsBandRole(),
+		CanManagePackingList:     role.AtLeast(models.RoleMember),
 		CanAccessBandAdmin:       role == models.RoleBandAdmin,
 		CanAccessSystemAdmin:     role.IsPlatformRole(),
 		CanManagePlatformStaff:   role == models.RoleSystemAdmin,

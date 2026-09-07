@@ -53,6 +53,7 @@ const (
 	CategoryVariantPhoto = "variant-photos"
 	CategorySlideshow    = "slideshow-photos"
 	CategoryBandDocument = "band-documents"
+	CategoryPackingPhoto = "packing-photos"
 )
 
 // LocalStore writes to a directory on a mounted volume.

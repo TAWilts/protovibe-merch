@@ -40,6 +40,7 @@ type FeatureFlags struct {
 	PaymentQR    *bool `json:"payment_qr,omitempty"`
 	OfflineSales *bool `json:"offline_sales,omitempty"`
 	CSVImport    *bool `json:"csv_import,omitempty"`
+	PackingList  *bool `json:"packing_list,omitempty"`
 }
 
 // Enabled reports a flag's effective state; nil means enabled.
@@ -50,6 +51,7 @@ func (f FeatureFlags) BandFinancesEnabled() bool { return enabled(f.BandFinances
 func (f FeatureFlags) PaymentQREnabled() bool    { return enabled(f.PaymentQR) }
 func (f FeatureFlags) OfflineSalesEnabled() bool { return enabled(f.OfflineSales) }
 func (f FeatureFlags) CSVImportEnabled() bool    { return enabled(f.CSVImport) }
+func (f FeatureFlags) PackingListEnabled() bool  { return enabled(f.PackingList) }
 
 func (f FeatureFlags) Value() (driver.Value, error) {
 	return json.Marshal(f)

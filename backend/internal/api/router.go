@@ -74,6 +74,7 @@ func New(s *Server) *gin.Engine {
 	s.registerSupportInboxRoutes(api)
 	s.registerBackupRoutes(api)
 	s.registerPhotoRoutes(api)
+	s.registerPackingRoutes(api)
 	s.registerBandAdminRoutes(api)
 
 	// Unmatched paths must not slip past the guard chain with a bare 404. The

@@ -64,6 +64,9 @@ const (
 	ActionPurchaseUpdated     = "purchase.updated"
 	ActionPurchaseCancelled   = "purchase.cancelled"
 	ActionPurchaseDeleted     = "purchase.deleted" // legacy identifier; no hard-delete path remains
+	ActionPackingChanged      = "packing.changed"
+	ActionPackingReset        = "packing.reset"
+	ActionPackingPhotoChanged = "packing.photo_changed"
 
 	ActionBackupStarted   = "backup.started"
 	ActionBackupFinished  = "backup.finished"

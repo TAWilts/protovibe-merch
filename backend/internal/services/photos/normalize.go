@@ -62,8 +62,14 @@ func Normalize(r io.Reader) (*Normalized, error) {
 	config, format, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
 		// WebP is not in the standard decoder set, so it is tried explicitly.
-		if decoded, webpErr := webp.Decode(bytes.NewReader(raw)); webpErr == nil {
-			return encode(decoded)
+		webpConfig, webpErr := webp.DecodeConfig(bytes.NewReader(raw))
+		if webpErr == nil {
+			if int64(webpConfig.Width)*int64(webpConfig.Height) > MaxPixels {
+				return nil, ErrTooManyPixels
+			}
+			if decoded, decodeErr := webp.Decode(bytes.NewReader(raw)); decodeErr == nil {
+				return encode(decoded)
+			}
 		}
 		return nil, ErrNotAnImage
 	}

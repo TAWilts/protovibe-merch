@@ -37,6 +37,7 @@ type featureFlagsPayload struct {
 	PaymentQR    bool `json:"payment_qr"`
 	OfflineSales bool `json:"offline_sales"`
 	CSVImport    bool `json:"csv_import"`
+	PackingList  bool `json:"packing_list"`
 }
 
 func (s *Server) currentBand(c *gin.Context) {
@@ -64,6 +65,7 @@ func (s *Server) currentBand(c *gin.Context) {
 			PaymentQR:    band.FeatureFlags.PaymentQREnabled(),
 			OfflineSales: band.FeatureFlags.OfflineSalesEnabled(),
 			CSVImport:    band.FeatureFlags.CSVImportEnabled(),
+			PackingList:  band.FeatureFlags.PackingListEnabled(),
 		},
 		MaintenanceMessage: band.MaintenanceMessage,
 	})
