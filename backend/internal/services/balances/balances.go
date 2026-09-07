@@ -34,12 +34,11 @@ type Row struct {
 	MinimumStock *int `json:"minimum_stock"`
 	BelowMinimum bool `json:"below_minimum"`
 
-	PurchaseCostCents         int64 `json:"purchase_cost_cents"`
-	RevenueCents              int64 `json:"revenue_cents"`
-	CollectedCents            int64 `json:"collected_cents"`
-	DonationCents             int64 `json:"donation_cents"`
-	SalePriceCents            int64 `json:"sale_price_cents"`
-	DefaultPurchasePriceCents int64 `json:"default_purchase_price_cents"`
+	PurchaseCostCents int64 `json:"purchase_cost_cents"`
+	RevenueCents      int64 `json:"revenue_cents"`
+	CollectedCents    int64 `json:"collected_cents"`
+	DonationCents     int64 `json:"donation_cents"`
+	SalePriceCents    int64 `json:"sale_price_cents"`
 
 	IsOffered bool `json:"is_offered"`
 	// IsAvailableForSale also includes the article-level flags. A variant may
@@ -122,27 +121,26 @@ func (s *Service) Compute(ctx context.Context) (*Payload, error) {
 // the table does not fill up with noise.
 func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 	type aggregate struct {
-		VariantID                 int64
-		ArticleID                 int64
-		ArticleName               string
-		SalePriceCents            int64
-		DefaultPurchasePriceCents int64
-		MinimumStock              *int
-		IsOffered                 bool
-		ArticleIsOffered          bool
-		ArticleIsActive           bool
-		NoReorder                 bool
-		IsActive                  bool
-		PurchaseCostCents         int64
-		RevenueCents              int64
-		CollectedCents            int64
-		DonationCents             int64
+		VariantID         int64
+		ArticleID         int64
+		ArticleName       string
+		SalePriceCents    int64
+		MinimumStock      *int
+		IsOffered         bool
+		ArticleIsOffered  bool
+		ArticleIsActive   bool
+		NoReorder         bool
+		IsActive          bool
+		PurchaseCostCents int64
+		RevenueCents      int64
+		CollectedCents    int64
+		DonationCents     int64
 	}
 
 	var aggregates []aggregate
 	err := s.db.WithContext(ctx).Model(&models.Variant{}).
 		Select(`variants.id AS variant_id, variants.article_id, articles.name AS article_name,
-			variants.sale_price_cents, variants.default_purchase_price_cents,
+			variants.sale_price_cents,
 			variants.minimum_stock, variants.is_offered, variants.no_reorder, variants.is_active,
 			articles.is_offered AS article_is_offered, articles.is_active AS article_is_active,
 			COALESCE((SELECT SUM(p.quantity * p.unit_cost_cents) FROM purchases p
@@ -177,25 +175,24 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 		}
 
 		rows = append(rows, Row{
-			VariantID:                 entry.VariantID,
-			ArticleID:                 entry.ArticleID,
-			ArticleName:               entry.ArticleName,
-			VariantLabel:              labels[entry.VariantID].VariantLabel,
-			Purchased:                 position.Purchased,
-			Sold:                      position.Sold,
-			OnHand:                    position.OnHand,
-			MinimumStock:              entry.MinimumStock,
-			BelowMinimum:              catalogue.IsAtOrBelowMinimum(position.OnHand, entry.MinimumStock),
-			PurchaseCostCents:         entry.PurchaseCostCents,
-			RevenueCents:              entry.RevenueCents,
-			CollectedCents:            entry.CollectedCents,
-			DonationCents:             entry.DonationCents,
-			SalePriceCents:            entry.SalePriceCents,
-			DefaultPurchasePriceCents: entry.DefaultPurchasePriceCents,
-			IsOffered:                 entry.IsOffered,
-			IsAvailableForSale:        entry.IsActive && entry.ArticleIsActive && entry.IsOffered && entry.ArticleIsOffered,
-			NoReorder:                 entry.NoReorder,
-			IsActive:                  entry.IsActive,
+			VariantID:          entry.VariantID,
+			ArticleID:          entry.ArticleID,
+			ArticleName:        entry.ArticleName,
+			VariantLabel:       labels[entry.VariantID].VariantLabel,
+			Purchased:          position.Purchased,
+			Sold:               position.Sold,
+			OnHand:             position.OnHand,
+			MinimumStock:       entry.MinimumStock,
+			BelowMinimum:       catalogue.IsAtOrBelowMinimum(position.OnHand, entry.MinimumStock),
+			PurchaseCostCents:  entry.PurchaseCostCents,
+			RevenueCents:       entry.RevenueCents,
+			CollectedCents:     entry.CollectedCents,
+			DonationCents:      entry.DonationCents,
+			SalePriceCents:     entry.SalePriceCents,
+			IsOffered:          entry.IsOffered,
+			IsAvailableForSale: entry.IsActive && entry.ArticleIsActive && entry.IsOffered && entry.ArticleIsOffered,
+			NoReorder:          entry.NoReorder,
+			IsActive:           entry.IsActive,
 		})
 	}
 

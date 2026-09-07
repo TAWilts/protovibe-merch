@@ -218,7 +218,6 @@ export interface Variant {
   option_value_ids: number[]
   combination_key: string
   sale_price_cents: number
-  default_purchase_price_cents: number
   minimum_stock: number | null
   is_offered: boolean
   is_available_for_sale: boolean
@@ -236,7 +235,6 @@ export interface Article {
   id: number
   name: string
   default_sale_price_cents: number
-  default_purchase_price_cents: number
   is_offered: boolean
   is_active: boolean
   configuration_complete: boolean
@@ -334,7 +332,6 @@ export interface BalanceRow {
   collected_cents: number
   donation_cents: number
   sale_price_cents: number
-  default_purchase_price_cents: number
   is_offered: boolean
   is_available_for_sale: boolean
   no_reorder: boolean

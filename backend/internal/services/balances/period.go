@@ -70,22 +70,21 @@ func (s *Service) ComputePeriod(ctx context.Context, period Period) (*Payload, e
 
 func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, error) {
 	type baseVariant struct {
-		ID                        int64
-		ArticleID                 int64
-		ArticleName               string
-		SalePriceCents            int64
-		DefaultPurchasePriceCents int64
-		MinimumStock              *int
-		IsOffered                 bool
-		ArticleIsOffered          bool
-		ArticleIsActive           bool
-		NoReorder                 bool
-		IsActive                  bool
+		ID               int64
+		ArticleID        int64
+		ArticleName      string
+		SalePriceCents   int64
+		MinimumStock     *int
+		IsOffered        bool
+		ArticleIsOffered bool
+		ArticleIsActive  bool
+		NoReorder        bool
+		IsActive         bool
 	}
 	var variants []baseVariant
 	err := s.db.WithContext(ctx).Model(&models.Variant{}).
 		Select(`variants.id, variants.article_id, articles.name AS article_name,
-			variants.sale_price_cents, variants.default_purchase_price_cents,
+			variants.sale_price_cents,
 			variants.minimum_stock, variants.is_offered, variants.no_reorder, variants.is_active,
 			articles.is_offered AS article_is_offered, articles.is_active AS article_is_active`).
 		Joins("JOIN articles ON articles.id = variants.article_id").
@@ -155,25 +154,24 @@ func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, 
 		}
 		sale := sales[variant.ID]
 		rows = append(rows, Row{
-			VariantID:                 variant.ID,
-			ArticleID:                 variant.ArticleID,
-			ArticleName:               variant.ArticleName,
-			VariantLabel:              labels[variant.ID].VariantLabel,
-			Purchased:                 position.Purchased,
-			Sold:                      position.Sold,
-			OnHand:                    position.OnHand,
-			MinimumStock:              variant.MinimumStock,
-			BelowMinimum:              catalogue.IsAtOrBelowMinimum(position.OnHand, variant.MinimumStock),
-			PurchaseCostCents:         purchaseCost[variant.ID],
-			RevenueCents:              sale.RevenueCents,
-			CollectedCents:            sale.CollectedCents,
-			DonationCents:             sale.DonationCents,
-			SalePriceCents:            variant.SalePriceCents,
-			DefaultPurchasePriceCents: variant.DefaultPurchasePriceCents,
-			IsOffered:                 variant.IsOffered,
-			IsAvailableForSale:        variant.IsActive && variant.ArticleIsActive && variant.IsOffered && variant.ArticleIsOffered,
-			NoReorder:                 variant.NoReorder,
-			IsActive:                  variant.IsActive,
+			VariantID:          variant.ID,
+			ArticleID:          variant.ArticleID,
+			ArticleName:        variant.ArticleName,
+			VariantLabel:       labels[variant.ID].VariantLabel,
+			Purchased:          position.Purchased,
+			Sold:               position.Sold,
+			OnHand:             position.OnHand,
+			MinimumStock:       variant.MinimumStock,
+			BelowMinimum:       catalogue.IsAtOrBelowMinimum(position.OnHand, variant.MinimumStock),
+			PurchaseCostCents:  purchaseCost[variant.ID],
+			RevenueCents:       sale.RevenueCents,
+			CollectedCents:     sale.CollectedCents,
+			DonationCents:      sale.DonationCents,
+			SalePriceCents:     variant.SalePriceCents,
+			IsOffered:          variant.IsOffered,
+			IsAvailableForSale: variant.IsActive && variant.ArticleIsActive && variant.IsOffered && variant.ArticleIsOffered,
+			NoReorder:          variant.NoReorder,
+			IsActive:           variant.IsActive,
 		})
 	}
 

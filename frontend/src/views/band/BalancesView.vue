@@ -144,7 +144,6 @@ function downloadCsv(kind: 'inventory' | 'articles') {
     : [
         ['Artikel', (row) => row.article_name], ['Optionen', (row) => row.variant_label],
         ['Verkaufspreis', (row) => format(row.sale_price_cents)],
-        ['Standard-Einkaufspreis', (row) => format(row.default_purchase_price_cents)],
         ['Mindestbestand', (row) => row.minimum_stock ?? ''],
         ['Nachbestellen', (row) => row.no_reorder ? 'nein' : 'ja'],
         ['Angeboten', (row) => row.is_available_for_sale ? 'ja' : 'nein'],

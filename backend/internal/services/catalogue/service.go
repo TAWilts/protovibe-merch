@@ -140,13 +140,12 @@ func (s *Service) SyncVariants(ctx context.Context, articleID int64) error {
 			return fmt.Errorf("catalogue: malformed combination key %q: %w", key, err)
 		}
 		variant := &models.Variant{
-			ArticleID:                 articleID,
-			OptionValueIDs:            optionIDs,
-			CombinationKey:            key,
-			SalePriceCents:            article.DefaultSalePriceCents,
-			DefaultPurchasePriceCents: article.DefaultPurchasePriceCents,
-			IsOffered:                 true,
-			IsActive:                  true,
+			ArticleID:      articleID,
+			OptionValueIDs: optionIDs,
+			CombinationKey: key,
+			SalePriceCents: article.DefaultSalePriceCents,
+			IsOffered:      true,
+			IsActive:       true,
 		}
 		if err := s.db.WithContext(ctx).Create(variant).Error; err != nil {
 			return err
@@ -218,21 +217,24 @@ func (s *Service) PreserveVariantsForNewOptionGroups(ctx context.Context, articl
 
 // CreateArticle adds an article together with the default option grid and its
 // resulting variants, in one transaction.
-func (s *Service) CreateArticle(ctx context.Context, name string, defaultSaleCents, defaultPurchaseCents int64) (*models.Article, error) {
+//
+// The final int64 argument is retained temporarily for source compatibility
+// with older internal callers. It is intentionally ignored: purchase prices
+// are derived exclusively from actual purchase transactions.
+func (s *Service) CreateArticle(ctx context.Context, name string, defaultSaleCents, _ int64) (*models.Article, error) {
 	cleaned := strings.TrimSpace(name)
 	if cleaned == "" || len(cleaned) > 200 {
 		return nil, fmt.Errorf("%w: 1 to 200 characters required", ErrInvalidName)
 	}
-	if defaultSaleCents < 0 || defaultPurchaseCents < 0 {
+	if defaultSaleCents < 0 {
 		return nil, ErrNegativePrice
 	}
 
 	article := &models.Article{
-		Name:                      cleaned,
-		DefaultSalePriceCents:     defaultSaleCents,
-		DefaultPurchasePriceCents: defaultPurchaseCents,
-		IsOffered:                 true,
-		IsActive:                  true,
+		Name:                  cleaned,
+		DefaultSalePriceCents: defaultSaleCents,
+		IsOffered:             true,
+		IsActive:              true,
 	}
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

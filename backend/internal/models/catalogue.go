@@ -13,9 +13,10 @@ type Article struct {
 	ID int64 `gorm:"primaryKey" json:"id"`
 	Tenant
 
-	Name                      string `gorm:"size:200;not null" json:"name"`
-	DefaultSalePriceCents     int64  `gorm:"not null;default:0" json:"default_sale_price_cents"`
-	DefaultPurchasePriceCents int64  `gorm:"not null;default:0" json:"default_purchase_price_cents"`
+	Name                  string `gorm:"size:200;not null" json:"name"`
+	DefaultSalePriceCents int64  `gorm:"not null;default:0" json:"default_sale_price_cents"`
+	// Legacy compatibility column. Purchase prices come exclusively from Purchase rows.
+	DefaultPurchasePriceCents int64 `gorm:"not null;default:0" json:"-"`
 
 	IsOffered bool `gorm:"not null" json:"is_offered"`
 	IsActive  bool `gorm:"not null" json:"is_active"`
@@ -74,8 +75,9 @@ type Variant struct {
 	OptionValueIDs JSONInt64Slice `gorm:"type:json;not null" json:"option_value_ids"`
 	CombinationKey string         `gorm:"size:255;not null" json:"combination_key"`
 
-	SalePriceCents            int64 `gorm:"not null;default:0" json:"sale_price_cents"`
-	DefaultPurchasePriceCents int64 `gorm:"not null;default:0" json:"default_purchase_price_cents"`
+	SalePriceCents int64 `gorm:"not null;default:0" json:"sale_price_cents"`
+	// Legacy compatibility column. It is intentionally not exposed or used as a price source.
+	DefaultPurchasePriceCents int64 `gorm:"not null;default:0" json:"-"`
 
 	// MinimumStock nil means no warning is configured. An explicit 0 stays
 	// meaningful: warn only once the variant is actually sold out.

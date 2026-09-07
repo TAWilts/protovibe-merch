@@ -127,7 +127,7 @@ func (f *fixture) addOptionGroup(articleID int64, name string, position int, val
 }
 
 // TestCreateArticleSeedsDefaultGrid pins the shape a band gets when it adds an
-// article: Farbe x Größe, ten sellable variants, priced from the article.
+// article: Farbe x Größe, ten sellable variants, with only a sale-price default.
 func TestCreateArticleSeedsDefaultGrid(t *testing.T) {
 	f := newFixture(t)
 
@@ -141,8 +141,11 @@ func TestCreateArticleSeedsDefaultGrid(t *testing.T) {
 		t.Fatalf("expected 10 variants for 2 colours x 5 sizes, got %d", len(active))
 	}
 	for _, variant := range active {
-		if variant.SalePriceCents != 1800 || variant.DefaultPurchasePriceCents != 900 {
-			t.Fatalf("variant %d did not inherit the article prices: %+v", variant.ID, variant)
+		if variant.SalePriceCents != 1800 {
+			t.Fatalf("variant %d did not inherit the article sale price: %+v", variant.ID, variant)
+		}
+		if variant.DefaultPurchasePriceCents != 0 {
+			t.Fatalf("variant %d must not inherit a stable purchase price: %+v", variant.ID, variant)
 		}
 		if len(variant.OptionValueIDs) != 2 {
 			t.Fatalf("variant %d should carry one value per group, got %v", variant.ID, variant.OptionValueIDs)

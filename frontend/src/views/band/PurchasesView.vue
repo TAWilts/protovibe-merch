@@ -624,19 +624,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
           {{ t('purchases.unitCost') }}
           <input v-model="unitCostInput" inputmode="decimal" :disabled="!selectedVariant" @change="onUnitCostChanged" />
         </label>
-        <div class="field-grid two-columns">
-          <label class="checkbox-row">
-            <input v-model="pricesIncludeVat" type="checkbox" />
-            <span>{{ t('purchases.priceIncludesVat') }}</span>
-          </label>
-          <label>
-            {{ t('purchases.vatRate') }}
-            <input v-model="vatRateInput" inputmode="decimal" />
-          </label>
-        </div>
-        <label>{{ t('purchases.shippingCost') }}<input v-model="shippingCostInput" inputmode="decimal" /></label>
-
-        <div class="quantity-and-total">
+        <div class="purchase-line-controls">
           <label class="quantity-control">
             {{ t('common.quantity') }}
             <span class="stepper">
@@ -651,12 +639,6 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
               <button type="button" :aria-label="t('common.increase')" @click="stepQuantity(1)">+</button>
             </span>
           </label>
-          <div class="total-box">
-            <span>{{ t('purchases.netTotal') }}</span>
-            <strong>{{ format(cartNetCents) }}</strong>
-            <span>{{ t('purchases.grossTotal') }}</span>
-            <strong>{{ format(cartGrossCents) }}</strong>
-          </div>
         </div>
 
         <button
@@ -685,6 +667,26 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             </div>
           </div>
         </section>
+
+        <div class="field-grid two-columns purchase-tax-row">
+          <label class="checkbox-row">
+            <input v-model="pricesIncludeVat" type="checkbox" />
+            <span>{{ t('purchases.priceIncludesVat') }}</span>
+          </label>
+          <label>
+            {{ t('purchases.vatRate') }}
+            <input v-model="vatRateInput" inputmode="decimal" :disabled="pricesIncludeVat" />
+          </label>
+        </div>
+
+        <label>{{ t('purchases.shippingCost') }}<input v-model="shippingCostInput" inputmode="decimal" /></label>
+
+        <div class="total-box purchase-total-box">
+          <span>{{ t('purchases.netTotal') }}</span>
+          <strong>{{ format(cartNetCents) }}</strong>
+          <span>{{ t('purchases.grossTotal') }}</span>
+          <strong>{{ format(cartGrossCents) }}</strong>
+        </div>
 
         <div class="field-grid two-columns">
           <label>{{ t('common.date') }}<input v-model="purchasedOn" type="date" /></label>
@@ -756,6 +758,9 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             </span>
             <span>{{ t('purchases.positionCount', { count: receipt.positions.length }) }}</span>
             <strong>{{ format(receipt.totalCostCents) }}</strong>
+            <button v-if="purchaseEditingEnabled && canManage && !receipt.isCancelled" class="compact-button" type="button" @click.stop.prevent="startEdit(receipt)">
+              {{ t('purchases.edit') }}
+            </button>
             <span class="receipt-chevron" aria-hidden="true">⌄</span>
           </summary>
           <div class="receipt-details">
@@ -791,9 +796,6 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
               </table>
             </div>
             <div class="receipt-actions">
-              <button v-if="purchaseEditingEnabled && canManage && !receipt.isCancelled" class="secondary-button" type="button" @click="startEdit(receipt)">
-                {{ t('purchases.edit') }}
-              </button>
               <button class="secondary-button" type="button" @click="openAttachments(receipt.positions[0])">
                 {{ t('purchases.invoiceAndAttachments') }}
               </button>
@@ -833,7 +835,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
         <label>{{ t('purchases.invoiceReference') }}<input v-model="editInvoiceReference" /></label>
         <div class="field-grid two-columns">
           <label class="checkbox-row"><input v-model="editPricesIncludeVat" type="checkbox" /><span>{{ t('purchases.priceIncludesVat') }}</span></label>
-          <label>{{ t('purchases.vatRate') }}<input v-model="editVatRateInput" inputmode="decimal" /></label>
+          <label>{{ t('purchases.vatRate') }}<input v-model="editVatRateInput" inputmode="decimal" :disabled="editPricesIncludeVat" /></label>
         </div>
         <label>{{ t('purchases.shippingCost') }}<input v-model="editShippingCostInput" inputmode="decimal" /></label>
         <div class="edit-purchase-lines">
@@ -895,6 +897,11 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
   align-items: center;
 }
 
+.purchase-line-controls {
+  display: flex;
+  align-items: flex-end;
+}
+
 .attachment-indicator { font-size: 1rem; }
 
 .edit-purchase-lines { display: grid; gap: 10px; }
@@ -943,7 +950,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
 
 .purchase-receipt-card summary {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto auto auto;
+  grid-template-columns: minmax(180px, 1fr) auto auto auto auto;
   gap: 20px;
   align-items: center;
   padding: 16px 18px;

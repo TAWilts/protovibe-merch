@@ -29,9 +29,8 @@ type OptionGroupInput struct {
 // VariantInput carries the per-variant overrides the management page edits.
 // Only variants the client actually sent are touched.
 type VariantInput struct {
-	ID                        int64  `json:"id"`
-	SalePriceCents            *int64 `json:"sale_price_cents"`
-	DefaultPurchasePriceCents *int64 `json:"default_purchase_price_cents"`
+	ID             int64  `json:"id"`
+	SalePriceCents *int64 `json:"sale_price_cents"`
 	// MinimumStock is tri-state: absent leaves it alone, null clears the
 	// warning, a number sets the threshold. An explicit 0 means "warn only
 	// once sold out", which is why null and 0 must stay distinguishable.
@@ -43,12 +42,11 @@ type VariantInput struct {
 
 // ArticleConfiguration is a complete save of the article management page.
 type ArticleConfiguration struct {
-	Name                      *string            `json:"name"`
-	DefaultSalePriceCents     *int64             `json:"default_sale_price_cents"`
-	DefaultPurchasePriceCents *int64             `json:"default_purchase_price_cents"`
-	IsOffered                 *bool              `json:"is_offered"`
-	OptionGroups              []OptionGroupInput `json:"option_groups"`
-	Variants                  []VariantInput     `json:"variants"`
+	Name                  *string            `json:"name"`
+	DefaultSalePriceCents *int64             `json:"default_sale_price_cents"`
+	IsOffered             *bool              `json:"is_offered"`
+	OptionGroups          []OptionGroupInput `json:"option_groups"`
+	Variants              []VariantInput     `json:"variants"`
 }
 
 // ErrUnknownEntity is returned when a save references a group, value or
@@ -124,15 +122,6 @@ func applyArticleFields(ctx context.Context, tx *gorm.DB, article *models.Articl
 		}
 		updates["default_sale_price_cents"] = *cfg.DefaultSalePriceCents
 	}
-	if cfg.DefaultPurchasePriceCents != nil {
-		if *cfg.DefaultPurchasePriceCents < 0 {
-			return ErrNegativePrice
-		}
-		if *cfg.DefaultPurchasePriceCents != article.DefaultPurchasePriceCents {
-			cascades["default_purchase_price_cents"] = article.DefaultPurchasePriceCents
-		}
-		updates["default_purchase_price_cents"] = *cfg.DefaultPurchasePriceCents
-	}
 	if cfg.IsOffered != nil {
 		// Withdrawing an article from the assortment is not a deletion: its
 		// bookings, stock and future purchases stay fully available.
@@ -145,13 +134,7 @@ func applyArticleFields(ctx context.Context, tx *gorm.DB, article *models.Articl
 
 	now := updates["updated_at"]
 	for column, previousDefault := range cascades {
-		var replacement int64
-		switch column {
-		case "sale_price_cents":
-			replacement = *cfg.DefaultSalePriceCents
-		default:
-			replacement = *cfg.DefaultPurchasePriceCents
-		}
+		replacement := *cfg.DefaultSalePriceCents
 		if err := tx.WithContext(ctx).Model(&models.Variant{}).
 			Where("article_id = ? AND "+column+" = ?", article.ID, previousDefault).
 			Updates(map[string]any{column: replacement, "updated_at": now}).Error; err != nil {
@@ -335,12 +318,6 @@ func (s *Service) applyVariantOverrides(ctx context.Context, tx *gorm.DB, articl
 				return ErrNegativePrice
 			}
 			updates["sale_price_cents"] = *input.SalePriceCents
-		}
-		if input.DefaultPurchasePriceCents != nil {
-			if *input.DefaultPurchasePriceCents < 0 {
-				return ErrNegativePrice
-			}
-			updates["default_purchase_price_cents"] = *input.DefaultPurchasePriceCents
 		}
 		switch {
 		case input.ClearMinimum:

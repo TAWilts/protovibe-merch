@@ -29,15 +29,14 @@ func (s *Server) registerCatalogueRoutes(g *gin.RouterGroup) {
 // variantPayload is one variant as the API returns it, with its derived stock
 // already resolved so the client never has to compute it.
 type variantPayload struct {
-	ID                        int64   `json:"id"`
-	OptionValueIDs            []int64 `json:"option_value_ids"`
-	CombinationKey            string  `json:"combination_key"`
-	SalePriceCents            int64   `json:"sale_price_cents"`
-	DefaultPurchasePriceCents int64   `json:"default_purchase_price_cents"`
-	MinimumStock              *int    `json:"minimum_stock"`
-	IsOffered                 bool    `json:"is_offered"`
-	NoReorder                 bool    `json:"no_reorder"`
-	IsActive                  bool    `json:"is_active"`
+	ID             int64   `json:"id"`
+	OptionValueIDs []int64 `json:"option_value_ids"`
+	CombinationKey string  `json:"combination_key"`
+	SalePriceCents int64   `json:"sale_price_cents"`
+	MinimumStock   *int    `json:"minimum_stock"`
+	IsOffered      bool    `json:"is_offered"`
+	NoReorder      bool    `json:"no_reorder"`
+	IsActive       bool    `json:"is_active"`
 
 	Purchased    int64 `json:"purchased"`
 	Sold         int64 `json:"sold"`
@@ -66,12 +65,11 @@ type optionGroupPayload struct {
 }
 
 type articlePayload struct {
-	ID                        int64  `json:"id"`
-	Name                      string `json:"name"`
-	DefaultSalePriceCents     int64  `json:"default_sale_price_cents"`
-	DefaultPurchasePriceCents int64  `json:"default_purchase_price_cents"`
-	IsOffered                 bool   `json:"is_offered"`
-	IsActive                  bool   `json:"is_active"`
+	ID                    int64  `json:"id"`
+	Name                  string `json:"name"`
+	DefaultSalePriceCents int64  `json:"default_sale_price_cents"`
+	IsOffered             bool   `json:"is_offered"`
+	IsActive              bool   `json:"is_active"`
 	// ConfigurationComplete is false while an option group still has no
 	// values; such an article cannot be sold yet.
 	ConfigurationComplete bool                 `json:"configuration_complete"`
@@ -233,20 +231,19 @@ func (s *Server) buildArticles(c *gin.Context, id int64) ([]articlePayload, erro
 	for _, variant := range variants {
 		position := stock[variant.ID]
 		payload := variantPayload{
-			ID:                        variant.ID,
-			OptionValueIDs:            variant.OptionValueIDs,
-			CombinationKey:            variant.CombinationKey,
-			SalePriceCents:            variant.SalePriceCents,
-			DefaultPurchasePriceCents: variant.DefaultPurchasePriceCents,
-			MinimumStock:              variant.MinimumStock,
-			PhotoIDs:                  emptyPhotos(variant.ID),
-			IsOffered:                 variant.IsOffered,
-			NoReorder:                 variant.NoReorder,
-			IsActive:                  variant.IsActive,
-			Purchased:                 position.Purchased,
-			Sold:                      position.Sold,
-			OnHand:                    position.OnHand,
-			BelowMinimum:              catalogue.IsAtOrBelowMinimum(position.OnHand, variant.MinimumStock),
+			ID:             variant.ID,
+			OptionValueIDs: variant.OptionValueIDs,
+			CombinationKey: variant.CombinationKey,
+			SalePriceCents: variant.SalePriceCents,
+			MinimumStock:   variant.MinimumStock,
+			PhotoIDs:       emptyPhotos(variant.ID),
+			IsOffered:      variant.IsOffered,
+			NoReorder:      variant.NoReorder,
+			IsActive:       variant.IsActive,
+			Purchased:      position.Purchased,
+			Sold:           position.Sold,
+			OnHand:         position.OnHand,
+			BelowMinimum:   catalogue.IsAtOrBelowMinimum(position.OnHand, variant.MinimumStock),
 		}
 		if payload.OptionValueIDs == nil {
 			payload.OptionValueIDs = []int64{}
@@ -284,25 +281,23 @@ func (s *Server) buildArticles(c *gin.Context, id int64) ([]articlePayload, erro
 		}
 
 		out = append(out, articlePayload{
-			ID:                        article.ID,
-			Name:                      article.Name,
-			DefaultSalePriceCents:     article.DefaultSalePriceCents,
-			DefaultPurchasePriceCents: article.DefaultPurchasePriceCents,
-			IsOffered:                 article.IsOffered,
-			IsActive:                  article.IsActive,
-			ConfigurationComplete:     complete,
-			TotalStock:                totalStock[article.ID],
-			OptionGroups:              articleGroups,
-			Variants:                  articleVariants,
+			ID:                    article.ID,
+			Name:                  article.Name,
+			DefaultSalePriceCents: article.DefaultSalePriceCents,
+			IsOffered:             article.IsOffered,
+			IsActive:              article.IsActive,
+			ConfigurationComplete: complete,
+			TotalStock:            totalStock[article.ID],
+			OptionGroups:          articleGroups,
+			Variants:              articleVariants,
 		})
 	}
 	return out, nil
 }
 
 type createArticleRequest struct {
-	Name                      string `json:"name" binding:"required"`
-	DefaultSalePriceCents     int64  `json:"default_sale_price_cents"`
-	DefaultPurchasePriceCents int64  `json:"default_purchase_price_cents"`
+	Name                  string `json:"name" binding:"required"`
+	DefaultSalePriceCents int64  `json:"default_sale_price_cents"`
 }
 
 func (s *Server) createArticle(c *gin.Context) {
@@ -313,7 +308,8 @@ func (s *Server) createArticle(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	article, err := s.catalogue.CreateArticle(ctx, req.Name, req.DefaultSalePriceCents, req.DefaultPurchasePriceCents)
+	// Purchase prices are transaction data, never article defaults.
+	article, err := s.catalogue.CreateArticle(ctx, req.Name, req.DefaultSalePriceCents, 0)
 	if err != nil {
 		s.reportCatalogueError(c, err)
 		return

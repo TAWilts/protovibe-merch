@@ -145,16 +145,15 @@ func (s *Service) WriteZIP(ctx context.Context, w io.Writer) error {
 
 // variantContext is everything the exports need to describe a variant.
 type variantContext struct {
-	ArticleID                 int64
-	ArticleName               string
-	ArticleIsOffered          bool
-	OptionText                string
-	SalePriceCents            int64
-	DefaultPurchasePriceCents int64
-	MinimumStock              *int
-	IsOffered                 bool
-	NoReorder                 bool
-	IsActive                  bool
+	ArticleID        int64
+	ArticleName      string
+	ArticleIsOffered bool
+	OptionText       string
+	SalePriceCents   int64
+	MinimumStock     *int
+	IsOffered        bool
+	NoReorder        bool
+	IsActive         bool
 }
 
 // variantContexts resolves every variant with its article and option labels.
@@ -164,23 +163,22 @@ type variantContext struct {
 // separately would double the number of queries for no benefit.
 func (s *Service) variantContexts(ctx context.Context) (map[int64]variantContext, []int64, error) {
 	type variantRow struct {
-		ID                        int64
-		ArticleID                 int64
-		ArticleName               string
-		ArticleIsOffered          bool
-		OptionValueIDs            models.JSONInt64Slice
-		SalePriceCents            int64
-		DefaultPurchasePriceCents int64
-		MinimumStock              *int
-		IsOffered                 bool
-		NoReorder                 bool
-		IsActive                  bool
+		ID               int64
+		ArticleID        int64
+		ArticleName      string
+		ArticleIsOffered bool
+		OptionValueIDs   models.JSONInt64Slice
+		SalePriceCents   int64
+		MinimumStock     *int
+		IsOffered        bool
+		NoReorder        bool
+		IsActive         bool
 	}
 
 	var variants []variantRow
 	err := s.db.WithContext(ctx).Model(&models.Variant{}).
 		Select(`variants.id, variants.article_id, variants.option_value_ids,
-			variants.sale_price_cents, variants.default_purchase_price_cents,
+			variants.sale_price_cents,
 			variants.minimum_stock, variants.is_offered, variants.no_reorder, variants.is_active,
 			articles.name AS article_name, articles.is_offered AS article_is_offered`).
 		Joins("JOIN articles ON articles.id = variants.article_id").
@@ -231,16 +229,15 @@ func (s *Service) variantContexts(ctx context.Context) (map[int64]variantContext
 		}
 
 		contexts[variant.ID] = variantContext{
-			ArticleID:                 variant.ArticleID,
-			ArticleName:               variant.ArticleName,
-			ArticleIsOffered:          variant.ArticleIsOffered,
-			OptionText:                text,
-			SalePriceCents:            variant.SalePriceCents,
-			DefaultPurchasePriceCents: variant.DefaultPurchasePriceCents,
-			MinimumStock:              variant.MinimumStock,
-			IsOffered:                 variant.IsOffered,
-			NoReorder:                 variant.NoReorder,
-			IsActive:                  variant.IsActive,
+			ArticleID:        variant.ArticleID,
+			ArticleName:      variant.ArticleName,
+			ArticleIsOffered: variant.ArticleIsOffered,
+			OptionText:       text,
+			SalePriceCents:   variant.SalePriceCents,
+			MinimumStock:     variant.MinimumStock,
+			IsOffered:        variant.IsOffered,
+			NoReorder:        variant.NoReorder,
+			IsActive:         variant.IsActive,
 		}
 		order = append(order, variant.ID)
 	}
@@ -282,7 +279,6 @@ func (s *Service) articleSheet(ctx context.Context) (*Sheet, error) {
 			minimumStockText(entry.MinimumStock),
 			yesNo(catalogue.IsAtOrBelowMinimum(position.OnHand, entry.MinimumStock)),
 			money.FormatCSV(entry.SalePriceCents),
-			money.FormatCSV(entry.DefaultPurchasePriceCents),
 			yesNo(!entry.NoReorder),
 			yesNo(entry.ArticleIsOffered && entry.IsOffered),
 			status,
@@ -293,8 +289,7 @@ func (s *Service) articleSheet(ctx context.Context) (*Sheet, error) {
 		Name: string(KindArticles),
 		Header: []string{
 			"Artikel-ID", "Artikel", "Varianten-ID", "Optionen", "Bestand", "Mindestbestand",
-			"Mindestbestandswarnung", "Verkaufspreis", "Standard-Einkaufspreis",
-			"Nachbestellen", "Angeboten", "Status",
+			"Mindestbestandswarnung", "Verkaufspreis", "Nachbestellen", "Angeboten", "Status",
 		},
 		Rows: rows,
 	}, nil
