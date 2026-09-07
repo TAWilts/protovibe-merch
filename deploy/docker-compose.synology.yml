@@ -1,8 +1,6 @@
 # Synology Container Manager stack. Images are built and published by
 # .github/workflows/publish-image.yml; no source checkout or compiler is needed
 # on the NAS.
-name: protovibe-merch-multitenant-test
-
 x-logging: &default-logging
   driver: json-file
   options:
@@ -26,7 +24,7 @@ services:
       - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
       - --default-time-zone=+00:00
     volumes:
-      - ${SYNOLOGY_DATA_ROOT:-/volume1/docker/protovibe-merch-multitenant-test/data}/mariadb:/var/lib/mysql
+      - ${SYNOLOGY_DATA_ROOT:?SYNOLOGY_DATA_ROOT is required}/mariadb:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -73,7 +71,7 @@ services:
       UPDATE_CHECK_REPOSITORY: ${UPDATE_CHECK_REPOSITORY:-TAWilts/protovibe-merch}
       UPDATE_CHECK_TOKEN: ${UPDATE_CHECK_TOKEN:-}
     volumes:
-      - ${SYNOLOGY_DATA_ROOT:-/volume1/docker/protovibe-merch-multitenant-test/data}/app:/data
+      - ${SYNOLOGY_DATA_ROOT:?SYNOLOGY_DATA_ROOT is required}/app:/data
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/readyz >/dev/null || exit 1"]
       interval: 10s
@@ -95,8 +93,8 @@ services:
     ports:
       - "${HOST_BIND:-0.0.0.0}:${HOST_PORT:-8090}:80"
     volumes:
-      - ${SYNOLOGY_DATA_ROOT:-/volume1/docker/protovibe-merch-multitenant-test/data}/caddy-data:/data
-      - ${SYNOLOGY_DATA_ROOT:-/volume1/docker/protovibe-merch-multitenant-test/data}/caddy-config:/config
+      - ${SYNOLOGY_DATA_ROOT:?SYNOLOGY_DATA_ROOT is required}/caddy-data:/data
+      - ${SYNOLOGY_DATA_ROOT:?SYNOLOGY_DATA_ROOT is required}/caddy-config:/config
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/healthz >/dev/null || exit 1"]
       interval: 10s

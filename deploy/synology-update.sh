@@ -1,14 +1,17 @@
 #!/bin/sh
 set -eu
 
-PROJECT_DIR="${PROJECT_DIR:-/volume1/docker/protovibe-merch-multitenant-test}"
-PROJECT_NAME="${PROJECT_NAME:-protovibe-merch-multitenant-test}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROJECT_DIR="${PROJECT_DIR:-$SCRIPT_DIR}"
+PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
 ENV_FILE="${ENV_FILE:-$PROJECT_DIR/.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-$PROJECT_DIR/docker-compose.synology.yml}"
 
 EXPECTED_REPOSITORY="${EXPECTED_REPOSITORY:-ghcr.io/tawilts/protovibe-merch-multitenant}"
-EXPECTED_DATA_ROOT="${EXPECTED_DATA_ROOT:-/volume1/docker/protovibe-merch-multitenant-test/data}"
-EXPECTED_PORT="${EXPECTED_PORT:-8090}"
+EXPECTED_DATA_ROOT="${EXPECTED_DATA_ROOT:-$PROJECT_DIR/data}"
+# Optional safety check. Leave empty when the deployment is intentionally
+# using a different port, for example a parallel test instance.
+EXPECTED_PORT="${EXPECTED_PORT:-}"
 
 fail() {
   echo "FEHLER: $*" >&2
@@ -113,8 +116,12 @@ HOST_PORT="$(setting HOST_PORT)"
 [ "$DATA_ROOT" = "$EXPECTED_DATA_ROOT" ] ||
   fail "SYNOLOGY_DATA_ROOT muss $EXPECTED_DATA_ROOT sein."
 
-[ "$HOST_PORT" = "$EXPECTED_PORT" ] ||
+[ -n "$HOST_PORT" ] ||
+  fail "HOST_PORT fehlt in .env."
+
+if [ -n "$EXPECTED_PORT" ] && [ "$HOST_PORT" != "$EXPECTED_PORT" ]; then
   fail "HOST_PORT muss $EXPECTED_PORT sein."
+fi
 
 APP_URL="http://127.0.0.1:${HOST_PORT}"
 

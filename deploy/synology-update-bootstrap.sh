@@ -3,7 +3,8 @@
 # that image's matching synology-update.sh atomically, then executes it.
 set -eu
 
-PROJECT_DIR="${PROJECT_DIR:-/volume1/docker/protovibe-merch-multitenant-test}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PROJECT_DIR="${PROJECT_DIR:-$SCRIPT_DIR}"
 ENV_FILE="${ENV_FILE:-$PROJECT_DIR/.env}"
 UPDATE_FILE="${UPDATE_FILE:-$PROJECT_DIR/synology-update.sh}"
 IMAGE_UPDATE_PATH="/usr/local/share/merch-manager/synology-update.sh"
