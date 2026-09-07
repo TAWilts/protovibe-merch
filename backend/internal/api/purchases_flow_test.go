@@ -58,6 +58,7 @@ func (h *harness) upload(path, filename, contentType string, content []byte) res
 // TestGoodsReceiptLifecycle walks booking, correcting and removing a receipt,
 // and checks the derived stock follows each step.
 func TestGoodsReceiptLifecycle(t *testing.T) {
+	t.Setenv("PURCHASE_EDITING_ENABLED", "true")
 	h := newHarness(t)
 	band := h.makeBand()
 	h.signInAs(band, models.RoleManager)
