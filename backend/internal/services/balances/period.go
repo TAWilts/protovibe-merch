@@ -208,6 +208,22 @@ func (s *Service) summaryPeriod(ctx context.Context, period Period, rows []Row) 
 			summary.MinimumStockWarnings++
 		}
 	}
+	// Shipping is receipt-level but repeated on purchase rows, so count it once per receipt.
+	type shippingRow struct {
+		ReceiptID         string
+		ShippingCostCents int64
+	}
+	var shippingRows []shippingRow
+	shippingQuery := s.db.WithContext(ctx).Model(&models.Purchase{}).Where("is_cancelled = ?", false)
+	shippingQuery = period.apply(shippingQuery, "purchased_on")
+	if err := shippingQuery.Select("receipt_id, MAX(shipping_cost_cents) AS shipping_cost_cents").
+		Group("receipt_id").Scan(&shippingRows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range shippingRows {
+		summary.PurchaseCostCents += row.ShippingCostCents
+	}
+
 	summary.CashBalanceCents = summary.CollectedCents + summary.DonationCents - summary.PurchaseCostCents
 
 	openQuery := s.db.WithContext(ctx).Model(&models.Sale{}).
@@ -249,19 +265,14 @@ func (s *Service) summaryPeriod(ctx context.Context, period Period, rows []Row) 
 }
 
 func (s *Service) costBasisAt(ctx context.Context, to *models.Date) (map[int64]int64, error) {
-	type variantDefault struct {
-		ID                        int64
-		DefaultPurchasePriceCents int64
-	}
-	var defaults []variantDefault
-	if err := s.db.WithContext(ctx).Model(&models.Variant{}).
-		Select("id, default_purchase_price_cents").
-		Scan(&defaults).Error; err != nil {
+	// Acquisition costs come only from real purchases. An unpurchased variant has cost basis 0.
+	var variantIDs []int64
+	if err := s.db.WithContext(ctx).Model(&models.Variant{}).Pluck("id", &variantIDs).Error; err != nil {
 		return nil, err
 	}
-	basis := make(map[int64]int64, len(defaults))
-	for _, row := range defaults {
-		basis[row.ID] = row.DefaultPurchasePriceCents
+	basis := make(map[int64]int64, len(variantIDs))
+	for _, id := range variantIDs {
+		basis[id] = 0
 	}
 
 	type purchaseAggregate struct {

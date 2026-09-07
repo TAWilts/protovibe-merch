@@ -99,7 +99,6 @@ export const catalogueApi = {
   create: (payload: {
     name: string
     default_sale_price_cents: number
-    default_purchase_price_cents: number
   }) => api.post<Article>('/articles', payload),
   save: (id: number, payload: unknown) => api.put<Article>(`/articles/${id}`, payload),
 }
@@ -221,14 +220,28 @@ export const reportsApi = {
 }
 
 export const purchasesApi = {
-  list: () => api.get<{ purchases: Purchase[] }>('/purchases'),
+  list: () => api.get<{ purchases: Purchase[]; editing_enabled: boolean }>('/purchases'),
   create: (payload: {
     items: { variant_id: number; quantity: number; unit_cost_cents: number; comment?: string }[]
     purchased_on: string
     supplier?: string
     invoice_reference?: string
+    prices_include_vat: boolean
+    vat_rate_basis_points: number
+    shipping_cost_cents: number
     receipt_id?: string
   }) => api.post<{ receipt_id: string; purchase_ids: number[]; total_cost_cents: number }>('/purchases', payload),
+  updateReceipt: (receiptId: string, payload: {
+    items: { id: number; quantity: number; unit_cost_cents: number }[]
+    purchased_on: string
+    supplier: string
+    invoice_reference: string
+    prices_include_vat: boolean
+    vat_rate_basis_points: number
+    shipping_cost_cents: number
+  }) => api.patch<{ receipt_id: string; purchase_ids: number[]; total_cost_cents: number }>(
+    `/purchases/receipt/${encodeURIComponent(receiptId)}`, payload,
+  ),
   update: (id: number, payload: { quantity: number; unit_cost_cents: number; comment?: string }) =>
     api.patch<void>(`/purchases/${id}`, payload),
   cancel: (id: number) => api.patch<void>(`/purchases/${id}/cancel`),

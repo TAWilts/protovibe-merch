@@ -28,6 +28,8 @@ var (
 	ErrUnknownVariant   = errors.New("purchases: unknown variant")
 	ErrNotFound         = errors.New("purchases: no such purchase")
 	ErrAlreadyCancelled = errors.New("purchases: purchase is already cancelled")
+	ErrInvalidVAT       = errors.New("purchases: VAT rate must be between 0 and 100 percent")
+	ErrNegativeShipping = errors.New("purchases: shipping costs cannot be negative")
 )
 
 // Item is one position of a goods receipt.
@@ -44,8 +46,29 @@ type Request struct {
 	PurchasedOn      models.Date `json:"purchased_on"`
 	Supplier         string      `json:"supplier"`
 	InvoiceReference string      `json:"invoice_reference"`
+	// Pointer fields preserve gross-price semantics for older clients that omit them.
+	PricesIncludeVAT   *bool `json:"prices_include_vat"`
+	VATRateBasisPoints *int  `json:"vat_rate_basis_points"`
+	// Shipping uses the same net/gross interpretation as the item prices.
+	ShippingCostCents int64 `json:"shipping_cost_cents"`
 	// ReceiptID is the preview the client displayed.
 	ReceiptID string `json:"receipt_id"`
+}
+
+type ReceiptEditItem struct {
+	ID            int64 `json:"id"`
+	Quantity      int   `json:"quantity"`
+	UnitCostCents int64 `json:"unit_cost_cents"`
+}
+
+type ReceiptUpdateRequest struct {
+	Items              []ReceiptEditItem `json:"items"`
+	PurchasedOn        models.Date       `json:"purchased_on"`
+	Supplier           string            `json:"supplier"`
+	InvoiceReference   string            `json:"invoice_reference"`
+	PricesIncludeVAT   *bool             `json:"prices_include_vat"`
+	VATRateBasisPoints *int              `json:"vat_rate_basis_points"`
+	ShippingCostCents  int64             `json:"shipping_cost_cents"`
 }
 
 // Actor is who booked the receipt.
@@ -77,9 +100,15 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
 	if len(req.Items) == 0 {
 		return nil, ErrEmptyReceipt
 	}
+	includeVAT, vatRate, shippingGross, err := pricingTerms(
+		req.PricesIncludeVAT, req.VATRateBasisPoints, req.ShippingCostCents,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	var result *Result
-	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := validateVariants(ctx, tx, req.Items); err != nil {
 			return err
 		}
@@ -101,18 +130,22 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
 			if item.UnitCostCents < 0 {
 				return fmt.Errorf("%w: position %d", ErrNegativeCost, i+1)
 			}
+			grossUnitCost := GrossFromEntered(item.UnitCostCents, includeVAT, vatRate)
 
 			purchase := &models.Purchase{
-				ReceiptID:        receiptID,
-				VariantID:        item.VariantID,
-				Quantity:         item.Quantity,
-				UnitCostCents:    item.UnitCostCents,
-				PurchasedOn:      req.PurchasedOn,
-				Supplier:         strings.TrimSpace(req.Supplier),
-				InvoiceReference: strings.TrimSpace(req.InvoiceReference),
-				Comment:          strings.TrimSpace(item.Comment),
-				CreatedAt:        now,
-				UpdatedAt:        now,
+				ReceiptID:          receiptID,
+				VariantID:          item.VariantID,
+				Quantity:           item.Quantity,
+				UnitCostCents:      grossUnitCost,
+				PricesIncludeVAT:   includeVAT,
+				VATRateBasisPoints: vatRate,
+				ShippingCostCents:  shippingGross,
+				PurchasedOn:        req.PurchasedOn,
+				Supplier:           strings.TrimSpace(req.Supplier),
+				InvoiceReference:   strings.TrimSpace(req.InvoiceReference),
+				Comment:            strings.TrimSpace(item.Comment),
+				CreatedAt:          now,
+				UpdatedAt:          now,
 			}
 			purchase.CreatedByUserID = &actor.UserID
 			purchase.CreatedByUsername = actor.Username
@@ -121,8 +154,9 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
 				return err
 			}
 			ids = append(ids, purchase.ID)
-			total += int64(item.Quantity) * item.UnitCostCents
+			total += int64(item.Quantity) * grossUnitCost
 		}
+		total += shippingGross
 
 		result = &Result{ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total}
 		return nil
@@ -175,6 +209,93 @@ func (s *Service) Update(ctx context.Context, id int64, item Item) error {
 				"updated_at":      time.Now().UTC(),
 			}).Error
 	})
+}
+
+// UpdateReceipt corrects all active positions and shared receipt metadata atomically.
+// The API exposes this only while PURCHASE_EDITING_ENABLED=true.
+func (s *Service) UpdateReceipt(ctx context.Context, receiptID string, req ReceiptUpdateRequest) (*Result, error) {
+	if len(req.Items) == 0 {
+		return nil, ErrEmptyReceipt
+	}
+	includeVAT, vatRate, shippingGross, err := pricingTerms(
+		req.PricesIncludeVAT, req.VATRateBasisPoints, req.ShippingCostCents,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	var result *Result
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var positions []models.Purchase
+		if err := tx.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("receipt_id = ?", receiptID).
+			Find(&positions).Error; err != nil {
+			return err
+		}
+		if len(positions) == 0 {
+			return ErrNotFound
+		}
+
+		active := make(map[int64]models.Purchase)
+		for _, position := range positions {
+			if !position.IsCancelled {
+				active[position.ID] = position
+			}
+		}
+		if len(active) == 0 {
+			return ErrAlreadyCancelled
+		}
+		if len(req.Items) != len(active) {
+			return ErrEmptyReceipt
+		}
+
+		now := time.Now().UTC()
+		if err := tx.WithContext(ctx).Model(&models.Purchase{}).
+			Where("receipt_id = ?", receiptID).
+			Updates(map[string]any{
+				"purchased_on":          req.PurchasedOn,
+				"supplier":              strings.TrimSpace(req.Supplier),
+				"invoice_reference":     strings.TrimSpace(req.InvoiceReference),
+				"prices_include_vat":    includeVAT,
+				"vat_rate_basis_points": vatRate,
+				"shipping_cost_cents":   shippingGross,
+				"updated_at":            now,
+			}).Error; err != nil {
+			return err
+		}
+
+		seen := make(map[int64]bool)
+		ids := make([]int64, 0, len(req.Items))
+		var total int64
+		for index, item := range req.Items {
+			if item.Quantity <= 0 {
+				return fmt.Errorf("%w: position %d", ErrInvalidQuantity, index+1)
+			}
+			if item.UnitCostCents < 0 {
+				return fmt.Errorf("%w: position %d", ErrNegativeCost, index+1)
+			}
+			if _, ok := active[item.ID]; !ok || seen[item.ID] {
+				return ErrNotFound
+			}
+			seen[item.ID] = true
+			gross := GrossFromEntered(item.UnitCostCents, includeVAT, vatRate)
+			if err := tx.WithContext(ctx).Model(&models.Purchase{}).Where("id = ?", item.ID).
+				Updates(map[string]any{
+					"quantity":        item.Quantity,
+					"unit_cost_cents": gross,
+					"updated_at":      now,
+				}).Error; err != nil {
+				return err
+			}
+			ids = append(ids, item.ID)
+			total += int64(item.Quantity) * gross
+		}
+		total += shippingGross
+		result = &Result{ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total}
+		return nil
+	})
+	return result, err
 }
 
 // Cancel marks one purchase position as cancelled. The original data and all
@@ -277,6 +398,41 @@ func (s *Service) LastUnitCost(ctx context.Context, variantID int64) (int64, boo
 		return 0, false, err
 	}
 	return purchase.UnitCostCents, true, nil
+}
+
+const DefaultVATRateBasisPoints = 1900
+
+func pricingTerms(include *bool, rate *int, shippingEntered int64) (bool, int, int64, error) {
+	includeVAT := true
+	if include != nil {
+		includeVAT = *include
+	}
+	vatRate := DefaultVATRateBasisPoints
+	if rate != nil {
+		vatRate = *rate
+	}
+	if vatRate < 0 || vatRate > 10000 {
+		return false, 0, 0, ErrInvalidVAT
+	}
+	if shippingEntered < 0 {
+		return false, 0, 0, ErrNegativeShipping
+	}
+	return includeVAT, vatRate, GrossFromEntered(shippingEntered, includeVAT, vatRate), nil
+}
+
+// GrossFromEntered normalises a user-entered amount to the canonical gross cents.
+func GrossFromEntered(cents int64, includesVAT bool, rateBasisPoints int) int64 {
+	if includesVAT || cents == 0 {
+		return cents
+	}
+	return (cents*int64(10000+rateBasisPoints) + 5000) / 10000
+}
+
+func NetFromGross(cents int64, rateBasisPoints int) int64 {
+	if cents == 0 || rateBasisPoints <= 0 {
+		return cents
+	}
+	return (cents*10000 + int64(10000+rateBasisPoints)/2) / int64(10000+rateBasisPoints)
 }
 
 // validateVariants rejects positions pointing at a variant the band does not

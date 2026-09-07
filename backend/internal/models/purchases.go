@@ -12,8 +12,14 @@ type Purchase struct {
 	ReceiptID string `gorm:"size:40;not null;index" json:"receipt_id"`
 	VariantID int64  `gorm:"not null;index" json:"variant_id"`
 
-	Quantity      int   `gorm:"not null" json:"quantity"`
+	Quantity int `gorm:"not null" json:"quantity"`
+	// UnitCostCents is canonical gross cost. Net user input is converted before storage.
 	UnitCostCents int64 `gorm:"not null" json:"unit_cost_cents"`
+
+	// Receipt-level price metadata is repeated on each line, like supplier/date/reference.
+	PricesIncludeVAT   bool  `gorm:"not null" json:"prices_include_vat"`
+	VATRateBasisPoints int   `gorm:"not null;default:1900" json:"vat_rate_basis_points"`
+	ShippingCostCents  int64 `gorm:"not null;default:0" json:"shipping_cost_cents"`
 
 	PurchasedOn Date   `gorm:"not null;index" json:"purchased_on"`
 	Supplier    string `gorm:"size:200;not null;default:''" json:"supplier"`

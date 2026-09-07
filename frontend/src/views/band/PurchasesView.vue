@@ -32,6 +32,7 @@ const dateFrom = ref('')
 const dateTo = ref('')
 
 const canManage = computed(() => session.capabilities?.can_manage_purchases ?? false)
+const purchaseEditingEnabled = ref(false)
 
 const receiptId = ref('')
 const purchasedOn = ref(new Date().toISOString().slice(0, 10))
@@ -44,8 +45,13 @@ const selectedArticleId = ref<number | null>(null)
 const chosenValues = ref<Record<number, number>>({})
 const quantity = ref(1)
 const unitCostInput = ref('')
+const pricesIncludeVat = ref(true)
+const vatRateInput = ref('19')
+const shippingCostInput = ref('0,00')
+const rememberedArticleCost = ref<Record<number, string>>({})
 
 interface CartLine {
+  articleId: number
   variantId: number
   label: string
   quantity: number
@@ -84,9 +90,42 @@ const variantLabel = computed(() => {
   return parts.length ? `${article.name} — ${parts.join(' · ')}` : article.name
 })
 
-const cartTotalCents = computed(() =>
-  cart.value.reduce((sum, line) => sum + line.quantity * line.unitCostCents, 0),
-)
+function parseVatRate(raw: string): number | null {
+  const normalized = raw.trim().replace(',', '.')
+  if (!/^\d{1,3}(?:\.\d{1,2})?$/.test(normalized)) return null
+  const percent = Number(normalized)
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100) return null
+  return Math.round(percent * 100)
+}
+
+function grossFromEntered(cents: number, includesVat: boolean, vatBasisPoints: number) {
+  return includesVat ? cents : Math.round(cents * (10000 + vatBasisPoints) / 10000)
+}
+
+function netFromGross(cents: number, vatBasisPoints: number) {
+  if (vatBasisPoints <= 0) return cents
+  return Math.round(cents * 10000 / (10000 + vatBasisPoints))
+}
+
+const vatRateBasisPoints = computed(() => parseVatRate(vatRateInput.value) ?? 1900)
+const shippingEnteredCents = computed(() => parseAmount(shippingCostInput.value))
+const cartNetCents = computed(() => {
+  const vat = vatRateBasisPoints.value
+  const goods = cart.value.reduce((sum, line) => {
+    const entered = line.quantity * line.unitCostCents
+    return sum + (pricesIncludeVat.value ? netFromGross(entered, vat) : entered)
+  }, 0)
+  const shipping = shippingEnteredCents.value ?? 0
+  return goods + (pricesIncludeVat.value ? netFromGross(shipping, vat) : shipping)
+})
+const cartGrossCents = computed(() => {
+  const vat = vatRateBasisPoints.value
+  const goods = cart.value.reduce(
+    (sum, line) => sum + line.quantity * grossFromEntered(line.unitCostCents, pricesIncludeVat.value, vat), 0,
+  )
+  const shipping = shippingEnteredCents.value ?? 0
+  return goods + grossFromEntered(shipping, pricesIncludeVat.value, vat)
+})
 
 interface PurchaseReceipt {
   receiptId: string
@@ -95,6 +134,10 @@ interface PurchaseReceipt {
   invoiceReference: string
   positions: Purchase[]
   totalCostCents: number
+  pricesIncludeVat: boolean
+  vatRateBasisPoints: number
+  shippingCostCents: number
+  hasAttachment: boolean
   isCancelled: boolean
 }
 
@@ -111,6 +154,10 @@ const visibleReceipts = computed(() => {
         invoiceReference: purchase.invoice_reference,
         positions: [],
         totalCostCents: 0,
+        pricesIncludeVat: purchase.prices_include_vat,
+        vatRateBasisPoints: purchase.vat_rate_basis_points || 1900,
+        shippingCostCents: purchase.shipping_cost_cents,
+        hasAttachment: false,
         isCancelled: false,
       }
       known.set(purchase.receipt_id, receipt)
@@ -118,8 +165,10 @@ const visibleReceipts = computed(() => {
     }
     receipt.positions.push(purchase)
     receipt.totalCostCents += purchase.total_cost_cents
+    receipt.hasAttachment ||= purchase.has_invoice_file || purchase.has_receipt_attachment
   }
   for (const receipt of receipts) {
+    receipt.totalCostCents += receipt.shippingCostCents
     receipt.isCancelled = receipt.positions.length > 0 &&
       receipt.positions.every((purchase) => purchase.is_cancelled)
   }
@@ -184,7 +233,9 @@ async function loadArticles() {
 
 async function loadPurchases() {
   try {
-    purchases.value = (await purchasesApi.list()).purchases
+    const result = await purchasesApi.list()
+    purchases.value = result.purchases
+    purchaseEditingEnabled.value = result.editing_enabled
   } catch {
     flash.error(t('errors.generic'))
   }
@@ -211,14 +262,38 @@ function selectArticle(article: Article) {
 // retyping — but it stays editable, because suppliers change their prices.
 watch(selectedVariant, async (variant) => {
   if (!variant) return
+  const articleId = selectedArticleId.value
+  if (articleId !== null && rememberedArticleCost.value[articleId] !== undefined) {
+    unitCostInput.value = rememberedArticleCost.value[articleId] ?? ''
+    return
+  }
   try {
     const last = await purchasesApi.lastCost(variant.id)
-    const cents = last.found ? last.unit_cost_cents : variant.default_purchase_price_cents
+    if (!last.found) {
+      unitCostInput.value = ''
+      return
+    }
+    const cents = pricesIncludeVat.value
+      ? last.unit_cost_cents
+      : netFromGross(last.unit_cost_cents, vatRateBasisPoints.value)
     unitCostInput.value = (cents / 100).toFixed(2).replace('.', ',')
   } catch {
-    unitCostInput.value = (variant.default_purchase_price_cents / 100).toFixed(2).replace('.', ',')
+    unitCostInput.value = ''
   }
 })
+
+function onUnitCostChanged() {
+  const article = selectedArticle.value
+  const cents = parseAmount(unitCostInput.value)
+  if (unitCostInput.value.trim() && (cents === null || cents < 0)) {
+    flash.error(t('purchases.invalidPrice'))
+    return
+  }
+  if (!article || cents === null || article.variants.filter((variant) => variant.is_active).length <= 1) return
+  if (!window.confirm(t('purchases.applyPriceToVariants'))) return
+  rememberedArticleCost.value = { ...rememberedArticleCost.value, [article.id]: unitCostInput.value }
+  cart.value = cart.value.map((line) => line.articleId === article.id ? { ...line, unitCostCents: cents } : line)
+}
 
 /**
  * The stepper is the only way to change the amount on a tablet, so it must
@@ -237,9 +312,15 @@ function normalizeQuantity() {
 function addToCart() {
   const variant = selectedVariant.value
   const cost = parseAmount(unitCostInput.value)
-  if (!variant || cost === null || cost < 0 || quantity.value <= 0) return
+  if (!variant) return
+  if (cost === null || cost < 0) {
+    flash.error(t('purchases.invalidPrice'))
+    return
+  }
+  if (quantity.value <= 0) return
 
   cart.value.push({
+    articleId: selectedArticleId.value ?? 0,
     variantId: variant.id,
     label: variantLabel.value,
     quantity: quantity.value,
@@ -262,6 +343,16 @@ function report(error: unknown) {
 
 async function book() {
   if (!cart.value.length || busy.value) return
+  const vat = parseVatRate(vatRateInput.value)
+  const shipping = parseAmount(shippingCostInput.value)
+  if (vat === null) {
+    flash.error(t('purchases.invalidVat'))
+    return
+  }
+  if (shipping === null || shipping < 0) {
+    flash.error(t('purchases.invalidShipping'))
+    return
+  }
   busy.value = true
   try {
     const result = await purchasesApi.create({
@@ -273,6 +364,9 @@ async function book() {
       purchased_on: purchasedOn.value,
       supplier: supplier.value.trim(),
       invoice_reference: invoiceReference.value.trim(),
+      prices_include_vat: pricesIncludeVat.value,
+      vat_rate_basis_points: vat,
+      shipping_cost_cents: shipping,
       receipt_id: receiptId.value,
     })
     flash.success(t('purchases.booked', { receipt: result.receipt_id }))
@@ -284,11 +378,102 @@ async function book() {
       }
     }
     cart.value = []
+    rememberedArticleCost.value = {}
     supplier.value = ''
     invoiceReference.value = ''
+    shippingCostInput.value = '0,00'
     receiptInvoice.value = null
     if (receiptInvoiceInput.value) receiptInvoiceInput.value.value = ''
     await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
+  } catch (error) {
+    report(error)
+  } finally {
+    busy.value = false
+  }
+}
+
+function clearReceiptInvoice() {
+  receiptInvoice.value = null
+  if (receiptInvoiceInput.value) receiptInvoiceInput.value.value = ''
+}
+
+interface ReceiptEditLine {
+  id: number
+  label: string
+  quantity: number
+  unitCostInput: string
+}
+
+const editingReceipt = ref<PurchaseReceipt | null>(null)
+const editPurchasedOn = ref('')
+const editSupplier = ref('')
+const editInvoiceReference = ref('')
+const editPricesIncludeVat = ref(true)
+const editVatRateInput = ref('19')
+const editShippingCostInput = ref('0,00')
+const editLines = ref<ReceiptEditLine[]>([])
+
+function toMoneyInput(cents: number) {
+  return (cents / 100).toFixed(2).replace('.', ',')
+}
+
+function startEdit(receipt: PurchaseReceipt) {
+  editingReceipt.value = receipt
+  editPurchasedOn.value = receipt.purchasedOn
+  editSupplier.value = receipt.supplier
+  editInvoiceReference.value = receipt.invoiceReference
+  editPricesIncludeVat.value = receipt.pricesIncludeVat
+  editVatRateInput.value = (receipt.vatRateBasisPoints / 100).toFixed(2).replace(/(?:[.,]00)$/, '').replace('.', ',')
+  const enteredShipping = receipt.pricesIncludeVat
+    ? receipt.shippingCostCents
+    : netFromGross(receipt.shippingCostCents, receipt.vatRateBasisPoints)
+  editShippingCostInput.value = toMoneyInput(enteredShipping)
+  editLines.value = receipt.positions.filter((purchase) => !purchase.is_cancelled).map((purchase) => ({
+    id: purchase.id,
+    label: `${purchase.article_name} — ${purchase.variant_label}`,
+    quantity: purchase.quantity,
+    unitCostInput: toMoneyInput(receipt.pricesIncludeVat
+      ? purchase.unit_cost_cents
+      : netFromGross(purchase.unit_cost_cents, receipt.vatRateBasisPoints)),
+  }))
+}
+
+async function saveReceiptEdit() {
+  const receipt = editingReceipt.value
+  if (!receipt || busy.value) return
+  const vat = parseVatRate(editVatRateInput.value)
+  const shipping = parseAmount(editShippingCostInput.value)
+  if (vat === null) {
+    flash.error(t('purchases.invalidVat'))
+    return
+  }
+  if (shipping === null || shipping < 0) {
+    flash.error(t('purchases.invalidShipping'))
+    return
+  }
+  const parsedItems = editLines.value.map((line) => ({
+    id: line.id,
+    quantity: line.quantity,
+    unit_cost_cents: parseAmount(line.unitCostInput),
+  }))
+  if (parsedItems.some((item) => item.quantity <= 0 || item.unit_cost_cents === null || item.unit_cost_cents < 0)) {
+    flash.error(t('purchases.invalidPrice'))
+    return
+  }
+  busy.value = true
+  try {
+    await purchasesApi.updateReceipt(receipt.receiptId, {
+      items: parsedItems.map((item) => ({ id: item.id, quantity: item.quantity, unit_cost_cents: item.unit_cost_cents as number })),
+      purchased_on: editPurchasedOn.value,
+      supplier: editSupplier.value.trim(),
+      invoice_reference: editInvoiceReference.value.trim(),
+      prices_include_vat: editPricesIncludeVat.value,
+      vat_rate_basis_points: vat,
+      shipping_cost_cents: shipping,
+    })
+    flash.success(t('purchases.updated'))
+    editingReceipt.value = null
+    await Promise.all([loadArticles(), loadPurchases()])
   } catch (error) {
     report(error)
   } finally {
@@ -319,7 +504,7 @@ async function onFileChosen(event: Event) {
   try {
     await attachmentsApi.upload(attachmentsFor.value.receipt_id, file)
     flash.success(t('purchases.invoiceUploaded'))
-    await loadAttachments()
+    await Promise.all([loadAttachments(), loadPurchases()])
   } catch (error) {
     report(error)
   }
@@ -344,7 +529,7 @@ async function removeAttachment(file: Attachment) {
   if (!attachmentsFor.value) return
   try {
     await attachmentsApi.remove(attachmentsFor.value.receipt_id, file.id)
-    await loadAttachments()
+    await Promise.all([loadAttachments(), loadPurchases()])
   } catch (error) {
     report(error)
   }
@@ -437,8 +622,19 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
       <section class="selection-panel sale-details">
         <label>
           {{ t('purchases.unitCost') }}
-          <input v-model="unitCostInput" inputmode="decimal" :disabled="!selectedVariant" />
+          <input v-model="unitCostInput" inputmode="decimal" :disabled="!selectedVariant" @change="onUnitCostChanged" />
         </label>
+        <div class="field-grid two-columns">
+          <label class="checkbox-row">
+            <input v-model="pricesIncludeVat" type="checkbox" />
+            <span>{{ t('purchases.priceIncludesVat') }}</span>
+          </label>
+          <label>
+            {{ t('purchases.vatRate') }}
+            <input v-model="vatRateInput" inputmode="decimal" />
+          </label>
+        </div>
+        <label>{{ t('purchases.shippingCost') }}<input v-model="shippingCostInput" inputmode="decimal" /></label>
 
         <div class="quantity-and-total">
           <label class="quantity-control">
@@ -456,8 +652,10 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             </span>
           </label>
           <div class="total-box">
-            <span>{{ t('purchases.receiptTotal') }}</span>
-            <strong>{{ format(cartTotalCents) }}</strong>
+            <span>{{ t('purchases.netTotal') }}</span>
+            <strong>{{ format(cartNetCents) }}</strong>
+            <span>{{ t('purchases.grossTotal') }}</span>
+            <strong>{{ format(cartGrossCents) }}</strong>
           </div>
         </div>
 
@@ -501,6 +699,10 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
             @change="receiptInvoice = ($event.target as HTMLInputElement).files?.[0] ?? null"
           />
+          <span v-if="receiptInvoice" class="selected-upload">
+            <span>{{ receiptInvoice.name }}</span>
+            <button class="compact-button danger-button" type="button" @click="clearReceiptInvoice">{{ t('common.delete') }}</button>
+          </span>
           <small class="muted">{{ t('purchases.invoiceFileHint') }}</small>
         </label>
 
@@ -545,7 +747,10 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
         >
           <summary>
             <span class="receipt-summary-main">
-              <code>{{ receipt.receiptId }}</code>
+              <span class="receipt-id-with-file">
+                <code>{{ receipt.receiptId }}</code>
+                <span v-if="receipt.hasAttachment" class="attachment-indicator" :title="t('purchases.hasAttachment')" :aria-label="t('purchases.hasAttachment')">📎</span>
+              </span>
               <small>{{ receipt.purchasedOn }} · {{ receipt.supplier || t('purchases.noSupplier') }}</small>
               <em v-if="receipt.isCancelled" class="cancelled-badge">{{ t('purchases.cancelledLabel') }}</em>
             </span>
@@ -557,6 +762,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             <div class="receipt-meta">
               <span><b>{{ t('purchases.supplier') }}:</b> {{ receipt.supplier || '—' }}</span>
               <span><b>{{ t('purchases.invoiceReference') }}:</b> {{ receipt.invoiceReference || '—' }}</span>
+              <span><b>{{ t('purchases.shippingCost') }}:</b> {{ format(receipt.shippingCostCents) }}</span>
             </div>
             <div class="table-scroll">
               <table>
@@ -585,6 +791,9 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
               </table>
             </div>
             <div class="receipt-actions">
+              <button v-if="purchaseEditingEnabled && canManage && !receipt.isCancelled" class="secondary-button" type="button" @click="startEdit(receipt)">
+                {{ t('purchases.edit') }}
+              </button>
               <button class="secondary-button" type="button" @click="openAttachments(receipt.positions[0])">
                 {{ t('purchases.invoiceAndAttachments') }}
               </button>
@@ -609,6 +818,37 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
       hidden
       @change="onFileChosen"
     />
+
+    <dialog v-if="editingReceipt" class="confirmation-dialog" open>
+      <div class="stack-form">
+        <div>
+          <p class="eyebrow"><code>{{ editingReceipt.receiptId }}</code></p>
+          <h2>{{ t('purchases.editTitle') }}</h2>
+          <p class="muted">{{ t('purchases.editHint') }}</p>
+        </div>
+        <div class="field-grid two-columns">
+          <label>{{ t('common.date') }}<input v-model="editPurchasedOn" type="date" /></label>
+          <label>{{ t('purchases.supplier') }}<input v-model="editSupplier" /></label>
+        </div>
+        <label>{{ t('purchases.invoiceReference') }}<input v-model="editInvoiceReference" /></label>
+        <div class="field-grid two-columns">
+          <label class="checkbox-row"><input v-model="editPricesIncludeVat" type="checkbox" /><span>{{ t('purchases.priceIncludesVat') }}</span></label>
+          <label>{{ t('purchases.vatRate') }}<input v-model="editVatRateInput" inputmode="decimal" /></label>
+        </div>
+        <label>{{ t('purchases.shippingCost') }}<input v-model="editShippingCostInput" inputmode="decimal" /></label>
+        <div class="edit-purchase-lines">
+          <div v-for="line in editLines" :key="line.id" class="edit-purchase-line">
+            <strong>{{ line.label }}</strong>
+            <label>{{ t('common.quantity') }}<input v-model.number="line.quantity" type="number" min="1" /></label>
+            <label>{{ t('purchases.unitCost') }}<input v-model="line.unitCostInput" inputmode="decimal" /></label>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" @click="editingReceipt = null">{{ t('common.cancel') }}</button>
+          <button class="primary-button" type="button" :disabled="busy" @click="saveReceiptEdit">{{ t('common.save') }}</button>
+        </div>
+      </div>
+    </dialog>
 
     <dialog v-if="attachmentsFor" class="confirmation-dialog" open>
       <div class="stack-form">
@@ -648,6 +888,23 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
 </template>
 
 <style scoped>
+.selected-upload,
+.receipt-id-with-file {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.attachment-indicator { font-size: 1rem; }
+
+.edit-purchase-lines { display: grid; gap: 10px; }
+.edit-purchase-line {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 110px 140px;
+  gap: 10px;
+  align-items: end;
+}
+
 .purchase-history-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -816,6 +1073,8 @@ td a {
 }
 
 @media (max-width: 700px) {
+  .edit-purchase-line { grid-template-columns: 1fr; }
+
   .purchase-receipt-card summary {
     grid-template-columns: 1fr auto;
     gap: 8px 12px;

@@ -2,6 +2,7 @@ package importer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -354,7 +355,18 @@ func (s *Service) resolvePrice(ctx context.Context, kind Kind, variantID int64, 
 	if kind == KindSales {
 		return variant.SalePriceCents, nil
 	}
-	return variant.DefaultPurchasePriceCents, nil
+
+	var previous models.Purchase
+	err := s.db.WithContext(ctx).
+		Where("variant_id = ? AND is_cancelled = ?", variantID, false).
+		Order("purchased_on DESC, id DESC").First(&previous).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, fmt.Errorf("importer: line %d: purchase price is required because this variant has no previous purchase", row.LineNumber)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return previous.UnitCostCents, nil
 }
 
 func (s *Service) findArticle(ctx context.Context, name string) (*models.Article, error) {

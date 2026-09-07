@@ -1,0 +1,1325 @@
+diff --git a/.env.example b/.env.example
+index 575021c..40fc78f 100644
+--- a/.env.example
++++ b/.env.example
+@@ -9,6 +9,8 @@ LOCAL_DEV_MODE=false
+ APP_VERSION=v0.0.0
+ PUBLIC_BASE_URL=https://merch.example.org
+ PUBLIC_REGISTRATION_ENABLED=false
++# Temporary: allows managers to correct already booked purchases.
++PURCHASE_EDITING_ENABLED=false
+ SITE_ADDRESS=merch.example.org
+ HOST_PORT=8080
+ HOST_TLS_PORT=8443
+diff --git a/backend/internal/api/handlers_purchases.go b/backend/internal/api/handlers_purchases.go
+index da0fec0..0ae57bf 100644
+--- a/backend/internal/api/handlers_purchases.go
++++ b/backend/internal/api/handlers_purchases.go
+@@ -23,6 +23,7 @@ func (s *Server) registerPurchaseRoutes(g *gin.RouterGroup) {
+ 	write := g.Group("/purchases", requireAuth(), requireBandRole(models.RoleManager))
+ 	write.POST("", s.createPurchase)
+ 	write.PATCH("/:id", s.updatePurchase)
++	write.PATCH("/receipt/:receiptID", s.updatePurchaseReceipt)
+ 	write.PATCH("/:id/cancel", s.cancelPurchase)
+ 	// Legacy DELETE endpoints remain for older clients, but their semantics are
+ 	// cancellation. No purchase row or attachment is hard-deleted.
+@@ -33,23 +34,27 @@ func (s *Server) registerPurchaseRoutes(g *gin.RouterGroup) {
+ }
+ 
+ type purchasePayload struct {
+-	ID                  int64       `json:"id"`
+-	ReceiptID           string      `json:"receipt_id"`
+-	VariantID           int64       `json:"variant_id"`
+-	ArticleName         string      `json:"article_name"`
+-	VariantLabel        string      `json:"variant_label"`
+-	Quantity            int         `json:"quantity"`
+-	UnitCostCents       int64       `json:"unit_cost_cents"`
+-	TotalCostCents      int64       `json:"total_cost_cents"`
+-	PurchasedOn         models.Date `json:"purchased_on"`
+-	Supplier            string      `json:"supplier"`
+-	InvoiceReference    string      `json:"invoice_reference"`
+-	HasInvoiceFile      bool        `json:"has_invoice_file"`
+-	Comment             string      `json:"comment"`
+-	IsCancelled         bool        `json:"is_cancelled"`
+-	CancelledAt         *time.Time  `json:"cancelled_at,omitempty"`
+-	CancelledByUsername string      `json:"cancelled_by_username"`
+-	CreatedByUsername   string      `json:"created_by_username"`
++	ID                   int64       `json:"id"`
++	ReceiptID            string      `json:"receipt_id"`
++	VariantID            int64       `json:"variant_id"`
++	ArticleName          string      `json:"article_name"`
++	VariantLabel         string      `json:"variant_label"`
++	Quantity             int         `json:"quantity"`
++	UnitCostCents        int64       `json:"unit_cost_cents"`
++	TotalCostCents       int64       `json:"total_cost_cents"`
++	PurchasedOn          models.Date `json:"purchased_on"`
++	Supplier             string      `json:"supplier"`
++	InvoiceReference     string      `json:"invoice_reference"`
++	HasInvoiceFile       bool        `json:"has_invoice_file"`
++	HasReceiptAttachment bool        `json:"has_receipt_attachment"`
++	PricesIncludeVAT     bool        `json:"prices_include_vat"`
++	VATRateBasisPoints   int         `json:"vat_rate_basis_points"`
++	ShippingCostCents    int64       `json:"shipping_cost_cents"`
++	Comment              string      `json:"comment"`
++	IsCancelled          bool        `json:"is_cancelled"`
++	CancelledAt          *time.Time  `json:"cancelled_at,omitempty"`
++	CancelledByUsername  string      `json:"cancelled_by_username"`
++	CreatedByUsername    string      `json:"created_by_username"`
+ }
+ 
+ // listPurchases returns the goods-receipt history, newest first.
+@@ -71,29 +76,47 @@ func (s *Server) listPurchases(c *gin.Context) {
+ 		return
+ 	}
+ 
++	var attachedReceiptIDs []string
++	if err := s.db.WithContext(ctx).Model(&models.PurchaseReceiptAttachment{}).
++		Distinct("receipt_id").Pluck("receipt_id", &attachedReceiptIDs).Error; err != nil {
++		serverError(c, err)
++		return
++	}
++	hasReceiptAttachment := make(map[string]bool, len(attachedReceiptIDs))
++	for _, receiptID := range attachedReceiptIDs {
++		hasReceiptAttachment[receiptID] = true
++	}
++
+ 	payload := make([]purchasePayload, 0, len(rows))
+ 	for _, row := range rows {
+ 		payload = append(payload, purchasePayload{
+-			ID:                  row.ID,
+-			ReceiptID:           row.ReceiptID,
+-			VariantID:           row.VariantID,
+-			ArticleName:         labels[row.VariantID].ArticleName,
+-			VariantLabel:        labels[row.VariantID].VariantLabel,
+-			Quantity:            row.Quantity,
+-			UnitCostCents:       row.UnitCostCents,
+-			TotalCostCents:      int64(row.Quantity) * row.UnitCostCents,
+-			PurchasedOn:         row.PurchasedOn,
+-			Supplier:            row.Supplier,
+-			InvoiceReference:    row.InvoiceReference,
+-			HasInvoiceFile:      row.InvoiceFilePath != "",
+-			Comment:             row.Comment,
+-			IsCancelled:         row.IsCancelled,
+-			CancelledAt:         row.CancelledAt,
+-			CancelledByUsername: row.CancelledByUsername,
+-			CreatedByUsername:   row.CreatedByUsername,
++			ID:                   row.ID,
++			ReceiptID:            row.ReceiptID,
++			VariantID:            row.VariantID,
++			ArticleName:          labels[row.VariantID].ArticleName,
++			VariantLabel:         labels[row.VariantID].VariantLabel,
++			Quantity:             row.Quantity,
++			UnitCostCents:        row.UnitCostCents,
++			TotalCostCents:       int64(row.Quantity) * row.UnitCostCents,
++			PurchasedOn:          row.PurchasedOn,
++			Supplier:             row.Supplier,
++			InvoiceReference:     row.InvoiceReference,
++			HasInvoiceFile:       row.InvoiceFilePath != "",
++			HasReceiptAttachment: hasReceiptAttachment[row.ReceiptID],
++			PricesIncludeVAT:     row.PricesIncludeVAT,
++			VATRateBasisPoints:   row.VATRateBasisPoints,
++			ShippingCostCents:    row.ShippingCostCents,
++			Comment:              row.Comment,
++			IsCancelled:          row.IsCancelled,
++			CancelledAt:          row.CancelledAt,
++			CancelledByUsername:  row.CancelledByUsername,
++			CreatedByUsername:    row.CreatedByUsername,
+ 		})
+ 	}
+-	c.JSON(http.StatusOK, gin.H{"purchases": payload})
++	c.JSON(http.StatusOK, gin.H{
++		"purchases":       payload,
++		"editing_enabled": s.cfg.PurchaseEditingEnabled,
++	})
+ }
+ 
+ // lastPurchaseCost pre-fills the form for a reorder.
+@@ -142,6 +165,10 @@ func (s *Server) createPurchase(c *gin.Context) {
+ }
+ 
+ func (s *Server) updatePurchase(c *gin.Context) {
++	if !s.cfg.PurchaseEditingEnabled {
++		fail(c, http.StatusForbidden, "feature_disabled", "purchase editing is disabled")
++		return
++	}
+ 	id, ok := pathID(c)
+ 	if !ok {
+ 		return
+@@ -165,6 +192,42 @@ func (s *Server) updatePurchase(c *gin.Context) {
+ 	c.Status(http.StatusNoContent)
+ }
+ 
++func (s *Server) updatePurchaseReceipt(c *gin.Context) {
++	if !s.cfg.PurchaseEditingEnabled {
++		fail(c, http.StatusForbidden, "feature_disabled", "purchase editing is disabled")
++		return
++	}
++	receiptID := c.Param("receiptID")
++	if receiptID == "" {
++		fail(c, http.StatusBadRequest, "invalid_id", "invalid receipt identifier")
++		return
++	}
++	var req purchases.ReceiptUpdateRequest
++	if err := c.ShouldBindJSON(&req); err != nil {
++		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
++		return
++	}
++	if req.PurchasedOn.IsZero() {
++		req.PurchasedOn = s.today()
++	}
++
++	ctx := c.Request.Context()
++	result, err := s.purchases.UpdateReceipt(ctx, receiptID, req)
++	if err != nil {
++		s.reportPurchaseError(c, err)
++		return
++	}
++	s.audit.Log(ctx, actorFrom(c), audit.Entry{
++		Action: audit.ActionPurchaseUpdated, EntityType: "purchase_receipt",
++		Details: map[string]any{
++			"receipt_id":       receiptID,
++			"positions":        len(result.PurchaseIDs),
++			"total_cost_cents": result.TotalCostCents,
++		},
++	})
++	c.JSON(http.StatusOK, result)
++}
++
+ func (s *Server) cancelPurchase(c *gin.Context) {
+ 	id, ok := pathID(c)
+ 	if !ok {
+@@ -219,8 +282,10 @@ func (s *Server) reportPurchaseError(c *gin.Context, err error) {
+ 		fail(c, http.StatusBadRequest, "empty_receipt", err.Error())
+ 	case errors.Is(err, purchases.ErrInvalidQuantity):
+ 		fail(c, http.StatusBadRequest, "invalid_quantity", err.Error())
+-	case errors.Is(err, purchases.ErrNegativeCost):
++	case errors.Is(err, purchases.ErrNegativeCost), errors.Is(err, purchases.ErrNegativeShipping):
+ 		fail(c, http.StatusBadRequest, "invalid_cost", err.Error())
++	case errors.Is(err, purchases.ErrInvalidVAT):
++		fail(c, http.StatusBadRequest, "invalid_vat", err.Error())
+ 	case errors.Is(err, purchases.ErrUnknownVariant):
+ 		fail(c, http.StatusBadRequest, "unknown_variant", err.Error())
+ 	default:
+diff --git a/backend/internal/config/config.go b/backend/internal/config/config.go
+index 767b7b1..590d05f 100644
+--- a/backend/internal/config/config.go
++++ b/backend/internal/config/config.go
+@@ -74,6 +74,9 @@ type Config struct {
+ 	DisplayTimezone           *time.Location
+ 	PublicBaseURL             string
+ 	PublicRegistrationEnabled bool
++
++	// Temporary feature flag. When false, already booked purchases are read-only.
++	PurchaseEditingEnabled bool
+ }
+ 
+ // placeholderValues are the literal strings shipped in .env.example. Booting
+@@ -133,6 +136,7 @@ func Load() (*Config, error) {
+ 
+ 		PublicBaseURL:             strings.TrimRight(env("PUBLIC_BASE_URL", "http://localhost:8000"), "/"),
+ 		PublicRegistrationEnabled: envBool("PUBLIC_REGISTRATION_ENABLED", false),
++		PurchaseEditingEnabled:    envBool("PURCHASE_EDITING_ENABLED", false),
+ 	}
+ 
+ 	if raw := os.Getenv("TRUSTED_PROXIES"); raw != "" {
+diff --git a/backend/internal/models/purchases.go b/backend/internal/models/purchases.go
+index af4f89f..a05d5cc 100644
+--- a/backend/internal/models/purchases.go
++++ b/backend/internal/models/purchases.go
+@@ -12,9 +12,15 @@ type Purchase struct {
+ 	ReceiptID string `gorm:"size:40;not null;index" json:"receipt_id"`
+ 	VariantID int64  `gorm:"not null;index" json:"variant_id"`
+ 
+-	Quantity      int   `gorm:"not null" json:"quantity"`
++	Quantity int `gorm:"not null" json:"quantity"`
++	// UnitCostCents is canonical gross cost. Net user input is converted before storage.
+ 	UnitCostCents int64 `gorm:"not null" json:"unit_cost_cents"`
+ 
++	// Receipt-level price metadata is repeated on each line, like supplier/date/reference.
++	PricesIncludeVAT   bool  `gorm:"not null;default:true" json:"prices_include_vat"`
++	VATRateBasisPoints int   `gorm:"not null;default:1900" json:"vat_rate_basis_points"`
++	ShippingCostCents  int64 `gorm:"not null;default:0" json:"shipping_cost_cents"`
++
+ 	PurchasedOn Date   `gorm:"not null;index" json:"purchased_on"`
+ 	Supplier    string `gorm:"size:200;not null;default:''" json:"supplier"`
+ 	// InvoiceReference is a typed invoice number and stays useful even when a
+diff --git a/backend/internal/services/balances/period.go b/backend/internal/services/balances/period.go
+index 56440aa..aa5c853 100644
+--- a/backend/internal/services/balances/period.go
++++ b/backend/internal/services/balances/period.go
+@@ -208,6 +208,22 @@ func (s *Service) summaryPeriod(ctx context.Context, period Period, rows []Row)
+ 			summary.MinimumStockWarnings++
+ 		}
+ 	}
++	// Shipping is receipt-level but repeated on purchase rows, so count it once per receipt.
++	type shippingRow struct {
++		ReceiptID         string
++		ShippingCostCents int64
++	}
++	var shippingRows []shippingRow
++	shippingQuery := s.db.WithContext(ctx).Model(&models.Purchase{}).Where("is_cancelled = ?", false)
++	shippingQuery = period.apply(shippingQuery, "purchased_on")
++	if err := shippingQuery.Select("receipt_id, MAX(shipping_cost_cents) AS shipping_cost_cents").
++		Group("receipt_id").Scan(&shippingRows).Error; err != nil {
++		return nil, err
++	}
++	for _, row := range shippingRows {
++		summary.PurchaseCostCents += row.ShippingCostCents
++	}
++
+ 	summary.CashBalanceCents = summary.CollectedCents + summary.DonationCents - summary.PurchaseCostCents
+ 
+ 	openQuery := s.db.WithContext(ctx).Model(&models.Sale{}).
+@@ -249,19 +265,14 @@ func (s *Service) summaryPeriod(ctx context.Context, period Period, rows []Row)
+ }
+ 
+ func (s *Service) costBasisAt(ctx context.Context, to *models.Date) (map[int64]int64, error) {
+-	type variantDefault struct {
+-		ID                        int64
+-		DefaultPurchasePriceCents int64
+-	}
+-	var defaults []variantDefault
+-	if err := s.db.WithContext(ctx).Model(&models.Variant{}).
+-		Select("id, default_purchase_price_cents").
+-		Scan(&defaults).Error; err != nil {
++	// Acquisition costs come only from real purchases. An unpurchased variant has cost basis 0.
++	var variantIDs []int64
++	if err := s.db.WithContext(ctx).Model(&models.Variant{}).Pluck("id", &variantIDs).Error; err != nil {
+ 		return nil, err
+ 	}
+-	basis := make(map[int64]int64, len(defaults))
+-	for _, row := range defaults {
+-		basis[row.ID] = row.DefaultPurchasePriceCents
++	basis := make(map[int64]int64, len(variantIDs))
++	for _, id := range variantIDs {
++		basis[id] = 0
+ 	}
+ 
+ 	type purchaseAggregate struct {
+diff --git a/backend/internal/services/importer/apply.go b/backend/internal/services/importer/apply.go
+index f80ac2e..969628d 100644
+--- a/backend/internal/services/importer/apply.go
++++ b/backend/internal/services/importer/apply.go
+@@ -2,6 +2,7 @@ package importer
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"strings"
+ 	"time"
+@@ -354,7 +355,18 @@ func (s *Service) resolvePrice(ctx context.Context, kind Kind, variantID int64,
+ 	if kind == KindSales {
+ 		return variant.SalePriceCents, nil
+ 	}
+-	return variant.DefaultPurchasePriceCents, nil
++
++	var previous models.Purchase
++	err := s.db.WithContext(ctx).
++		Where("variant_id = ? AND is_cancelled = ?", variantID, false).
++		Order("purchased_on DESC, id DESC").First(&previous).Error
++	if errors.Is(err, gorm.ErrRecordNotFound) {
++		return 0, fmt.Errorf("importer: line %d: purchase price is required because this variant has no previous purchase", row.LineNumber)
++	}
++	if err != nil {
++		return 0, err
++	}
++	return previous.UnitCostCents, nil
+ }
+ 
+ func (s *Service) findArticle(ctx context.Context, name string) (*models.Article, error) {
+diff --git a/backend/internal/services/purchases/pricing_test.go b/backend/internal/services/purchases/pricing_test.go
+new file mode 100644
+index 0000000..eb859ad
+--- /dev/null
++++ b/backend/internal/services/purchases/pricing_test.go
+@@ -0,0 +1,18 @@
++package purchases
++
++import "testing"
++
++func TestGrossFromEntered(t *testing.T) {
++	if got := GrossFromEntered(10000, false, 1900); got != 11900 {
++		t.Fatalf("100.00 net at 19%% = %d cents, want 11900", got)
++	}
++	if got := GrossFromEntered(11900, true, 1900); got != 11900 {
++		t.Fatalf("gross input changed: %d", got)
++	}
++}
++
++func TestNetFromGross(t *testing.T) {
++	if got := NetFromGross(11900, 1900); got != 10000 {
++		t.Fatalf("119.00 gross at 19%% = %d cents net, want 10000", got)
++	}
++}
+diff --git a/backend/internal/services/purchases/purchases.go b/backend/internal/services/purchases/purchases.go
+index 7f9f419..28e59a3 100644
+--- a/backend/internal/services/purchases/purchases.go
++++ b/backend/internal/services/purchases/purchases.go
+@@ -28,6 +28,8 @@ var (
+ 	ErrUnknownVariant   = errors.New("purchases: unknown variant")
+ 	ErrNotFound         = errors.New("purchases: no such purchase")
+ 	ErrAlreadyCancelled = errors.New("purchases: purchase is already cancelled")
++	ErrInvalidVAT       = errors.New("purchases: VAT rate must be between 0 and 100 percent")
++	ErrNegativeShipping = errors.New("purchases: shipping costs cannot be negative")
+ )
+ 
+ // Item is one position of a goods receipt.
+@@ -44,10 +46,31 @@ type Request struct {
+ 	PurchasedOn      models.Date `json:"purchased_on"`
+ 	Supplier         string      `json:"supplier"`
+ 	InvoiceReference string      `json:"invoice_reference"`
++	// Pointer fields preserve gross-price semantics for older clients that omit them.
++	PricesIncludeVAT   *bool `json:"prices_include_vat"`
++	VATRateBasisPoints *int  `json:"vat_rate_basis_points"`
++	// Shipping uses the same net/gross interpretation as the item prices.
++	ShippingCostCents int64 `json:"shipping_cost_cents"`
+ 	// ReceiptID is the preview the client displayed.
+ 	ReceiptID string `json:"receipt_id"`
+ }
+ 
++type ReceiptEditItem struct {
++	ID            int64 `json:"id"`
++	Quantity      int   `json:"quantity"`
++	UnitCostCents int64 `json:"unit_cost_cents"`
++}
++
++type ReceiptUpdateRequest struct {
++	Items              []ReceiptEditItem `json:"items"`
++	PurchasedOn        models.Date       `json:"purchased_on"`
++	Supplier           string            `json:"supplier"`
++	InvoiceReference   string            `json:"invoice_reference"`
++	PricesIncludeVAT   *bool             `json:"prices_include_vat"`
++	VATRateBasisPoints *int              `json:"vat_rate_basis_points"`
++	ShippingCostCents  int64             `json:"shipping_cost_cents"`
++}
++
+ // Actor is who booked the receipt.
+ type Actor struct {
+ 	UserID   int64
+@@ -77,6 +100,12 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
+ 	if len(req.Items) == 0 {
+ 		return nil, ErrEmptyReceipt
+ 	}
++	includeVAT, vatRate, shippingGross, err := pricingTerms(
++		req.PricesIncludeVAT, req.VATRateBasisPoints, req.ShippingCostCents,
++	)
++	if err != nil {
++		return nil, err
++	}
+ 
+ 	var result *Result
+ 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+@@ -101,18 +130,22 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
+ 			if item.UnitCostCents < 0 {
+ 				return fmt.Errorf("%w: position %d", ErrNegativeCost, i+1)
+ 			}
++			grossUnitCost := GrossFromEntered(item.UnitCostCents, includeVAT, vatRate)
+ 
+ 			purchase := &models.Purchase{
+-				ReceiptID:        receiptID,
+-				VariantID:        item.VariantID,
+-				Quantity:         item.Quantity,
+-				UnitCostCents:    item.UnitCostCents,
+-				PurchasedOn:      req.PurchasedOn,
+-				Supplier:         strings.TrimSpace(req.Supplier),
+-				InvoiceReference: strings.TrimSpace(req.InvoiceReference),
+-				Comment:          strings.TrimSpace(item.Comment),
+-				CreatedAt:        now,
+-				UpdatedAt:        now,
++				ReceiptID:          receiptID,
++				VariantID:          item.VariantID,
++				Quantity:           item.Quantity,
++				UnitCostCents:      grossUnitCost,
++				PricesIncludeVAT:   includeVAT,
++				VATRateBasisPoints: vatRate,
++				ShippingCostCents:  shippingGross,
++				PurchasedOn:        req.PurchasedOn,
++				Supplier:           strings.TrimSpace(req.Supplier),
++				InvoiceReference:   strings.TrimSpace(req.InvoiceReference),
++				Comment:            strings.TrimSpace(item.Comment),
++				CreatedAt:          now,
++				UpdatedAt:          now,
+ 			}
+ 			purchase.CreatedByUserID = &actor.UserID
+ 			purchase.CreatedByUsername = actor.Username
+@@ -121,8 +154,9 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
+ 				return err
+ 			}
+ 			ids = append(ids, purchase.ID)
+-			total += int64(item.Quantity) * item.UnitCostCents
++			total += int64(item.Quantity) * grossUnitCost
+ 		}
++		total += shippingGross
+ 
+ 		result = &Result{ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total}
+ 		return nil
+@@ -177,6 +211,93 @@ func (s *Service) Update(ctx context.Context, id int64, item Item) error {
+ 	})
+ }
+ 
++// UpdateReceipt corrects all active positions and shared receipt metadata atomically.
++// The API exposes this only while PURCHASE_EDITING_ENABLED=true.
++func (s *Service) UpdateReceipt(ctx context.Context, receiptID string, req ReceiptUpdateRequest) (*Result, error) {
++	if len(req.Items) == 0 {
++		return nil, ErrEmptyReceipt
++	}
++	includeVAT, vatRate, shippingGross, err := pricingTerms(
++		req.PricesIncludeVAT, req.VATRateBasisPoints, req.ShippingCostCents,
++	)
++	if err != nil {
++		return nil, err
++	}
++
++	var result *Result
++	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
++		var positions []models.Purchase
++		if err := tx.WithContext(ctx).
++			Clauses(clause.Locking{Strength: "UPDATE"}).
++			Where("receipt_id = ?", receiptID).
++			Find(&positions).Error; err != nil {
++			return err
++		}
++		if len(positions) == 0 {
++			return ErrNotFound
++		}
++
++		active := make(map[int64]models.Purchase)
++		for _, position := range positions {
++			if !position.IsCancelled {
++				active[position.ID] = position
++			}
++		}
++		if len(active) == 0 {
++			return ErrAlreadyCancelled
++		}
++		if len(req.Items) != len(active) {
++			return ErrEmptyReceipt
++		}
++
++		now := time.Now().UTC()
++		if err := tx.WithContext(ctx).Model(&models.Purchase{}).
++			Where("receipt_id = ?", receiptID).
++			Updates(map[string]any{
++				"purchased_on":          req.PurchasedOn,
++				"supplier":              strings.TrimSpace(req.Supplier),
++				"invoice_reference":     strings.TrimSpace(req.InvoiceReference),
++				"prices_include_vat":    includeVAT,
++				"vat_rate_basis_points": vatRate,
++				"shipping_cost_cents":   shippingGross,
++				"updated_at":            now,
++			}).Error; err != nil {
++			return err
++		}
++
++		seen := make(map[int64]bool)
++		ids := make([]int64, 0, len(req.Items))
++		var total int64
++		for index, item := range req.Items {
++			if item.Quantity <= 0 {
++				return fmt.Errorf("%w: position %d", ErrInvalidQuantity, index+1)
++			}
++			if item.UnitCostCents < 0 {
++				return fmt.Errorf("%w: position %d", ErrNegativeCost, index+1)
++			}
++			if _, ok := active[item.ID]; !ok || seen[item.ID] {
++				return ErrNotFound
++			}
++			seen[item.ID] = true
++			gross := GrossFromEntered(item.UnitCostCents, includeVAT, vatRate)
++			if err := tx.WithContext(ctx).Model(&models.Purchase{}).Where("id = ?", item.ID).
++				Updates(map[string]any{
++					"quantity":        item.Quantity,
++					"unit_cost_cents": gross,
++					"updated_at":      now,
++				}).Error; err != nil {
++				return err
++			}
++			ids = append(ids, item.ID)
++			total += int64(item.Quantity) * gross
++		}
++		total += shippingGross
++		result = &Result{ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total}
++		return nil
++	})
++	return result, err
++}
++
+ // Cancel marks one purchase position as cancelled. The original data and all
+ // invoice/receipt attachments remain available for audit.
+ func (s *Service) Cancel(ctx context.Context, id int64, actor Actor) error {
+@@ -279,6 +400,41 @@ func (s *Service) LastUnitCost(ctx context.Context, variantID int64) (int64, boo
+ 	return purchase.UnitCostCents, true, nil
+ }
+ 
++const DefaultVATRateBasisPoints = 1900
++
++func pricingTerms(include *bool, rate *int, shippingEntered int64) (bool, int, int64, error) {
++	includeVAT := true
++	if include != nil {
++		includeVAT = *include
++	}
++	vatRate := DefaultVATRateBasisPoints
++	if rate != nil {
++		vatRate = *rate
++	}
++	if vatRate < 0 || vatRate > 10000 {
++		return false, 0, 0, ErrInvalidVAT
++	}
++	if shippingEntered < 0 {
++		return false, 0, 0, ErrNegativeShipping
++	}
++	return includeVAT, vatRate, GrossFromEntered(shippingEntered, includeVAT, vatRate), nil
++}
++
++// GrossFromEntered normalises a user-entered amount to the canonical gross cents.
++func GrossFromEntered(cents int64, includesVAT bool, rateBasisPoints int) int64 {
++	if includesVAT || cents == 0 {
++		return cents
++	}
++	return (cents*int64(10000+rateBasisPoints) + 5000) / 10000
++}
++
++func NetFromGross(cents int64, rateBasisPoints int) int64 {
++	if cents == 0 || rateBasisPoints <= 0 {
++		return cents
++	}
++	return (cents*10000 + int64(10000+rateBasisPoints)/2) / int64(10000+rateBasisPoints)
++}
++
+ // validateVariants rejects positions pointing at a variant the band does not
+ // have. Unlike a sale, a purchase may target a withdrawn variant: restocking
+ // something that left the assortment is legitimate bookkeeping.
+diff --git a/backend/migrations/0012_purchase_vat_shipping.down.sql b/backend/migrations/0012_purchase_vat_shipping.down.sql
+new file mode 100644
+index 0000000..78d9ecd
+--- /dev/null
++++ b/backend/migrations/0012_purchase_vat_shipping.down.sql
+@@ -0,0 +1,4 @@
++ALTER TABLE purchases
++    DROP COLUMN shipping_cost_cents,
++    DROP COLUMN vat_rate_basis_points,
++    DROP COLUMN prices_include_vat;
+diff --git a/backend/migrations/0012_purchase_vat_shipping.up.sql b/backend/migrations/0012_purchase_vat_shipping.up.sql
+new file mode 100644
+index 0000000..529b3eb
+--- /dev/null
++++ b/backend/migrations/0012_purchase_vat_shipping.up.sql
+@@ -0,0 +1,4 @@
++ALTER TABLE purchases
++    ADD COLUMN prices_include_vat TINYINT(1) NOT NULL DEFAULT 1 AFTER unit_cost_cents,
++    ADD COLUMN vat_rate_basis_points INT NOT NULL DEFAULT 1900 AFTER prices_include_vat,
++    ADD COLUMN shipping_cost_cents BIGINT NOT NULL DEFAULT 0 AFTER vat_rate_basis_points;
+diff --git a/deploy/.env.synology.example b/deploy/.env.synology.example
+index bbfa933..722c689 100644
+--- a/deploy/.env.synology.example
++++ b/deploy/.env.synology.example
+@@ -16,6 +16,8 @@ PUBLIC_BASE_URL=http://192.168.1.10:8090
+ # Enables the public band-request form on the landing page. No SMTP setup is
+ # required; applicants receive a one-time status link instead.
+ PUBLIC_REGISTRATION_ENABLED=true
++# Temporary: allows managers to correct already booked purchases.
++PURCHASE_EDITING_ENABLED=false
+ COOKIE_SECURE=false
+ COOKIE_DOMAIN=
+ TRUSTED_PROXIES=
+diff --git a/deploy/docker-compose.synology.yml b/deploy/docker-compose.synology.yml
+index 174671c..53115ee 100644
+--- a/deploy/docker-compose.synology.yml
++++ b/deploy/docker-compose.synology.yml
+@@ -50,6 +50,7 @@ services:
+       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+       PUBLIC_REGISTRATION_ENABLED: ${PUBLIC_REGISTRATION_ENABLED:-false}
++      PURCHASE_EDITING_ENABLED: ${PURCHASE_EDITING_ENABLED:-false}
+       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+diff --git a/deploy/docker-compose.yml b/deploy/docker-compose.yml
+index 21149e7..5cd091c 100644
+--- a/deploy/docker-compose.yml
++++ b/deploy/docker-compose.yml
+@@ -51,6 +51,7 @@ services:
+       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+       PUBLIC_REGISTRATION_ENABLED: ${PUBLIC_REGISTRATION_ENABLED:-false}
++      PURCHASE_EDITING_ENABLED: ${PURCHASE_EDITING_ENABLED:-false}
+       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+       STORAGE_ROOT: /data/storage
+diff --git a/frontend/src/api/endpoints.ts b/frontend/src/api/endpoints.ts
+index f11f9bc..5a18be6 100644
+--- a/frontend/src/api/endpoints.ts
++++ b/frontend/src/api/endpoints.ts
+@@ -99,7 +99,6 @@ export const catalogueApi = {
+   create: (payload: {
+     name: string
+     default_sale_price_cents: number
+-    default_purchase_price_cents: number
+   }) => api.post<Article>('/articles', payload),
+   save: (id: number, payload: unknown) => api.put<Article>(`/articles/${id}`, payload),
+ }
+@@ -221,14 +220,28 @@ export const reportsApi = {
+ }
+ 
+ export const purchasesApi = {
+-  list: () => api.get<{ purchases: Purchase[] }>('/purchases'),
++  list: () => api.get<{ purchases: Purchase[]; editing_enabled: boolean }>('/purchases'),
+   create: (payload: {
+     items: { variant_id: number; quantity: number; unit_cost_cents: number; comment?: string }[]
+     purchased_on: string
+     supplier?: string
+     invoice_reference?: string
++    prices_include_vat: boolean
++    vat_rate_basis_points: number
++    shipping_cost_cents: number
+     receipt_id?: string
+   }) => api.post<{ receipt_id: string; purchase_ids: number[]; total_cost_cents: number }>('/purchases', payload),
++  updateReceipt: (receiptId: string, payload: {
++    items: { id: number; quantity: number; unit_cost_cents: number }[]
++    purchased_on: string
++    supplier: string
++    invoice_reference: string
++    prices_include_vat: boolean
++    vat_rate_basis_points: number
++    shipping_cost_cents: number
++  }) => api.patch<{ receipt_id: string; purchase_ids: number[]; total_cost_cents: number }>(
++    `/purchases/receipt/${encodeURIComponent(receiptId)}`, payload,
++  ),
+   update: (id: number, payload: { quantity: number; unit_cost_cents: number; comment?: string }) =>
+     api.patch<void>(`/purchases/${id}`, payload),
+   cancel: (id: number) => api.patch<void>(`/purchases/${id}/cancel`),
+diff --git a/frontend/src/api/types.ts b/frontend/src/api/types.ts
+index e2e94a8..a84483c 100644
+--- a/frontend/src/api/types.ts
++++ b/frontend/src/api/types.ts
+@@ -450,6 +450,10 @@ export interface Purchase {
+   supplier: string
+   invoice_reference: string
+   has_invoice_file: boolean
++  has_receipt_attachment: boolean
++  prices_include_vat: boolean
++  vat_rate_basis_points: number
++  shipping_cost_cents: number
+   comment: string
+   is_cancelled: boolean
+   cancelled_at?: string
+diff --git a/frontend/src/composables/useMoney.spec.ts b/frontend/src/composables/useMoney.spec.ts
+new file mode 100644
+index 0000000..61413ba
+--- /dev/null
++++ b/frontend/src/composables/useMoney.spec.ts
+@@ -0,0 +1,17 @@
++import { describe, expect, it } from 'vitest'
++
++import { parseAmount } from './useMoney'
++
++describe('parseAmount', () => {
++  it('accepts a dot decimal separator', () => {
++    expect(parseAmount('28.02')).toBe(2802)
++  })
++
++  it('accepts German thousands plus decimals', () => {
++    expect(parseAmount('1.000,02')).toBe(100002)
++  })
++
++  it('rejects malformed repeated decimal separators', () => {
++    expect(parseAmount('1.000.02')).toBeNull()
++  })
++})
+diff --git a/frontend/src/i18n/de.json b/frontend/src/i18n/de.json
+index abcb9a9..b807077 100644
+--- a/frontend/src/i18n/de.json
++++ b/frontend/src/i18n/de.json
+@@ -496,8 +496,22 @@
+   "purchases": {
+     "eyebrow": "Wareneingang",
+     "title": "EinkÃ¤ufe",
+-    "unitCost": "Einkaufspreis",
++    "unitCost": "Einkaufspreis pro StÃ¼ck",
+     "receiptTotal": "Beleg gesamt",
++    "priceIncludesVat": "Preis enthÃ¤lt Mehrwertsteuer",
++    "vatRate": "MwSt.-Satz",
++    "shippingCost": "Versandkosten",
++    "netTotal": "Netto gesamt",
++    "grossTotal": "Brutto gesamt",
++    "invalidPrice": "Der Einkaufspreis ist ungÃ¼ltig. Bitte z. B. 28,02 oder 1.000,02 eingeben.",
++    "invalidVat": "Der Mehrwertsteuersatz ist ungÃ¼ltig.",
++    "invalidShipping": "Die Versandkosten sind ungÃ¼ltig.",
++    "applyPriceToVariants": "Diesen Einkaufspreis fÃ¼r alle Varianten dieses Artikels im aktuellen Warenkorb Ã¼bernehmen?",
++    "hasAttachment": "Datei angehÃ¤ngt",
++    "edit": "Edit",
++    "editTitle": "Einkauf bearbeiten",
++    "editHint": "Korrigiere Datum, Lieferant, Preise, MwSt., Versandkosten oder Mengen dieses Einkaufs.",
++    "updated": "Einkauf aktualisiert.",
+     "addPosition": "Position hinzufÃ¼gen",
+     "positions": "Positionen",
+     "noPositions": "Noch keine Positionen erfasst.",
+@@ -561,7 +575,6 @@
+     "incomplete": "unvollstÃ¤ndig",
+     "withdrawnHint": "Der Artikel verschwindet aus dem Verkauf, bleibt aber fÃ¼r EinkÃ¤ufe, Bilanzen und die Historie vollstÃ¤ndig erhalten.",
+     "defaultSalePrice": "Standard-Verkaufspreis",
+-    "defaultPurchasePrice": "Standard-Einkaufspreis",
+     "options": "Optionen",
+     "optionsHint": "Frei definierbare Spalten, zum Beispiel Farbe und GrÃ¶ÃŸe. Entfernte Werte werden deaktiviert, nicht gelÃ¶scht â€” alte Belege bleiben lesbar, und ein Umbenennen wirkt rÃ¼ckwirkend.",
+     "addOption": "Option hinzufÃ¼gen",
+diff --git a/frontend/src/i18n/en.json b/frontend/src/i18n/en.json
+index 3fc968d..e1264e1 100644
+--- a/frontend/src/i18n/en.json
++++ b/frontend/src/i18n/en.json
+@@ -496,8 +496,22 @@
+   "purchases": {
+     "eyebrow": "Wareneingang",
+     "title": "EinkÃ¤ufe",
+-    "unitCost": "Einkaufspreis",
+-    "receiptTotal": "Beleg gesamt",
++    "unitCost": "Purchase price per unit",
++    "receiptTotal": "Receipt total",
++    "priceIncludesVat": "Price includes VAT",
++    "vatRate": "VAT rate",
++    "shippingCost": "Shipping cost",
++    "netTotal": "Net total",
++    "grossTotal": "Gross total",
++    "invalidPrice": "The purchase price is invalid. Use e.g. 28.02 or 1,000.02.",
++    "invalidVat": "The VAT rate is invalid.",
++    "invalidShipping": "The shipping cost is invalid.",
++    "applyPriceToVariants": "Apply this purchase price to all variants of this article in the current basket?",
++    "hasAttachment": "File attached",
++    "edit": "Edit",
++    "editTitle": "Edit purchase",
++    "editHint": "Correct the date, supplier, prices, VAT, shipping or quantities for this purchase.",
++    "updated": "Purchase updated.",
+     "addPosition": "Position hinzufÃ¼gen",
+     "positions": "Positionen",
+     "noPositions": "Noch keine Positionen erfasst.",
+@@ -561,7 +575,6 @@
+     "incomplete": "unvollstÃ¤ndig",
+     "withdrawnHint": "Der Artikel verschwindet aus dem Verkauf, bleibt aber fÃ¼r EinkÃ¤ufe, Bilanzen und die Historie vollstÃ¤ndig erhalten.",
+     "defaultSalePrice": "Standard-Verkaufspreis",
+-    "defaultPurchasePrice": "Standard-Einkaufspreis",
+     "options": "Optionen",
+     "optionsHint": "Frei definierbare Spalten, zum Beispiel Farbe und GrÃ¶ÃŸe. Entfernte Werte werden deaktiviert, nicht gelÃ¶scht â€” alte Belege bleiben lesbar, und ein Umbenennen wirkt rÃ¼ckwirkend.",
+     "addOption": "Option hinzufÃ¼gen",
+diff --git a/frontend/src/views/band/ArticlesView.vue b/frontend/src/views/band/ArticlesView.vue
+index af4d825..182faca 100644
+--- a/frontend/src/views/band/ArticlesView.vue
++++ b/frontend/src/views/band/ArticlesView.vue
+@@ -40,10 +40,9 @@ interface DraftGroup {
+ const draft = ref<{
+   name: string
+   salePrice: string
+-  purchasePrice: string
+   isOffered: boolean
+   groups: DraftGroup[]
+-}>({ name: '', salePrice: '', purchasePrice: '', isOffered: true, groups: [] })
++}>({ name: '', salePrice: '', isOffered: true, groups: [] })
+ 
+ const newArticleName = ref('')
+ 
+@@ -116,7 +115,6 @@ function select(id: number) {
+   draft.value = {
+     name: article.name,
+     salePrice: toInput(article.default_sale_price_cents),
+-    purchasePrice: toInput(article.default_purchase_price_cents),
+     isOffered: article.is_offered,
+     groups: article.option_groups
+       .filter((group) => group.is_active)
+@@ -255,7 +253,6 @@ async function createArticle() {
+     const created = await catalogueApi.create({
+       name,
+       default_sale_price_cents: 0,
+-      default_purchase_price_cents: 0,
+     })
+     newArticleName.value = ''
+     flash.success(t('articles.created'))
+@@ -307,8 +304,7 @@ async function save() {
+   busy.value = true
+ 
+   const sale = parseAmount(draft.value.salePrice)
+-  const purchase = parseAmount(draft.value.purchasePrice)
+-  if (sale === null || purchase === null) {
++  if (sale === null) {
+     flash.error(t('articles.invalidPrice'))
+     busy.value = false
+     return
+@@ -318,7 +314,6 @@ async function save() {
+     await catalogueApi.save(selected.value.id, {
+       name: draft.value.name.trim(),
+       default_sale_price_cents: sale,
+-      default_purchase_price_cents: purchase,
+       is_offered: draft.value.isOffered,
+       option_groups: draft.value.groups
+         .filter((group) => group.name.trim())
+diff --git a/frontend/src/views/band/PurchasesView.vue b/frontend/src/views/band/PurchasesView.vue
+index 788c1fb..d313cef 100644
+--- a/frontend/src/views/band/PurchasesView.vue
++++ b/frontend/src/views/band/PurchasesView.vue
+@@ -32,6 +32,7 @@ const dateFrom = ref('')
+ const dateTo = ref('')
+ 
+ const canManage = computed(() => session.capabilities?.can_manage_purchases ?? false)
++const purchaseEditingEnabled = ref(false)
+ 
+ const receiptId = ref('')
+ const purchasedOn = ref(new Date().toISOString().slice(0, 10))
+@@ -44,8 +45,13 @@ const selectedArticleId = ref<number | null>(null)
+ const chosenValues = ref<Record<number, number>>({})
+ const quantity = ref(1)
+ const unitCostInput = ref('')
++const pricesIncludeVat = ref(true)
++const vatRateInput = ref('19')
++const shippingCostInput = ref('0,00')
++const rememberedArticleCost = ref<Record<number, string>>({})
+ 
+ interface CartLine {
++  articleId: number
+   variantId: number
+   label: string
+   quantity: number
+@@ -84,9 +90,42 @@ const variantLabel = computed(() => {
+   return parts.length ? `${article.name} â€” ${parts.join(' Â· ')}` : article.name
+ })
+ 
+-const cartTotalCents = computed(() =>
+-  cart.value.reduce((sum, line) => sum + line.quantity * line.unitCostCents, 0),
+-)
++function parseVatRate(raw: string): number | null {
++  const normalized = raw.trim().replace(',', '.')
++  if (!/^\d{1,3}(?:\.\d{1,2})?$/.test(normalized)) return null
++  const percent = Number(normalized)
++  if (!Number.isFinite(percent) || percent < 0 || percent > 100) return null
++  return Math.round(percent * 100)
++}
++
++function grossFromEntered(cents: number, includesVat: boolean, vatBasisPoints: number) {
++  return includesVat ? cents : Math.round(cents * (10000 + vatBasisPoints) / 10000)
++}
++
++function netFromGross(cents: number, vatBasisPoints: number) {
++  if (vatBasisPoints <= 0) return cents
++  return Math.round(cents * 10000 / (10000 + vatBasisPoints))
++}
++
++const vatRateBasisPoints = computed(() => parseVatRate(vatRateInput.value) ?? 1900)
++const shippingEnteredCents = computed(() => parseAmount(shippingCostInput.value))
++const cartNetCents = computed(() => {
++  const vat = vatRateBasisPoints.value
++  const goods = cart.value.reduce((sum, line) => {
++    const entered = line.quantity * line.unitCostCents
++    return sum + (pricesIncludeVat.value ? netFromGross(entered, vat) : entered)
++  }, 0)
++  const shipping = shippingEnteredCents.value ?? 0
++  return goods + (pricesIncludeVat.value ? netFromGross(shipping, vat) : shipping)
++})
++const cartGrossCents = computed(() => {
++  const vat = vatRateBasisPoints.value
++  const goods = cart.value.reduce(
++    (sum, line) => sum + line.quantity * grossFromEntered(line.unitCostCents, pricesIncludeVat.value, vat), 0,
++  )
++  const shipping = shippingEnteredCents.value ?? 0
++  return goods + grossFromEntered(shipping, pricesIncludeVat.value, vat)
++})
+ 
+ interface PurchaseReceipt {
+   receiptId: string
+@@ -95,6 +134,10 @@ interface PurchaseReceipt {
+   invoiceReference: string
+   positions: Purchase[]
+   totalCostCents: number
++  pricesIncludeVat: boolean
++  vatRateBasisPoints: number
++  shippingCostCents: number
++  hasAttachment: boolean
+   isCancelled: boolean
+ }
+ 
+@@ -111,6 +154,10 @@ const visibleReceipts = computed(() => {
+         invoiceReference: purchase.invoice_reference,
+         positions: [],
+         totalCostCents: 0,
++        pricesIncludeVat: purchase.prices_include_vat,
++        vatRateBasisPoints: purchase.vat_rate_basis_points || 1900,
++        shippingCostCents: purchase.shipping_cost_cents,
++        hasAttachment: false,
+         isCancelled: false,
+       }
+       known.set(purchase.receipt_id, receipt)
+@@ -118,8 +165,10 @@ const visibleReceipts = computed(() => {
+     }
+     receipt.positions.push(purchase)
+     receipt.totalCostCents += purchase.total_cost_cents
++    receipt.hasAttachment ||= purchase.has_invoice_file || purchase.has_receipt_attachment
+   }
+   for (const receipt of receipts) {
++    receipt.totalCostCents += receipt.shippingCostCents
+     receipt.isCancelled = receipt.positions.length > 0 &&
+       receipt.positions.every((purchase) => purchase.is_cancelled)
+   }
+@@ -184,7 +233,9 @@ async function loadArticles() {
+ 
+ async function loadPurchases() {
+   try {
+-    purchases.value = (await purchasesApi.list()).purchases
++    const result = await purchasesApi.list()
++    purchases.value = result.purchases
++    purchaseEditingEnabled.value = result.editing_enabled
+   } catch {
+     flash.error(t('errors.generic'))
+   }
+@@ -211,15 +262,39 @@ function selectArticle(article: Article) {
+ // retyping â€” but it stays editable, because suppliers change their prices.
+ watch(selectedVariant, async (variant) => {
+   if (!variant) return
++  const articleId = selectedArticleId.value
++  if (articleId !== null && rememberedArticleCost.value[articleId] !== undefined) {
++    unitCostInput.value = rememberedArticleCost.value[articleId] ?? ''
++    return
++  }
+   try {
+     const last = await purchasesApi.lastCost(variant.id)
+-    const cents = last.found ? last.unit_cost_cents : variant.default_purchase_price_cents
++    if (!last.found) {
++      unitCostInput.value = ''
++      return
++    }
++    const cents = pricesIncludeVat.value
++      ? last.unit_cost_cents
++      : netFromGross(last.unit_cost_cents, vatRateBasisPoints.value)
+     unitCostInput.value = (cents / 100).toFixed(2).replace('.', ',')
+   } catch {
+-    unitCostInput.value = (variant.default_purchase_price_cents / 100).toFixed(2).replace('.', ',')
++    unitCostInput.value = ''
+   }
+ })
+ 
++function onUnitCostChanged() {
++  const article = selectedArticle.value
++  const cents = parseAmount(unitCostInput.value)
++  if (unitCostInput.value.trim() && (cents === null || cents < 0)) {
++    flash.error(t('purchases.invalidPrice'))
++    return
++  }
++  if (!article || cents === null || article.variants.filter((variant) => variant.is_active).length <= 1) return
++  if (!window.confirm(t('purchases.applyPriceToVariants'))) return
++  rememberedArticleCost.value = { ...rememberedArticleCost.value, [article.id]: unitCostInput.value }
++  cart.value = cart.value.map((line) => line.articleId === article.id ? { ...line, unitCostCents: cents } : line)
++}
++
+ /**
+  * The stepper is the only way to change the amount on a tablet, so it must
+  * never leave the field in a state the basket cannot use: clearing a number
+@@ -237,9 +312,15 @@ function normalizeQuantity() {
+ function addToCart() {
+   const variant = selectedVariant.value
+   const cost = parseAmount(unitCostInput.value)
+-  if (!variant || cost === null || cost < 0 || quantity.value <= 0) return
++  if (!variant) return
++  if (cost === null || cost < 0) {
++    flash.error(t('purchases.invalidPrice'))
++    return
++  }
++  if (quantity.value <= 0) return
+ 
+   cart.value.push({
++    articleId: selectedArticleId.value ?? 0,
+     variantId: variant.id,
+     label: variantLabel.value,
+     quantity: quantity.value,
+@@ -262,6 +343,16 @@ function report(error: unknown) {
+ 
+ async function book() {
+   if (!cart.value.length || busy.value) return
++  const vat = parseVatRate(vatRateInput.value)
++  const shipping = parseAmount(shippingCostInput.value)
++  if (vat === null) {
++    flash.error(t('purchases.invalidVat'))
++    return
++  }
++  if (shipping === null || shipping < 0) {
++    flash.error(t('purchases.invalidShipping'))
++    return
++  }
+   busy.value = true
+   try {
+     const result = await purchasesApi.create({
+@@ -273,6 +364,9 @@ async function book() {
+       purchased_on: purchasedOn.value,
+       supplier: supplier.value.trim(),
+       invoice_reference: invoiceReference.value.trim(),
++      prices_include_vat: pricesIncludeVat.value,
++      vat_rate_basis_points: vat,
++      shipping_cost_cents: shipping,
+       receipt_id: receiptId.value,
+     })
+     flash.success(t('purchases.booked', { receipt: result.receipt_id }))
+@@ -284,8 +378,10 @@ async function book() {
+       }
+     }
+     cart.value = []
++    rememberedArticleCost.value = {}
+     supplier.value = ''
+     invoiceReference.value = ''
++    shippingCostInput.value = '0,00'
+     receiptInvoice.value = null
+     if (receiptInvoiceInput.value) receiptInvoiceInput.value.value = ''
+     await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
+@@ -296,6 +392,95 @@ async function book() {
+   }
+ }
+ 
++function clearReceiptInvoice() {
++  receiptInvoice.value = null
++  if (receiptInvoiceInput.value) receiptInvoiceInput.value.value = ''
++}
++
++interface ReceiptEditLine {
++  id: number
++  label: string
++  quantity: number
++  unitCostInput: string
++}
++
++const editingReceipt = ref<PurchaseReceipt | null>(null)
++const editPurchasedOn = ref('')
++const editSupplier = ref('')
++const editInvoiceReference = ref('')
++const editPricesIncludeVat = ref(true)
++const editVatRateInput = ref('19')
++const editShippingCostInput = ref('0,00')
++const editLines = ref<ReceiptEditLine[]>([])
++
++function toMoneyInput(cents: number) {
++  return (cents / 100).toFixed(2).replace('.', ',')
++}
++
++function startEdit(receipt: PurchaseReceipt) {
++  editingReceipt.value = receipt
++  editPurchasedOn.value = receipt.purchasedOn
++  editSupplier.value = receipt.supplier
++  editInvoiceReference.value = receipt.invoiceReference
++  editPricesIncludeVat.value = receipt.pricesIncludeVat
++  editVatRateInput.value = (receipt.vatRateBasisPoints / 100).toFixed(2).replace(/(?:[.,]00)$/, '').replace('.', ',')
++  const enteredShipping = receipt.pricesIncludeVat
++    ? receipt.shippingCostCents
++    : netFromGross(receipt.shippingCostCents, receipt.vatRateBasisPoints)
++  editShippingCostInput.value = toMoneyInput(enteredShipping)
++  editLines.value = receipt.positions.filter((purchase) => !purchase.is_cancelled).map((purchase) => ({
++    id: purchase.id,
++    label: `${purchase.article_name} â€” ${purchase.variant_label}`,
++    quantity: purchase.quantity,
++    unitCostInput: toMoneyInput(receipt.pricesIncludeVat
++      ? purchase.unit_cost_cents
++      : netFromGross(purchase.unit_cost_cents, receipt.vatRateBasisPoints)),
++  }))
++}
++
++async function saveReceiptEdit() {
++  const receipt = editingReceipt.value
++  if (!receipt || busy.value) return
++  const vat = parseVatRate(editVatRateInput.value)
++  const shipping = parseAmount(editShippingCostInput.value)
++  if (vat === null) {
++    flash.error(t('purchases.invalidVat'))
++    return
++  }
++  if (shipping === null || shipping < 0) {
++    flash.error(t('purchases.invalidShipping'))
++    return
++  }
++  const parsedItems = editLines.value.map((line) => ({
++    id: line.id,
++    quantity: line.quantity,
++    unit_cost_cents: parseAmount(line.unitCostInput),
++  }))
++  if (parsedItems.some((item) => item.quantity <= 0 || item.unit_cost_cents === null || item.unit_cost_cents < 0)) {
++    flash.error(t('purchases.invalidPrice'))
++    return
++  }
++  busy.value = true
++  try {
++    await purchasesApi.updateReceipt(receipt.receiptId, {
++      items: parsedItems.map((item) => ({ id: item.id, quantity: item.quantity, unit_cost_cents: item.unit_cost_cents as number })),
++      purchased_on: editPurchasedOn.value,
++      supplier: editSupplier.value.trim(),
++      invoice_reference: editInvoiceReference.value.trim(),
++      prices_include_vat: editPricesIncludeVat.value,
++      vat_rate_basis_points: vat,
++      shipping_cost_cents: shipping,
++    })
++    flash.success(t('purchases.updated'))
++    editingReceipt.value = null
++    await Promise.all([loadArticles(), loadPurchases()])
++  } catch (error) {
++    report(error)
++  } finally {
++    busy.value = false
++  }
++}
++
+ /**
+  * Invoices and receipt attachments.
+  *
+@@ -319,7 +504,7 @@ async function onFileChosen(event: Event) {
+   try {
+     await attachmentsApi.upload(attachmentsFor.value.receipt_id, file)
+     flash.success(t('purchases.invoiceUploaded'))
+-    await loadAttachments()
++    await Promise.all([loadAttachments(), loadPurchases()])
+   } catch (error) {
+     report(error)
+   }
+@@ -344,7 +529,7 @@ async function removeAttachment(file: Attachment) {
+   if (!attachmentsFor.value) return
+   try {
+     await attachmentsApi.remove(attachmentsFor.value.receipt_id, file.id)
+-    await loadAttachments()
++    await Promise.all([loadAttachments(), loadPurchases()])
+   } catch (error) {
+     report(error)
+   }
+@@ -437,8 +622,19 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
+       <section class="selection-panel sale-details">
+         <label>
+           {{ t('purchases.unitCost') }}
+-          <input v-model="unitCostInput" inputmode="decimal" :disabled="!selectedVariant" />
++          <input v-model="unitCostInput" inputmode="decimal" :disabled="!selectedVariant" @change="onUnitCostChanged" />
+         </label>
++        <div class="field-grid two-columns">
++          <label class="checkbox-row">
++            <input v-model="pricesIncludeVat" type="checkbox" />
++            <span>{{ t('purchases.priceIncludesVat') }}</span>
++          </label>
++          <label>
++            {{ t('purchases.vatRate') }}
++            <input v-model="vatRateInput" inputmode="decimal" />
++          </label>
++        </div>
++        <label>{{ t('purchases.shippingCost') }}<input v-model="shippingCostInput" inputmode="decimal" /></label>
+ 
+         <div class="quantity-and-total">
+           <label class="quantity-control">
+@@ -456,8 +652,10 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
+             </span>
+           </label>
+           <div class="total-box">
+-            <span>{{ t('purchases.receiptTotal') }}</span>
+-            <strong>{{ format(cartTotalCents) }}</strong>
++            <span>{{ t('purchases.netTotal') }}</span>
++            <strong>{{ format(cartNetCents) }}</strong>
++            <span>{{ t('purchases.grossTotal') }}</span>
++            <strong>{{ format(cartGrossCents) }}</strong>
+           </div>
+         </div>
+ 
+@@ -501,6 +699,10 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
+             accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+             @change="receiptInvoice = ($event.target as HTMLInputElement).files?.[0] ?? null"
+           />
++          <span v-if="receiptInvoice" class="selected-upload">
++            <span>{{ receiptInvoice.name }}</span>
++            <button class="compact-button danger-button" type="button" @click="clearReceiptInvoice">{{ t('common.delete') }}</button>
++          </span>
+           <small class="muted">{{ t('purchases.invoiceFileHint') }}</small>
+         </label>
+ 
+@@ -545,7 +747,10 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
+         >
+           <summary>
+             <span class="receipt-summary-main">
+-              <code>{{ receipt.receiptId }}</code>
++              <span class="receipt-id-with-file">
++                <code>{{ receipt.receiptId }}</code>
++                <span v-if="receipt.hasAttachment" class="attachment-indicator" :title="t('purchases.hasAttachment')" :aria-label="t('purchases.hasAttachment')">ðŸ“Ž</span>
++              </span>
+               <small>{{ receipt.purchasedOn }} Â· {{ receipt.supplier || t('purchases.noSupplier') }}</small>
+               <em v-if="receipt.isCancelled" class="cancelled-badge">{{ t('purchases.cancelledLabel') }}</em>
+             </span>
+@@ -557,6 +762,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
+             <div class="receipt-meta">
+               <span><b>{{ t('purchases.supplier') }}:</b> {{ receipt.supplier || 'â€”' }}</span>
+               <span><b>{{ t('purchases.invoiceReference') }}:</b> {{ receipt.invoiceReference || 'â€”' }}</span>
++              <span><b>{{ t('purchases.shippingCost') }}:</b> {{ format(receipt.shippingCostCents) }}</span>
+             </div>
+             <div class="table-scroll">
+               <table>
+@@ -585,6 +791,9 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
+               </table>
+             </div>
+             <div class="receipt-actions">
++              <button v-if="purchaseEditingEnabled && canManage && !receipt.isCancelled" class="secondary-button" type="button" @click="startEdit(receipt)">
++                {{ t('purchases.edit') }}
++              </button>
+               <button class="secondary-button" type="button" @click="openAttachments(receipt.positions[0])">
+                 {{ t('purchases.invoiceAndAttachments') }}
+               </button>
+@@ -610,6 +819,37 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
+       @change="onFileChosen"
+     />
+ 
++    <dialog v-if="editingReceipt" class="confirmation-dialog" open>
++      <div class="stack-form">
++        <div>
++          <p class="eyebrow"><code>{{ editingReceipt.receiptId }}</code></p>
++          <h2>{{ t('purchases.editTitle') }}</h2>
++          <p class="muted">{{ t('purchases.editHint') }}</p>
++        </div>
++        <div class="field-grid two-columns">
++          <label>{{ t('common.date') }}<input v-model="editPurchasedOn" type="date" /></label>
++          <label>{{ t('purchases.supplier') }}<input v-model="editSupplier" /></label>
++        </div>
++        <label>{{ t('purchases.invoiceReference') }}<input v-model="editInvoiceReference" /></label>
++        <div class="field-grid two-columns">
++          <label class="checkbox-row"><input v-model="editPricesIncludeVat" type="checkbox" /><span>{{ t('purchases.priceIncludesVat') }}</span></label>
++          <label>{{ t('purchases.vatRate') }}<input v-model="editVatRateInput" inputmode="decimal" /></label>
++        </div>
++        <label>{{ t('purchases.shippingCost') }}<input v-model="editShippingCostInput" inputmode="decimal" /></label>
++        <div class="edit-purchase-lines">
++          <div v-for="line in editLines" :key="line.id" class="edit-purchase-line">
++            <strong>{{ line.label }}</strong>
++            <label>{{ t('common.quantity') }}<input v-model.number="line.quantity" type="number" min="1" /></label>
++            <label>{{ t('purchases.unitCost') }}<input v-model="line.unitCostInput" inputmode="decimal" /></label>
++          </div>
++        </div>
++        <div class="dialog-actions">
++          <button class="secondary-button" type="button" @click="editingReceipt = null">{{ t('common.cancel') }}</button>
++          <button class="primary-button" type="button" :disabled="busy" @click="saveReceiptEdit">{{ t('common.save') }}</button>
++        </div>
++      </div>
++    </dialog>
++
+     <dialog v-if="attachmentsFor" class="confirmation-dialog" open>
+       <div class="stack-form">
+         <div>
+@@ -648,6 +888,23 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
+ </template>
+ 
+ <style scoped>
++.selected-upload,
++.receipt-id-with-file {
++  display: flex;
++  gap: 8px;
++  align-items: center;
++}
++
++.attachment-indicator { font-size: 1rem; }
++
++.edit-purchase-lines { display: grid; gap: 10px; }
++.edit-purchase-line {
++  display: grid;
++  grid-template-columns: minmax(180px, 1fr) 110px 140px;
++  gap: 10px;
++  align-items: end;
++}
++
+ .purchase-history-toolbar {
+   display: flex;
+   flex-wrap: wrap;
+@@ -816,6 +1073,8 @@ td a {
+ }
+ 
+ @media (max-width: 700px) {
++  .edit-purchase-line { grid-template-columns: 1fr; }
++
+   .purchase-receipt-card summary {
+     grid-template-columns: 1fr auto;
+     gap: 8px 12px;

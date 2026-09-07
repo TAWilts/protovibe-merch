@@ -450,6 +450,10 @@ export interface Purchase {
   supplier: string
   invoice_reference: string
   has_invoice_file: boolean
+  has_receipt_attachment: boolean
+  prices_include_vat: boolean
+  vat_rate_basis_points: number
+  shipping_cost_cents: number
   comment: string
   is_cancelled: boolean
   cancelled_at?: string

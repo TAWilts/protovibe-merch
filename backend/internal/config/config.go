@@ -74,6 +74,9 @@ type Config struct {
 	DisplayTimezone           *time.Location
 	PublicBaseURL             string
 	PublicRegistrationEnabled bool
+
+	// Temporary feature flag. When false, already booked purchases are read-only.
+	PurchaseEditingEnabled bool
 }
 
 // placeholderValues are the literal strings shipped in .env.example. Booting
@@ -133,6 +136,7 @@ func Load() (*Config, error) {
 
 		PublicBaseURL:             strings.TrimRight(env("PUBLIC_BASE_URL", "http://localhost:8000"), "/"),
 		PublicRegistrationEnabled: envBool("PUBLIC_REGISTRATION_ENABLED", false),
+		PurchaseEditingEnabled:    envBool("PURCHASE_EDITING_ENABLED", false),
 	}
 
 	if raw := os.Getenv("TRUSTED_PROXIES"); raw != "" {

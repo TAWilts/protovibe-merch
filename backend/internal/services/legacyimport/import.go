@@ -942,19 +942,21 @@ func (i *destinationImporter) importPurchases(ctx context.Context, rows []row) e
 			return err
 		}
 		record := models.Purchase{
-			Tenant:           models.Tenant{BandID: i.bandID},
-			ReceiptID:        stringValue(r, "receipt_id"),
-			VariantID:        i.variantIDs[int64Value(r, "variant_id")],
-			Quantity:         intValue(r, "quantity"),
-			UnitCostCents:    int64Value(r, "unit_cost_cents"),
-			PurchasedOn:      purchasedOn,
-			Supplier:         stringValue(r, "supplier"),
-			InvoiceReference: stringValue(r, "invoice_reference"),
-			Comment:          stringValue(r, "comment"),
-			IsCancelled:      false,
-			CreatedAt:        created,
-			UpdatedAt:        created,
-			Actor:            i.actor(r, "created_by", "created_by_username"),
+			Tenant:             models.Tenant{BandID: i.bandID},
+			ReceiptID:          stringValue(r, "receipt_id"),
+			VariantID:          i.variantIDs[int64Value(r, "variant_id")],
+			Quantity:           intValue(r, "quantity"),
+			UnitCostCents:      int64Value(r, "unit_cost_cents"),
+			PricesIncludeVAT:   true,
+			VATRateBasisPoints: 1900,
+			PurchasedOn:        purchasedOn,
+			Supplier:           stringValue(r, "supplier"),
+			InvoiceReference:   stringValue(r, "invoice_reference"),
+			Comment:            stringValue(r, "comment"),
+			IsCancelled:        false,
+			CreatedAt:          created,
+			UpdatedAt:          created,
+			Actor:              i.actor(r, "created_by", "created_by_username"),
 		}
 		if path := stringValue(r, "invoice_file_path"); path != "" {
 			obj, err := i.copyFile(ctx, storage.CategoryInvoice, path)

@@ -40,10 +40,9 @@ interface DraftGroup {
 const draft = ref<{
   name: string
   salePrice: string
-  purchasePrice: string
   isOffered: boolean
   groups: DraftGroup[]
-}>({ name: '', salePrice: '', purchasePrice: '', isOffered: true, groups: [] })
+}>({ name: '', salePrice: '', isOffered: true, groups: [] })
 
 const newArticleName = ref('')
 
@@ -116,7 +115,6 @@ function select(id: number) {
   draft.value = {
     name: article.name,
     salePrice: toInput(article.default_sale_price_cents),
-    purchasePrice: toInput(article.default_purchase_price_cents),
     isOffered: article.is_offered,
     groups: article.option_groups
       .filter((group) => group.is_active)
@@ -255,7 +253,6 @@ async function createArticle() {
     const created = await catalogueApi.create({
       name,
       default_sale_price_cents: 0,
-      default_purchase_price_cents: 0,
     })
     newArticleName.value = ''
     flash.success(t('articles.created'))
@@ -307,8 +304,7 @@ async function save() {
   busy.value = true
 
   const sale = parseAmount(draft.value.salePrice)
-  const purchase = parseAmount(draft.value.purchasePrice)
-  if (sale === null || purchase === null) {
+  if (sale === null) {
     flash.error(t('articles.invalidPrice'))
     busy.value = false
     return
@@ -318,7 +314,6 @@ async function save() {
     await catalogueApi.save(selected.value.id, {
       name: draft.value.name.trim(),
       default_sale_price_cents: sale,
-      default_purchase_price_cents: purchase,
       is_offered: draft.value.isOffered,
       option_groups: draft.value.groups
         .filter((group) => group.name.trim())
@@ -459,10 +454,7 @@ async function applyMinimumToAll() {
               <input v-model="draft.isOffered" type="checkbox" />
               <span>{{ t('articles.offered') }}</span>
             </label>
-            <div class="field-grid two-columns">
-              <label>{{ t('articles.defaultSalePrice') }}<input v-model="draft.salePrice" inputmode="decimal" /></label>
-              <label>{{ t('articles.defaultPurchasePrice') }}<input v-model="draft.purchasePrice" inputmode="decimal" /></label>
-            </div>
+            <label>{{ t('articles.defaultSalePrice') }}<input v-model="draft.salePrice" inputmode="decimal" /></label>
             <p v-if="!draft.isOffered" class="muted">{{ t('articles.withdrawnHint') }}</p>
           </div>
 
