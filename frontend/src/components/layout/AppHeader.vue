@@ -10,6 +10,7 @@ import { usePackingStore } from '@/stores/packing'
 import { ApiError } from '@/api/client'
 import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import AccountMenu from './AccountMenu.vue'
 
 /**
  * The sticky application header, ported from _old/templates/base.html.
@@ -121,9 +122,12 @@ async function leavePOSMode() {
 
 <template>
   <header v-if="session.isAuthenticated" class="app-header">
-    <RouterLink class="brand" :to="platformOnly ? { name: 'platform-bands' } : { name: 'sales' }">
+    <RouterLink class="brand" :to="platformOnly ? { name: 'platform-dashboard' } : { name: 'sales' }">
       <span class="brand-mark">P</span>
-      <span>{{ t('app.name') }}</span>
+      <span class="brand-copy">
+        <strong>{{ t('app.name') }}</strong>
+        <small v-if="session.band?.name">{{ session.band.name }}</small>
+      </span>
     </RouterLink>
 
     <nav class="main-nav" :aria-label="t('nav.label')">
@@ -137,6 +141,7 @@ async function leavePOSMode() {
           v-else
           :to="{ name: link.name }"
           :class="{ active: isActive(link.name) }"
+          :aria-current="isActive(link.name) ? 'page' : undefined"
         >{{ link.label }}</RouterLink>
         <span
           v-if="link.name === dividerAfter"
@@ -147,7 +152,11 @@ async function leavePOSMode() {
 
       <template v-if="caps?.can_access_system_administration">
         <span class="main-nav-divider" aria-hidden="true"></span>
-        <RouterLink :to="{ name: 'platform-bands' }">
+        <RouterLink
+          :to="{ name: 'platform-dashboard' }"
+          :class="{ active: isActive('platform-dashboard') }"
+          :aria-current="isActive('platform-dashboard') ? 'page' : undefined"
+        >
           {{ t('nav.systemAdministration') }}
         </RouterLink>
       </template>
@@ -184,15 +193,11 @@ async function leavePOSMode() {
         </span>
       </button>
 
-      <span class="user-identity">
-        <RouterLink class="user-profile-link" :to="{ name: 'profile' }">
-          {{ session.user?.username }} · {{ caps?.role_label }}
-        </RouterLink>
-      </span>
-
-      <button class="text-button" type="button" @click="signOut">
-        {{ t('common.logout') }}
-      </button>
+      <AccountMenu
+        :username="session.user?.username ?? ''"
+        :role-label="caps?.role_label ?? ''"
+        @logout="signOut"
+      />
     </div>
   </header>
 
@@ -300,6 +305,11 @@ async function leavePOSMode() {
     clip: rect(0 0 0 0);
     white-space: nowrap;
     clip-path: inset(50%);
+  }
+
+  :deep(.account-summary-copy),
+  :deep(.account-chevron) {
+    display: none;
   }
 }
 </style>

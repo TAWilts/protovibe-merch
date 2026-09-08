@@ -21,8 +21,9 @@ const expiresAt = computed(() =>
 </script>
 
 <template>
-  <div v-if="grant" class="support-grant-banner" role="status">
+  <div v-if="grant" class="support-grant-banner" role="status" aria-live="polite">
     <strong>{{ t('support.active') }}</strong>
+    <span v-if="session.band?.name" class="support-grant-band">{{ session.band.name }}</span>
     <span>
       {{ t('support.detail', { user: grant.username, reason: grant.reason }) }}
     </span>
@@ -52,4 +53,6 @@ const expiresAt = computed(() =>
   border-radius: 999px;
   font-weight: 650;
 }
+
+.support-grant-band { color: var(--warning-text); font-weight: 750; }
 </style>

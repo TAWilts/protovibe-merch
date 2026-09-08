@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { useSessionStore } from '@/stores/session'
 import FlashStack from '@/components/FlashStack.vue'
 import SupportGrantBanner from './SupportGrantBanner.vue'
+import AccountMenu from './AccountMenu.vue'
 
 /**
  * The admin center's own shell.
@@ -45,7 +46,10 @@ async function signOut() {
   <header class="app-header platform-header">
     <RouterLink class="brand" :to="{ name: 'platform-dashboard' }">
       <span class="brand-mark">P</span>
-      <span>{{ t('platform.title') }}</span>
+      <span class="brand-copy">
+        <strong>{{ t('platform.title') }}</strong>
+        <small>{{ t('platform.context') }}</small>
+      </span>
     </RouterLink>
 
     <nav class="main-nav" :aria-label="t('nav.label')">
@@ -54,13 +58,11 @@ async function signOut() {
         :key="link.name"
         :to="{ name: link.name }"
         :class="{ active: route.name === link.name }"
+        :aria-current="route.name === link.name ? 'page' : undefined"
       >{{ link.name === 'platform-dashboard' ? link.label : t(link.label) }}</RouterLink>
     </nav>
 
     <div class="user-menu">
-      <span class="user-identity">
-        {{ session.user?.username }} · {{ session.capabilities?.role_label }}
-      </span>
       <!-- A live grant is the whole point of the support flow, so it has to
            open this door too: a platform account never has
            can_access_band_workflows, and without the grant check the link
@@ -70,7 +72,11 @@ async function signOut() {
         :class="session.supportGrant ? 'grant-link' : 'text-button'"
         :to="{ name: 'sales' }"
       >{{ session.supportGrant ? t('platform.toGrantedBand', { band: session.band?.name ?? '' }) : t('platform.toBandApp') }}</RouterLink>
-      <button class="text-button" type="button" @click="signOut">{{ t('common.logout') }}</button>
+      <AccountMenu
+        :username="session.user?.username ?? ''"
+        :role-label="session.capabilities?.role_label ?? ''"
+        @logout="signOut"
+      />
     </div>
   </header>
 
@@ -87,8 +93,11 @@ async function signOut() {
 <style scoped>
 /* A different accent line makes it unmistakable which surface you are on. */
 .platform-header {
-  border-bottom: 2px solid var(--accent-dark);
+  border-bottom: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface-raised));
 }
+
+.platform-header .brand-mark { border-radius: var(--radius-small); }
 
 /* While a grant is open this is the one thing an operator is looking for, so
    it must not read as another "Abmelden" next to it. */

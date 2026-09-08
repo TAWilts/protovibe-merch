@@ -58,6 +58,9 @@ textarea:focus-visible {
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 780; letter-spacing: -.02em; white-space: nowrap; }
 .brand-mark { width: 29px; height: 29px; display: grid; place-items: center; border-radius: var(--radius-control); color: var(--on-accent); background: linear-gradient(135deg, var(--accent-hover), var(--accent)); font-weight: 900; }
+.brand-copy { min-width: 0; display: grid; gap: 2px; line-height: 1.05; }
+.brand-copy strong { overflow: hidden; text-overflow: ellipsis; }
+.brand-copy small { max-width: 170px; overflow: hidden; color: var(--text-tertiary); font-size: .68rem; font-weight: 620; letter-spacing: .02em; text-overflow: ellipsis; }
 .main-nav { display: flex; align-items: stretch; align-self: stretch; gap: 4px; overflow-x: auto; }
 .main-nav a, .pos-restricted-nav { display: grid; place-items: center; padding: 0 12px; color: var(--muted); border-bottom: 2px solid transparent; font-size: .93rem; white-space: nowrap; }
 .main-nav a:hover { color: var(--text); border-bottom-color: var(--border-strong); }
@@ -73,6 +76,25 @@ textarea:focus-visible {
 .user-identity { min-width: 0; display: inline-flex; align-items: center; gap: 7px; }
 .user-profile-link { padding: 5px 7px; border: 1px solid transparent; border-radius: var(--radius-small); color: var(--text-secondary); transition: color .15s, background .15s, border-color .15s, transform .12s; }
 .user-profile-link:hover { color: var(--text-primary); border-color: var(--border-default); background: var(--surface-hover); }
+.account-menu { position: relative; color: var(--text-secondary); }
+.account-menu summary { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 4px 7px; border: 1px solid transparent; border-radius: var(--radius-control); list-style: none; cursor: pointer; transition: color .15s, background .15s, border-color .15s; }
+.account-menu summary::-webkit-details-marker { display: none; }
+.account-menu summary:hover,
+.account-menu[open] summary { color: var(--text-primary); border-color: var(--border-default); background: var(--surface-hover); }
+.account-avatar { width: 28px; height: 28px; flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--border-default); border-radius: 50%; color: var(--accent-bright); background: var(--accent-soft); font-size: .78rem; font-weight: 800; }
+.account-summary-copy { min-width: 0; display: grid; gap: 2px; text-align: left; line-height: 1.05; }
+.account-summary-copy strong { max-width: 120px; overflow: hidden; color: var(--text-primary); font-size: .78rem; text-overflow: ellipsis; }
+.account-summary-copy small { color: var(--text-tertiary); font-size: .68rem; }
+.account-chevron { color: var(--text-tertiary); font-size: .8rem; transition: transform .15s ease; }
+.account-menu[open] .account-chevron { transform: rotate(180deg); }
+.account-popover { position: absolute; z-index: 50; top: calc(100% + 8px); right: 0; min-width: 220px; display: grid; gap: 3px; padding: 8px; border: 1px solid var(--border-default); border-radius: var(--radius-panel); background: var(--surface-raised); box-shadow: var(--shadow-md); }
+.account-popover-heading { min-width: 0; display: grid; gap: 3px; margin-bottom: 3px; padding: 8px 9px 10px; border-bottom: 1px solid var(--border-subtle); }
+.account-popover-heading strong { overflow: hidden; color: var(--text-primary); font-size: .84rem; text-overflow: ellipsis; }
+.account-popover-heading span { color: var(--text-tertiary); font-size: .72rem; }
+.account-popover a,
+.account-popover button { width: 100%; min-height: 40px; display: flex; align-items: center; padding: 8px 9px; border: 0; border-radius: var(--radius-small); color: var(--text-secondary); background: transparent; font-size: .82rem; font-weight: 680; text-align: left; text-decoration: none; }
+.account-popover a:hover,
+.account-popover button:hover { color: var(--text-primary); background: var(--surface-hover); }
 .offline-sync-status { display: inline-flex; align-items: center; gap: 5px; min-width: 0; color: var(--success); font-size: .72rem; font-weight: 730; line-height: 1.2; }
 .offline-sync-status::before { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; content: ""; background: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent); }
 .offline-sync-status[data-connection="offline"] { color: var(--warning); }

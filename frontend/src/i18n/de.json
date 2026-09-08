@@ -1,5 +1,9 @@
 {
   "app": { "name": "Merch Manager" },
+  "accountMenu": {
+    "open": "Kontomenü öffnen",
+    "profile": "Profil und Darstellung"
+  },
   "nav": {
     "packingList": "Packliste",
     "label": "Hauptnavigation",
@@ -662,6 +666,7 @@
   },
   "platform": {
     "title": "Admin Center",
+    "context": "Plattformverwaltung",
     "eyebrow": "Plattform",
     "toBandApp": "Zur Band-App",
     "toGrantedBand": "Zur Band {band}",

@@ -30,7 +30,10 @@
   .main-nav a,
   .pos-mode-button,
   .user-message-button,
-  .user-profile-link {
+  .user-profile-link,
+  .account-menu summary,
+  .account-popover a,
+  .account-popover button {
     min-height: 48px;
   }
 

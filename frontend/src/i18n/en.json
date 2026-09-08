@@ -1,5 +1,9 @@
 {
   "app": { "name": "Merch Manager" },
+  "accountMenu": {
+    "open": "Open account menu",
+    "profile": "Profile and appearance"
+  },
   "nav": {
     "packingList": "Packing list",
     "label": "Main navigation",
@@ -662,6 +666,7 @@
   },
   "platform": {
     "title": "Admin Center",
+    "context": "Platform administration",
     "eyebrow": "Plattform",
     "toBandApp": "Zur Band-App",
     "toGrantedBand": "Zur Band {band}",
