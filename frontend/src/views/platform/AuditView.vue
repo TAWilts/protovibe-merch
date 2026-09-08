@@ -52,7 +52,7 @@ function details(entry: AuditEntry): string {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell platform-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('platform.eyebrow') }}</p>
@@ -64,7 +64,7 @@ function details(entry: AuditEntry): string {
     <section class="table-section">
       <div class="section-heading ledger-heading">
         <div><h2>{{ t('platform.audit.filters') }}</h2></div>
-        <div class="ledger-actions">
+        <div class="ledger-actions data-toolbar">
           <label class="table-filter">
             {{ t('platform.support.band') }}
             <select v-model="filters.band_id" @change="load">

@@ -7,6 +7,7 @@ import { platformApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { BandSummary, SupportGrant } from '@/api/types'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -124,16 +125,16 @@ function formatDate(value: string | null): string {
   return value ? d(new Date(value), 'short') : '—'
 }
 
-function statusClass(status: string): string {
-  if (status === 'active') return 'warning'
-  if (status === 'approved') return 'success'
+function statusTone(status: string): 'neutral' | 'success' | 'warning' | 'danger' {
+  if (status === 'active') return 'success'
+  if (status === 'pending' || status === 'approved') return 'warning'
   if (status === 'denied' || status === 'revoked') return 'danger'
-  return ''
+  return 'neutral'
 }
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell platform-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('platform.eyebrow') }}</p>
@@ -231,9 +232,9 @@ function statusClass(status: string): string {
               <td>{{ grant.reason }}</td>
               <td>{{ grant.scope === 'read_only' ? t('support.readOnly') : t('support.readWrite') }}</td>
               <td>
-                <span class="status" :class="statusClass(grant.status)">
+                <StatusBadge :tone="statusTone(grant.status)">
                   {{ t(`platform.support.status.${grant.status}`) }}
-                </span>
+                </StatusBadge>
               </td>
               <td>{{ grant.decided_by_username || '—' }}</td>
               <td>{{ formatDate(grant.expires_at) }}</td>

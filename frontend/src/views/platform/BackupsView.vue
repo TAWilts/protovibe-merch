@@ -7,6 +7,7 @@ import { ApiError } from '@/api/client'
 import type { BackupRun, BandSummary } from '@/api/types'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
@@ -136,7 +137,7 @@ function formatBytes(bytes: number): string {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell platform-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('platform.eyebrow') }}</p>
@@ -196,10 +197,9 @@ function formatBytes(bytes: number): string {
               <td>{{ bandName(entry.band_id) }}</td>
               <td>{{ t(`platform.backups.triggers.${entry.trigger}`) }}</td>
               <td>
-                <span
-                  class="status"
-                  :class="{ success: entry.status === 'succeeded', danger: entry.status === 'failed' }"
-                >{{ t(`platform.backups.status.${entry.status}`) }}</span>
+                <StatusBadge :tone="entry.status === 'succeeded' ? 'success' : entry.status === 'failed' ? 'danger' : 'warning'">
+                  {{ t(`platform.backups.status.${entry.status}`) }}
+                </StatusBadge>
                 <small v-if="entry.error">{{ entry.error }}</small>
               </td>
               <td class="numeric">{{ formatBytes(entry.size_bytes) }}</td>

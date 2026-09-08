@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import { platformApi } from '@/api/endpoints'
 import type { TelemetryEvent, TelemetryPayload } from '@/api/telemetry-types'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 
@@ -212,14 +213,14 @@ onMounted(load)
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell platform-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('telemetryAdmin.eyebrow') }}</p>
         <h1>{{ t('telemetryAdmin.title') }}</h1>
         <p class="muted">{{ t('telemetryAdmin.intro') }}</p>
       </div>
-      <div class="telemetry-actions">
+      <div class="telemetry-actions data-toolbar">
         <label>
           {{ t('telemetryAdmin.range') }}
           <select v-model.number="days" @change="load">
@@ -337,7 +338,11 @@ onMounted(load)
                 <td class="numeric">{{ event.unit_price_cents === undefined ? '—' : format(event.unit_price_cents) }}</td>
                 <td class="numeric">{{ event.amount_cents === undefined ? '—' : format(event.amount_cents) }}</td>
                 <td>{{ event.payment_method || '—' }}</td>
-                <td><span class="status-pill" :class="event.status">{{ event.status || '—' }}</span></td>
+                <td>
+                  <StatusBadge :tone="event.status === 'cancelled' ? 'danger' : event.status === 'open' ? 'warning' : 'success'">
+                    {{ event.status || '—' }}
+                  </StatusBadge>
+                </td>
                 <td>{{ event.location || '—' }}</td>
               </tr>
             </tbody>
@@ -405,23 +410,6 @@ onMounted(load)
 .numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
-}
-
-.status-pill {
-  display: inline-flex;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: var(--input-bg);
-  font-size: .78rem;
-  font-weight: 700;
-}
-
-.status-pill.open {
-  color: var(--warning);
-}
-
-.status-pill.cancelled {
-  color: var(--danger);
 }
 
 @media (max-width: 820px) {

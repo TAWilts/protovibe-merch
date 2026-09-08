@@ -111,7 +111,7 @@ function resetMfa(user: PlatformUser) {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell platform-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('platform.eyebrow') }}</p>

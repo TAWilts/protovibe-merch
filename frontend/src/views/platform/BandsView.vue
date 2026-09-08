@@ -7,6 +7,7 @@ import { ApiError } from '@/api/client'
 import type { BandSummary } from '@/api/types'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
@@ -238,13 +239,13 @@ function formatDate(value: string | null): string {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell platform-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('platform.eyebrow') }}</p>
         <h1>{{ t('platform.bands.title') }}</h1>
       </div>
-      <div class="ledger-actions">
+      <div class="ledger-actions data-toolbar">
         <label class="table-filter">
           {{ t('common.filter') }}
           <input v-model="filter" type="search" />
@@ -355,12 +356,12 @@ function formatDate(value: string | null): string {
               <td>{{ formatDate(band.last_activity_at) }}</td>
               <td>{{ formatDate(band.last_backup_at) }}</td>
               <td>
-                <span v-if="band.deleted_at" class="status danger">{{ t('platform.bands.deleted') }}</span>
-                <span v-else-if="!band.is_active" class="status warning">{{ t('platform.bands.inactive') }}</span>
-                <span v-else class="status success">{{ t('platform.bands.active') }}</span>
-                <span v-if="band.active_grant_id" class="status warning">
+                <StatusBadge v-if="band.deleted_at" tone="danger">{{ t('platform.bands.deleted') }}</StatusBadge>
+                <StatusBadge v-else-if="!band.is_active" tone="warning">{{ t('platform.bands.inactive') }}</StatusBadge>
+                <StatusBadge v-else tone="success">{{ t('platform.bands.active') }}</StatusBadge>
+                <StatusBadge v-if="band.active_grant_id" tone="warning">
                   {{ t('platform.bands.supportActive') }}
-                </span>
+                </StatusBadge>
               </td>
               <td v-if="canManage" class="band-actions">
                 <button

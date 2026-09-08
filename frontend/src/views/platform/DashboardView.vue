@@ -15,6 +15,7 @@ import type {
 } from '@/api/types'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -118,10 +119,17 @@ function backupStatus(status: BackupRun['status']) {
 function scopeLabel(scope: SupportGrant['scope']) {
   return scope === 'read_write' ? 'Lesen & Schreiben' : 'Nur lesen'
 }
+
+function grantTone(status: SupportGrant['status']): 'neutral' | 'success' | 'warning' | 'danger' {
+  if (status === 'active') return 'success'
+  if (status === 'pending' || status === 'approved') return 'warning'
+  if (status === 'denied' || status === 'revoked') return 'danger'
+  return 'neutral'
+}
 </script>
 
 <template>
-  <main class="page-shell dashboard-page">
+  <main class="page-shell dashboard-page platform-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">Platform</p>
@@ -169,13 +177,13 @@ function scopeLabel(scope: SupportGrant['scope']) {
       </section>
 
       <section class="dashboard-metrics">
-        <RouterLink class="dashboard-metric" :to="{ name: 'platform-bands' }">
+        <RouterLink class="dashboard-metric primary-metric" :to="{ name: 'platform-bands' }">
           <span>Bands</span><strong>{{ bands.length }}</strong><small>{{ activeBands }} aktiv · {{ bands.length - activeBands }} inaktiv</small>
         </RouterLink>
-        <RouterLink class="dashboard-metric" :to="{ name: 'platform-bands' }">
+        <RouterLink class="dashboard-metric primary-metric" :to="{ name: 'platform-bands' }">
           <span>Bandkonten</span><strong>{{ totalUsers }}</strong><small>über alle Bands</small>
         </RouterLink>
-        <RouterLink class="dashboard-metric" :to="{ name: 'platform-messages' }">
+        <RouterLink class="dashboard-metric primary-metric" :class="{ warning: messages.length }" :to="{ name: 'platform-messages' }">
           <span>Offenes Postfach</span><strong>{{ messages.length }}</strong><small>ungelöste Nachrichten</small>
         </RouterLink>
         <RouterLink class="dashboard-metric" :to="{ name: 'platform-support' }">
@@ -193,7 +201,7 @@ function scopeLabel(scope: SupportGrant['scope']) {
       </section>
 
       <div class="dashboard-grid">
-        <section class="table-section dashboard-card">
+        <section class="table-section dashboard-card attention-card">
           <div class="dashboard-card-head">
             <div><p class="eyebrow">To-do</p><h2>Benötigt Aufmerksamkeit</h2></div>
             <span class="attention-count" :class="{ clear: attentionCount === 0 }">{{ attentionCount }}</span>
@@ -212,7 +220,7 @@ function scopeLabel(scope: SupportGrant['scope']) {
           </div>
         </section>
 
-        <section class="table-section dashboard-card">
+        <section class="table-section dashboard-card system-card">
           <div class="dashboard-card-head"><div><p class="eyebrow">System</p><h2>Status</h2></div><RouterLink class="compact-button" :to="{ name: 'platform-settings' }">Einstellungen</RouterLink></div>
           <dl class="status-list">
             <div><dt>Wartungsmodus</dt><dd><span class="status-dot" :class="settings?.maintenance_enabled ? 'danger' : 'success'"></span>{{ settings?.maintenance_enabled ? 'Aktiv' : 'Aus' }}</dd></div>
@@ -223,18 +231,18 @@ function scopeLabel(scope: SupportGrant['scope']) {
           <RouterLink class="text-link" :to="{ name: 'platform-backups' }">Sicherungen öffnen →</RouterLink>
         </section>
 
-        <section class="table-section dashboard-card">
+        <section class="table-section dashboard-card support-card">
           <div class="dashboard-card-head"><div><p class="eyebrow">Support</p><h2>Aktuelle Zugriffe</h2></div><RouterLink class="compact-button" :to="{ name: 'platform-support' }">Alle</RouterLink></div>
           <p v-if="!recentGrants.length" class="muted">Keine offenen oder aktiven Supportzugriffe.</p>
           <div v-else class="preview-list">
             <RouterLink v-for="grant in recentGrants" :key="grant.id" class="preview-row" :to="{ name: 'platform-support' }">
               <span><strong>Band #{{ grant.band_id }}</strong><small>{{ grant.requested_by_username }} · {{ scopeLabel(grant.scope) }}</small></span>
-              <span class="status-pill" :class="grant.status">{{ grantStatus(grant.status) }}</span>
+              <StatusBadge :tone="grantTone(grant.status)">{{ grantStatus(grant.status) }}</StatusBadge>
             </RouterLink>
           </div>
         </section>
 
-        <section v-if="isSystemAdmin" class="table-section dashboard-card">
+        <section v-if="isSystemAdmin" class="table-section dashboard-card registrations-card">
           <div class="dashboard-card-head"><div><p class="eyebrow">Onboarding</p><h2>Neue Registrierungen</h2></div><RouterLink class="compact-button" :to="{ name: 'platform-registrations' }">Alle</RouterLink></div>
           <p v-if="!pendingRegistrations.length" class="muted">Keine Registrierung wartet auf Prüfung.</p>
           <div v-else class="preview-list">
@@ -245,7 +253,7 @@ function scopeLabel(scope: SupportGrant['scope']) {
           </div>
         </section>
 
-        <section class="table-section dashboard-card">
+        <section class="table-section dashboard-card activity-card">
           <div class="dashboard-card-head"><div><p class="eyebrow">Audit</p><h2>Neueste Aktivitäten</h2></div><RouterLink class="compact-button" :to="{ name: 'platform-audit' }">Auditlog</RouterLink></div>
           <p v-if="!auditEntries.length" class="muted">Noch keine Audit-Einträge.</p>
           <div v-else class="preview-list">
@@ -256,7 +264,7 @@ function scopeLabel(scope: SupportGrant['scope']) {
           </div>
         </section>
 
-        <section class="table-section dashboard-card">
+        <section class="table-section dashboard-card tenant-card">
           <div class="dashboard-card-head"><div><p class="eyebrow">Tenants</p><h2>Neueste Bands</h2></div><RouterLink class="compact-button" :to="{ name: 'platform-bands' }">Alle</RouterLink></div>
           <p v-if="!newestBands.length" class="muted">Noch keine Bands vorhanden.</p>
           <div v-else class="preview-list">
@@ -278,25 +286,32 @@ function scopeLabel(scope: SupportGrant['scope']) {
 .dashboard-skeleton-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .dashboard-intro { max-width: 760px; margin: 6px 0 0; color: var(--muted); }
 .dashboard-alerts { display: grid; gap: 10px; }
-.dashboard-alert { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--warning); border-radius: var(--radius); background: color-mix(in srgb, var(--warning) 10%, var(--panel)); }
-.dashboard-alert.critical { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--panel)); }
+.dashboard-alert { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--warning-border); border-radius: var(--radius-panel); background: var(--warning-soft); }
+.dashboard-alert.critical { border-color: var(--danger-border); background: var(--danger-soft); }
 .dashboard-alert p { margin: 4px 0 0; }
 .dashboard-alert small { color: var(--muted); }
 .dashboard-metrics { display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); gap: 12px; }
-.dashboard-metric { display: grid; gap: 5px; min-width: 0; padding: 15px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--panel); text-decoration: none; }
-.dashboard-metric:hover { border-color: var(--accent); background: var(--panel-raised); }
-.dashboard-metric.warning { border-color: var(--warning); }
+.dashboard-metric { display: grid; gap: 5px; min-width: 0; min-height: 82px; padding: 13px 15px; border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); color: var(--text); background: var(--surface-subtle); text-decoration: none; }
+.dashboard-metric.primary-metric { min-height: 108px; align-content: center; border-color: var(--border-default); background: var(--surface-raised); }
+.dashboard-metric:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+.dashboard-metric.warning { border-color: var(--warning-border); background: var(--warning-soft); }
 .dashboard-metric > span, .dashboard-metric small { color: var(--muted); }
-.dashboard-metric strong { font-size: clamp(1.45rem, 2vw, 2rem); line-height: 1; }
+.dashboard-metric strong { font-size: clamp(1.3rem, 1.8vw, 1.75rem); line-height: 1; }
+.dashboard-metric.primary-metric strong { font-size: clamp(1.75rem, 2.5vw, 2.35rem); }
 .muted-metric { opacity: 0.72; }
-.dashboard-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.dashboard-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; align-items: start; }
 .dashboard-card { min-width: 0; }
+.attention-card { grid-column: span 7; }
+.system-card { grid-column: span 5; }
+.support-card, .registrations-card { grid-column: span 6; }
+.activity-card { grid-column: span 7; }
+.tenant-card { grid-column: span 5; }
 .dashboard-card-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
 .dashboard-card-head h2, .dashboard-card-head p { margin: 0; }
 .attention-count { display: grid; min-width: 38px; height: 38px; place-items: center; padding: 0 10px; border-radius: 999px; color: var(--panel); background: var(--warning); font-size: 1.1rem; font-weight: 850; }
 .attention-count.clear { background: var(--success); }
 .attention-list, .preview-list { display: grid; gap: 7px; }
-.attention-row, .preview-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 10px 11px; border-radius: var(--radius-control); color: var(--text); background: var(--panel-raised); text-decoration: none; }
+.attention-row, .preview-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 10px 11px; border: 1px solid transparent; border-radius: var(--radius-control); color: var(--text); background: var(--surface-subtle); text-decoration: none; }
 .attention-row:hover, .preview-row:hover { background: var(--surface-hover); }
 .attention-row > span, .preview-row > span:first-child { min-width: 0; }
 .attention-row small, .preview-row small { display: block; margin-top: 2px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
@@ -309,10 +324,9 @@ function scopeLabel(scope: SupportGrant['scope']) {
 .status-list dd { display: flex; align-items: center; gap: 7px; margin: 0; text-align: right; }
 .status-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--muted); }
 .status-dot.success { background: var(--success); }.status-dot.warning { background: var(--warning); }.status-dot.danger { background: var(--danger); }
-.status-pill { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; color: var(--muted); background: var(--option-bg); font-size: .74rem; font-weight: 700; }
-.status-pill.active { color: var(--success); }.status-pill.pending, .status-pill.approved { color: var(--warning); }
 .text-link { display: inline-block; margin-top: 13px; color: var(--accent-bright); text-decoration: none; font-weight: 650; }
 @media (max-width: 1200px) { .dashboard-metrics, .dashboard-skeleton-metrics { grid-template-columns: repeat(3, minmax(140px, 1fr)); } }
+@media (max-width: 900px) { .dashboard-card { grid-column: 1 / -1; } }
 @media (max-width: 800px) { .dashboard-grid, .dashboard-skeleton-cards { grid-template-columns: 1fr; }.dashboard-metrics, .dashboard-skeleton-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 520px) { .dashboard-metrics, .dashboard-skeleton-metrics { grid-template-columns: 1fr; }.dashboard-alert, .dashboard-card-head, .status-list > div { align-items: flex-start; flex-direction: column; }.status-list dd { text-align: left; } }
 </style>

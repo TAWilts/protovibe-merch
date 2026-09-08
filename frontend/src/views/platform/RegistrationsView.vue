@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ApiError } from '@/api/client'
 import { platformApi } from '@/api/endpoints'
 import type { BandRegistrationRequest, BandRegistrationStatus } from '@/api/types'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { useFlashStore } from '@/stores/flash'
 
 type Draft = {
@@ -94,23 +95,25 @@ async function reject(request: BandRegistrationRequest) {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell platform-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('platform.eyebrow') }}</p>
         <h1>{{ t('platform.registrations.title') }}</h1>
         <p class="page-intro">{{ t('platform.registrations.intro') }}</p>
       </div>
-      <label class="table-filter">
-        {{ t('platform.registrations.filter') }}
-        <select v-model="filter" @change="load">
-          <option value="">{{ t('platform.registrations.all') }}</option>
-          <option value="pending">{{ t('platform.registrations.status.pending') }}</option>
-          <option value="approved">{{ t('platform.registrations.status.approved') }}</option>
-          <option value="rejected">{{ t('platform.registrations.status.rejected') }}</option>
-          <option value="expired">{{ t('platform.registrations.status.expired') }}</option>
-        </select>
-      </label>
+      <div class="data-toolbar">
+        <label class="table-filter">
+          {{ t('platform.registrations.filter') }}
+          <select v-model="filter" @change="load">
+            <option value="">{{ t('platform.registrations.all') }}</option>
+            <option value="pending">{{ t('platform.registrations.status.pending') }}</option>
+            <option value="approved">{{ t('platform.registrations.status.approved') }}</option>
+            <option value="rejected">{{ t('platform.registrations.status.rejected') }}</option>
+            <option value="expired">{{ t('platform.registrations.status.expired') }}</option>
+          </select>
+        </label>
+      </div>
     </div>
 
     <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
@@ -124,11 +127,9 @@ async function reject(request: BandRegistrationRequest) {
             <p class="eyebrow">{{ request.reference }}</p>
             <h2>{{ request.requested_band_name }}</h2>
           </div>
-          <span class="status" :class="{
-            success: request.status === 'approved',
-            warning: request.status === 'pending',
-            danger: request.status === 'rejected' || request.status === 'expired',
-          }">{{ t(`platform.registrations.status.${request.status}`) }}</span>
+          <StatusBadge :tone="request.status === 'approved' ? 'success' : request.status === 'pending' ? 'warning' : 'danger'">
+            {{ t(`platform.registrations.status.${request.status}`) }}
+          </StatusBadge>
         </header>
 
         <div class="request-meta">

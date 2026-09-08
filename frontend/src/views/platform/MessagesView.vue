@@ -61,13 +61,13 @@ async function resolve(message: SupportMessage, resolved: boolean) {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell platform-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('platform.eyebrow') }}</p>
         <h1>{{ t('platform.messages.title') }}</h1>
       </div>
-      <label class="checkbox-row">
+      <label class="checkbox-row data-toolbar">
         <input v-model="openOnly" type="checkbox" @change="load" />
         <span>{{ t('platform.messages.openOnly') }}</span>
       </label>
