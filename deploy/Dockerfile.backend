@@ -1,13 +1,18 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.25-alpine AS build
+ARG BUILDPLATFORM
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 ARG APP_VERSION=v0.0.0
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
 COPY backend/ ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/server ./cmd/server \
- && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/importlegacy ./cmd/importlegacy
+# Both target binaries are pure Go. Compile them natively on the BuildKit host
+# instead of executing the ARM64 Go toolchain through QEMU.
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w" -o /out/server ./cmd/server \
+ && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w" -o /out/importlegacy ./cmd/importlegacy
 
 FROM alpine:3.21
 ARG APP_VERSION=v0.0.0
