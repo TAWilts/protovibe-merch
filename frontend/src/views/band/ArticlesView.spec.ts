@@ -99,6 +99,9 @@ describe('ArticlesView variant generation', () => {
     const wrapper = mount(ArticlesView)
     await flushPromises()
 
+    expect(wrapper.get('.selection-button').classes()).toContain('selected')
+    expect(wrapper.get('.selection-button').attributes('aria-pressed')).toBe('true')
+
     await wrapper.get('.minimum-for-all input').setValue('7')
     await wrapper.get('.minimum-for-all').trigger('submit')
     await flushPromises()

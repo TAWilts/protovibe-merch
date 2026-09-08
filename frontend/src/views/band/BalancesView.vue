@@ -330,13 +330,13 @@ td:last-child, th:last-child { text-align: right; }
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell operational-page balances-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('balances.eyebrow') }}</p>
         <h1>{{ t('balances.title') }}</h1>
       </div>
-      <div class="balance-page-actions">
+      <div class="balance-page-actions data-toolbar">
         <DateRangeFilter v-model:from="dateFrom" v-model:to="dateTo" />
         <a class="secondary-button" :href="exportUrls.zip()">{{ t('balances.exportAll') }}</a>
       </div>
@@ -600,6 +600,6 @@ td small {
 }
 
 .finance-report-panel {
-  border-style: dashed;
+  border-color: var(--border-default);
 }
 </style>

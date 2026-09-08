@@ -210,7 +210,7 @@ function durationLabel(seconds: number): string {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell operational-page settings-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('administration.eyebrow') }}</p>

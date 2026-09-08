@@ -569,7 +569,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
 </script>
 
 <template>
-  <main class="page-shell transaction-page">
+  <main class="page-shell transaction-page operational-page purchases-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('purchases.eyebrow') }}</p>
@@ -734,7 +734,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
           <h2>{{ t('purchases.history') }}</h2>
           <p>{{ t('purchases.historyHint') }}</p>
         </div>
-        <div class="purchase-history-toolbar">
+        <div class="purchase-history-toolbar data-toolbar">
           <DateRangeFilter
             v-model:from="dateFrom"
             v-model:to="dateTo"
@@ -945,9 +945,18 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
 
 .purchase-receipt-card {
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-panel);
   background: var(--surface-panel);
+}
+
+.purchase-receipt-card:not(.cancelled) summary:hover {
+  background: var(--surface-hover);
+}
+
+.purchase-receipt-card[open] {
+  border-color: var(--border-default);
+  background: var(--surface-raised);
 }
 
 .purchase-receipt-card.cancelled {
@@ -975,6 +984,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
   padding: 16px 18px;
   cursor: pointer;
   list-style: none;
+  transition: background .12s ease;
 }
 
 .purchase-receipt-card summary::-webkit-details-marker {
@@ -988,10 +998,16 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
 
 .receipt-summary-main code {
   width: fit-content;
+  color: var(--text-secondary);
 }
 
 .receipt-summary-main small {
   color: var(--muted);
+}
+
+.purchase-receipt-card summary > strong {
+  font-size: 1.08rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .receipt-chevron {

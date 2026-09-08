@@ -192,7 +192,7 @@ async function regenerateCodes() {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell operational-page settings-page profile-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('profile.eyebrow') }}</p>

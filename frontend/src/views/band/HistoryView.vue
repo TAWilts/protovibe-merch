@@ -148,13 +148,13 @@ async function confirmCancel() {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell operational-page history-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('history.eyebrow') }}</p>
         <h1>{{ t('history.title') }}</h1>
       </div>
-      <div class="history-toolbar">
+      <div class="history-toolbar data-toolbar">
         <DateRangeFilter
           v-model:from="dateFrom"
           v-model:to="dateTo"

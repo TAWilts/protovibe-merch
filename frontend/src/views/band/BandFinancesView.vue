@@ -256,28 +256,30 @@ async function cancelEntry(id: number) {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell operational-page band-finances-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('bandFinances.eyebrow') }}</p>
         <h1>{{ t('bandFinances.title') }}</h1>
       </div>
-      <DateRangeFilter v-model:from="dateFrom" v-model:to="dateTo" />
+      <div class="data-toolbar">
+        <DateRangeFilter v-model:from="dateFrom" v-model:to="dateTo" />
+      </div>
     </div>
 
     <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
 
     <template v-else-if="ledger">
       <section class="metric-grid band-finance-metrics">
-        <article class="metric-card">
+        <article class="metric-card income-metric">
           <span>{{ t('bandFinances.income') }}</span>
           <strong>{{ format(visibleTotals.income_cents) }}</strong>
         </article>
-        <article class="metric-card">
+        <article class="metric-card expense-metric">
           <span>{{ t('bandFinances.expense') }}</span>
           <strong>{{ format(visibleTotals.expense_cents) }}</strong>
         </article>
-        <article class="metric-card">
+        <article class="metric-card balance-metric">
           <span>{{ t('bandFinances.balance') }}</span>
           <strong>{{ format(visibleTotals.balance_cents) }}</strong>
         </article>
@@ -508,8 +510,12 @@ async function cancelEntry(id: number) {
 }
 
 .open-metric strong {
-  color: var(--warning);
+  color: var(--warning-text);
 }
+
+.income-metric strong { color: var(--success-text); }
+.expense-metric strong { color: var(--danger-text); }
+.balance-metric { border-color: var(--border-default); background: var(--surface-raised); }
 
 .unsettled-row {
   background: color-mix(in srgb, var(--warning) 12%, transparent);

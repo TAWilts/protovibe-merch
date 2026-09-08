@@ -1120,10 +1120,10 @@ function resetAfterSale() {
   gap: 8px;
   min-height: 42px;
   padding: 8px 12px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-control);
   color: var(--muted);
-  background: var(--panel);
+  background: var(--surface-subtle);
 }
 
 .checkout-progress button:disabled {
@@ -1134,6 +1134,7 @@ function resetAfterSale() {
   border-color: var(--accent-bright);
   color: var(--text);
   background: var(--surface-selected);
+  box-shadow: inset 0 -2px var(--accent);
 }
 
 .checkout-progress button.complete {
@@ -1157,9 +1158,9 @@ function resetAfterSale() {
      engages — the page grows instead. */
   min-height: 0;
   padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--surface-panel);
 }
 
 .till-scroll {
@@ -1253,9 +1254,9 @@ function resetAfterSale() {
   gap: 13px;
   min-width: 0;
   padding: clamp(14px, 2vw, 24px);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--option-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--surface-subtle);
 }
 
 .checkout-group h3 {
@@ -1294,7 +1295,7 @@ function resetAfterSale() {
   gap: 18px;
   place-items: center;
   min-height: 260px;
-  color: var(--accent-bright);
+  color: var(--text-secondary);
 }
 
 .checkout-payment-symbol :deep(.payment-icon) {
@@ -1311,9 +1312,9 @@ function resetAfterSale() {
   display: grid;
   gap: 12px;
   padding: clamp(16px, 3vw, 30px);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--option-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--surface-subtle);
 }
 
 .checkout-review-line,
@@ -1374,6 +1375,12 @@ function resetAfterSale() {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   text-align: center;
+}
+
+.till-articles .selection-button.selected {
+  border-color: var(--accent);
+  background: var(--surface-selected);
+  box-shadow: inset 3px 0 var(--accent);
 }
 
 /* --- variant ----------------------------------------------------------- */
@@ -1551,14 +1558,9 @@ function resetAfterSale() {
   top: -1px;
   right: -1px;
   left: -1px;
-  height: 7px;
-  background:
-    repeating-linear-gradient(
-      -45deg,
-      var(--border) 0 6px,
-      transparent 6px 12px
-    );
-  border-radius: var(--radius) var(--radius) 0 0;
+  height: 2px;
+  background: var(--border-strong);
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
 }
 
 /* The method decides whether a payment code can be offered at all, so it sits
@@ -1648,6 +1650,13 @@ function resetAfterSale() {
   font-weight: 650;
 }
 
+.option-choices .option-choice.selected,
+.till-methods .option-choice.selected {
+  border-color: var(--accent);
+  background: var(--surface-selected);
+  box-shadow: inset 0 -2px var(--accent);
+}
+
 .till-line-stepper {
   display: grid;
   grid-template-columns: 54px auto 54px;
@@ -1729,7 +1738,7 @@ function resetAfterSale() {
   gap: 10px;
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 2px solid var(--border);
+  border-top: 1px solid var(--border-strong);
 }
 
 /* The total is the largest type on the page. It is the number the customer

@@ -406,7 +406,7 @@ async function applyMinimumToAll() {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell operational-page articles-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('articles.eyebrow') }}</p>
@@ -435,7 +435,8 @@ async function applyMinimumToAll() {
             :key="article.id"
             type="button"
             class="selection-button"
-            :class="{ active: article.id === selectedId }"
+            :class="{ selected: article.id === selectedId }"
+            :aria-pressed="article.id === selectedId"
             @click="select(article.id)"
           >
             <span>{{ article.name }}</span>
@@ -773,6 +774,15 @@ async function applyMinimumToAll() {
   border-top: 1px solid var(--border);
 }
 
+.article-layout > .selection-panel {
+  position: sticky;
+  top: 86px;
+}
+
+.article-layout .selection-button.selected {
+  box-shadow: inset 3px 0 var(--accent);
+}
+
 .article-form-group h3 {
   margin: 0 0 12px;
   font-size: 0.82rem;
@@ -922,12 +932,21 @@ async function applyMinimumToAll() {
   .article-layout > * {
     min-width: 0;
   }
+
+  .article-layout > .selection-panel {
+    position: static;
+  }
 }
 
 .article-editor {
   display: grid;
   gap: 18px;
   min-width: 0;
+}
+
+.article-form {
+  border-color: var(--border-default);
+  background: var(--surface-raised);
 }
 
 .article-editor > .table-section,
@@ -942,8 +961,11 @@ async function applyMinimumToAll() {
 }
 
 .option-editor {
-  padding: 14px 0;
-  border-bottom: 1px solid var(--border);
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
 }
 
 .option-editor-head {

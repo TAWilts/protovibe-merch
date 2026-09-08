@@ -198,7 +198,7 @@ async function saveShippingCost() {
 </script>
 
 <template>
-  <main class="page-shell">
+  <main class="page-shell operational-page operations-page">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">{{ t('operations.eyebrow') }}</p>
@@ -424,9 +424,9 @@ async function saveShippingCost() {
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--surface-panel);
 }
 
 .shipment-card header {
@@ -447,7 +447,8 @@ async function saveShippingCost() {
   gap: 6px;
   padding: 12px;
   border-radius: var(--radius-control);
-  background: var(--option-bg);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-inset);
 }
 
 .shipment-address p {
@@ -511,7 +512,8 @@ async function saveShippingCost() {
 }
 
 .shipment-total {
-  font-size: 1.1rem;
+  color: var(--text-primary);
+  font-size: 1.22rem;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
 }
