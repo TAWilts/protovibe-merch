@@ -106,6 +106,7 @@ var POSRestrictedPrefixes = []string{
 	"/api/v1/purchase-receipts",
 	"/api/v1/band-finances",
 	"/api/v1/balances",
+	"/api/v1/sales/historical",
 	"/api/v1/band-admin",
 	"/api/v1/platform",
 	"/api/v1/exports",

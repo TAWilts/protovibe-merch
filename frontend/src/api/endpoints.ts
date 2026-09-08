@@ -96,7 +96,8 @@ export const authApi = {
 
 /** Catalogue: the full view for management, the offered subset for selling. */
 export const catalogueApi = {
-  list: () => api.get<{ articles: Article[] }>('/articles'),
+  list: (includeInactive = false) =>
+    api.get<{ articles: Article[] }>(`/articles${includeInactive ? '?include_inactive=true' : ''}`),
   assortment: () =>
     api.get<{ articles: Article[]; payment_methods: string[] }>('/assortment'),
   create: (payload: {
@@ -130,6 +131,19 @@ export interface BookSalePayload {
   client_created_at?: string
 }
 
+export interface HistoricalSalePayload {
+  items: { variant_id: number; quantity: number; unit_price_cents: number }[]
+  sale_event_id: number
+  sold_on: string
+  amount_given_cents: number
+  discount_confirmed: boolean
+  comment?: string
+  receipt_id?: string
+  client_event_id: string
+  client_device_id: string
+  client_created_at: string
+}
+
 export const salesApi = {
   /**
    * Proposes the next receipt ID. It is explicitly provisional: a concurrent
@@ -141,6 +155,8 @@ export const salesApi = {
     return api.get<{ receipt_id: string; provisional: boolean }>(`/receipt-preview?${query}`)
   },
   book: (payload: BookSalePayload) => api.post<SaleResult>('/sales', payload),
+  bookHistorical: (payload: HistoricalSalePayload) =>
+    api.post<SaleResult>('/sales/historical', payload),
   /** Which codes the band can show at all. */
   paymentQrAvailability: () =>
     api.get<PaymentQRAvailability>('/payment-qr/availability'),

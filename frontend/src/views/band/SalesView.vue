@@ -3,7 +3,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
-import { catalogueApi, photosApi, salesApi, type BookSalePayload } from '@/api/endpoints'
+import {
+  catalogueApi,
+  photosApi,
+  salesApi,
+  type BookSalePayload,
+  type HistoricalSalePayload,
+} from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import type {
@@ -18,6 +24,7 @@ import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
+import { deviceId } from '@/offline/outbox'
 import PaymentMethodIcon from '@/components/PaymentMethodIcon.vue'
 
 /**
@@ -41,6 +48,24 @@ const events = ref<SaleEvent[]>([])
 const selectedEventId = ref<number>(0)
 const receiptId = ref('')
 const loading = ref(true)
+
+const historicalMode = ref(false)
+const historicalSoldOn = ref('')
+const historicalRetry = ref<HistoricalSalePayload | null>(null)
+const historicalNetworkUncertain = ref(false)
+
+const canUseHistoricalMode = computed(() => (
+  !isOrder.value
+  && !session.posMode
+  && session.capabilities?.can_manage_purchases === true
+))
+const today = (() => {
+  const value = new Date()
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+})()
 
 const selectedArticleId = ref<number | null>(null)
 /** The chosen value per option group, keyed by group ID. */
@@ -85,7 +110,7 @@ const shipReady = computed(
 
 type CheckoutStep = 1 | 2 | 3
 const checkoutStep = ref<CheckoutStep>(1)
-const needsShipping = computed(() => isOrder.value || shipOpen.value)
+const needsShipping = computed(() => !historicalMode.value && (isOrder.value || shipOpen.value))
 
 /**
  * The till claims exactly the space left below whatever is above it.
@@ -138,6 +163,9 @@ const articleFilter = ref('')
 const visibleArticles = computed(() => {
   const needle = articleFilter.value.trim().toLowerCase()
   return articles.value.filter((article) => {
+    if (historicalMode.value) {
+      return article.variants.length > 0 && (!needle || article.name.toLowerCase().includes(needle))
+    }
     const sellable = article.is_offered !== false
       && article.is_active !== false
       && article.configuration_complete !== false
@@ -152,16 +180,17 @@ const selectedArticle = computed(
 
 const sellableVariants = computed(() =>
   (selectedArticle.value?.variants ?? [])
-    .filter((variant) => variant.is_offered !== false && variant.is_active !== false),
+    .filter((variant) => historicalMode.value
+      || (variant.is_offered !== false && variant.is_active !== false)),
 )
 
 /** The active option columns of the selected article, in the band's order. */
 const optionGroups = computed(() =>
   (selectedArticle.value?.option_groups ?? [])
-    .filter((group) => group.is_active)
+    .filter((group) => historicalMode.value || group.is_active)
     .map((group) => ({
       ...group,
-      values: group.values.filter((value) => value.is_active
+      values: group.values.filter((value) => (historicalMode.value || value.is_active)
         && sellableVariants.value.some((variant) => variant.option_value_ids.includes(value.id))),
     })),
 )
@@ -204,6 +233,7 @@ const saleTotalCents = computed(() =>
   basketTotalCents.value + Math.max(0, shippingCostCents.value ?? 0),
 )
 const hasOutOfStockItem = computed(() => basket.value.some((line) => line.onHand <= 0))
+const createsNegativeStock = computed(() => basket.value.some((line) => line.quantity > line.onHand))
 /** The mobile receipt rail starts closed so it never covers article controls. */
 const mobileCartOpen = ref(false)
 
@@ -290,6 +320,14 @@ const canAddToCart = computed(
 const canBook = computed(() => basket.value.length > 0 && !busy.value)
 const paymentStepReady = computed(() => {
   if (!basket.value.length || busy.value || (needsShipping.value && !shipReady.value)) return false
+  if (historicalMode.value) {
+    return offline.online
+      && historicalSoldOn.value !== ''
+      && historicalSoldOn.value <= today
+      && selectedEventId.value > 0
+      && amountGivenCents.value !== null
+      && amountGivenCents.value >= 0
+  }
   if (needsShipping.value && (shippingCostCents.value === null || shippingCostCents.value < 0)) return false
   if (!needsShipping.value || !shipPayLater.value) {
     return amountGivenCents.value !== null && amountGivenCents.value >= 0
@@ -331,6 +369,14 @@ async function loadAssortment() {
   }
 }
 
+async function loadHistoricalCatalogue() {
+  try {
+    articles.value = (await catalogueApi.list(true)).articles
+  } catch {
+    flash.error(t('errors.generic'))
+  }
+}
+
 async function loadPaymentQrAvailability() {
 	if (session.featureFlags?.payment_qr === false) return
   try {
@@ -353,8 +399,14 @@ async function loadEvents() {
 }
 
 async function refreshReceiptPreview() {
+  if (historicalMode.value && !historicalSoldOn.value) {
+    receiptId.value = ''
+    return
+  }
   try {
-    receiptId.value = (await salesApi.receiptPreview()).receipt_id
+    receiptId.value = (await salesApi.receiptPreview(
+      'sale', historicalMode.value ? historicalSoldOn.value : undefined,
+    )).receipt_id
   } catch {
     receiptId.value = ''
   }
@@ -373,6 +425,18 @@ function selectArticle(article: Article) {
 
 function chooseValue(groupId: number, valueId: number) {
   chosenValues.value = { ...chosenValues.value, [groupId]: valueId }
+}
+
+function historicalArticleStatus(article: Article) {
+  if (article.is_active === false) return t('sales.historicalInactive')
+  if (article.is_offered === false) return t('sales.historicalNotOffered')
+  return ''
+}
+
+function historicalVariantStatus(variant: Variant) {
+  if (variant.is_active === false) return t('sales.historicalWithdrawnVariant')
+  if (variant.is_offered === false) return t('sales.historicalNotOfferedVariant')
+  return ''
 }
 
 // Selecting a variant fills in its catalogue price, which the seller may then
@@ -397,10 +461,50 @@ watch(amountGivenInput, () => {
   discountDialogOpen.value = false
 })
 
+watch(historicalSoldOn, () => {
+  if (historicalMode.value) void refreshReceiptPreview()
+})
+
 watch(isOrder, (order) => {
   shipOpen.value = order
   checkoutStep.value = 1
 })
+
+watch(() => session.posMode, (posMode) => {
+  if (posMode && historicalMode.value) void setHistoricalMode(false, true)
+})
+
+async function setHistoricalMode(enabled: boolean, force = false) {
+  if (enabled === historicalMode.value) return
+  if (enabled && (!canUseHistoricalMode.value || !offline.online)) return
+  if (!force && basket.value.length > 0 && !window.confirm(t('sales.historicalDiscardCart'))) return
+
+  historicalMode.value = enabled
+  historicalRetry.value = null
+  historicalNetworkUncertain.value = false
+  basket.value = []
+  selectedArticleId.value = null
+  chosenValues.value = {}
+  unitPriceInput.value = ''
+  quantity.value = 1
+  amountGivenInput.value = ''
+  comment.value = ''
+  selectedEventId.value = 0
+  historicalSoldOn.value = ''
+  checkoutStep.value = 1
+  qrIntent.value = null
+  mobileCartOpen.value = false
+
+  if (enabled) {
+    paymentMethod.value = 'Sonstiges'
+    receiptId.value = ''
+    await Promise.all([loadHistoricalCatalogue(), loadEvents()])
+    selectedEventId.value = 0
+  } else {
+    soldBy.value = session.user?.username ?? ''
+    await Promise.all([loadAssortment(), loadEvents(), refreshReceiptPreview()])
+  }
+}
 
 /**
  * The stepper is the only way to change the amount on a tablet, so it must
@@ -504,7 +608,7 @@ function backToBasket() {
 
 async function continueToConfirmation() {
   if (!paymentStepReady.value) return
-  if (qrOffered.value && (!needsShipping.value || !shipPayLater.value) && (amountGivenCents.value ?? 0) > 0) {
+  if (!historicalMode.value && qrOffered.value && (!needsShipping.value || !shipPayLater.value) && (amountGivenCents.value ?? 0) > 0) {
     if (!await showPaymentQr()) return
   }
   checkoutStep.value = 3
@@ -534,6 +638,10 @@ async function backToPayment() {
 }
 
 async function confirmCheckout() {
+  if (historicalMode.value) {
+    await bookHistorical()
+    return
+  }
   if (qrIntent.value) {
     await confirmPaymentQr()
     return
@@ -554,7 +662,7 @@ async function createEvent() {
   if (!name || busy.value) return
   busy.value = true
   try {
-    const event = await salesApi.createEvent(name)
+    const event = await salesApi.createEvent(name, !historicalMode.value)
     events.value = [event, ...events.value.filter((entry) => entry.id !== event.id)]
     selectedEventId.value = event.id
     newEventName.value = null
@@ -619,6 +727,53 @@ function removeLine(index: number) {
   basket.value.splice(index, 1)
 }
 
+async function bookHistorical(): Promise<boolean> {
+  if (!paymentStepReady.value) return false
+  busy.value = true
+
+  try {
+    if (!historicalRetry.value) {
+      historicalRetry.value = {
+        items: basket.value.map((line) => ({
+          variant_id: line.variantId,
+          quantity: line.quantity,
+          unit_price_cents: line.unitPriceCents,
+        })),
+        sale_event_id: selectedEventId.value,
+        sold_on: historicalSoldOn.value,
+        amount_given_cents: amountGivenCents.value ?? 0,
+        discount_confirmed: discountCents.value > 0 && discountConfirmed.value,
+        comment: comment.value.trim(),
+        receipt_id: receiptId.value || undefined,
+        client_event_id: crypto.randomUUID(),
+        client_device_id: await deviceId(),
+        client_created_at: new Date().toISOString(),
+      }
+    }
+
+    const result = await salesApi.bookHistorical(historicalRetry.value)
+    flash.success(t('sales.historicalBooked', { receipt: result.receipt_id }))
+    historicalRetry.value = null
+    historicalNetworkUncertain.value = false
+    resetAfterSale()
+    await Promise.all([loadHistoricalCatalogue(), loadEvents()])
+    selectedEventId.value = 0
+    return true
+  } catch (error) {
+    if (error instanceof ApiError) {
+      historicalRetry.value = null
+      historicalNetworkUncertain.value = false
+      reportError(error)
+    } else {
+      historicalNetworkUncertain.value = true
+      flash.error(t('sales.historicalRetryHint'))
+    }
+    return false
+  } finally {
+    busy.value = false
+  }
+}
+
 async function book(override?: BookSalePayload): Promise<boolean> {
   if (!override && !canBook.value) return false
   busy.value = true
@@ -667,6 +822,11 @@ function resetAfterSale() {
   mobileCartOpen.value = false
   checkoutStep.value = 1
   qrIntent.value = null
+  if (historicalMode.value) {
+    historicalSoldOn.value = ''
+    selectedEventId.value = 0
+    receiptId.value = ''
+  }
   // sold_by deliberately survives, so a stand run by one person does not have
   // to retype it for every sale.
 }
@@ -676,7 +836,7 @@ function resetAfterSale() {
   <main
     ref="tillEl"
     class="till checkout-till"
-    :class="[`checkout-step-${checkoutStep}`, { 'has-note': isOrder }]"
+    :class="[`checkout-step-${checkoutStep}`, { 'has-note': isOrder || historicalMode || canUseHistoricalMode }]"
   >
     <h1 class="visually-hidden">{{ isOrder ? t('sales.ordersTitle') : t('sales.title') }}</h1>
 
@@ -690,7 +850,7 @@ function resetAfterSale() {
         :class="{ active: checkoutStep === 2, complete: checkoutStep > 2 }"
         @click="checkoutStep > 1 ? backToPayment() : goToPayment()"
       >
-        <b>2</b><span>{{ t('sales.paymentMethod') }}</span>
+        <b>2</b><span>{{ historicalMode ? t('sales.historicalDetails') : t('sales.paymentMethod') }}</span>
       </button>
       <button type="button" disabled :class="{ active: checkoutStep === 3 }">
         <b>3</b><span>{{ t('common.confirm') }}</span>
@@ -698,6 +858,19 @@ function resetAfterSale() {
     </nav>
 
     <p v-if="isOrder" class="till-mode-note">{{ t('sales.ordersHint') }}</p>
+    <div v-else-if="historicalMode || canUseHistoricalMode" class="till-mode-note historical-mode-note">
+      <span>
+        <strong>{{ historicalMode ? t('sales.historicalTitle') : t('sales.historicalOffer') }}</strong>
+        {{ historicalMode ? t('sales.historicalWorkflowHint') : t('sales.historicalOfferHint') }}
+        <small v-if="!offline.online">{{ t('sales.historicalOffline') }}</small>
+      </span>
+      <button
+        class="secondary-button"
+        type="button"
+        :disabled="busy || (!historicalMode && !offline.online) || historicalNetworkUncertain"
+        @click="setHistoricalMode(!historicalMode)"
+      >{{ historicalMode ? t('sales.historicalLeave') : t('sales.historicalEnter') }}</button>
+    </div>
 
     <template v-if="checkoutStep === 1">
       <section class="till-column till-articles">
@@ -715,7 +888,12 @@ function resetAfterSale() {
               :class="{ selected: article.id === selectedArticleId }"
               @click="selectArticle(article)"
             >
-              <span>{{ article.name }}</span>
+              <span>
+                {{ article.name }}
+                <em v-if="historicalMode && historicalArticleStatus(article)" class="historical-state">
+                  {{ historicalArticleStatus(article) }}
+                </em>
+              </span>
               <small>{{ article.total_stock }}</small>
             </button>
             <p v-if="!loading && !visibleArticles.length" class="muted">{{ t('sales.noArticles') }}</p>
@@ -752,6 +930,11 @@ function resetAfterSale() {
           <p v-if="selectedVariant && selectedVariant.on_hand <= 0" class="stock-sale-warning" role="status">
             {{ t('sales.stockWarning') }}
           </p>
+          <p
+            v-if="historicalMode && selectedVariant && historicalVariantStatus(selectedVariant)"
+            class="notice historical-variant-notice"
+            role="status"
+          >{{ historicalVariantStatus(selectedVariant) }}</p>
           <div v-if="variantPhotos.length" class="variant-photo-preview">
             <p class="variant-photo-caption">
               {{ variantPhotoSelection?.isFallback
@@ -862,10 +1045,10 @@ function resetAfterSale() {
         <strong>{{ format(saleTotalCents) }}</strong>
       </header>
 
-      <div class="checkout-payment-grid till-scroll">
+      <div class="checkout-payment-grid till-scroll" :class="{ 'is-historical': historicalMode }">
         <section class="checkout-group">
-          <h3>{{ t('sales.paymentMethod') }}</h3>
-          <div class="till-methods" role="group" :aria-label="t('sales.paymentMethod')">
+          <h3>{{ historicalMode ? t('sales.historicalAmount') : t('sales.paymentMethod') }}</h3>
+          <div v-if="!historicalMode" class="till-methods" role="group" :aria-label="t('sales.paymentMethod')">
             <button
               v-for="method in paymentMethods"
               :key="method"
@@ -878,10 +1061,10 @@ function resetAfterSale() {
               <span>{{ method }}</span>
             </button>
           </div>
-          <p v-if="qrSetupMissing" class="notice payment-qr-setup-hint">
+          <p v-if="!historicalMode && qrSetupMissing" class="notice payment-qr-setup-hint">
             {{ t('sales.paymentQrSetupHint') }}
           </p>
-          <div v-if="!needsShipping || !shipPayLater" class="till-given">
+          <div v-if="historicalMode || !needsShipping || !shipPayLater" class="till-given">
             <label>
               <span>{{ t('sales.amountActuallyPaid') }}</span>
               <input v-model="amountGivenInput" inputmode="decimal" :placeholder="format(saleTotalCents)" />
@@ -904,11 +1087,15 @@ function resetAfterSale() {
 
         <section class="checkout-group">
           <h3>{{ t('sales.saleDetails') }}</h3>
+          <label v-if="historicalMode">
+            {{ t('sales.historicalDate') }}
+            <input v-model="historicalSoldOn" type="date" :max="today" required />
+          </label>
           <label>
             {{ t('sales.event') }}
             <span class="event-picker">
               <select v-model.number="selectedEventId">
-                <option :value="0">{{ t('sales.noEvent') }}</option>
+                <option :value="0">{{ historicalMode ? t('sales.historicalSelectEvent') : t('sales.noEvent') }}</option>
                 <option v-for="event in events" :key="event.id" :value="event.id">{{ event.name }}</option>
               </select>
               <button v-if="newEventName === null" class="compact-button" type="button" :aria-label="t('sales.newEvent')" @click="newEventName = ''">+</button>
@@ -916,14 +1103,14 @@ function resetAfterSale() {
           </label>
           <div v-if="newEventName !== null" class="new-event-row">
             <input v-model="newEventName" :placeholder="t('sales.newEventPlaceholder')" @keyup.enter="createEvent" />
-            <button class="secondary-button" type="button" :disabled="busy" @click="createEvent">{{ t('sales.createEvent') }}</button>
+            <button class="secondary-button" type="button" :disabled="busy || (historicalMode && !offline.online)" @click="createEvent">{{ t('sales.createEvent') }}</button>
             <button class="compact-button" type="button" @click="newEventName = null">{{ t('common.cancel') }}</button>
           </div>
-          <label>{{ t('sales.soldBy') }}<input v-model="soldBy" /></label>
+          <label v-if="!historicalMode">{{ t('sales.soldBy') }}<input v-model="soldBy" /></label>
           <label>{{ t('common.comment') }}<textarea v-model="comment" rows="3" /></label>
         </section>
 
-        <section class="checkout-group">
+        <section v-if="!historicalMode" class="checkout-group">
           <h3>{{ t('sales.shipmentTitle') }}</h3>
           <label v-if="!isOrder" class="checkbox-row">
             <input v-model="shipOpen" type="checkbox" />
@@ -949,7 +1136,7 @@ function resetAfterSale() {
       </div>
 
       <footer class="checkout-actions">
-        <button class="secondary-button" type="button" @click="backToBasket">{{ t('sales.cart') }}</button>
+        <button class="secondary-button" type="button" :disabled="historicalNetworkUncertain" @click="backToBasket">{{ t('sales.cart') }}</button>
         <button class="primary-button" type="button" :disabled="!paymentStepReady || qrBusy" @click="goToConfirmation">
           {{ t('common.confirm') }}
         </button>
@@ -959,7 +1146,7 @@ function resetAfterSale() {
     <section v-else class="till-column checkout-panel checkout-confirmation">
       <header class="checkout-panel-head">
         <div>
-          <p class="eyebrow">{{ paymentMethod }}</p>
+          <p class="eyebrow">{{ historicalMode ? t('sales.historicalTitle') : paymentMethod }}</p>
           <h2>{{ qrIntent ? t('sales.paymentQrTitle') : t('common.confirm') }}</h2>
           <p v-if="qrIntent">{{ t('sales.paymentQrIntro') }}</p>
           <p class="checkout-sale-id" aria-live="polite">
@@ -975,12 +1162,17 @@ function resetAfterSale() {
           <img :src="qrIntent.image_data_uri" :alt="t('sales.paymentQrAlt')" />
         </div>
         <div v-else class="checkout-payment-symbol">
-          <PaymentMethodIcon :method="paymentMethod" />
-          <strong>{{ paymentMethod }}</strong>
+          <PaymentMethodIcon v-if="!historicalMode" :method="paymentMethod" />
+          <strong>{{ historicalMode ? t('sales.historicalBooking') : paymentMethod }}</strong>
+          <span v-if="historicalMode">{{ historicalSoldOn }}</span>
+          <span v-if="historicalMode">{{ events.find((event) => event.id === selectedEventId)?.name }}</span>
         </div>
 
         <section class="checkout-review">
-          <p v-if="hasOutOfStockItem" class="stock-sale-warning" role="status">{{ t('sales.stockWarning') }}</p>
+          <p v-if="historicalMode && createsNegativeStock" class="stock-sale-warning" role="status">
+            {{ t('sales.historicalNegativeStock') }}
+          </p>
+          <p v-else-if="hasOutOfStockItem" class="stock-sale-warning" role="status">{{ t('sales.stockWarning') }}</p>
           <div v-for="line in basket" :key="line.variantId" class="checkout-review-line">
             <span>{{ line.quantity }}× {{ line.label }}</span>
             <b>{{ format(line.quantity * line.unitPriceCents) }}</b>
@@ -994,7 +1186,7 @@ function resetAfterSale() {
             <span>{{ t('sales.amountActuallyPaid') }}: <b>{{ format(amountGivenCents) }}</b></span>
             <span v-if="discountCents > 0">{{ t('sales.discountLabel') }}: <b>{{ format(discountCents) }}</b></span>
             <span v-if="surplusCents > 0">
-              {{ surplusMode === 'donation' ? t('sales.donationLabel') : t('sales.changeLabel') }}:
+              {{ historicalMode || surplusMode === 'donation' ? t('sales.donationLabel') : t('sales.changeLabel') }}:
               <b>{{ format(surplusCents) }}</b>
             </span>
           </div>
@@ -1006,13 +1198,15 @@ function resetAfterSale() {
       </div>
 
       <footer class="checkout-actions">
-        <button class="secondary-button" type="button" :disabled="qrBusy" @click="backToPayment">
-          {{ t('sales.paymentMethod') }}
+        <button class="secondary-button" type="button" :disabled="qrBusy || historicalNetworkUncertain" @click="backToPayment">
+          {{ historicalMode ? t('sales.historicalDetails') : t('sales.paymentMethod') }}
         </button>
         <button class="primary-button till-book" type="button" :disabled="busy || qrBusy" @click="confirmCheckout">
           {{ qrIntent
             ? t('sales.paymentQrConfirm')
-            : needsShipping
+            : historicalMode
+              ? (historicalNetworkUncertain ? t('sales.historicalRetry') : t('sales.historicalBook'))
+              : needsShipping
               ? (isOrder ? t('sales.createOrder') : t('sales.bookShipment'))
               : t('sales.book') }}
         </button>
@@ -1336,6 +1530,42 @@ function resetAfterSale() {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   text-align: center;
+}
+
+.checkout-payment-grid.is-historical {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.historical-mode-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-soft);
+}
+
+.historical-mode-note span {
+  display: grid;
+  gap: 3px;
+}
+
+.historical-mode-note strong,
+.historical-mode-note small {
+  display: block;
+}
+
+.historical-state {
+  display: block;
+  margin-top: 3px;
+  color: var(--status-warning-text);
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.historical-variant-notice {
+  margin-top: 10px;
 }
 
 .till-articles .selection-button.selected {

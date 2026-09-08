@@ -275,7 +275,7 @@ func itoa(id int64) string { return strconv.FormatInt(id, 10) }
 func (h *harness) onHand(variantID int64) int64 {
 	h.t.Helper()
 
-	res := h.do("GET", "/api/v1/articles", nil)
+	res := h.do("GET", "/api/v1/articles?include_inactive=true", nil)
 	for _, rawArticle := range jsonList(res.Body, "articles") {
 		for _, rawVariant := range jsonList(jsonObject(rawArticle), "variants") {
 			variant := jsonObject(rawVariant)

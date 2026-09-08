@@ -422,3 +422,194 @@ func TestSoldByDefaultsToTheSignedInUser(t *testing.T) {
 		t.Fatalf("an explicit seller must be kept, got %q", explicitSale.SoldBy)
 	}
 }
+
+func TestHistoricalSaleBooksWithdrawnVariantsExactlyOnce(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	actor := h.signInAs(band, models.RoleManager)
+	articleID, variants := h.sellableArticle("Archive Shirt")
+
+	if err := h.db.WithContext(h.ctx()).Model(&models.Variant{}).
+		Where("id = ? AND band_id = ?", variants[0], band.ID).
+		Updates(map[string]any{"is_offered": false, "is_active": false}).Error; err != nil {
+		t.Fatalf("withdraw variant: %v", err)
+	}
+	if err := h.db.WithContext(h.ctx()).Model(&models.Article{}).
+		Where("id = ? AND band_id = ?", articleID, band.ID).
+		Update("is_active", false).Error; err != nil {
+		t.Fatalf("deactivate article: %v", err)
+	}
+	archiveCatalogue := h.do(http.MethodGet, "/api/v1/articles?include_inactive=true", nil)
+	if archiveCatalogue.Status != http.StatusOK || len(jsonList(archiveCatalogue.Body, "articles")) != 1 {
+		t.Fatalf("manager historical catalogue must include inactive articles: %d %v", archiveCatalogue.Status, archiveCatalogue.Body)
+	}
+	h.signInAs(band, models.RoleMember)
+	memberCatalogue := h.do(http.MethodGet, "/api/v1/articles?include_inactive=true", nil)
+	if memberCatalogue.Status != http.StatusOK || len(jsonList(memberCatalogue.Body, "articles")) != 0 {
+		t.Fatalf("member must not expose inactive articles through the query flag: %d %v", memberCatalogue.Status, memberCatalogue.Body)
+	}
+	if res := h.signIn(band.Slug, actor.Username, "ein-langes-passwort"); res.Status != http.StatusOK {
+		t.Fatalf("sign manager back in: %d %v", res.Status, res.Body)
+	}
+	normal := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 2, "unit_price_cents": 1800}},
+		"payment_method": "Bar", "is_paid": true, "is_received": true,
+		"amount_given_cents": 3600, "sold_on": "2026-08-27",
+	})
+	if normal.Status != http.StatusBadRequest || normal.Body["code"] != "variant_not_offered" {
+		t.Fatalf("live sale must still reject a withdrawn variant: %d %v", normal.Status, normal.Body)
+	}
+
+	createdEvent := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{
+		"name": "Archivfestival", "select": false,
+	})
+	if createdEvent.Status != http.StatusCreated {
+		t.Fatalf("create event: %d %v", createdEvent.Status, createdEvent.Body)
+	}
+	eventID := int64(createdEvent.Body["id"].(float64))
+	payload := map[string]any{
+		"items":         []any{map[string]any{"variant_id": variants[0], "quantity": 2, "unit_price_cents": 1800}},
+		"sale_event_id": eventID, "sold_on": "2026-08-27",
+		"amount_given_cents": 3200, "discount_confirmed": true,
+		"comment": "Aus alter Abrechnung", "receipt_id": "V-20260827-001",
+		"client_event_id": "historical-event-1", "client_device_id": "archive-desktop",
+		"client_created_at": "2026-09-08T12:00:00Z",
+	}
+
+	first := h.do(http.MethodPost, "/api/v1/sales/historical", payload)
+	if first.Status != http.StatusCreated {
+		t.Fatalf("historical book: %d %v", first.Status, first.Body)
+	}
+	if first.Body["total_due_cents"] != float64(3600) || first.Body["total_paid_cents"] != float64(3200) ||
+		first.Body["discount_cents"] != float64(400) || first.Body["donation_cents"] != float64(0) {
+		t.Fatalf("unexpected historical totals: %v", first.Body)
+	}
+	if renamed := h.do(http.MethodPatch, "/api/v1/sale-events/"+itoa(eventID), map[string]any{"name": "Archivfestival neu"}); renamed.Status != http.StatusOK {
+		t.Fatalf("rename event before retry: %d %v", renamed.Status, renamed.Body)
+	}
+	second := h.do(http.MethodPost, "/api/v1/sales/historical", payload)
+	if second.Status != http.StatusOK || second.Body["replayed"] != true || second.Body["receipt_id"] != first.Body["receipt_id"] {
+		t.Fatalf("historical retry must replay: %d %v", second.Status, second.Body)
+	}
+	payload["amount_given_cents"] = 3100
+	conflict := h.do(http.MethodPost, "/api/v1/sales/historical", payload)
+	if conflict.Status != http.StatusConflict || conflict.Body["code"] != "sync_conflict" {
+		t.Fatalf("changed retry must conflict: %d %v", conflict.Status, conflict.Body)
+	}
+
+	if got := h.onHand(variants[0]); got != -2 {
+		t.Fatalf("historical sale must reduce stock once, got %d", got)
+	}
+	var sale models.Sale
+	if err := h.db.WithContext(h.ctx()).Where("band_id = ? AND receipt_id = ?", band.ID, first.Body["receipt_id"]).First(&sale).Error; err != nil {
+		t.Fatalf("read historical sale: %v", err)
+	}
+	if sale.EventName != "Archivfestival" || sale.SoldBy != "Historisch / nicht zugeordnet" ||
+		sale.PaymentMethod != models.PaymentMethodOther || !sale.IsPaid || !sale.IsReceived ||
+		sale.CreatedByUserID == nil || *sale.CreatedByUserID != actor.ID || sale.CustomerName != "" || sale.ShippingCostCents != 0 {
+		t.Fatalf("historical metadata was not fixed correctly: %+v", sale)
+	}
+
+	balances := h.do(http.MethodGet, "/api/v1/balances", nil)
+	foundSeller := false
+	for _, raw := range jsonList(balances.Body, "top_sellers") {
+		entry := jsonObject(raw)
+		if entry["label"] == "Historisch / nicht zugeordnet" && entry["quantity"] == float64(2) {
+			foundSeller = true
+		}
+	}
+	if !foundSeller {
+		t.Fatalf("historical seller grouping missing: %v", balances.Body["top_sellers"])
+	}
+	var audited int64
+	if err := h.db.Raw("SELECT COUNT(*) FROM audit_log WHERE band_id = ? AND action = ?", band.ID, audit.ActionHistoricalSaleCreated).Scan(&audited).Error; err != nil {
+		t.Fatalf("read audit: %v", err)
+	}
+	if audited != 1 {
+		t.Fatalf("expected one audit entry despite replay, got %d", audited)
+	}
+}
+
+func TestHistoricalSaleValidatesRoleDateEventAndTenant(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Historical Validation Shirt")
+	createdEvent := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{"name": "Eigener Gig", "select": false})
+	eventID := int64(createdEvent.Body["id"].(float64))
+	valid := func() map[string]any {
+		return map[string]any{
+			"items":         []any{map[string]any{"variant_id": variants[0], "quantity": 1, "unit_price_cents": 1800}},
+			"sale_event_id": eventID, "sold_on": "2026-08-27", "amount_given_cents": 1800,
+			"client_event_id": unique("historical-"), "client_device_id": "validation-device",
+			"client_created_at": "2026-09-08T12:00:00Z",
+		}
+	}
+
+	h.signInAs(band, models.RoleMember)
+	if res := h.do(http.MethodPost, "/api/v1/sales/historical", valid()); res.Status != http.StatusForbidden {
+		t.Fatalf("member must not book historical sales: %d %v", res.Status, res.Body)
+	}
+	h.signInAs(band, models.RoleManager)
+
+	missingDate := valid()
+	delete(missingDate, "sold_on")
+	if res := h.do(http.MethodPost, "/api/v1/sales/historical", missingDate); res.Status != http.StatusBadRequest || res.Body["code"] != "historical_date_required" {
+		t.Fatalf("missing date: %d %v", res.Status, res.Body)
+	}
+	future := valid()
+	future["sold_on"] = "2999-01-01"
+	if res := h.do(http.MethodPost, "/api/v1/sales/historical", future); res.Status != http.StatusBadRequest || res.Body["code"] != "historical_date_in_future" {
+		t.Fatalf("future date: %d %v", res.Status, res.Body)
+	}
+	missingEvent := valid()
+	missingEvent["sale_event_id"] = 0
+	if res := h.do(http.MethodPost, "/api/v1/sales/historical", missingEvent); res.Status != http.StatusBadRequest || res.Body["code"] != "historical_event_required" {
+		t.Fatalf("missing event: %d %v", res.Status, res.Body)
+	}
+	missingPrice := valid()
+	missingPrice["items"] = []any{map[string]any{"variant_id": variants[0], "quantity": 1}}
+	if res := h.do(http.MethodPost, "/api/v1/sales/historical", missingPrice); res.Status != http.StatusBadRequest || res.Body["code"] != "historical_price_required" {
+		t.Fatalf("missing price: %d %v", res.Status, res.Body)
+	}
+	missingAmount := valid()
+	delete(missingAmount, "amount_given_cents")
+	if res := h.do(http.MethodPost, "/api/v1/sales/historical", missingAmount); res.Status != http.StatusBadRequest || res.Body["code"] != "historical_amount_required" {
+		t.Fatalf("missing amount: %d %v", res.Status, res.Body)
+	}
+	missingRetryID := valid()
+	delete(missingRetryID, "client_event_id")
+	if res := h.do(http.MethodPost, "/api/v1/sales/historical", missingRetryID); res.Status != http.StatusBadRequest || res.Body["code"] != "historical_idempotency_required" {
+		t.Fatalf("missing idempotency metadata: %d %v", res.Status, res.Body)
+	}
+
+	otherBand := h.makeBand()
+	h.signInAs(otherBand, models.RoleManager)
+	foreignEvent := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{"name": "Fremder Gig", "select": false})
+	h.signInAs(band, models.RoleManager)
+	foreign := valid()
+	foreign["sale_event_id"] = int64(foreignEvent.Body["id"].(float64))
+	if res := h.do(http.MethodPost, "/api/v1/sales/historical", foreign); res.Status != http.StatusNotFound || res.Body["code"] != "historical_event_not_found" {
+		t.Fatalf("foreign event must stay hidden: %d %v", res.Status, res.Body)
+	}
+}
+
+func TestHistoricalSaleBooksOverpaymentAsDonation(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleBandAdmin)
+	_, variants := h.sellableArticle("Historical Donation Shirt")
+	createdEvent := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{"name": "Spenden-Gig", "select": false})
+	eventID := int64(createdEvent.Body["id"].(float64))
+
+	booked := h.do(http.MethodPost, "/api/v1/sales/historical", map[string]any{
+		"items":         []any{map[string]any{"variant_id": variants[0], "quantity": 1, "unit_price_cents": 1800}},
+		"sale_event_id": eventID, "sold_on": "2026-08-27", "amount_given_cents": 2000,
+		"client_event_id": "historical-donation-1", "client_device_id": "archive-desktop",
+		"client_created_at": "2026-09-08T12:00:00Z",
+	})
+	if booked.Status != http.StatusCreated || booked.Body["total_paid_cents"] != float64(2000) ||
+		booked.Body["donation_cents"] != float64(200) || booked.Body["discount_cents"] != float64(0) {
+		t.Fatalf("historical overpayment must become a donation: %d %v", booked.Status, booked.Body)
+	}
+}

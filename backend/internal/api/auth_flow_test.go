@@ -405,6 +405,9 @@ func TestPOSModeBlocksRestrictedAreas(t *testing.T) {
 	if res := h.do(http.MethodGet, "/api/v1/purchases/anything", nil); res.Status != http.StatusForbidden {
 		t.Fatalf("POS mode must block purchases, got %d %v", res.Status, res.Body)
 	}
+	if res := h.do(http.MethodPost, "/api/v1/sales/historical", map[string]any{}); res.Status != http.StatusForbidden || res.Body["code"] != "pos_mode_restricted" {
+		t.Fatalf("POS mode must block historical sales, got %d %v", res.Status, res.Body)
+	}
 	if res := h.do(http.MethodGet, "/api/v1/me", nil); res.Status != http.StatusOK {
 		t.Fatalf("POS mode must keep the sales workflow usable: %d", res.Status)
 	}

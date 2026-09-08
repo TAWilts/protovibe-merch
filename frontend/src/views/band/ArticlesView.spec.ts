@@ -16,7 +16,7 @@ vi.mock('@/stores/flash', () => ({
   useFlashStore: () => ({ success: vi.fn(), error: vi.fn() }),
 }))
 vi.mock('@/stores/session', () => ({
-  useSessionStore: () => ({ featureFlags: { csv_import: false } }),
+  useSessionStore: () => ({ featureFlags: { csv_import: true } }),
 }))
 vi.mock('@/api/endpoints', () => ({
   catalogueApi: { list, create, save },
@@ -112,5 +112,14 @@ describe('ArticlesView variant generation', () => {
         { id: 12, minimum_stock: 7 },
       ],
     })
+  })
+
+  it('does not expose the legacy CSV import even when its dormant flag is enabled', async () => {
+    list.mockResolvedValue({ articles: [confirmedArticle] })
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    expect(wrapper.find('input[type="file"][accept*="csv"]').exists()).toBe(false)
+    expect(wrapper.find('.transaction-import-panel').exists()).toBe(false)
   })
 })

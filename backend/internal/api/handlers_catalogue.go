@@ -82,7 +82,9 @@ type articlePayload struct {
 // listArticles returns the full catalogue including inactive variants, which
 // the management page needs to show what was retired.
 func (s *Server) listArticles(c *gin.Context) {
-	payload, err := s.buildArticles(c, 0)
+	state := stateFrom(c)
+	includeInactive := c.Query("include_inactive") == "true" && state != nil && state.User != nil && state.User.Role.AtLeast(models.RoleManager)
+	payload, err := s.buildArticles(c, 0, includeInactive)
 	if err != nil {
 		serverError(c, err)
 		return
@@ -95,7 +97,7 @@ func (s *Server) getArticle(c *gin.Context) {
 	if !ok {
 		return
 	}
-	payload, err := s.buildArticles(c, id)
+	payload, err := s.buildArticles(c, id, false)
 	if err != nil {
 		serverError(c, err)
 		return
@@ -110,7 +112,7 @@ func (s *Server) getArticle(c *gin.Context) {
 // getAssortment returns only what can actually be sold right now, which keeps
 // the point-of-sale payload small on a phone with a weak connection.
 func (s *Server) getAssortment(c *gin.Context) {
-	all, err := s.buildArticles(c, 0)
+	all, err := s.buildArticles(c, 0, false)
 	if err != nil {
 		serverError(c, err)
 		return
@@ -142,10 +144,13 @@ func (s *Server) getAssortment(c *gin.Context) {
 
 // buildArticles assembles the payload for one article or, with id 0, all of
 // them. It resolves stock once for the whole band rather than per variant.
-func (s *Server) buildArticles(c *gin.Context, id int64) ([]articlePayload, error) {
+func (s *Server) buildArticles(c *gin.Context, id int64, includeInactive bool) ([]articlePayload, error) {
 	ctx := c.Request.Context()
 
-	articleQuery := s.db.WithContext(ctx).Model(&models.Article{}).Where("is_active = ?", true)
+	articleQuery := s.db.WithContext(ctx).Model(&models.Article{})
+	if !includeInactive {
+		articleQuery = articleQuery.Where("is_active = ?", true)
+	}
 	if id != 0 {
 		articleQuery = articleQuery.Where("id = ?", id)
 	}
@@ -330,7 +335,7 @@ func (s *Server) createArticle(c *gin.Context) {
 		Details: map[string]any{"name": article.Name},
 	})
 
-	payload, err := s.buildArticles(c, article.ID)
+	payload, err := s.buildArticles(c, article.ID, false)
 	if err != nil {
 		serverError(c, err)
 		return
@@ -360,7 +365,7 @@ func (s *Server) saveArticle(c *gin.Context) {
 		Action: audit.ActionArticleUpdated, EntityType: "article", EntityID: &id,
 	})
 
-	payload, err := s.buildArticles(c, id)
+	payload, err := s.buildArticles(c, id, false)
 	if err != nil {
 		serverError(c, err)
 		return

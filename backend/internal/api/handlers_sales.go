@@ -26,6 +26,9 @@ func (s *Server) registerSalesRoutes(g *gin.RouterGroup) {
 	sell.POST("/sale-events", s.createSaleEvent)
 	sell.POST("/sale-events/:id/select", s.selectSaleEvent)
 
+	historical := g.Group("", requireAuth(), requireBandRole(models.RoleManager))
+	historical.POST("/sales/historical", s.createHistoricalSale)
+
 	// The history and the work queues belong to the member workflows; a seller
 	// records sales but does not follow up on them.
 	members := g.Group("", requireAuth(), requireBandRole(models.RoleMember))
@@ -287,6 +290,110 @@ func (s *Server) createSale(c *gin.Context) {
 	if result.Replayed {
 		// A replay created nothing; 200 tells the device its queue entry is
 		// settled without implying a second booking.
+		status = http.StatusOK
+	}
+	c.JSON(status, result)
+}
+
+const historicalUnassignedSeller = "Historisch / nicht zugeordnet"
+
+type createHistoricalSaleRequest struct {
+	Items             []sales.BasketItem `json:"items"`
+	SaleEventID       int64              `json:"sale_event_id"`
+	SoldOn            models.Date        `json:"sold_on"`
+	AmountGivenCents  *int64             `json:"amount_given_cents"`
+	DiscountConfirmed bool               `json:"discount_confirmed"`
+	Comment           string             `json:"comment"`
+	ReceiptID         string             `json:"receipt_id"`
+	ClientEventID     string             `json:"client_event_id"`
+	ClientDeviceID    string             `json:"client_device_id"`
+	ClientCreatedAt   *time.Time         `json:"client_created_at"`
+}
+
+func (s *Server) createHistoricalSale(c *gin.Context) {
+	var req createHistoricalSaleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if req.SoldOn.IsZero() {
+		fail(c, http.StatusBadRequest, "historical_date_required", "a historical sale requires its event date")
+		return
+	}
+	if req.SoldOn.Time.After(s.today().Time) {
+		fail(c, http.StatusBadRequest, "historical_date_in_future", "a historical sale cannot be dated in the future")
+		return
+	}
+	if req.SaleEventID <= 0 {
+		fail(c, http.StatusBadRequest, "historical_event_required", "a historical sale requires an event")
+		return
+	}
+	if req.AmountGivenCents == nil {
+		fail(c, http.StatusBadRequest, "historical_amount_required", "a historical sale requires the amount actually received")
+		return
+	}
+	for _, item := range req.Items {
+		if item.UnitPriceCents == nil {
+			fail(c, http.StatusBadRequest, "historical_price_required", "every historical position requires its unit price")
+			return
+		}
+	}
+	eventID := strings.TrimSpace(req.ClientEventID)
+	deviceID := strings.TrimSpace(req.ClientDeviceID)
+	if eventID == "" || len(eventID) > 64 || deviceID == "" || len(deviceID) > 64 || req.ClientCreatedAt == nil {
+		fail(c, http.StatusBadRequest, "historical_idempotency_required", "historical sales require valid client event metadata")
+		return
+	}
+
+	ctx := c.Request.Context()
+	var event models.SaleEvent
+	if err := s.db.WithContext(ctx).First(&event, req.SaleEventID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			fail(c, http.StatusNotFound, "historical_event_not_found", "no such event")
+			return
+		}
+		serverError(c, err)
+		return
+	}
+
+	state := stateFrom(c)
+	booking := sales.Request{
+		Items:             req.Items,
+		PaymentMethod:     models.PaymentMethodOther,
+		IsPaid:            true,
+		IsReceived:        true,
+		AmountGivenCents:  req.AmountGivenCents,
+		DiscountConfirmed: req.DiscountConfirmed,
+		EventName:         event.Name,
+		SoldBy:            historicalUnassignedSeller,
+		Comment:           strings.TrimSpace(req.Comment),
+		SoldOn:            req.SoldOn,
+		ReceiptID:         strings.TrimSpace(req.ReceiptID),
+	}
+	result, err := s.sales.BookHistorical(ctx, booking, sales.Actor{
+		UserID: state.User.ID, Username: state.User.Username,
+	}, &sales.OfflineEvent{
+		EventID: eventID, DeviceID: deviceID, CreatedAt: req.ClientCreatedAt.UTC(),
+		HashNamespace: "historical-sale:" + strconv.FormatInt(event.ID, 10),
+	})
+	if err != nil {
+		s.reportSalesError(c, err)
+		return
+	}
+
+	if !result.Replayed {
+		s.audit.Log(ctx, actorFrom(c), audit.Entry{
+			Action: audit.ActionHistoricalSaleCreated, EntityType: "sale",
+			Details: map[string]any{
+				"receipt_id": result.ReceiptID, "event_id": event.ID, "event_name": event.Name,
+				"sold_on": req.SoldOn, "positions": len(result.SaleIDs), "items": req.Items,
+				"total_due_cents": result.TotalDueCents, "total_paid_cents": result.TotalPaidCents,
+				"discount_cents": result.DiscountCents, "donation_cents": result.DonationCents,
+			},
+		})
+	}
+	status := http.StatusCreated
+	if result.Replayed {
 		status = http.StatusOK
 	}
 	c.JSON(status, result)

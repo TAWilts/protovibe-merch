@@ -2,9 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { catalogueApi, importApi, photosApi, type ImportKind } from '@/api/endpoints'
+import { catalogueApi, photosApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
-import type { Article, ImportPreview, Photo } from '@/api/types'
+import type { Article, Photo } from '@/api/types'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import TableSkeleton from '@/components/ui/TableSkeleton.vue'
@@ -191,55 +191,6 @@ async function removePhoto(photo: Photo) {
     await loadPhotos()
   } catch (error) {
     report(error)
-  }
-}
-
-/**
- * CSV import, ported from _old/templates/articles.html:52.
- *
- * The preview always runs first. An import creates missing articles, options
- * and variants as a side effect, so the band has to see what it is about to
- * gain before a single row is written.
- */
-const importKind = ref<ImportKind>('einkaeufe')
-const importFile = ref<File | null>(null)
-const importPreview = ref<ImportPreview | null>(null)
-const importing = ref(false)
-
-function onImportFile(event: Event) {
-  const input = event.target as HTMLInputElement
-  importFile.value = input.files?.[0] ?? null
-  importPreview.value = null
-}
-
-async function previewImport() {
-  if (!importFile.value || importing.value) return
-  importing.value = true
-  try {
-    importPreview.value = await importApi.preview(importKind.value, importFile.value)
-  } catch (error) {
-    importPreview.value = null
-    report(error)
-  } finally {
-    importing.value = false
-  }
-}
-
-async function applyImport() {
-  if (!importFile.value || !importPreview.value || importing.value) return
-  importing.value = true
-  try {
-    const result = await importApi.apply(importKind.value, importFile.value)
-    flash.success(t('articles.import.done', {
-      rows: result.row_count, receipt: result.receipt_id,
-    }))
-    importFile.value = null
-    importPreview.value = null
-    await load(true)
-  } catch (error) {
-    report(error)
-  } finally {
-    importing.value = false
   }
 }
 
@@ -693,75 +644,6 @@ async function applyMinimumToAll() {
       </div>
     </AppDialog>
 
-    <section v-if="session.featureFlags?.csv_import !== false" class="table-section transaction-import-panel">
-      <div class="section-heading">
-        <div>
-          <h2>{{ t('articles.import.title') }}</h2>
-          <p>{{ t('articles.import.hint') }}</p>
-        </div>
-      </div>
-
-      <div class="transaction-import-form">
-        <div class="field-grid two-columns">
-          <label>
-            {{ t('articles.import.kind') }}
-            <select v-model="importKind" @change="importPreview = null">
-              <option value="einkaeufe">{{ t('articles.import.purchases') }}</option>
-              <option value="verkaeufe">{{ t('articles.import.sales') }}</option>
-            </select>
-          </label>
-          <label>
-            {{ t('articles.import.file') }}
-            <input type="file" accept=".csv,text/csv" @change="onImportFile" />
-          </label>
-        </div>
-
-        <p class="muted">
-          {{ t('articles.import.columns') }}
-          <code>{{ importKind === 'einkaeufe'
-            ? 'Anzahl; Artikel; Optionen; Einkaufspreis; Gekauft von'
-            : 'Anzahl; Artikel; Optionen; Verkaufspreis; Verkauft an' }}</code>
-        </p>
-
-        <div class="form-actions">
-          <button
-            class="secondary-button"
-            type="button"
-            :disabled="!importFile || importing"
-            @click="previewImport"
-          >{{ t('articles.import.check') }}</button>
-          <button
-            class="primary-button"
-            type="button"
-            :disabled="!importPreview || importing"
-            @click="applyImport"
-          >{{ t('articles.import.apply') }}</button>
-        </div>
-
-        <dl v-if="importPreview" class="import-preview">
-          <div>
-            <dt>{{ t('articles.import.rows') }}</dt>
-            <dd>{{ importPreview.row_count }} ({{ importPreview.total_quantity }} {{ t('common.quantity') }})</dd>
-          </div>
-          <div>
-            <dt>{{ t('articles.import.sum') }}</dt>
-            <dd>{{ format(importPreview.total_cents) }}</dd>
-          </div>
-          <div>
-            <dt>{{ t('articles.import.newArticles') }}</dt>
-            <dd>{{ importPreview.new_articles.join(', ') || '—' }}</dd>
-          </div>
-          <div>
-            <dt>{{ t('articles.import.newOptions') }}</dt>
-            <dd>{{ importPreview.new_option_values.join(', ') || '—' }}</dd>
-          </div>
-          <div>
-            <dt>{{ t('articles.import.newVariants') }}</dt>
-            <dd>{{ importPreview.new_variants }}</dd>
-          </div>
-        </dl>
-      </div>
-    </section>
   </main>
 </template>
 

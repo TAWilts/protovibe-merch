@@ -39,6 +39,10 @@ type OfflineEvent struct {
 	EventID   string    `json:"event_id"`
 	DeviceID  string    `json:"device_id"`
 	CreatedAt time.Time `json:"created_at"`
+	// HashNamespace separates idempotency domains without changing the stored
+	// sync-event schema. Empty preserves the fingerprint used by existing
+	// offline sales; historical batches use their own namespace.
+	HashNamespace string `json:"-"`
 }
 
 // Result is what the client gets back after a successful booking.
@@ -73,6 +77,17 @@ func NewService(database *gorm.DB) *Service {
 // of creating a second sale, which is what makes a phone at a gig safe to
 // synchronise repeatedly.
 func (s *Service) Book(ctx context.Context, req Request, actor Actor, offline *OfflineEvent) (*Result, error) {
+	return s.book(ctx, req, actor, offline, false)
+}
+
+// BookHistorical stores a manager-entered historical batch. It deliberately
+// accepts withdrawn catalogue variants while preserving every other sale
+// validation and tenant boundary.
+func (s *Service) BookHistorical(ctx context.Context, req Request, actor Actor, event *OfflineEvent) (*Result, error) {
+	return s.book(ctx, req, actor, event, true)
+}
+
+func (s *Service) book(ctx context.Context, req Request, actor Actor, offline *OfflineEvent, allowUnavailable bool) (*Result, error) {
 	if offline != nil {
 		if replayed, err := s.replay(ctx, *offline, req); err != nil || replayed != nil {
 			return replayed, err
@@ -84,6 +99,12 @@ func (s *Service) Book(ctx context.Context, req Request, actor Actor, offline *O
 		prices, err := loadPrices(ctx, tx, req.Items)
 		if err != nil {
 			return err
+		}
+		if allowUnavailable {
+			for id, price := range prices {
+				price.IsOffered = true
+				prices[id] = price
+			}
 		}
 		prepared, err := Prepare(req, prices)
 		if err != nil {
@@ -180,7 +201,7 @@ func (s *Service) replay(ctx context.Context, event OfflineEvent, req Request) (
 		return nil, err
 	}
 
-	if stored.PayloadHash != payloadHash(req) {
+	if stored.PayloadHash != payloadHashFor(event, req) {
 		return nil, ErrSyncConflict
 	}
 
@@ -203,12 +224,24 @@ func (s *Service) recordSyncEvent(ctx context.Context, tx *gorm.DB, event Offlin
 		ActorUserID:     actor.UserID,
 		ActorUsername:   actor.Username,
 		DeviceID:        event.DeviceID,
-		PayloadHash:     payloadHash(req),
+		PayloadHash:     payloadHashFor(event, req),
 		ClientCreatedAt: event.CreatedAt,
 		ResponseJSON:    string(encoded),
 		CreatedAt:       time.Now().UTC(),
 	}
 	return tx.WithContext(ctx).Create(record).Error
+}
+
+func payloadHashFor(event OfflineEvent, req Request) string {
+	if event.HashNamespace == "" {
+		return payloadHash(req)
+	}
+	// The event name is a server-side snapshot. It may be renamed after an
+	// ambiguous response, while an identical client request still has to replay
+	// safely. The namespace carries the stable event ID instead.
+	req.EventName = ""
+	sum := sha256.Sum256([]byte(event.HashNamespace + ":" + payloadHash(req)))
+	return hex.EncodeToString(sum[:])
 }
 
 // payloadHash fingerprints the parts of a request that define the booking.
