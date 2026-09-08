@@ -4,6 +4,10 @@
 # runner instead of running Node through QEMU once per target architecture.
 ARG BUILDPLATFORM
 FROM --platform=$BUILDPLATFORM node:22-alpine AS build
+ARG VITE_PRIVACY_URL
+ARG VITE_IMPRINT_URL
+ENV VITE_PRIVACY_URL=$VITE_PRIVACY_URL
+ENV VITE_IMPRINT_URL=$VITE_IMPRINT_URL
 WORKDIR /src
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci

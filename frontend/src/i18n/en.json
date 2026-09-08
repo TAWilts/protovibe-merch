@@ -4,6 +4,12 @@
     "open": "Open account menu",
     "profile": "Profile and appearance"
   },
+  "notFound": {
+    "title": "Page not found",
+    "message": "The requested address does not exist or has moved.",
+    "backHome": "Back to home",
+    "backToApp": "Back to the application"
+  },
   "nav": {
     "packingList": "Packing list",
     "label": "Main navigation",
@@ -1271,7 +1277,12 @@
       "approval": { "question": "Is my band created immediately?", "answer": "No. A system administrator reviews the request first and can correct typing mistakes. Approval creates the band and its first administrator together." },
       "link": { "question": "What if I lose the status link?", "answer": "Without email delivery, the link cannot be recovered automatically. After approval, a system administrator can issue a new setup code if necessary." }
     },
-    "footer": "Sales, inventory and band finances in one shared tool."
+    "footer": "Sales, inventory and band finances in one shared tool.",
+    "legal": {
+      "label": "Legal and access",
+      "privacy": "Privacy",
+      "imprint": "Legal notice"
+    }
   },
   "profile": {
     "eyebrow": "Konto",

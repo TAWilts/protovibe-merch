@@ -79,6 +79,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.frontend
+      args:
+        VITE_PRIVACY_URL: ${PRIVACY_URL:-}
+        VITE_IMPRINT_URL: ${IMPRINT_URL:-}
     restart: unless-stopped
     depends_on:
       - backend

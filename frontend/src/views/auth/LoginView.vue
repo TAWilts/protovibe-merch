@@ -233,8 +233,25 @@ async function confirmReset() {
         <button type="button" :class="{ active: loginLocale === 'en' }" @click="chooseLocale('en')">EN</button>
       </div>
     </div>
-    <section class="login-card">
-      <div class="brand brand-login">
+    <div class="login-shell">
+      <aside class="login-context">
+        <RouterLink :to="{ name: 'landing' }" class="brand">
+          <span class="brand-mark">P</span><span>{{ t('app.name') }}</span>
+        </RouterLink>
+        <div>
+          <p class="eyebrow">{{ t('landing.hero.kicker') }}</p>
+          <h2>{{ t('landing.hero.title') }}</h2>
+          <p>{{ t('landing.hero.lead') }}</p>
+          <ul>
+            <li>{{ t('landing.hero.mobile') }}</li>
+            <li>{{ t('landing.hero.onAndOffline') }}</li>
+            <li>{{ t('landing.hero.noVendorLockin') }}</li>
+          </ul>
+        </div>
+      </aside>
+
+      <section class="login-card">
+      <div class="brand brand-login login-card-brand">
         <span class="brand-mark">P</span><span>{{ t('app.name') }}</span>
       </div>
 
@@ -350,11 +367,49 @@ async function confirmReset() {
           </button>
         </form>
       </template>
-    </section>
+      </section>
+    </div>
   </main>
 </template>
 
 <style scoped>
+.login-page {
+  display: block;
+  padding: 0;
+  background: var(--surface-page);
+}
+
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(310px, .82fr) minmax(460px, 1.18fr);
+}
+
+.login-context {
+  display: grid;
+  align-content: space-between;
+  gap: 64px;
+  padding: clamp(40px, 7vw, 92px);
+  border-right: 1px solid var(--border-subtle);
+  background: var(--surface-panel);
+}
+
+.login-context > div { max-width: 520px; }
+.login-context h2 { margin: 12px 0 18px; font-size: clamp(2.2rem, 4.2vw, 4.6rem); line-height: .98; letter-spacing: -.06em; text-wrap: balance; }
+.login-context p:not(.eyebrow) { max-width: 54ch; margin: 0; color: var(--text-secondary); line-height: 1.65; }
+.login-context ul { display: grid; gap: 10px; margin: 30px 0 0; padding: 0; color: var(--text-secondary); list-style: none; }
+.login-context li::before { margin-right: 9px; color: var(--success-text); content: '✓'; font-weight: 800; }
+
+.login-card {
+  align-self: center;
+  width: min(480px, calc(100% - 48px));
+  margin: 88px auto 40px;
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+.login-card-brand { display: none; }
+
 .login-toolbar {
   position: fixed;
   top: 18px;
@@ -391,6 +446,7 @@ async function confirmReset() {
 
 .remember-login {
   align-items: center;
+  z-index: 5;
 }
 
 .remember-login input {
@@ -422,5 +478,13 @@ async function confirmReset() {
 
 .mfa-secret {
   margin: 0 0 18px;
+}
+
+@media (max-width: 760px) {
+  .login-shell { display: block; }
+  .login-context { display: none; }
+  .login-card { width: min(440px, calc(100% - 28px)); margin: 82px auto 30px; padding: 25px 20px; }
+  .login-card-brand { display: flex; }
+  .login-toolbar { top: 14px; right: 14px; left: 14px; }
 }
 </style>

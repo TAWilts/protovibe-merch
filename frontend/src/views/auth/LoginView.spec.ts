@@ -28,6 +28,8 @@ describe('LoginView handover link', () => {
   it('prefills band and username from the query string', () => {
     const wrapper = mount(LoginView)
     expect(wrapper.get('main').attributes()).toMatchObject({ id: 'main-content', tabindex: '-1' })
+    expect(wrapper.find('.login-context').exists()).toBe(true)
+    expect(wrapper.find('.login-card').exists()).toBe(true)
     expect((wrapper.get('input[autocomplete="organization"]').element as HTMLInputElement).value).toBe('ready-band')
     expect((wrapper.get('input[autocomplete="username"]').element as HTMLInputElement).value).toBe('band-admin')
   })

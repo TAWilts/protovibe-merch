@@ -4,6 +4,12 @@
     "open": "Kontomenü öffnen",
     "profile": "Profil und Darstellung"
   },
+  "notFound": {
+    "title": "Seite nicht gefunden",
+    "message": "Die aufgerufene Adresse existiert nicht oder wurde verschoben.",
+    "backHome": "Zur Startseite",
+    "backToApp": "Zurück zur Anwendung"
+  },
   "nav": {
     "packingList": "Packliste",
     "label": "Hauptnavigation",
@@ -1280,7 +1286,12 @@
       "approval": { "question": "Wird meine Band sofort angelegt?", "answer": "Nein. Ein System-Admin prüft die Anfrage zuerst und kann Schreibfehler korrigieren. Erst die Freigabe erstellt Band und ersten Admin gemeinsam." },
       "link": { "question": "Was passiert, wenn ich den Statuslink verliere?", "answer": "Ohne E-Mail-Versand lässt sich der Link nicht automatisch wiederherstellen. Nach einer Freigabe kann ein System-Admin bei Bedarf einen neuen Einrichtungscode ausgeben." }
     },
-    "footer": "Verkauf, Bestand und Bandkasse in einem gemeinsamen Werkzeug."
+    "footer": "Verkauf, Bestand und Bandkasse in einem gemeinsamen Werkzeug.",
+    "legal": {
+      "label": "Rechtliches und Zugang",
+      "privacy": "Datenschutz",
+      "imprint": "Impressum"
+    }
   },
   "profile": {
     "eyebrow": "Konto",

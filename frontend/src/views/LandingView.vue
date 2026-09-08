@@ -40,6 +40,8 @@ const form = reactive({
 
 const features = ['mobile', 'payments', 'inventory', 'roles', 'backups', 'support'] as const
 const faqs = ['email', 'approval', 'link'] as const
+const privacyUrl = import.meta.env.VITE_PRIVACY_URL?.trim() ?? ''
+const imprintUrl = import.meta.env.VITE_IMPRINT_URL?.trim() ?? ''
 
 const appTarget = computed(() => {
   if (!session.isAuthenticated) return { name: 'login' }
@@ -613,10 +615,10 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
       <section class="landing-section faq-section">
         <div class="landing-heading"><p class="landing-kicker">FAQ</p><h2>{{ t('landing.faq.title') }}</h2></div>
         <div class="faq-list">
-          <details v-for="faq in faqs" :key="faq">
-            <summary>{{ t(`landing.faq.${faq}.question`) }}</summary>
+          <article v-for="faq in faqs" :key="faq">
+            <h3>{{ t(`landing.faq.${faq}.question`) }}</h3>
             <p>{{ t(`landing.faq.${faq}.answer`) }}</p>
-          </details>
+          </article>
         </div>
       </section>
     </main>
@@ -624,7 +626,11 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
     <footer class="landing-footer">
       <a class="landing-brand" href="#top"><span class="brand-mark">M</span><span>Merch Manager</span></a>
       <p>{{ t('landing.footer') }}</p>
-      <RouterLink :to="{ name: 'login' }">{{ t('landing.nav.login') }} →</RouterLink>
+      <nav class="landing-footer-links" :aria-label="t('landing.legal.label')">
+        <a v-if="privacyUrl" :href="privacyUrl">{{ t('landing.legal.privacy') }}</a>
+        <a v-if="imprintUrl" :href="imprintUrl">{{ t('landing.legal.imprint') }}</a>
+        <RouterLink :to="{ name: 'login' }">{{ t('landing.nav.login') }} →</RouterLink>
+      </nav>
     </footer>
   </div>
 </template>
@@ -1499,8 +1505,58 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 .status-details,.credential-panel dl { width:100%;margin:25px 0 0;display:grid;gap:0;border-top:1px solid rgba(255,255,255,.09); }.status-details > div,.credential-panel dl > div { padding:11px 0;display:grid;grid-template-columns:minmax(110px,.7fr) 1fr;gap:15px;border-bottom:1px solid rgba(255,255,255,.07); }.status-details dt,.credential-panel dt { color:#8f8496;font-size:.72rem;font-weight:700; }.status-details dd,.credential-panel dd { margin:0;overflow-wrap:anywhere;font-size:.86rem; }.credential-panel code,.status-details code { color:#f09afe; }.credential-panel .setup-code dd code { display:inline-block;padding:8px 10px;border-radius:7px;color:#190820;background:#f1a0fc;font-size:1.05rem;font-weight:900;letter-spacing:.06em; }
 .decision-note { width:100%;margin-top:18px!important;padding:13px;border-left:2px solid #f3b35a;background:rgba(243,179,90,.07); }.resume-link { width:100%;margin-top:19px;display:grid;grid-template-columns:1fr auto;gap:9px;align-items:end; }.resume-link .landing-button { min-height:42px; }.registration-loading { min-height:350px;display:grid;place-items:center;color:#a99daf; }
 
-.faq-section { display:grid;grid-template-columns:.7fr 1.3fr;gap:60px; }.faq-list { border-top:1px solid rgba(255,255,255,.11); }.faq-list details { border-bottom:1px solid rgba(255,255,255,.11); }.faq-list summary { padding:20px 35px 20px 0;position:relative;cursor:pointer;font-weight:750;list-style:none; }.faq-list summary::after { position:absolute;right:4px;content:'+';color:#e88df7;font-size:1.2rem; }.faq-list details[open] summary::after { content:'−'; }.faq-list p { margin:0;padding:0 35px 20px 0;color:#a99daf;line-height:1.6; }
-.landing-footer { padding:35px 0 48px;display:flex;align-items:center;gap:25px;border-top:1px solid rgba(255,255,255,.1);color:#8e8396;font-size:.78rem; }.landing-footer p { margin:auto; }.landing-footer > a:last-child { color:#e996f7;font-weight:750; }
+.faq-section { display:grid;grid-template-columns:.7fr 1.3fr;gap:60px; }.faq-list { border-top:1px solid var(--landing-line); }.faq-list article { padding:20px 0;border-bottom:1px solid var(--landing-line); }.faq-list h3 { margin:0 0 8px;font-size:1rem; }.faq-list p { max-width:68ch;margin:0;color:#a99daf;line-height:1.6; }
+.landing-footer { padding:35px 0 48px;display:flex;align-items:center;gap:25px;border-top:1px solid rgba(255,255,255,.1);color:#8e8396;font-size:.78rem; }.landing-footer p { margin:auto; }.landing-footer-links { display:flex;flex-wrap:wrap;justify-content:flex-end;gap:12px; }.landing-footer-links a { color:#e996f7;font-weight:750; }
+
+/* Product proof, not ambient effects: the public surface shares the same
+   graphite foundation as the application and spends the accent deliberately. */
+.landing-page {
+  --landing-bg: #101114;
+  --landing-panel: #181a1f;
+  --landing-line: #3b3f48;
+  color: #f4f4f6;
+  background: var(--landing-bg);
+}
+.landing-page::before,
+.showcase-glow { display: none; }
+.landing-header {
+  border-color: var(--landing-line);
+  border-radius: 12px;
+  background: color-mix(in srgb, #181a1f 96%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+  backdrop-filter: blur(10px);
+}
+.landing-nav a { color: #b8bbc4; }
+.landing-nav a:hover { color: #f4f4f6; background: #20232a; }
+.landing-locale { border-color: var(--landing-line); background: #101114; }
+.landing-locale button { color: #a3a7b1; }
+.landing-locale button.active { color: #101114; background: #d56cdb; }
+.landing-kicker { color: #e58bea; }
+.landing-button { border-radius: 9px; }
+.landing-button:hover:not(:disabled) { transform: translateY(-1px); }
+.landing-button-primary { color: #101114; background: #d56cdb; box-shadow: none; }
+.landing-button-ghost { color: #f4f4f6; border-color: var(--landing-line); background: #181a1f; }
+.landing-button:focus-visible,
+.landing-page button:focus-visible,
+.landing-page a:focus-visible,
+.landing-page input:focus-visible { outline-color: color-mix(in srgb, #d56cdb 55%, transparent); }
+.app-showcase { perspective: none; }
+.hero-window { transform: none; }
+.demo-window { border-color: var(--landing-line); border-radius: 12px; background: #181a1f; box-shadow: 0 18px 46px rgba(0,0,0,.28); }
+.hero-app-grid > div { border-color: #31343c; background: #131519; }
+.feature-card { border-color: var(--landing-line); border-radius: 12px; background: var(--landing-panel); }
+.feature-card:hover { border-color: #626773; }
+.feature-icon { border-color: #55405c; color: #e58bea; background: #241c27; }
+.workflow-grid li { border-top-color: var(--landing-line); background: transparent; }
+.registration-note { border-left-color: #d56cdb; background: #181a1f; }
+.registration-card { border-color: var(--landing-line); border-radius: 12px; background: var(--landing-panel); box-shadow: none; }
+.registration-form input,
+.resume-link input,
+.slug-field { border-color: var(--landing-line); background: #101114; }
+.registration-form input:focus,
+.resume-link input:focus { border-color: #d56cdb; box-shadow: 0 0 0 3px rgba(213,108,219,.13); }
+.landing-footer { border-top-color: var(--landing-line); }
+.landing-footer-links a { color: #e58bea; }
 
 .app-showcase:not(.is-visible) *, .demo-animated:not(.is-visible) *, .animations-paused * { animation-play-state: paused!important; }
 @media (prefers-reduced-motion: reduce) { .landing-page * { scroll-behavior:auto!important; animation:none!important; transition:none!important; }.app-showcase,.story-row,.feature-card,.workflow-grid li { opacity:1;transform:none; } }

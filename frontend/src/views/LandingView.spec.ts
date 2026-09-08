@@ -49,6 +49,9 @@ describe('LandingView registration', () => {
 
     expect(wrapper.get('.landing-page').attributes('id')).toBe('top')
     expect(wrapper.get('main').attributes()).toMatchObject({ id: 'main-content', tabindex: '-1' })
+    expect(wrapper.findAll('.faq-list article')).toHaveLength(3)
+    expect(wrapper.find('.faq-list details').exists()).toBe(false)
+    expect(wrapper.find('.landing-footer-links').exists()).toBe(true)
   })
 
   it('stores the secret status token and renders a pending request', async () => {
