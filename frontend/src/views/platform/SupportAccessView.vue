@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { platformApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { BandSummary, SupportGrant } from '@/api/types'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -257,7 +258,7 @@ function statusClass(status: string): string {
     </section>
 
     <!-- Activation needs a fresh code, not just the earlier approval. -->
-    <dialog v-if="activating" class="confirmation-dialog" open>
+    <AppDialog v-if="activating" :label="t('platform.support.startTitle')" :dismissible="!busy" @close="activating = null">
       <form class="stack-form" @submit.prevent="activate">
         <div>
           <p class="eyebrow">{{ t('platform.support.startEyebrow') }}</p>
@@ -277,7 +278,7 @@ function statusClass(status: string): string {
           </button>
         </div>
       </form>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 

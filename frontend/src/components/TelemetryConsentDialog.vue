@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { profileApi } from '@/api/endpoints'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -31,14 +32,12 @@ async function save() {
 </script>
 
 <template>
-  <div v-if="visible" class="telemetry-backdrop" role="presentation">
-    <section
-      class="telemetry-dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="telemetry-title"
-      aria-describedby="telemetry-description"
-    >
+  <AppDialog
+    v-if="visible"
+    class="telemetry-dialog"
+    :label="t('telemetryConsent.title')"
+    :dismissible="false"
+  >
       <p class="eyebrow">{{ t('telemetryConsent.eyebrow') }}</p>
       <h2 id="telemetry-title">{{ t('telemetryConsent.title') }}</h2>
       <p id="telemetry-description">{{ t('telemetryConsent.intro') }}</p>
@@ -76,24 +75,12 @@ async function save() {
         {{ t('telemetryConsent.save') }}
       </button>
       <small class="muted">{{ t('telemetryConsent.later') }}</small>
-    </section>
-  </div>
+  </AppDialog>
 </template>
 
 <style scoped>
-.telemetry-backdrop {
-  position: fixed;
-  z-index: 10000;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 18px;
-  background: rgb(var(--shadow-color) / .72);
-  backdrop-filter: blur(8px);
-}
-
 .telemetry-dialog {
-  width: min(640px, 100%);
+  width: min(640px, calc(100vw - 36px));
   max-height: calc(100vh - 36px);
   overflow: auto;
   padding: clamp(22px, 4vw, 36px);
@@ -101,6 +88,11 @@ async function save() {
   border-radius: var(--radius-overlay);
   background: var(--surface-raised);
   box-shadow: var(--shadow-overlay);
+}
+
+.telemetry-dialog::backdrop {
+  background: rgb(var(--shadow-color) / .72);
+  backdrop-filter: blur(8px);
 }
 
 .telemetry-dialog h2 {

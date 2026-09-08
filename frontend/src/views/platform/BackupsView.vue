@@ -5,6 +5,9 @@ import { useI18n } from 'vue-i18n'
 import { platformApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { BackupRun, BandSummary } from '@/api/types'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -21,6 +24,7 @@ const session = useSessionStore()
 const runs = ref<BackupRun[]>([])
 const bands = ref<BandSummary[]>([])
 const loading = ref(true)
+const loadFailed = ref(false)
 const running = ref(false)
 const selectedBandId = ref(0)
 
@@ -84,9 +88,11 @@ async function prune() {
 
 async function load() {
   loading.value = true
+  loadFailed.value = false
   try {
     runs.value = (await platformApi.backups()).runs
   } catch {
+    loadFailed.value = true
     flash.error(t('errors.generic'))
   } finally {
     loading.value = false
@@ -167,8 +173,11 @@ function formatBytes(bytes: number): string {
           {{ t('platform.backups.prune') }}
         </button>
       </div>
-      <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
-      <p v-else-if="!runs.length" class="muted">{{ t('platform.backups.empty') }}</p>
+      <TableSkeleton v-if="loading" :label="t('common.loading')" :columns="canRun ? 6 : 5" />
+      <EmptyState v-else-if="loadFailed" tone="error" :title="t('errors.generic')">
+        <button class="secondary-button" type="button" @click="load">{{ t('common.retry') }}</button>
+      </EmptyState>
+      <EmptyState v-else-if="!runs.length" :title="t('platform.backups.empty')" />
       <div v-else class="table-scroll">
         <table>
           <thead>
@@ -215,7 +224,7 @@ function formatBytes(bytes: number): string {
       </div>
     </section>
 
-    <dialog v-if="restoring" class="confirmation-dialog" open>
+    <AppDialog v-if="restoring" :label="t('platform.backups.restoreTitle')" :dismissible="!busy" @close="restoring = null">
       <div class="stack-form">
         <div>
           <p class="eyebrow">{{ bandName(restoring.band_id) }}</p>
@@ -236,7 +245,7 @@ function formatBytes(bytes: number): string {
           </button>
         </div>
       </div>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 

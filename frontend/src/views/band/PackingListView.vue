@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 
 import type { PackingBag, PackingItem, PackingStatus } from '@/api/types'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import { useFlashStore } from '@/stores/flash'
 import { usePackingStore } from '@/stores/packing'
 import { useSessionStore } from '@/stores/session'
@@ -371,7 +372,7 @@ function dropItem(bag: PackingBag, targetId: string) {
       </article>
     </section>
 
-    <dialog v-if="editor" class="confirmation-dialog" open>
+    <AppDialog v-if="editor" :label="t(`packing.editor.${editor.kind}`)" @close="editor = null">
       <form class="stack-form" @submit.prevent="saveEditor">
         <h2>{{ t(`packing.editor.${editor.kind}`) }}</h2>
         <label>
@@ -383,9 +384,13 @@ function dropItem(bag: PackingBag, targetId: string) {
           <button class="primary-button" type="submit">{{ t('common.save') }}</button>
         </div>
       </form>
-    </dialog>
+    </AppDialog>
 
-    <dialog v-if="confirming" class="confirmation-dialog" open>
+    <AppDialog
+      v-if="confirming"
+      :label="confirming.type === 'reset' ? t('packing.resetTitle') : confirming.type === 'conflict' ? t('packing.discardTitle') : t('packing.deleteTitle')"
+      @close="confirming = null"
+    >
       <form class="stack-form" @submit.prevent="confirmAction">
         <h2>{{ confirming.type === 'reset' ? t('packing.resetTitle') : confirming.type === 'conflict' ? t('packing.discardTitle') : t('packing.deleteTitle') }}</h2>
         <p>{{ confirming.type === 'reset' ? t('packing.resetConfirm') : confirming.type === 'conflict' ? t('packing.discardConfirm') : t('packing.deleteConfirm', { name: confirming.name }) }}</p>
@@ -394,7 +399,7 @@ function dropItem(bag: PackingBag, targetId: string) {
           <button class="danger-button" type="submit">{{ confirming.type === 'reset' ? t('packing.reset') : confirming.type === 'conflict' ? t('packing.discard') : t('common.delete') }}</button>
         </div>
       </form>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 

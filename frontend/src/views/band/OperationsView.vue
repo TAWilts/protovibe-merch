@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { operationsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { DeliveryStatus, Position, Queues } from '@/api/types'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import { parseAmount, useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 
@@ -382,7 +383,7 @@ async function saveShippingCost() {
       </section>
     </template>
 
-    <dialog v-if="shippingEdit" class="confirmation-dialog" open>
+    <AppDialog v-if="shippingEdit" :label="t('operations.editShipping')" @close="shippingEdit = null">
       <form class="stack-form" @submit.prevent="saveShippingCost">
         <div>
           <p class="eyebrow">{{ shippingEdit.shipment.receiptId }}</p>
@@ -400,7 +401,7 @@ async function saveShippingCost() {
           <button class="primary-button" type="submit">{{ t('operations.saveShipping') }}</button>
         </div>
       </form>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 

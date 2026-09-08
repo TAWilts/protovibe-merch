@@ -5,6 +5,9 @@ import { useI18n } from 'vue-i18n'
 import { catalogueApi, importApi, photosApi, type ImportKind } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { Article, ImportPreview, Photo } from '@/api/types'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
@@ -24,6 +27,7 @@ const session = useSessionStore()
 
 const articles = ref<Article[]>([])
 const loading = ref(true)
+const loadFailed = ref(false)
 const busy = ref(false)
 const selectedId = ref<number | null>(null)
 
@@ -69,6 +73,7 @@ onMounted(load)
  */
 async function load(silent = false) {
   if (!silent) loading.value = true
+  if (!silent) loadFailed.value = false
   try {
     articles.value = (await catalogueApi.list()).articles
     if (silent) return
@@ -78,6 +83,7 @@ async function load(silent = false) {
       select(selectedId.value)
     }
   } catch {
+    if (!silent) loadFailed.value = true
     flash.error(t('errors.generic'))
   } finally {
     if (!silent) loading.value = false
@@ -414,8 +420,11 @@ async function applyMinimumToAll() {
       </form>
     </div>
 
-    <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
-    <p v-else-if="!articles.length" class="muted">{{ t('articles.empty') }}</p>
+    <TableSkeleton v-if="loading" :label="t('common.loading')" :rows="4" :columns="3" />
+    <EmptyState v-else-if="loadFailed" tone="error" :title="t('errors.generic')">
+      <button class="secondary-button" type="button" @click="load()">{{ t('common.retry') }}</button>
+    </EmptyState>
+    <EmptyState v-else-if="!articles.length" :title="t('articles.empty')" />
 
     <section v-else class="article-layout">
       <aside class="selection-panel">
@@ -652,7 +661,7 @@ async function applyMinimumToAll() {
       @change="onPhotoChosen"
     />
 
-    <dialog v-if="photosFor" class="confirmation-dialog" open>
+    <AppDialog v-if="photosFor" :label="t('articles.photos.title')" :dismissible="!photoUploading" @close="photosFor = null">
       <div class="stack-form">
         <div>
           <p class="eyebrow">{{ photosFor.label || '—' }}</p>
@@ -681,7 +690,7 @@ async function applyMinimumToAll() {
           </button>
         </div>
       </div>
-    </dialog>
+    </AppDialog>
 
     <section v-if="session.featureFlags?.csv_import !== false" class="table-section transaction-import-panel">
       <div class="section-heading">

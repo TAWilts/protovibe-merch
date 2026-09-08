@@ -4,12 +4,13 @@ import { useI18n } from 'vue-i18n'
 
 import { supportApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import { useFlashStore } from '@/stores/flash'
 
 const { t } = useI18n()
 const flash = useFlashStore()
 
-const dialog = ref<HTMLDialogElement | null>(null)
+const visible = ref(false)
 const messageType = ref<'issue' | 'question'>('issue')
 const senderEmail = ref('')
 const subject = ref('')
@@ -17,11 +18,11 @@ const body = ref('')
 const sending = ref(false)
 
 function open() {
-  dialog.value?.showModal()
+  visible.value = true
 }
 
 function close() {
-  if (!sending.value) dialog.value?.close()
+  if (!sending.value) visible.value = false
 }
 
 async function send() {
@@ -37,7 +38,7 @@ async function send() {
     flash.success(t('supportMessage.sent'))
     subject.value = ''
     body.value = ''
-    dialog.value?.close()
+    visible.value = false
   } catch (error) {
     flash.error(
       error instanceof ApiError
@@ -61,7 +62,13 @@ async function send() {
     <span aria-hidden="true">✉</span>
   </button>
 
-  <dialog ref="dialog" class="confirmation-dialog support-message-dialog" @cancel.prevent="close">
+  <AppDialog
+    v-if="visible"
+    class="support-message-dialog"
+    :label="t('supportMessage.title')"
+    :dismissible="!sending"
+    @close="close"
+  >
     <form class="stack-form" @submit.prevent="send">
       <div>
         <p class="eyebrow">{{ t('supportMessage.eyebrow') }}</p>
@@ -98,7 +105,7 @@ async function send() {
         </button>
       </div>
     </form>
-  </dialog>
+  </AppDialog>
 </template>
 
 <style scoped>

@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { platformApi, profileApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { PlatformUser, Role } from '@/api/types'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -169,16 +170,16 @@ function resetMfa(user: PlatformUser) {
       </div>
     </section>
 
-    <dialog v-if="issuedCode" class="confirmation-dialog" open>
+    <AppDialog v-if="issuedCode" :label="t('administration.users.codeFor', { user: issuedCode.username })" @close="issuedCode = null">
       <div class="stack-form">
         <h2>{{ t('administration.users.codeFor', { user: issuedCode.username }) }}</h2>
         <p>{{ t('administration.users.codeHint') }}</p>
         <code class="setup-code">{{ issuedCode.code }}</code>
         <button class="primary-button" type="button" @click="issuedCode = null">{{ t('common.close') }}</button>
       </div>
-    </dialog>
+    </AppDialog>
 
-    <dialog v-if="reauth" class="confirmation-dialog" open>
+    <AppDialog v-if="reauth" :label="t('administration.users.confirmTitle')" :dismissible="!busy" @close="reauth = null">
       <form class="stack-form" @submit.prevent="confirmReauth">
         <h2>{{ t('administration.users.confirmTitle') }}</h2>
         <p>{{ t('administration.users.confirmIntro') }}</p>
@@ -187,7 +188,7 @@ function resetMfa(user: PlatformUser) {
         <button class="primary-button" type="submit" :disabled="busy">{{ t('common.confirm') }}</button>
         <button class="secondary-button" type="button" @click="reauth = null">{{ t('common.cancel') }}</button>
       </form>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 

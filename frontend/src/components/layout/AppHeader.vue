@@ -9,6 +9,7 @@ import { useSessionStore } from '@/stores/session'
 import { usePackingStore } from '@/stores/packing'
 import { ApiError } from '@/api/client'
 import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
 
 /**
  * The sticky application header, ported from _old/templates/base.html.
@@ -195,7 +196,7 @@ async function leavePOSMode() {
     </div>
   </header>
 
-  <dialog v-if="posExitPrompt" class="confirmation-dialog" open>
+  <AppDialog v-if="posExitPrompt" :label="t('posExit.title')" :dismissible="!posBusy" @close="posExitPrompt = null">
     <form @submit.prevent="leavePOSMode">
       <p class="eyebrow">{{ t('posExit.eyebrow') }}</p>
       <h2>{{ t('posExit.title') }}</h2>
@@ -228,7 +229,7 @@ async function leavePOSMode() {
         </button>
       </div>
     </form>
-  </dialog>
+  </AppDialog>
 </template>
 
 <style scoped>

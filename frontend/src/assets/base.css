@@ -332,22 +332,10 @@ input[type="number"] { font-variant-numeric: tabular-nums; }
 .danger-button:disabled { opacity: .5; cursor: not-allowed; }
 .confirmation-dialog { width: min(500px, calc(100vw - 28px)); border: 1px solid var(--border-strong); border-radius: var(--radius-overlay); padding: 25px; color: var(--text-primary); background: var(--surface-raised); box-shadow: var(--shadow-overlay); }
 .confirmation-dialog::backdrop { background: rgb(var(--shadow-color) / .64); backdrop-filter: blur(3px); }
-/*
- * The dialogs are rendered with the `open` attribute rather than opened with
- * showModal(), so the browser lays them out in the page instead of the top
- * layer — and ::backdrop above never applies. On a tablet that means a dialog
- * can open below the fold, out of sight of the person it is asking. Pinning it
- * to the middle of the viewport and painting the scrim with a spread shadow
- * gives the markup the modal behaviour it already implies.
- */
 dialog[open] {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
   margin: auto;
   max-height: calc(100dvh - 32px);
   overflow-y: auto;
-  box-shadow: var(--shadow-overlay), 0 0 0 100vmax rgb(var(--shadow-color) / .64);
 }
 .confirmation-dialog h2 { margin: 0 0 9px; }
 .confirmation-dialog p { color: var(--muted); line-height: 1.48; }
@@ -358,6 +346,55 @@ dialog[open] {
 .purchase-edit-dialog > label { margin-top: 12px; }
 .purchase-edit-dialog > .file-dropzone { margin-top: 12px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+.app-empty-state {
+  display: flex;
+  min-height: 150px;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 28px;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-panel);
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  text-align: center;
+}
+.app-empty-state.is-compact { min-height: 0; justify-content: flex-start; padding: 16px; text-align: left; }
+.app-empty-state.is-error { border-color: var(--danger-border); background: var(--danger-soft); }
+.app-empty-state-icon { color: var(--text-tertiary); font-size: 1.35rem; }
+.app-empty-state-copy { display: grid; gap: 5px; }
+.app-empty-state-copy strong { color: var(--text-primary); font-size: .95rem; }
+.app-empty-state-copy p { max-width: 58ch; margin: 0; color: var(--text-secondary); line-height: 1.5; }
+.app-empty-state-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.app-empty-state.is-compact .app-empty-state-actions { margin-left: auto; }
+
+.skeleton-block {
+  display: block;
+  min-width: 28px;
+  border-radius: var(--radius-small);
+  background: linear-gradient(90deg, var(--surface-subtle) 20%, var(--surface-hover) 50%, var(--surface-subtle) 80%);
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+.table-skeleton { display: grid; gap: 0; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
+.table-skeleton-head,
+.table-skeleton-row { display: grid; grid-template-columns: repeat(var(--skeleton-columns), minmax(70px, 1fr)); gap: 18px; padding: 12px 14px; }
+.table-skeleton-head { background: var(--surface-inset); }
+.table-skeleton-row { border-top: 1px solid var(--border-subtle); }
+.table-skeleton-head .skeleton-block { width: 62%; height: .68rem; }
+.table-skeleton-row .skeleton-block { width: 78%; height: .82rem; }
+.table-skeleton-row:nth-child(3n) .skeleton-block:nth-child(even),
+.table-skeleton-row:nth-child(3n + 1) .skeleton-block:nth-child(odd) { width: 54%; }
+
+@keyframes skeleton-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block { animation: none; background: var(--surface-subtle); }
+}
 .payment-qr-dialog { width: min(440px, calc(100vw - 28px)); text-align: center; }
 .payment-qr-dialog .eyebrow { margin: 0 0 4px; color: var(--accent-bright); }
 .payment-qr-dialog > div > p { margin-right: auto; margin-left: auto; }

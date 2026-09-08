@@ -13,6 +13,8 @@ import type {
   SupportGrant,
   SupportMessage,
 } from '@/api/types'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -21,6 +23,7 @@ const flash = useFlashStore()
 const session = useSessionStore()
 
 const loading = ref(true)
+const failedSources = ref(0)
 const bands = ref<BandSummary[]>([])
 const registrations = ref<BandRegistrationRequest[]>([])
 const grants = ref<SupportGrant[]>([])
@@ -64,6 +67,7 @@ onMounted(load)
 
 async function load() {
   loading.value = true
+  failedSources.value = 0
   let failed = 0
   const safe = async (job: () => Promise<void>) => {
     try { await job() } catch { failed++ }
@@ -85,6 +89,7 @@ async function load() {
   }
 
   await Promise.all(jobs)
+  failedSources.value = failed
   loading.value = false
   if (failed) flash.error(`Dashboard: ${failed} Datenquelle${failed === 1 ? '' : 'n'} konnte${failed === 1 ? '' : 'n'} nicht geladen werden.`)
 }
@@ -128,9 +133,26 @@ function scopeLabel(scope: SupportGrant['scope']) {
       </button>
     </div>
 
-    <p v-if="loading" class="muted">Dashboard wird geladen …</p>
+    <div v-if="loading" class="dashboard-skeleton" role="status" aria-live="polite">
+      <span class="visually-hidden">Dashboard wird geladen …</span>
+      <div class="dashboard-skeleton-metrics" aria-hidden="true">
+        <SkeletonBlock v-for="item in 6" :key="item" height="94px" />
+      </div>
+      <div class="dashboard-skeleton-cards" aria-hidden="true">
+        <SkeletonBlock v-for="item in 4" :key="item" height="245px" />
+      </div>
+    </div>
 
     <template v-else>
+      <EmptyState
+        v-if="failedSources"
+        compact
+        tone="error"
+        :title="`${failedSources} Datenquelle${failedSources === 1 ? '' : 'n'} konnte${failedSources === 1 ? '' : 'n'} nicht geladen werden.`"
+      >
+        <button class="secondary-button" type="button" @click="load">Erneut versuchen</button>
+      </EmptyState>
+
       <section v-if="settings?.maintenance_enabled || announcementActive" class="dashboard-alerts">
         <article v-if="settings?.maintenance_enabled" class="dashboard-alert critical">
           <div><strong>Wartungsmodus aktiv</strong><p>{{ settings.maintenance_message || 'Keine Wartungsmeldung hinterlegt.' }}</p></div>
@@ -251,6 +273,9 @@ function scopeLabel(scope: SupportGrant['scope']) {
 
 <style scoped>
 .dashboard-page { display: grid; gap: 18px; }
+.dashboard-skeleton { display: grid; gap: 16px; }
+.dashboard-skeleton-metrics { display: grid; grid-template-columns: repeat(6, minmax(130px, 1fr)); gap: 12px; }
+.dashboard-skeleton-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .dashboard-intro { max-width: 760px; margin: 6px 0 0; color: var(--muted); }
 .dashboard-alerts { display: grid; gap: 10px; }
 .dashboard-alert { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--warning); border-radius: var(--radius); background: color-mix(in srgb, var(--warning) 10%, var(--panel)); }
@@ -287,7 +312,7 @@ function scopeLabel(scope: SupportGrant['scope']) {
 .status-pill { flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; color: var(--muted); background: var(--option-bg); font-size: .74rem; font-weight: 700; }
 .status-pill.active { color: var(--success); }.status-pill.pending, .status-pill.approved { color: var(--warning); }
 .text-link { display: inline-block; margin-top: 13px; color: var(--accent-bright); text-decoration: none; font-weight: 650; }
-@media (max-width: 1200px) { .dashboard-metrics { grid-template-columns: repeat(3, minmax(140px, 1fr)); } }
-@media (max-width: 800px) { .dashboard-grid { grid-template-columns: 1fr; }.dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 520px) { .dashboard-metrics { grid-template-columns: 1fr; }.dashboard-alert, .dashboard-card-head, .status-list > div { align-items: flex-start; flex-direction: column; }.status-list dd { text-align: left; } }
+@media (max-width: 1200px) { .dashboard-metrics, .dashboard-skeleton-metrics { grid-template-columns: repeat(3, minmax(140px, 1fr)); } }
+@media (max-width: 800px) { .dashboard-grid, .dashboard-skeleton-cards { grid-template-columns: 1fr; }.dashboard-metrics, .dashboard-skeleton-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .dashboard-metrics, .dashboard-skeleton-metrics { grid-template-columns: 1fr; }.dashboard-alert, .dashboard-card-head, .status-list > div { align-items: flex-start; flex-direction: column; }.status-list dd { text-align: left; } }
 </style>

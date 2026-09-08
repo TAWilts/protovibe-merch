@@ -5,6 +5,9 @@ import { useI18n } from 'vue-i18n'
 import { platformApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { BandSummary } from '@/api/types'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -22,6 +25,7 @@ const session = useSessionStore()
 
 const bands = ref<BandSummary[]>([])
 const loading = ref(true)
+const loadFailed = ref(false)
 const includeDeleted = ref(false)
 const filter = ref('')
 
@@ -58,11 +62,13 @@ onMounted(load)
 
 async function load() {
   loading.value = true
+  loadFailed.value = false
   try {
     const payload = await platformApi.bands(includeDeleted.value)
     bands.value = payload.bands
     globalQuotaGb.value = bytesToGiBInput(payload.default_storage_quota_bytes)
   } catch {
+    loadFailed.value = true
     flash.error(t('errors.generic'))
   } finally {
     loading.value = false
@@ -296,8 +302,12 @@ function formatDate(value: string | null): string {
     </section>
 
     <section class="table-section">
-      <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
-      <p v-else-if="!visible.length" class="muted">{{ t('platform.bands.empty') }}</p>
+      <TableSkeleton v-if="loading" :label="t('common.loading')" :columns="canManage ? 9 : 8" />
+      <EmptyState v-else-if="loadFailed" tone="error" :title="t('errors.generic')">
+        <button class="secondary-button" type="button" @click="load">{{ t('common.retry') }}</button>
+      </EmptyState>
+      <p v-else-if="bands.length && !visible.length" class="muted">{{ t('platform.bands.empty') }}</p>
+      <EmptyState v-else-if="!visible.length" :title="t('platform.bands.empty')" />
 
       <div v-else class="table-scroll">
         <table>
@@ -396,7 +406,7 @@ function formatDate(value: string | null): string {
       <p v-if="canManage" class="muted">{{ t('platform.bands.deleteHint') }}</p>
     </section>
 
-    <dialog v-if="quotaPrompt" class="confirmation-dialog" open>
+    <AppDialog v-if="quotaPrompt" :label="t('platform.bands.quotaEditTitle')" :dismissible="!quotaBusy" @close="quotaPrompt = null">
       <form class="stack-form" @submit.prevent="saveBandQuota">
         <div>
           <p class="eyebrow">{{ quotaPrompt.band.name }}</p>
@@ -418,9 +428,9 @@ function formatDate(value: string | null): string {
           <button class="primary-button" type="submit" :disabled="quotaBusy">{{ t('common.save') }}</button>
         </div>
       </form>
-    </dialog>
+    </AppDialog>
 
-    <dialog v-if="adminPrompt" class="confirmation-dialog" open>
+    <AppDialog v-if="adminPrompt" :label="t('platform.bands.addAdmin')" :dismissible="!busy" @close="adminPrompt = null">
       <form class="stack-form" @submit.prevent="createBandAdmin">
         <div>
           <p class="eyebrow">{{ adminPrompt.band.name }}</p>
@@ -438,9 +448,9 @@ function formatDate(value: string | null): string {
           <button class="primary-button" type="submit" :disabled="busy">{{ t('common.confirm') }}</button>
         </div>
       </form>
-    </dialog>
+    </AppDialog>
 
-    <dialog v-if="issuedCode" class="confirmation-dialog" open>
+    <AppDialog v-if="issuedCode" :label="t('platform.bands.adminCreated', { user: issuedCode.username })" @close="issuedCode = null">
       <div class="stack-form">
         <div>
           <p class="eyebrow">{{ issuedCode.band }}</p>
@@ -470,7 +480,7 @@ function formatDate(value: string | null): string {
           </button>
         </div>
       </div>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 

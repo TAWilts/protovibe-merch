@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { bandAdminApi, bandUsersApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { BandUser, PaymentQRSettings, Role, SupportGrant } from '@/api/types'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -463,7 +464,7 @@ function durationLabel(seconds: number): string {
       <p class="muted">{{ t('administration.users.deleteHint') }}</p>
     </section>
 
-    <dialog v-if="reauthPrompt" class="confirmation-dialog" open>
+    <AppDialog v-if="reauthPrompt" :label="t('administration.users.confirmTitle')" :dismissible="!busy" @close="reauthPrompt = null">
       <form class="stack-form" @submit.prevent="confirmReauth">
         <div>
           <p class="eyebrow">{{ t('administration.users.confirmEyebrow') }}</p>
@@ -485,9 +486,9 @@ function durationLabel(seconds: number): string {
           <button class="primary-button" type="submit" :disabled="busy">{{ t('common.confirm') }}</button>
         </div>
       </form>
-    </dialog>
+    </AppDialog>
 
-    <dialog v-if="confirming" class="confirmation-dialog" open>
+    <AppDialog v-if="confirming" :label="t('administration.support.confirmTitle')" :dismissible="!busy" @close="confirming = null">
       <form class="stack-form" @submit.prevent="approve">
         <div>
           <p class="eyebrow">{{ t('administration.support.confirmEyebrow') }}</p>
@@ -515,7 +516,7 @@ function durationLabel(seconds: number): string {
           </button>
         </div>
       </form>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 

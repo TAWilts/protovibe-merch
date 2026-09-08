@@ -29,6 +29,7 @@
   "common": {
     "skipToContent": "Zum Hauptinhalt springen",
     "loading": "Wird geladen …",
+    "retry": "Erneut versuchen",
     "save": "Speichern",
     "cancel": "Abbrechen",
     "delete": "Löschen",

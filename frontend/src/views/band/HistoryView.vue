@@ -6,6 +6,9 @@ import { operationsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { Receipt } from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { datedFilename, downloadCsv } from '@/utils/csvDownload'
@@ -24,6 +27,7 @@ const flash = useFlashStore()
 
 const receipts = ref<Receipt[]>([])
 const loading = ref(true)
+const loadFailed = ref(false)
 const filter = ref('')
 const dateFrom = ref('')
 const dateTo = ref('')
@@ -86,10 +90,13 @@ function exportVisible() {
   )
 }
 
-async function load() {  loading.value = true
+async function load() {
+  loading.value = true
+  loadFailed.value = false
   try {
     receipts.value = (await operationsApi.history()).receipts
   } catch {
+    loadFailed.value = true
     flash.error(t('errors.generic'))
   } finally {
     loading.value = false
@@ -162,8 +169,12 @@ async function confirmCancel() {
     </div>
 
     <section class="table-section">
-      <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
-      <p v-else-if="!visible.length" class="muted">{{ t('history.empty') }}</p>
+      <TableSkeleton v-if="loading" :label="t('common.loading')" :columns="7" />
+      <EmptyState v-else-if="loadFailed" tone="error" :title="t('errors.generic')">
+        <button class="secondary-button" type="button" @click="load">{{ t('common.retry') }}</button>
+      </EmptyState>
+      <p v-else-if="receipts.length && !visible.length" class="muted">{{ t('history.empty') }}</p>
+      <EmptyState v-else-if="!visible.length" :title="t('history.empty')" />
 
       <div v-else class="table-scroll">
         <table>
@@ -290,7 +301,7 @@ async function confirmCancel() {
     </section>
 
     <!-- The three-second hold is the original's safeguard against a stray tap. -->
-    <dialog v-if="pendingCancel" class="confirmation-dialog" open>
+    <AppDialog v-if="pendingCancel" :label="t('history.cancelTitle')" @close="abortCancel">
       <div class="stack-form">
         <div>
           <p class="eyebrow">{{ t('history.cancelEyebrow') }}</p>
@@ -312,7 +323,7 @@ async function confirmCancel() {
           </button>
         </div>
       </div>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 

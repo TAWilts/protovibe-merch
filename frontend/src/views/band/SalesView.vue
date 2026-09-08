@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 
 import { catalogueApi, photosApi, salesApi, type BookSalePayload } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import type {
   Article,
   BasketLine,
@@ -1044,7 +1045,7 @@ function resetAfterSale() {
       </footer>
     </section>
 
-    <dialog v-if="discountDialogOpen" class="confirmation-dialog" open>
+    <AppDialog v-if="discountDialogOpen" :label="t('sales.discountConfirmTitle')" @close="discountDialogOpen = false">
       <div class="stack-form">
         <div>
           <p class="eyebrow">{{ t('sales.discountEyebrow') }}</p>
@@ -1060,9 +1061,9 @@ function resetAfterSale() {
           <button class="primary-button" type="button" @click="confirmDiscount">{{ t('sales.confirmDiscount') }}</button>
         </div>
       </div>
-    </dialog>
+    </AppDialog>
 
-    <dialog v-if="eventToDelete" class="confirmation-dialog" open>
+    <AppDialog v-if="eventToDelete" :label="t('sales.eventDeleteTitle')" :dismissible="!busy" @close="eventToDelete = null">
       <div class="stack-form">
         <div>
           <p class="eyebrow">{{ t('sales.eventDeleteEyebrow') }}</p>
@@ -1074,7 +1075,7 @@ function resetAfterSale() {
           <button class="danger-button" type="button" :disabled="busy" @click="deleteEvent">{{ t('common.delete') }}</button>
         </div>
       </div>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 

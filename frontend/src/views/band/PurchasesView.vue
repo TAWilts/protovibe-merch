@@ -6,6 +6,9 @@ import { attachmentsApi, catalogueApi, purchasesApi, salesApi } from '@/api/endp
 import { ApiError } from '@/api/client'
 import type { Article, Attachment, Purchase, Variant } from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
@@ -26,6 +29,7 @@ const session = useSessionStore()
 const articles = ref<Article[]>([])
 const purchases = ref<Purchase[]>([])
 const loading = ref(true)
+const purchasesLoadFailed = ref(false)
 const busy = ref(false)
 const filter = ref('')
 const dateFrom = ref('')
@@ -231,13 +235,18 @@ async function loadArticles() {
   }
 }
 
-async function loadPurchases() {
+async function loadPurchases(showLoading = false) {
+  if (showLoading) loading.value = true
+  purchasesLoadFailed.value = false
   try {
     const result = await purchasesApi.list()
     purchases.value = result.purchases
     purchaseEditingEnabled.value = result.editing_enabled
   } catch {
+    purchasesLoadFailed.value = true
     flash.error(t('errors.generic'))
+  } finally {
+    if (showLoading) loading.value = false
   }
 }
 
@@ -739,7 +748,12 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
         </div>
       </div>
 
-      <p v-if="!visibleReceipts.length" class="muted">{{ t('purchases.empty') }}</p>
+      <TableSkeleton v-if="loading" :label="t('common.loading')" :columns="5" />
+      <EmptyState v-else-if="purchasesLoadFailed" tone="error" :title="t('errors.generic')">
+        <button class="secondary-button" type="button" @click="loadPurchases(true)">{{ t('common.retry') }}</button>
+      </EmptyState>
+      <p v-else-if="purchases.length && !visibleReceipts.length" class="muted">{{ t('purchases.empty') }}</p>
+      <EmptyState v-else-if="!visibleReceipts.length" :title="t('purchases.empty')" />
       <div v-else class="purchase-receipt-list">
         <details
           v-for="receipt in visibleReceipts"
@@ -826,7 +840,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
       @change="onFileChosen"
     />
 
-    <dialog v-if="editingReceipt" class="confirmation-dialog" open>
+    <AppDialog v-if="editingReceipt" :label="t('purchases.editTitle')" :dismissible="!busy" @close="editingReceipt = null">
       <div class="stack-form">
         <div>
           <p class="eyebrow"><code>{{ editingReceipt.receiptId }}</code></p>
@@ -855,9 +869,9 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
           <button class="primary-button" type="button" :disabled="busy" @click="saveReceiptEdit">{{ t('common.save') }}</button>
         </div>
       </div>
-    </dialog>
+    </AppDialog>
 
-    <dialog v-if="attachmentsFor" class="confirmation-dialog" open>
+    <AppDialog v-if="attachmentsFor" :label="t('purchases.invoiceAndAttachments')" @close="attachmentsFor = null">
       <div class="stack-form">
         <div>
           <p class="eyebrow"><code>{{ attachmentsFor.receipt_id }}</code></p>
@@ -890,7 +904,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
           </button>
         </div>
       </div>
-    </dialog>
+    </AppDialog>
   </main>
 </template>
 
