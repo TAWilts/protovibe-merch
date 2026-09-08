@@ -59,6 +59,7 @@ const (
 	ActionSaleCancelled       = "sale.cancelled"
 	ActionSaleStatus          = "sale.status_changed"
 	ActionSaleShippingChanged = "sale.shipping_changed"
+	ActionSaleEventRenamed    = "sale_event.renamed"
 	ActionSaleEventDeleted    = "sale_event.deleted"
 	ActionPurchaseCreated     = "purchase.created"
 	ActionPurchaseUpdated     = "purchase.updated"

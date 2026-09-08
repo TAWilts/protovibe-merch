@@ -3,12 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import SalesView from './SalesView.vue'
 
-const { assortment, book, createPaymentQrIntent, events, deleteEvent } = vi.hoisted(() => ({
+const { assortment, book, createPaymentQrIntent, events } = vi.hoisted(() => ({
   assortment: vi.fn(),
   book: vi.fn(),
   createPaymentQrIntent: vi.fn(),
   events: vi.fn(),
-  deleteEvent: vi.fn(),
 }))
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ name: 'sales' }) }))
@@ -43,7 +42,6 @@ vi.mock('@/api/endpoints', () => ({
     receiptPreview: vi.fn().mockResolvedValue({ receipt_id: 'V-1' }),
     paymentQrAvailability: vi.fn().mockResolvedValue({ paypal: false, bank: false }),
     createEvent: vi.fn(),
-    deleteEvent,
     createPaymentQrIntent,
     cancelPaymentQrIntent: vi.fn(),
     book,
@@ -70,7 +68,6 @@ describe('SalesView checkout', () => {
   beforeEach(() => {
     book.mockReset().mockResolvedValue({ receipt_id: 'V-1', sale_ids: [1] })
     createPaymentQrIntent.mockReset()
-    deleteEvent.mockReset().mockResolvedValue(undefined)
     events.mockReset().mockResolvedValue({ events: [], selected_event_id: 0 })
     assortment.mockReset().mockResolvedValue({
       payment_methods: ['Bar'],
@@ -312,7 +309,7 @@ describe('SalesView checkout', () => {
     expect(wrapper.text()).not.toContain('Keine Variante')
   })
 
-  it('deletes the selected event only after confirmation', async () => {
+  it('keeps event deletion out of the sales wizard', async () => {
     events.mockResolvedValueOnce({
       events: [{ id: 7, name: 'Sommerfest', last_selected_at: '2026-09-07' }],
       selected_event_id: 7,
@@ -323,12 +320,6 @@ describe('SalesView checkout', () => {
     await button(wrapper, 'sales.addToCart').trigger('click')
     await button(wrapper, 'sales.paymentDetails').trigger('click')
 
-    await wrapper.get('button[aria-label="sales.deleteEvent"]').trigger('click')
-    expect(wrapper.get('.confirmation-dialog').text()).toContain('sales.eventDeleteTitle')
-    await wrapper.get('.confirmation-dialog .danger-button').trigger('click')
-    await flushPromises()
-
-    expect(deleteEvent).toHaveBeenCalledWith(7)
     expect(wrapper.find('button[aria-label="sales.deleteEvent"]').exists()).toBe(false)
   })
 })

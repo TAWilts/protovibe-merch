@@ -2,9 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { bandAdminApi, bandUsersApi } from '@/api/endpoints'
+import { bandAdminApi, bandUsersApi, salesApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
-import type { BandUser, PaymentQRSettings, Role, SupportGrant } from '@/api/types'
+import type { BandUser, PaymentQRSettings, Role, SaleEvent, SupportGrant } from '@/api/types'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
@@ -19,6 +19,12 @@ import { useSessionStore } from '@/stores/session'
 const { t, d } = useI18n()
 const flash = useFlashStore()
 const session = useSessionStore()
+
+const isBandAdmin = computed(() => session.capabilities?.is_band_admin ?? false)
+const events = ref<SaleEvent[]>([])
+const eventEditor = ref<{ mode: 'create' | 'rename'; id?: number; name: string } | null>(null)
+const eventToDelete = ref<SaleEvent | null>(null)
+const eventBusy = ref(false)
 
 const grants = ref<SupportGrant[]>([])
 const loading = ref(true)
@@ -68,20 +74,76 @@ onMounted(load)
 async function load() {
   loading.value = true
   try {
-    const [grantList, userList] = await Promise.all([
-      bandAdminApi.grants(),
-      bandUsersApi.list(),
-    ])
-    grants.value = grantList.grants
-    users.value = userList.users
-    assignableRoles.value = userList.assignable_roles
-    paymentQr.value = session.featureFlags?.payment_qr === false
-      ? null
-      : await bandUsersApi.paymentQrSettings()
+    const eventList = await salesApi.events()
+    events.value = eventList.events
+    if (isBandAdmin.value) {
+      const [grantList, userList] = await Promise.all([
+        bandAdminApi.grants(),
+        bandUsersApi.list(),
+      ])
+      grants.value = grantList.grants
+      users.value = userList.users
+      assignableRoles.value = userList.assignable_roles
+      paymentQr.value = session.featureFlags?.payment_qr === false
+        ? null
+        : await bandUsersApi.paymentQrSettings()
+    }
   } catch {
     flash.error(t('errors.generic'))
   } finally {
     loading.value = false
+  }
+}
+
+async function saveEvent() {
+  const editor = eventEditor.value
+  const name = editor?.name.trim() ?? ''
+  if (!editor || !name || eventBusy.value) return
+  eventBusy.value = true
+  try {
+    if (editor.mode === 'create') {
+      await salesApi.createEvent(name, false)
+      flash.success(t('administration.events.created'))
+    } else {
+      await salesApi.renameEvent(editor.id!, name)
+      flash.success(t('administration.events.renamed'))
+    }
+    eventEditor.value = null
+    events.value = (await salesApi.events()).events
+  } catch (error) {
+    report(error)
+  } finally {
+    eventBusy.value = false
+  }
+}
+
+async function selectEvent(event: SaleEvent) {
+  if (eventBusy.value || event.is_selected) return
+  eventBusy.value = true
+  try {
+    await salesApi.selectEvent(event.id)
+    events.value = events.value.map((entry) => ({ ...entry, is_selected: entry.id === event.id }))
+    flash.success(t('administration.events.selected'))
+  } catch (error) {
+    report(error)
+  } finally {
+    eventBusy.value = false
+  }
+}
+
+async function deleteEvent() {
+  const event = eventToDelete.value
+  if (!event || eventBusy.value) return
+  eventBusy.value = true
+  try {
+    await salesApi.deleteEvent(event.id)
+    events.value = events.value.filter((entry) => entry.id !== event.id)
+    eventToDelete.value = null
+    flash.success(t('administration.events.deleted'))
+  } catch (error) {
+    report(error)
+  } finally {
+    eventBusy.value = false
   }
 }
 
@@ -218,7 +280,40 @@ function durationLabel(seconds: number): string {
       </div>
     </div>
 
-    <section v-if="paymentQr" class="table-section admin-payment-qr-settings">
+    <section class="table-section event-admin-panel">
+      <div class="section-heading">
+        <div>
+          <h2>{{ t('administration.events.title') }}</h2>
+          <p>{{ t('administration.events.intro') }}</p>
+        </div>
+        <button class="primary-button" type="button" @click="eventEditor = { mode: 'create', name: '' }">
+          {{ t('administration.events.create') }}
+        </button>
+      </div>
+      <p v-if="loading" class="muted">{{ t('common.loading') }}</p>
+      <div v-else-if="events.length" class="event-admin-list">
+        <article v-for="event in events" :key="event.id" :class="{ selected: event.is_selected }">
+          <div>
+            <strong>{{ event.name }}</strong>
+            <span v-if="event.is_selected" class="status success">{{ t('administration.events.active') }}</span>
+          </div>
+          <div class="event-admin-actions">
+            <button class="compact-button" type="button" :disabled="eventBusy || event.is_selected" @click="selectEvent(event)">
+              {{ event.is_selected ? t('administration.events.selectedLabel') : t('administration.events.select') }}
+            </button>
+            <button class="compact-button" type="button" :disabled="eventBusy" @click="eventEditor = { mode: 'rename', id: event.id, name: event.name }">
+              {{ t('packing.rename') }}
+            </button>
+            <button class="compact-button danger-button" type="button" :disabled="eventBusy" @click="eventToDelete = event">
+              {{ t('common.delete') }}
+            </button>
+          </div>
+        </article>
+      </div>
+      <p v-else class="muted">{{ t('administration.events.empty') }}</p>
+    </section>
+
+    <section v-if="isBandAdmin && paymentQr" class="table-section admin-payment-qr-settings">
       <div class="section-heading">
         <div>
           <h2>{{ t('administration.paymentQr.title') }}</h2>
@@ -262,7 +357,7 @@ function durationLabel(seconds: number): string {
       </form>
     </section>
 
-    <section class="table-section">
+    <section v-if="isBandAdmin" class="table-section">
       <div class="section-heading">
         <div>
           <h2>{{ t('administration.support.title') }}</h2>
@@ -338,7 +433,7 @@ function durationLabel(seconds: number): string {
       </template>
     </section>
 
-    <section class="table-section">
+    <section v-if="isBandAdmin" class="table-section">
       <div class="section-heading">
         <div>
           <h2>{{ t('administration.users.title') }}</h2>
@@ -464,7 +559,32 @@ function durationLabel(seconds: number): string {
       <p class="muted">{{ t('administration.users.deleteHint') }}</p>
     </section>
 
-    <AppDialog v-if="reauthPrompt" :label="t('administration.users.confirmTitle')" :dismissible="!busy" @close="reauthPrompt = null">
+    <AppDialog v-if="eventEditor" :label="t(`administration.events.${eventEditor.mode}Title`)" :dismissible="!eventBusy" @close="eventEditor = null">
+      <form class="stack-form" @submit.prevent="saveEvent">
+        <h2>{{ t(`administration.events.${eventEditor.mode}Title`) }}</h2>
+        <label>
+          {{ t('administration.events.name') }}
+          <input v-model="eventEditor.name" maxlength="200" autofocus required />
+        </label>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" @click="eventEditor = null">{{ t('common.cancel') }}</button>
+          <button class="primary-button" type="submit" :disabled="eventBusy">{{ t('common.save') }}</button>
+        </div>
+      </form>
+    </AppDialog>
+
+    <AppDialog v-if="eventToDelete" :label="t('administration.events.deleteTitle')" :dismissible="!eventBusy" @close="eventToDelete = null">
+      <div class="stack-form">
+        <h2>{{ t('administration.events.deleteTitle') }}</h2>
+        <p>{{ t('administration.events.deleteConfirm', { name: eventToDelete.name }) }}</p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" @click="eventToDelete = null">{{ t('common.cancel') }}</button>
+          <button class="danger-button" type="button" :disabled="eventBusy" @click="deleteEvent">{{ t('common.delete') }}</button>
+        </div>
+      </div>
+    </AppDialog>
+
+    <AppDialog v-if="isBandAdmin && reauthPrompt" :label="t('administration.users.confirmTitle')" :dismissible="!busy" @close="reauthPrompt = null">
       <form class="stack-form" @submit.prevent="confirmReauth">
         <div>
           <p class="eyebrow">{{ t('administration.users.confirmEyebrow') }}</p>
@@ -488,7 +608,7 @@ function durationLabel(seconds: number): string {
       </form>
     </AppDialog>
 
-    <AppDialog v-if="confirming" :label="t('administration.support.confirmTitle')" :dismissible="!busy" @close="confirming = null">
+    <AppDialog v-if="isBandAdmin && confirming" :label="t('administration.support.confirmTitle')" :dismissible="!busy" @close="confirming = null">
       <form class="stack-form" @submit.prevent="approve">
         <div>
           <p class="eyebrow">{{ t('administration.support.confirmEyebrow') }}</p>
@@ -521,6 +641,42 @@ function durationLabel(seconds: number): string {
 </template>
 
 <style scoped>
+.event-admin-list {
+  display: grid;
+  gap: 8px;
+}
+
+.event-admin-list article {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+}
+
+.event-admin-list article.selected {
+  border-color: var(--success-border);
+  background: var(--success-soft);
+}
+
+.event-admin-list article > div,
+.event-admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .event-admin-list article {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .role-field {
   display: flex;
   flex-direction: column;

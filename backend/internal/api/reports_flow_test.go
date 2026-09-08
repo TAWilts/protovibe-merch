@@ -263,6 +263,52 @@ func TestRankingsFoldVariantsIntoArticles(t *testing.T) {
 	}
 }
 
+func TestEventTimelineSplitsOnlyAfterMoreThanThirtyOneDaysAndKeepsStableStart(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Timeline Shirt")
+	h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items":        []any{map[string]any{"variant_id": variants[0], "quantity": 10, "unit_cost_cents": 800}},
+		"purchased_on": "2025-12-20",
+	})
+	for _, sale := range []map[string]any{
+		{"sold_on": "2026-01-01", "event_name": "Clubnacht"},
+		{"sold_on": "2026-02-01", "event_name": "clubnacht"},
+		{"sold_on": "2026-03-05", "event_name": "Clubnacht"},
+	} {
+		response := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+			"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+			"payment_method": "Bar", "is_paid": true, "is_received": true,
+			"sold_on": sale["sold_on"], "event_name": sale["event_name"],
+		})
+		if response.Status != http.StatusCreated {
+			t.Fatalf("book timeline sale: %d %v", response.Status, response.Body)
+		}
+	}
+
+	points := jsonList(h.do(http.MethodGet, "/api/v1/balances", nil).Body, "event_timeline")
+	if len(points) != 2 {
+		t.Fatalf("expected two event occurrences, got %v", points)
+	}
+	first := jsonObject(points[0])
+	if first["date"] != "2026-01-01" || first["quantity"] != float64(2) || first["income_cents"] != float64(3600) || first["profit_cents"] != float64(2000) {
+		t.Fatalf("unexpected first occurrence: %v", first)
+	}
+	if second := jsonObject(points[1]); second["date"] != "2026-03-05" || second["quantity"] != float64(1) {
+		t.Fatalf("unexpected second occurrence: %v", second)
+	}
+
+	filtered := jsonList(h.do(http.MethodGet, "/api/v1/balances?from=2026-02-01&to=2026-02-28", nil).Body, "event_timeline")
+	if len(filtered) != 1 {
+		t.Fatalf("expected one filtered occurrence, got %v", filtered)
+	}
+	visible := jsonObject(filtered[0])
+	if visible["date"] != "2026-01-01" || visible["quantity"] != float64(1) || visible["income_cents"] != float64(1800) {
+		t.Fatalf("filter must preserve occurrence start while limiting values: %v", visible)
+	}
+}
+
 // TestBandLedgerIsSeparateButAddsUp pins the deliberate split: gig money never
 // touches the merch balance, yet both appear in one headline figure.
 func TestBandLedgerIsSeparateButAddsUp(t *testing.T) {

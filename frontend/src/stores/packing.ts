@@ -122,7 +122,7 @@ export const usePackingStore = defineStore('packing', () => {
       if (poller !== undefined) window.clearInterval(poller)
       poller = window.setInterval(() => {
         if (document.visibilityState === 'visible') void sync()
-      }, 5_000)
+      }, 10_000)
     }
   }
 

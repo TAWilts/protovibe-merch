@@ -35,6 +35,7 @@ func (s *Server) registerSalesRoutes(g *gin.RouterGroup) {
 	members.PATCH("/sales/:id/delivery-status", s.setDeliveryStatus)
 	members.PATCH("/sales/:id/payment-status", s.markSalePaid)
 	members.PATCH("/sales/receipt/:receiptID/shipping-cost", s.updateSaleShippingCost)
+	members.PATCH("/sale-events/:id", s.renameSaleEvent)
 	members.DELETE("/sale-events/:id", s.deleteSaleEvent)
 }
 
@@ -531,6 +532,70 @@ func (s *Server) selectSaleEvent(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, saleEventPayload{ID: event.ID, Name: event.Name, IsSelected: true})
+}
+
+type renameSaleEventRequest struct {
+	Name string `json:"name" binding:"required"`
+}
+
+func (s *Server) renameSaleEvent(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var req renameSaleEventRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" || len(name) > 200 {
+		fail(c, http.StatusBadRequest, "invalid_name", "the event name must be 1 to 200 characters")
+		return
+	}
+
+	ctx := c.Request.Context()
+	var event models.SaleEvent
+	if err := s.db.WithContext(ctx).First(&event, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			fail(c, http.StatusNotFound, "not_found", "no such event")
+			return
+		}
+		serverError(c, err)
+		return
+	}
+	var duplicate int64
+	if err := s.db.WithContext(ctx).Model(&models.SaleEvent{}).
+		Where("id <> ? AND name = ?", id, name).Count(&duplicate).Error; err != nil {
+		serverError(c, err)
+		return
+	}
+	if duplicate > 0 {
+		fail(c, http.StatusConflict, "sale_event_name_conflict", "an event with this name already exists")
+		return
+	}
+	oldName := event.Name
+	if err := s.db.WithContext(ctx).Model(&event).Update("name", name).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			fail(c, http.StatusConflict, "sale_event_name_conflict", "an event with this name already exists")
+			return
+		}
+		serverError(c, err)
+		return
+	}
+	s.audit.Log(ctx, actorFrom(c), audit.Entry{
+		Action: audit.ActionSaleEventRenamed, EntityType: "sale_event", EntityID: &id,
+		Details: map[string]any{
+			"old": map[string]any{"name": oldName},
+			"new": map[string]any{"name": name},
+		},
+	})
+	selectedID, err := s.selectedEventID(c)
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, saleEventPayload{ID: event.ID, Name: name, IsSelected: event.ID == selectedID})
 }
 
 func (s *Server) deleteSaleEvent(c *gin.Context) {

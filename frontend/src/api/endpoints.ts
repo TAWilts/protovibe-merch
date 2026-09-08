@@ -160,6 +160,8 @@ export const salesApi = {
   createEvent: (name: string, select = true) =>
     api.post<SaleEvent>('/sale-events', { name, select }),
   selectEvent: (id: number) => api.post<SaleEvent>(`/sale-events/${id}/select`),
+  renameEvent: (id: number, name: string) =>
+    api.patch<SaleEvent>(`/sale-events/${id}`, { name }),
   deleteEvent: (id: number) => api.delete<void>(`/sale-events/${id}`),
 }
 

@@ -104,8 +104,6 @@ function measureTill() {
 }
 /** null while the inline "new event" row is hidden. */
 const newEventName = ref<string | null>(null)
-const eventToDelete = ref<SaleEvent | null>(null)
-const canDeleteEvents = computed(() => session.capabilities?.can_access_member_workflows ?? false)
 
 /**
  * The payment code flow. Showing a code is deliberately not a sale: the server
@@ -567,23 +565,6 @@ async function createEvent() {
   }
 }
 
-async function deleteEvent() {
-  const event = eventToDelete.value
-  if (!event || busy.value) return
-  busy.value = true
-  try {
-    await salesApi.deleteEvent(event.id)
-    events.value = events.value.filter((entry) => entry.id !== event.id)
-    if (selectedEventId.value === event.id) selectedEventId.value = 0
-    eventToDelete.value = null
-    flash.success(t('sales.eventDeleted'))
-  } catch (error) {
-    reportError(error)
-  } finally {
-    busy.value = false
-  }
-}
-
 function stepQuantity(delta: number) {
   const current = Number.isFinite(quantity.value) ? quantity.value : 1
   quantity.value = Math.max(1, current + delta)
@@ -931,13 +912,6 @@ function resetAfterSale() {
                 <option v-for="event in events" :key="event.id" :value="event.id">{{ event.name }}</option>
               </select>
               <button v-if="newEventName === null" class="compact-button" type="button" :aria-label="t('sales.newEvent')" @click="newEventName = ''">+</button>
-              <button
-                v-if="canDeleteEvents && selectedEventId"
-                class="compact-button danger-button"
-                type="button"
-                :aria-label="t('sales.deleteEvent')"
-                @click="eventToDelete = events.find((event) => event.id === selectedEventId) ?? null"
-              >{{ t('common.delete') }}</button>
             </span>
           </label>
           <div v-if="newEventName !== null" class="new-event-row">
@@ -1063,19 +1037,6 @@ function resetAfterSale() {
       </div>
     </AppDialog>
 
-    <AppDialog v-if="eventToDelete" :label="t('sales.eventDeleteTitle')" :dismissible="!busy" @close="eventToDelete = null">
-      <div class="stack-form">
-        <div>
-          <p class="eyebrow">{{ t('sales.eventDeleteEyebrow') }}</p>
-          <h2>{{ t('sales.eventDeleteTitle') }}</h2>
-          <p>{{ t('sales.eventDeleteIntro', { event: eventToDelete.name }) }}</p>
-        </div>
-        <div class="dialog-actions">
-          <button class="secondary-button" type="button" @click="eventToDelete = null">{{ t('common.cancel') }}</button>
-          <button class="danger-button" type="button" :disabled="busy" @click="deleteEvent">{{ t('common.delete') }}</button>
-        </div>
-      </div>
-    </AppDialog>
   </main>
 </template>
 

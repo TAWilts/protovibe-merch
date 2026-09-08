@@ -9,6 +9,7 @@ import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import { useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import IncomeChart from '@/components/IncomeChart.vue'
+import EventTimelineChart from '@/components/EventTimelineChart.vue'
 import BalanceTable, { type BalanceSortKey } from '@/components/BalanceTable.vue'
 
 /**
@@ -480,6 +481,13 @@ td:last-child, th:last-child { text-align: right; }
             <li v-if="!data.top_sellers.length" class="muted">{{ t('balances.noSales') }}</li>
           </ol>
         </article>
+      </section>
+
+      <section class="table-section income-chart-section">
+        <div class="section-heading">
+          <div><h2>{{ t('balances.eventTimeline') }}</h2><p>{{ t('balances.eventTimelineHint') }}</p></div>
+        </div>
+        <EventTimelineChart :points="data.event_timeline" />
       </section>
 
       <section class="table-section income-chart-section">

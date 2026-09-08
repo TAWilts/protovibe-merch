@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/tawilts/protovibe-merch/backend/internal/audit"
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
 )
 
@@ -282,6 +283,62 @@ func TestMembersCanDeleteEventsWithoutChangingHistoricalSales(t *testing.T) {
 	receipt := jsonObject(jsonList(history.Body, "receipts")[0])
 	if receipt["event_name"] != "Sommerfest 2026" {
 		t.Fatalf("historical event name must remain: %v", receipt)
+	}
+}
+
+func TestMembersCanRenameEventsWithoutChangingHistoricalSales(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Rename Event Shirt")
+	created := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{
+		"name": "Alter Gigname", "select": true,
+	})
+	eventID := int64(created.Body["id"].(float64))
+	booked := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+		"payment_method": "Bar", "is_paid": true, "is_received": true,
+		"event_name": "Alter Gigname", "sold_on": "2026-09-07",
+	})
+	if booked.Status != http.StatusCreated {
+		t.Fatalf("book historical sale: %d %v", booked.Status, booked.Body)
+	}
+
+	h.signInAs(band, models.RoleMember)
+	renamed := h.do(http.MethodPatch, "/api/v1/sale-events/"+itoa(eventID), map[string]any{"name": "Neuer Gigname"})
+	if renamed.Status != http.StatusOK || renamed.Body["name"] != "Neuer Gigname" || renamed.Body["is_selected"] != true {
+		t.Fatalf("member rename: %d %v", renamed.Status, renamed.Body)
+	}
+	history := h.do(http.MethodGet, "/api/v1/history", nil)
+	if got := jsonObject(jsonList(history.Body, "receipts")[0])["event_name"]; got != "Alter Gigname" {
+		t.Fatalf("historical event name changed to %v", got)
+	}
+
+	var logged int64
+	if err := h.db.Raw("SELECT COUNT(*) FROM audit_log WHERE band_id = ? AND action = ? AND entity_id = ?",
+		band.ID, audit.ActionSaleEventRenamed, eventID).Scan(&logged).Error; err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if logged != 1 {
+		t.Fatalf("expected one rename audit entry, got %d", logged)
+	}
+
+	otherBand := h.makeBand()
+	h.signInAs(otherBand, models.RoleMember)
+	if hidden := h.do(http.MethodPatch, "/api/v1/sale-events/"+itoa(eventID), map[string]any{"name": "Fremder Gig"}); hidden.Status != http.StatusNotFound {
+		t.Fatalf("another band must not rename the event, got %d %v", hidden.Status, hidden.Body)
+	}
+
+	h.signInAs(band, models.RoleMember)
+	h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{"name": "Zweiter Gig"})
+	conflict := h.do(http.MethodPatch, "/api/v1/sale-events/"+itoa(eventID), map[string]any{"name": "Zweiter Gig"})
+	if conflict.Status != http.StatusConflict || conflict.Body["code"] != "sale_event_name_conflict" {
+		t.Fatalf("duplicate rename must conflict: %d %v", conflict.Status, conflict.Body)
+	}
+
+	h.signInAs(band, models.RoleSeller)
+	if blocked := h.do(http.MethodPatch, "/api/v1/sale-events/"+itoa(eventID), map[string]any{"name": "Nicht erlaubt"}); blocked.Status != http.StatusForbidden {
+		t.Fatalf("seller rename must be forbidden, got %d", blocked.Status)
 	}
 }
 

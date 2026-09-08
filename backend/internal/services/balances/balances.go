@@ -86,6 +86,17 @@ type DailyIncome struct {
 	SaleCount   int64       `json:"sale_count"`
 }
 
+// EventTimelinePoint is one chronological occurrence of an event name. A name
+// may occur more than once when the gap between sales exceeds 31 days.
+type EventTimelinePoint struct {
+	Key         string      `json:"key"`
+	Label       string      `json:"label"`
+	Date        models.Date `json:"date"`
+	Quantity    int64       `json:"quantity"`
+	IncomeCents int64       `json:"income_cents"`
+	ProfitCents int64       `json:"profit_cents"`
+}
+
 // Payload is the whole balances page.
 type Payload struct {
 	Summary Summary `json:"summary"`
@@ -94,11 +105,12 @@ type Payload struct {
 	ReorderRows  []Row `json:"reorder_rows"`
 	ObsoleteRows []Row `json:"obsolete_rows"`
 
-	TopSellingItems []RankingEntry `json:"top_selling_items"`
-	TopRevenueItems []RankingEntry `json:"top_revenue_items"`
-	TopEvents       []RankingEntry `json:"top_events"`
-	TopSellers      []RankingEntry `json:"top_sellers"`
-	DailyIncome     []DailyIncome  `json:"daily_income"`
+	TopSellingItems []RankingEntry       `json:"top_selling_items"`
+	TopRevenueItems []RankingEntry       `json:"top_revenue_items"`
+	TopEvents       []RankingEntry       `json:"top_events"`
+	TopSellers      []RankingEntry       `json:"top_sellers"`
+	DailyIncome     []DailyIncome        `json:"daily_income"`
+	EventTimeline   []EventTimelinePoint `json:"event_timeline"`
 }
 
 // Service computes the balances payload.

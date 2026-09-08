@@ -2,8 +2,10 @@ package balances
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -63,6 +65,9 @@ func (s *Service) ComputePeriod(ctx context.Context, period Period) (*Payload, e
 		return nil, err
 	}
 	if payload.DailyIncome, err = s.dailyIncomePeriod(ctx, period); err != nil {
+		return nil, err
+	}
+	if payload.EventTimeline, err = s.eventTimelinePeriod(ctx, period); err != nil {
 		return nil, err
 	}
 	return payload, nil
@@ -426,4 +431,83 @@ func (s *Service) dailyIncomePeriod(ctx context.Context, period Period) ([]Daily
 		points = []DailyIncome{}
 	}
 	return points, nil
+}
+
+// eventTimelinePeriod first identifies stable event occurrences from the full
+// sales history and only then applies the selected reporting period to their
+// values. This keeps an occurrence's start date stable when the user narrows
+// the report to a few days in the middle of a gig.
+func (s *Service) eventTimelinePeriod(ctx context.Context, period Period) ([]EventTimelinePoint, error) {
+	type saleRow struct {
+		ID             int64
+		EventName      string
+		SoldOn         models.Date
+		VariantID      int64
+		Quantity       int64
+		IsPaid         bool
+		AmountDueCents int64
+		DiscountCents  int64
+	}
+	var rows []saleRow
+	if err := s.db.WithContext(ctx).Model(&models.Sale{}).
+		Where("is_cancelled = ? AND TRIM(event_name) <> ''", false).
+		Select("id, event_name, sold_on, variant_id, quantity, is_paid, amount_due_cents, discount_cents").
+		Order("sold_on, id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	basis, err := s.costBasisAt(ctx, period.To)
+	if err != nil {
+		return nil, err
+	}
+	type occurrence struct {
+		point     EventTimelinePoint
+		lastSeen  models.Date
+		costCents int64
+		hasValues bool
+	}
+	occurrences := make([]*occurrence, 0)
+	latest := make(map[string]*occurrence)
+	const eventGap = 31 * 24 * time.Hour
+
+	for _, row := range rows {
+		label := strings.TrimSpace(row.EventName)
+		normalized := strings.ToLower(label)
+		current := latest[normalized]
+		if current == nil || row.SoldOn.Sub(current.lastSeen.Time) > eventGap {
+			current = &occurrence{
+				point: EventTimelinePoint{
+					Key:   fmt.Sprintf("%s:%s", normalized, row.SoldOn.String()),
+					Label: label,
+					Date:  row.SoldOn,
+				},
+				lastSeen: row.SoldOn,
+			}
+			latest[normalized] = current
+			occurrences = append(occurrences, current)
+		} else {
+			current.lastSeen = row.SoldOn
+		}
+
+		if (period.From != nil && row.SoldOn.Before(period.From.Time)) ||
+			(period.To != nil && row.SoldOn.After(period.To.Time)) {
+			continue
+		}
+		current.hasValues = true
+		current.point.Quantity += row.Quantity
+		current.costCents += row.Quantity * basis[row.VariantID]
+		if row.IsPaid {
+			current.point.IncomeCents += row.AmountDueCents - row.DiscountCents
+		}
+	}
+
+	result := make([]EventTimelinePoint, 0, len(occurrences))
+	for _, occurrence := range occurrences {
+		if !occurrence.hasValues {
+			continue
+		}
+		occurrence.point.ProfitCents = occurrence.point.IncomeCents - occurrence.costCents
+		result = append(result, occurrence.point)
+	}
+	return result, nil
 }

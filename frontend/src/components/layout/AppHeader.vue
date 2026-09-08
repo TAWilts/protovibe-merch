@@ -64,13 +64,13 @@ const links = computed<NavLink[]>(() => {
     // advertised as a current workflow.
     { name: 'history', label: t('nav.history'), visible: c.can_access_member_workflows || grant },
     { name: 'operations', label: t('nav.operations'), visible: c.can_access_member_workflows || grant },
-    { name: 'packing-list', label: t('nav.packingList'), visible: (c.can_use_packing_list || grant) && flags.value?.packing_list !== false },
     { name: 'slideshow', label: t('nav.slideshow'), visible: (c.can_access_band_workflows || grant) && flags.value?.slideshow !== false },
     { name: 'articles', label: t('nav.articles'), visible: c.can_manage_articles || grant, posRestricted: true },
     { name: 'purchases', label: t('nav.purchases'), visible: c.can_access_member_workflows || grant, posRestricted: true },
     { name: 'band-finances', label: t('nav.bandFinances'), visible: (c.can_access_member_workflows || grant) && flags.value?.band_finances !== false, posRestricted: true },
     { name: 'balances', label: t('nav.balances'), visible: c.can_access_member_workflows || grant, posRestricted: true },
-    { name: 'administration', label: t('nav.administration'), visible: c.can_access_band_administration, posRestricted: true },
+    { name: 'packing-list', label: t('nav.packingList'), visible: (c.can_use_packing_list || grant) && flags.value?.packing_list !== false },
+    { name: 'administration', label: t('nav.administration'), visible: c.can_access_member_workflows || c.can_access_band_administration, posRestricted: true },
   ].filter((link) => link.visible)
 })
 
@@ -178,7 +178,7 @@ async function leavePOSMode() {
       <!-- The sync state is always visible while selling: a seller at a stand
            must be able to tell at a glance whether their sales have landed. -->
       <button
-        v-if="caps?.can_access_band_workflows && (flags?.offline_sales !== false || flags?.packing_list !== false)"
+        v-if="route.name !== 'packing-list' && caps?.can_access_band_workflows && (flags?.offline_sales !== false || flags?.packing_list !== false)"
         class="offline-sync-status"
         :class="{ 'is-offline': !combinedOnline, 'has-queue': combinedQueued > 0 }"
         type="button"

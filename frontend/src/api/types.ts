@@ -389,6 +389,15 @@ export interface DailyIncome {
   sale_count: number
 }
 
+export interface EventTimelinePoint {
+  key: string
+  label: string
+  date: string
+  quantity: number
+  income_cents: number
+  profit_cents: number
+}
+
 export interface BalancesPayload {
   summary: BalanceSummary
   reorder_rows: BalanceRow[]
@@ -398,6 +407,7 @@ export interface BalancesPayload {
   top_events: RankingEntry[]
   top_sellers: RankingEntry[]
   daily_income: DailyIncome[]
+  event_timeline: EventTimelinePoint[]
 }
 
 export interface FinanceReportSummary {
