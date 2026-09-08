@@ -218,6 +218,18 @@ func (s *Service) PreserveVariantsForNewOptionGroups(ctx context.Context, articl
 // CreateArticle adds an article together with the default option grid and its
 // resulting variants, in one transaction.
 func (s *Service) CreateArticle(ctx context.Context, name string, defaultSaleCents int64) (*models.Article, error) {
+	return s.createArticle(ctx, name, defaultSaleCents, true)
+}
+
+// CreateArticleDraft adds an article and its editable default option grid, but
+// deliberately waits with variant generation until the configuration is saved
+// for the first time. This keeps the management UI from presenting a derived
+// result before the manager has confirmed its inputs.
+func (s *Service) CreateArticleDraft(ctx context.Context, name string, defaultSaleCents int64) (*models.Article, error) {
+	return s.createArticle(ctx, name, defaultSaleCents, false)
+}
+
+func (s *Service) createArticle(ctx context.Context, name string, defaultSaleCents int64, generateVariants bool) (*models.Article, error) {
 	cleaned := strings.TrimSpace(name)
 	if cleaned == "" || len(cleaned) > 200 {
 		return nil, fmt.Errorf("%w: 1 to 200 characters required", ErrInvalidName)
@@ -263,7 +275,10 @@ func (s *Service) CreateArticle(ctx context.Context, name string, defaultSaleCen
 			}
 		}
 
-		return txService.SyncVariants(ctx, article.ID)
+		if generateVariants {
+			return txService.SyncVariants(ctx, article.ID)
+		}
+		return nil
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {

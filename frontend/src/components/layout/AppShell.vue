@@ -27,6 +27,7 @@ const viaGrant = computed(
     <RouterLink :to="{ name: 'platform-bands' }">{{ t('platform.backToAdmin') }}</RouterLink>
   </p>
   <FlashStack />
+  <span id="main-content" class="main-content-anchor" tabindex="-1"></span>
   <RouterView />
 </template>
 

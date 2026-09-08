@@ -102,6 +102,7 @@ export const catalogueApi = {
   create: (payload: {
     name: string
     default_sale_price_cents: number
+    defer_variants?: boolean
   }) => api.post<Article>('/articles', payload),
   save: (id: number, payload: unknown) => api.put<Article>(`/articles/${id}`, payload),
 }

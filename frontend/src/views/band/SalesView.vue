@@ -1120,7 +1120,7 @@ function resetAfterSale() {
   min-height: 42px;
   padding: 8px 12px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   color: var(--muted);
   background: var(--panel);
 }
@@ -1132,7 +1132,7 @@ function resetAfterSale() {
 .checkout-progress button.active {
   border-color: var(--accent-bright);
   color: var(--text);
-  background: var(--selection-hover);
+  background: var(--surface-selected);
 }
 
 .checkout-progress button.complete {
@@ -1180,8 +1180,8 @@ function resetAfterSale() {
   margin: 0;
   padding: 10px 14px;
   border: 1px solid var(--accent-dark);
-  border-radius: 10px;
-  background: var(--selection-hover);
+  border-radius: var(--radius-control);
+  background: var(--surface-selected);
   color: var(--text);
   font-size: 0.88rem;
 }
@@ -1220,9 +1220,9 @@ function resetAfterSale() {
   margin-top: 14px !important;
   padding: 10px 14px;
   border: 1px solid var(--accent-bright);
-  border-radius: 10px;
-  background: var(--selection-hover);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-control);
+  background: var(--surface-selected);
+  box-shadow: var(--shadow-sm);
 }
 
 .checkout-sale-id span {
@@ -1460,8 +1460,8 @@ function resetAfterSale() {
   margin: 16px 0 0;
   padding: 12px 14px;
   border: 1px solid var(--accent-dark);
-  border-radius: 10px;
-  background: var(--selection-hover);
+  border-radius: var(--radius-control);
+  background: var(--surface-selected);
 }
 
 .till-chosen strong {
@@ -1471,7 +1471,7 @@ function resetAfterSale() {
 .till-stock {
   padding: 3px 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--surface-subtle);
   color: var(--muted);
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
@@ -1653,7 +1653,7 @@ function resetAfterSale() {
   align-items: center;
   justify-self: end;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   overflow: hidden;
 }
 
@@ -1671,8 +1671,8 @@ function resetAfterSale() {
   user-select: none;
 }
 
-.till-line-stepper button:hover { background: #523662; }
-.till-line-stepper button:active { background: #5d3d6e; }
+.till-line-stepper button:hover { background: var(--surface-hover); }
+.till-line-stepper button:active { background: var(--surface-selected); }
 
 /* At one the button no longer subtracts, it deletes — so it stops looking
    like the rest of the stepper. */
@@ -1681,7 +1681,7 @@ function resetAfterSale() {
 }
 
 .till-line-stepper button.is-remove:hover {
-  background: rgba(242, 121, 131, 0.18);
+  background: var(--danger-soft);
 }
 
 .till-line-stepper svg {
@@ -1804,8 +1804,8 @@ function resetAfterSale() {
 }
 
 .till-change.is-discount {
-  color: #ffd69b;
-  background: rgba(243,179,90,.12);
+  color: var(--warning-text);
+  background: var(--warning-soft);
 }
 
 .till-surplus-toggle {
@@ -1932,7 +1932,7 @@ function resetAfterSale() {
     padding: 0 14px 10px;
     overflow: hidden;
     border-radius: var(--radius) var(--radius) 0 0;
-    box-shadow: 0 -18px 40px rgba(0, 0, 0, 0.42);
+    box-shadow: 0 -18px 40px rgb(var(--shadow-color) / .42);
     transition: max-height 180ms ease;
   }
 

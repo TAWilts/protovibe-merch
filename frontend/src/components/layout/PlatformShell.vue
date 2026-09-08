@@ -80,6 +80,7 @@ async function signOut() {
     {{ t('platform.supportAdminNote') }}
   </div>
 
+  <span id="main-content" class="main-content-anchor" tabindex="-1"></span>
   <RouterView />
 </template>
 

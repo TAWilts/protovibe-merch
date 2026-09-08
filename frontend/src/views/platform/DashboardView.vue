@@ -271,8 +271,8 @@ function scopeLabel(scope: SupportGrant['scope']) {
 .attention-count { display: grid; min-width: 38px; height: 38px; place-items: center; padding: 0 10px; border-radius: 999px; color: var(--panel); background: var(--warning); font-size: 1.1rem; font-weight: 850; }
 .attention-count.clear { background: var(--success); }
 .attention-list, .preview-list { display: grid; gap: 7px; }
-.attention-row, .preview-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 10px 11px; border-radius: 10px; color: var(--text); background: var(--panel-raised); text-decoration: none; }
-.attention-row:hover, .preview-row:hover { background: var(--selection-hover); }
+.attention-row, .preview-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 10px 11px; border-radius: var(--radius-control); color: var(--text); background: var(--panel-raised); text-decoration: none; }
+.attention-row:hover, .preview-row:hover { background: var(--surface-hover); }
 .attention-row > span, .preview-row > span:first-child { min-width: 0; }
 .attention-row small, .preview-row small { display: block; margin-top: 2px; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-preview { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }

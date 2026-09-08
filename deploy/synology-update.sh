@@ -6,6 +6,7 @@ PROJECT_DIR="${PROJECT_DIR:-$SCRIPT_DIR}"
 PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
 ENV_FILE="${ENV_FILE:-$PROJECT_DIR/.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-$PROJECT_DIR/docker-compose.synology.yml}"
+IMAGE_COMPOSE_PATH="/usr/local/share/merch-manager/docker-compose.synology.yml"
 
 EXPECTED_REPOSITORY="${EXPECTED_REPOSITORY:-ghcr.io/tawilts/protovibe-merch-multitenant}"
 EXPECTED_DATA_ROOT="${EXPECTED_DATA_ROOT:-$PROJECT_DIR/data}"
@@ -38,6 +39,26 @@ container_health() {
   docker inspect \
     --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
     "$1"
+}
+
+container_setting() {
+  docker inspect \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' \
+    "$1" |
+    sed -n "s/^${2}=//p" |
+    tail -n 1
+}
+
+bool_value() {
+  value="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    1|true|yes|on)
+      printf 'true'
+      ;;
+    *)
+      printf 'false'
+      ;;
+  esac
 }
 
 app_ready() {
@@ -86,6 +107,13 @@ if docker compose version >/dev/null 2>&1; then
       -f "$COMPOSE_FILE" \
       "$@"
   }
+  validate_compose() {
+    docker compose \
+      -p "$PROJECT_NAME" \
+      --env-file "$ENV_FILE" \
+      -f "$1" \
+      config --quiet
+  }
 elif command -v docker-compose >/dev/null 2>&1; then
   compose() {
     docker-compose \
@@ -93,6 +121,13 @@ elif command -v docker-compose >/dev/null 2>&1; then
       --env-file "$ENV_FILE" \
       -f "$COMPOSE_FILE" \
       "$@"
+  }
+  validate_compose() {
+    docker-compose \
+      -p "$PROJECT_NAME" \
+      --env-file "$ENV_FILE" \
+      -f "$1" \
+      config --quiet
   }
 else
   fail "Docker Compose ist nicht verfuegbar."
@@ -215,6 +250,48 @@ if ! compose pull backend web; then
   fail "Image-Download fehlgeschlagen. Laufender Stack bleibt unveraendert."
 fi
 
+# The DSM-side compose file used to stay unchanged forever while only this
+# updater was refreshed from the image. New environment mappings (notably
+# PURCHASE_EDITING_ENABLED) could therefore be present in .env but absent from
+# the backend container. Install the compose file shipped with the exact same
+# backend image before recreating the stack.
+echo
+echo "Aktualisiere Compose-Datei passend zum Backend-Image..."
+
+TEMP_COMPOSE="${COMPOSE_FILE}.new"
+rm -f "$TEMP_COMPOSE"
+
+if ! CONFIG_CONTAINER="$(docker create "${REPOSITORY}:${IMAGE_TAG}")"; then
+  fail "Compose-Datei konnte nicht aus dem Backend-Image vorbereitet werden."
+fi
+
+if ! docker cp "${CONFIG_CONTAINER}:${IMAGE_COMPOSE_PATH}" "$TEMP_COMPOSE"; then
+  docker rm -f "$CONFIG_CONTAINER" >/dev/null 2>&1 || true
+  rm -f "$TEMP_COMPOSE"
+  fail "Compose-Datei konnte nicht aus dem Backend-Image gelesen werden."
+fi
+docker rm -f "$CONFIG_CONTAINER" >/dev/null 2>&1 || true
+
+[ -s "$TEMP_COMPOSE" ] || {
+  rm -f "$TEMP_COMPOSE"
+  fail "Compose-Datei im Backend-Image ist leer."
+}
+
+grep -q 'PURCHASE_EDITING_ENABLED:' "$TEMP_COMPOSE" || {
+  rm -f "$TEMP_COMPOSE"
+  fail "Compose-Datei reicht PURCHASE_EDITING_ENABLED nicht an das Backend weiter."
+}
+
+if ! validate_compose "$TEMP_COMPOSE"; then
+  rm -f "$TEMP_COMPOSE"
+  fail "Neue Compose-Datei ist mit der vorhandenen .env nicht gueltig."
+fi
+
+chmod 644 "$TEMP_COMPOSE"
+mv "$TEMP_COMPOSE" "$COMPOSE_FILE"
+echo "Compose-Datei aktualisiert: $COMPOSE_FILE"
+echo "Purchase-Editing: ${PURCHASE_EDITING_ENABLED:-$(setting PURCHASE_EDITING_ENABLED)}"
+
 # ------------------------------------------------------------
 # Datenbank VOR dem Neu-Erzeugen der Container sichern
 # ------------------------------------------------------------
@@ -303,6 +380,14 @@ while [ "$attempt" -lt 90 ]; do
        [ "$WEB_HEALTH" = healthy ] &&
        app_ready; then
 
+      EXPECTED_PURCHASE_EDITING="$(bool_value "$(setting PURCHASE_EDITING_ENABLED)")"
+      ACTUAL_PURCHASE_EDITING="$(bool_value "$(container_setting "$BACKEND_CONTAINER" PURCHASE_EDITING_ENABLED)")"
+
+      if [ "$ACTUAL_PURCHASE_EDITING" != "$EXPECTED_PURCHASE_EDITING" ]; then
+        show_status
+        fail "PURCHASE_EDITING_ENABLED wurde nicht korrekt an das Backend uebergeben."
+      fi
+
       echo
       echo "========================================"
       echo "Deployment erfolgreich"
@@ -311,6 +396,7 @@ while [ "$attempt" -lt 90 ]; do
       echo "Image-Tag: $IMAGE_TAG"
       echo "URL:       $APP_URL"
       echo "Backup:    ${DUMP_FILE}.gz"
+      echo "Purchase-Editing im Backend: $ACTUAL_PURCHASE_EDITING"
       echo
 
       compose ps

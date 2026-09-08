@@ -56,7 +56,9 @@ Requests.
 `/volume1/docker/protovibe-merch-multitenant-test` kopieren. Der eigentliche
 `synology-update.sh` muss nicht mehr manuell gepflegt werden: Er wird in jedes
 Backend-Image eingebettet und vor jedem Update passend zum konfigurierten
-Image-Tag extrahiert. Dann per SSH:
+Image-Tag extrahiert. Der Updater ersetzt danach auch die Compose-Datei durch
+die zum Image gehörende Version. Eigene Instanzwerte gehören deshalb in
+`.env`, nicht als Änderungen in die Compose-Datei. Dann per SSH:
 
 ```sh
 sudo -i
@@ -140,9 +142,11 @@ Der kleine Bootstrap ist absichtlich stabil und bleibt auf dem NAS. Er liest
 Backend-Image, extrahiert dessen
 `/usr/local/share/merch-manager/synology-update.sh` atomar nach
 `/volume1/docker/protovibe-merch-multitenant-test/synology-update.sh` und führt
-anschließend diese Datei aus. Dadurch gehören Update-Logik und Backend-Version
-immer zusammen; bei einem fest gesetzten Versionstag wird automatisch auch der
-Updater dieser Version verwendet.
+anschließend diese Datei aus. Der Updater installiert außerdem die im selben
+Image verpackte `docker-compose.synology.yml`. Dadurch gehören Update-Logik,
+Compose-Umgebungsvariablen und Backend-Version immer zusammen; bei einem fest
+gesetzten Versionstag wird automatisch auch der Updater dieser Version
+verwendet.
 
 Der extrahierte Updater zieht Backend und Web. Stimmen deren Image-IDs bereits
 mit den laufenden Containern überein, beendet er sich ohne Neustart. Vor einem

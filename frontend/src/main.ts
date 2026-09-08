@@ -5,6 +5,7 @@ import { watch } from 'vue'
 import App from './App.vue'
 import router from './router'
 import { i18n } from './i18n'
+import '@fontsource-variable/geist/wght.css'
 import './assets/base.css'
 // After base.css on purpose: the touch sizes have to win the cascade over the
 // desktop defaults they replace, and a media query adds no specificity.

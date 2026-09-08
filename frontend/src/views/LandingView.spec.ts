@@ -44,6 +44,13 @@ describe('LandingView registration', () => {
     session.capabilities = null
   })
 
+  it('keeps the top anchor on the page frame and exposes the main-content target', () => {
+    const wrapper = mount(LandingView)
+
+    expect(wrapper.get('.landing-page').attributes('id')).toBe('top')
+    expect(wrapper.get('main').attributes()).toMatchObject({ id: 'main-content', tabindex: '-1' })
+  })
+
   it('stores the secret status token and renders a pending request', async () => {
     create.mockResolvedValue({
       reference: 'REG-TEST', status: 'pending', expires_at: '2026-10-01T00:00:00Z',

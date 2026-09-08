@@ -60,6 +60,53 @@ func TestArticleLifecycleOverHTTP(t *testing.T) {
 	}
 }
 
+// TestArticleDraftDefersVariants pins the article-management workflow: the
+// option grid is editable immediately, but its derived variants only exist
+// after the manager confirms the configuration for the first time.
+func TestArticleDraftDefersVariants(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+
+	created := h.do(http.MethodPost, "/api/v1/articles", map[string]any{
+		"name":                     "Draft Shirt",
+		"default_sale_price_cents": 1800,
+		"defer_variants":           true,
+	})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("create draft: %d %v", created.Status, created.Body)
+	}
+	if got := len(jsonList(created.Body, "variants")); got != 0 {
+		t.Fatalf("an unconfirmed draft must not have variants, got %d", got)
+	}
+	if created.Body["configuration_complete"] != false {
+		t.Fatalf("an unconfirmed draft must be incomplete: %v", created.Body)
+	}
+
+	if res := h.do(http.MethodGet, "/api/v1/assortment", nil); len(jsonList(res.Body, "articles")) != 0 {
+		t.Fatalf("an unconfirmed draft must not be sellable: %v", res.Body)
+	}
+
+	articleID := int64(created.Body["id"].(float64))
+	saved := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"option_groups": jsonList(created.Body, "option_groups"),
+	})
+	if saved.Status != http.StatusOK {
+		t.Fatalf("confirm draft: %d %v", saved.Status, saved.Body)
+	}
+	if got := len(jsonList(saved.Body, "variants")); got != 10 {
+		t.Fatalf("the first confirmation must generate the 2x5 grid, got %d", got)
+	}
+	if saved.Body["configuration_complete"] != true {
+		t.Fatalf("the confirmed article must be complete: %v", saved.Body)
+	}
+	for _, raw := range jsonList(saved.Body, "variants") {
+		if jsonObject(raw)["is_active"] != true {
+			t.Fatalf("the first generated grid must not contain retired variants: %v", saved.Body)
+		}
+	}
+}
+
 // TestSellersCannotChangeTheCatalogue pins the role split: reading the
 // assortment is a seller's job, editing it is a manager's.
 func TestSellersCannotChangeTheCatalogue(t *testing.T) {

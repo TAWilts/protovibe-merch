@@ -1,7 +1,9 @@
+import 'fake-indexeddb/auto'
+import { reactive } from 'vue'
 import { describe, expect, it } from 'vitest'
 
 import type { PackingOperation, PackingSnapshot } from '@/api/types'
-import { applyPackingOperation } from './packing'
+import { applyPackingOperation, createPackingOperation, loadPackingSnapshot } from './packing'
 
 const bagId = '11111111-1111-4111-8111-111111111111'
 const firstItem = '22222222-2222-4222-8222-222222222222'
@@ -29,6 +31,30 @@ function snapshot(): PackingSnapshot {
 }
 
 describe('offline packing projection', () => {
+  it('creates a bag from a reactive Pinia-style snapshot', () => {
+    const current = reactive<PackingSnapshot>({ revision: 0, generation: 1, bags: [] })
+
+    const next = applyPackingOperation(current, operation('create_bag', {
+      bag_id: bagId,
+      name: 'Stagerack',
+    }))
+
+    expect(next.bags).toEqual([expect.objectContaining({ id: bagId, name: 'Stagerack' })])
+  })
+
+  it('persists a bag created from reactive state in the offline queue and snapshot', async () => {
+    const context = { bandId: 901, userId: 902 }
+    const current = reactive<PackingSnapshot>({ revision: 0, generation: 1, bags: [] })
+
+    const result = await createPackingOperation(context, current, 'create_bag', {
+      bag_id: bagId,
+      name: 'Stagerack',
+    })
+
+    expect(result.snapshot.bags[0]?.name).toBe('Stagerack')
+    expect((await loadPackingSnapshot(context))?.bags[0]?.name).toBe('Stagerack')
+  })
+
   it('packs and reopens a complete bag without overwriting stays-here entries', () => {
     const packed = applyPackingOperation(snapshot(), operation('set_bag_status', { bag_id: bagId, status: 'packed' }))
     expect(packed.bags[0]?.items.map((item) => item.status)).toEqual(['packed', 'stays_here'])

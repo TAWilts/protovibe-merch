@@ -225,7 +225,7 @@ async function confirmReset() {
 </script>
 
 <template>
-  <main class="login-page">
+  <main id="main-content" class="login-page" tabindex="-1">
     <div class="login-toolbar">
       <RouterLink :to="{ name: 'landing' }" class="text-button">{{ t('landing.nav.home') }}</RouterLink>
       <div class="locale-switch" :aria-label="t('landing.language.label')">
@@ -370,7 +370,7 @@ async function confirmReset() {
   padding: 3px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: rgba(17, 14, 22, 0.74);
+  background: color-mix(in srgb, var(--surface-inset) 78%, transparent);
 }
 
 .locale-switch button {
@@ -385,8 +385,8 @@ async function confirmReset() {
 }
 
 .locale-switch button.active {
-  color: #250d2e;
-  background: var(--accent-bright);
+  color: var(--on-accent);
+  background: var(--accent);
 }
 
 .remember-login {
@@ -413,7 +413,7 @@ async function confirmReset() {
   display: block;
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   background: var(--input-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   text-align: center;

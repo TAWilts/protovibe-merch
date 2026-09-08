@@ -99,8 +99,8 @@ onUnmounted(() => {
   place-items: center;
   padding: 24px;
   background:
-    radial-gradient(circle at 50% 35%, rgba(116, 70, 138, 0.24), transparent 42%),
-    var(--bg);
+    radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 42%),
+    var(--surface-page);
 }
 
 .maintenance-card {
@@ -108,10 +108,10 @@ onUnmounted(() => {
   gap: 16px;
   width: min(560px, 100%);
   padding: clamp(24px, 5vw, 52px);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel);
-  box-shadow: var(--shadow);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-overlay);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-overlay);
   text-align: center;
 }
 

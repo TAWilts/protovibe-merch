@@ -187,10 +187,9 @@ async function reject(request: BandRegistrationRequest) {
 
 .registration-request {
   padding: 22px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: rgba(26, 22, 34, .9);
-  box-shadow: var(--shadow);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--surface-panel);
 }
 
 .registration-request > header {
@@ -212,15 +211,15 @@ async function reject(request: BandRegistrationRequest) {
   display: flex;
   flex-wrap: wrap;
   gap: 9px 22px;
-  border-top: 1px solid rgba(255,255,255,.07);
-  border-bottom: 1px solid rgba(255,255,255,.07);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
   color: var(--muted);
   font-size: .74rem;
 }
 
 .request-meta strong { color: var(--text); }
 .request-actions { display: flex; justify-content: flex-end; gap: 9px; }
-.requested-values { border: 1px solid var(--border); border-radius: 9px; background: rgba(255,255,255,.025); }
+.requested-values { border: 1px solid var(--border-default); border-radius: var(--radius-control); background: var(--surface-subtle); }
 .requested-values summary { padding: 10px 12px; color: var(--muted); cursor: pointer; font-size: .78rem; font-weight: 720; }
 .requested-values dl, .decision-summary dl { margin: 0; padding: 0 12px 12px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; }
 .requested-values dl > div, .decision-summary dl > div { display: grid; gap: 2px; }

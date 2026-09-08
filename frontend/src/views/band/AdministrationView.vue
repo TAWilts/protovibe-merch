@@ -565,7 +565,7 @@ function durationLabel(seconds: number): string {
 
 .role-help[open] > summary {
   border-color: var(--accent);
-  background: var(--selection-hover);
+  background: var(--surface-selected);
 }
 
 .role-help-panel {
@@ -606,7 +606,7 @@ function durationLabel(seconds: number): string {
 .setup-code-card code {
   padding: 10px 14px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   background: var(--input-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 1.2rem;

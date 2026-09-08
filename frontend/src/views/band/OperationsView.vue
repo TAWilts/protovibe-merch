@@ -445,7 +445,7 @@ async function saveShippingCost() {
   justify-items: start;
   gap: 6px;
   padding: 12px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--option-bg);
 }
 

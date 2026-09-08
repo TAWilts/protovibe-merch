@@ -1,104 +1,133 @@
 /*
- * Design tokens ported verbatim from the Flask original
- * (_old/static/app.css lines 1-99). Same variable names, same five themes,
- * same html[data-theme] switch, so the visual identity carries over exactly.
+ * Shared semantic design tokens.
+ *
+ * Components should consume the semantic surface, border, text and state
+ * tokens below. The legacy aliases at the end deliberately keep older scoped
+ * styles working while the redesign is rolled out in reviewable phases.
  */
 :root {
-  --bg: #100d16;
-  --panel: #1a1622;
-  --panel-raised: #211b2b;
-  --panel-muted: #2c2438;
-  --border: #3d334b;
-  --text: #f4f1f7;
-  --muted: #b8b0c3;
-  --accent: #d95ff1;
-  --accent-bright: #f08eff;
-  --accent-dark: #8e2ea8;
-  --success: #52d18b;
-  --warning: #f3b35a;
-  --danger: #f27983;
-  --radius: 14px;
-  --shadow: 0 18px 45px rgba(0, 0, 0, .23);
-  --page-glow: radial-gradient(circle at 18% -10%, #332143 0, transparent 34rem);
-  --header-bg: rgba(16, 13, 22, .91);
-  --input-bg: #110e16;
-  --selection-hover: #392447;
-  --option-bg: #16121d;
-  --option-selected: #4b2856;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: var(--text);
-  background: var(--bg);
+  color-scheme: dark;
+
+  /* Aurora: neutral graphite with one restrained Protovibe accent. */
+  --surface-page: #101114;
+  --surface-panel: #181a1f;
+  --surface-raised: #20232a;
+  --border-default: #3b3f48;
+  --text-primary: #f4f4f6;
+  --text-secondary: #b7bbc4;
+  --accent: #d56cdb;
+  --on-accent: #211423;
+  --shadow-color: 4 6 10;
+
+  /* Derived surfaces and hierarchy. */
+  --surface-subtle: color-mix(in srgb, var(--surface-page) 58%, var(--surface-panel));
+  --surface-inset: color-mix(in srgb, var(--surface-page) 84%, black);
+  --surface-hover: color-mix(in srgb, var(--accent) 8%, var(--surface-raised));
+  --surface-pressed: color-mix(in srgb, var(--accent) 12%, var(--surface-raised));
+  --surface-selected: color-mix(in srgb, var(--accent) 17%, var(--surface-raised));
+  --border-subtle: color-mix(in srgb, var(--border-default) 58%, transparent);
+  --border-strong: color-mix(in srgb, var(--border-default) 78%, var(--text-primary));
+  --text-tertiary: color-mix(in srgb, var(--text-secondary) 76%, var(--surface-page));
+
+  /* Accent and interaction states. */
+  --accent-hover: color-mix(in srgb, var(--accent) 82%, white);
+  --accent-pressed: color-mix(in srgb, var(--accent) 84%, black);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --focus-ring: color-mix(in srgb, var(--accent) 70%, white);
+
+  /* Semantic feedback states. */
+  --success: #61c98a;
+  --success-text: #8fddb0;
+  --success-soft: color-mix(in srgb, var(--success) 14%, transparent);
+  --success-border: color-mix(in srgb, var(--success) 48%, transparent);
+  --warning: #e2aa58;
+  --warning-text: #f1c680;
+  --warning-soft: color-mix(in srgb, var(--warning) 14%, transparent);
+  --warning-border: color-mix(in srgb, var(--warning) 50%, transparent);
+  --danger: #e16f78;
+  --danger-text: #f1979d;
+  --danger-soft: color-mix(in srgb, var(--danger) 14%, transparent);
+  --danger-border: color-mix(in srgb, var(--danger) 50%, transparent);
+
+  /* Shape and elevation. */
+  --radius-small: 7px;
+  --radius-control: 9px;
+  --radius-panel: 12px;
+  --radius-overlay: 18px;
+  --shadow-sm: 0 4px 12px rgb(var(--shadow-color) / .18);
+  --shadow-md: 0 14px 34px rgb(var(--shadow-color) / .26);
+  --shadow-overlay: 0 24px 72px rgb(var(--shadow-color) / .48);
+
+  /* Contextual surfaces derived from the current theme. */
+  --page-glow: radial-gradient(circle at 18% -10%, color-mix(in srgb, var(--accent) 6%, transparent) 0, transparent 34rem);
+  --header-bg: color-mix(in srgb, var(--surface-page) 91%, transparent);
+  --selection-hover: var(--surface-hover);
+  --option-bg: var(--surface-inset);
+  --option-selected: var(--surface-selected);
+
+  /* Compatibility aliases for existing views. */
+  --bg: var(--surface-page);
+  --panel: var(--surface-panel);
+  --panel-raised: var(--surface-raised);
+  --panel-muted: var(--surface-subtle);
+  --border: var(--border-default);
+  --text: var(--text-primary);
+  --muted: var(--text-secondary);
+  --accent-bright: var(--accent-hover);
+  --accent-dark: var(--accent-pressed);
+  --radius: var(--radius-panel);
+  --shadow: var(--shadow-md);
+  --input-bg: var(--surface-inset);
+
+  font-family: "Geist Variable", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--text-primary);
+  background: var(--surface-page);
 }
 
 html[data-theme="ocean"] {
-  --bg: #0a171f;
-  --panel: #10232d;
-  --panel-raised: #15303b;
-  --panel-muted: #1d4050;
-  --border: #315665;
-  --text: #edfaff;
-  --muted: #a9c6d1;
-  --accent: #2fc2dc;
-  --accent-bright: #70e9ff;
-  --accent-dark: #177e9a;
-  --page-glow: radial-gradient(circle at 18% -10%, #15536b 0, transparent 34rem);
-  --header-bg: rgba(10, 23, 31, .91);
-  --input-bg: #09141b;
-  --selection-hover: #174453;
-  --option-bg: #0c1b23;
-  --option-selected: #18566a;
+  --surface-page: #0d161b;
+  --surface-panel: #142229;
+  --surface-raised: #1b2e36;
+  --border-default: #31515c;
+  --text-primary: #eef8fb;
+  --text-secondary: #adc3cb;
+  --accent: #55bed0;
+  --on-accent: #092126;
+  --shadow-color: 2 12 16;
 }
+
 html[data-theme="sunset"] {
-  --bg: #211018;
-  --panel: #301722;
-  --panel-raised: #3c1d2a;
-  --panel-muted: #552636;
-  --border: #704052;
-  --text: #fff2ef;
-  --muted: #ddbbb9;
-  --accent: #f25a92;
-  --accent-bright: #ffb167;
-  --accent-dark: #c33d74;
-  --page-glow: radial-gradient(circle at 18% -10%, #843653 0, transparent 34rem);
-  --header-bg: rgba(33, 16, 24, .91);
-  --input-bg: #1c0c14;
-  --selection-hover: #5b283a;
-  --option-bg: #250f19;
-  --option-selected: #703047;
+  --surface-page: #1b1316;
+  --surface-panel: #271a1f;
+  --surface-raised: #322127;
+  --border-default: #5d3e49;
+  --text-primary: #fff4f1;
+  --text-secondary: #d4bdbb;
+  --accent: #df6c91;
+  --on-accent: #2d1019;
+  --shadow-color: 17 7 11;
 }
+
 html[data-theme="forest"] {
-  --bg: #0d1c17;
-  --panel: #142a22;
-  --panel-raised: #19352b;
-  --panel-muted: #265040;
-  --border: #3a6754;
-  --text: #effcf4;
-  --muted: #b3d1bf;
-  --accent: #45c985;
-  --accent-bright: #91f2bd;
-  --accent-dark: #27885b;
-  --page-glow: radial-gradient(circle at 18% -10%, #286548 0, transparent 34rem);
-  --header-bg: rgba(13, 28, 23, .91);
-  --input-bg: #0b1813;
-  --selection-hover: #24533d;
-  --option-bg: #102018;
-  --option-selected: #286448;
+  --surface-page: #0e1814;
+  --surface-panel: #16251f;
+  --surface-raised: #1c3027;
+  --border-default: #365848;
+  --text-primary: #eff8f2;
+  --text-secondary: #b4cbbd;
+  --accent: #61bd89;
+  --on-accent: #0b2115;
+  --shadow-color: 4 13 9;
 }
+
 html[data-theme="midnight"] {
-  --bg: #101627;
-  --panel: #19223a;
-  --panel-raised: #202b46;
-  --panel-muted: #303d60;
-  --border: #4a577b;
-  --text: #f1f4ff;
-  --muted: #bec6df;
-  --accent: #778dfa;
-  --accent-bright: #b3c0ff;
-  --accent-dark: #5063cf;
-  --page-glow: radial-gradient(circle at 18% -10%, #344d9a 0, transparent 34rem);
-  --header-bg: rgba(16, 22, 39, .91);
-  --input-bg: #0d1220;
-  --selection-hover: #303d68;
-  --option-bg: #141b2e;
-  --option-selected: #394a82;
+  --surface-page: #111621;
+  --surface-panel: #192131;
+  --surface-raised: #202a3e;
+  --border-default: #3e4c6a;
+  --text-primary: #f1f4ff;
+  --text-secondary: #bbc4dc;
+  --accent: #899cec;
+  --on-accent: #101832;
+  --shadow-color: 5 9 20;
 }

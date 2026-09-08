@@ -406,16 +406,16 @@ function dropItem(bag: PackingBag, targetId: string) {
 .packing-toolbar, .row-actions, .dialog-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 .sync-state { font-size: .86rem; color: var(--muted); }
 .sync-state.offline { color: var(--warning); }
-.packing-progress { display: grid; grid-template-columns: repeat(3, auto) 1fr; align-items: center; gap: .75rem 1rem; padding: 1rem; border-radius: 1rem; background: var(--panel); }
-.packing-progress progress { width: 100%; min-width: 8rem; accent-color: var(--accent, #1d8f75); }
-.packing-message { display: flex; justify-content: space-between; gap: 1rem; padding: .8rem 1rem; border: 1px solid var(--warning, #d59027); border-radius: .75rem; }
+.packing-progress { display: grid; grid-template-columns: repeat(3, auto) 1fr; align-items: center; gap: .75rem 1rem; padding: 1rem; border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--surface-panel); }
+.packing-progress progress { width: 100%; min-width: 8rem; accent-color: var(--accent); }
+.packing-message { display: flex; justify-content: space-between; gap: 1rem; padding: .8rem 1rem; border: 1px solid var(--warning-border); border-radius: var(--radius-panel); color: var(--warning-text); background: var(--warning-soft); }
 .packing-message button { border: 0; background: transparent; text-decoration: underline; }
-.packing-conflicts { display: grid; gap: .6rem; padding: 1rem; border: 1px solid var(--warning); border-radius: .8rem; background: var(--panel); }
+.packing-conflicts { display: grid; gap: .6rem; padding: 1rem; border: 1px solid var(--warning-border); border-radius: var(--radius-panel); background: var(--surface-panel); }
 .packing-conflicts h2, .packing-conflicts p { margin: 0; }
 .packing-conflicts article { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(10rem, 2fr) auto; align-items: center; gap: .75rem; }
 .packing-conflicts small { color: var(--muted); }
 .bag-list { display: grid; gap: .85rem; }
-.packing-bag { overflow: hidden; border: 1px solid var(--border); border-radius: 1rem; background: var(--panel); }
+.packing-bag { overflow: hidden; border: 1px solid var(--border-default); border-radius: var(--radius-panel); background: var(--surface-panel); }
 .packing-bag.excluded { opacity: .72; }
 .bag-header { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; padding: .85rem 1rem; }
 .collapse-button { display: flex; align-items: center; gap: .55rem; flex: 1 1 12rem; padding: .3rem 0; border: 0; background: transparent; text-align: left; font: inherit; }
@@ -423,18 +423,21 @@ function dropItem(bag: PackingBag, targetId: string) {
 .bag-name { font-size: 1.08rem; font-weight: 750; }
 .bag-counts { color: var(--muted); font-size: .84rem; }
 .status-check { display: inline-flex; align-items: center; gap: .45rem; font-weight: 650; }
-.status-check input { width: 1.2rem; height: 1.2rem; accent-color: var(--accent, #1d8f75); }
-.stay-button, .row-actions button { min-height: 2.25rem; padding: .35rem .65rem; border: 1px solid var(--border, #ccd5d1); border-radius: .55rem; background: transparent; }
-.stay-button.active { color: #fff; background: var(--accent, #1d8f75); border-color: transparent; }
+.status-check input { width: 1.2rem; height: 1.2rem; accent-color: var(--accent); }
+.stay-button, .row-actions button { min-height: 2.25rem; padding: .35rem .65rem; border: 1px solid var(--border-default); border-radius: var(--radius-control); color: var(--text-primary); background: var(--surface-subtle); transition: border-color .15s, background .15s, transform .12s; }
+.stay-button:hover:not(:disabled), .row-actions button:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-hover); }
+.stay-button:active:not(:disabled), .row-actions button:active:not(:disabled) { background: var(--surface-pressed); transform: translateY(1px); }
+.stay-button:disabled, .row-actions button:disabled { opacity: .48; cursor: not-allowed; }
+.stay-button.active { color: var(--on-accent); background: var(--accent); border-color: var(--accent-hover); }
 .bag-body { display: grid; gap: .8rem; padding: 0 1rem 1rem 2.6rem; }
 .item-list { display: grid; gap: .55rem; }
 .item-list.muted { opacity: .65; }
-.packing-item { padding: .7rem .75rem; border: 1px solid var(--border, #dde3e0); border-radius: .75rem; }
+.packing-item { padding: .7rem .75rem; border: 1px solid var(--border-subtle); border-radius: var(--radius-panel); background: var(--surface-subtle); }
 .item-line { display: flex; align-items: center; gap: .6rem; }
 .item-check { flex: 1 1 12rem; }
 .photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: .65rem; }
 .photo-grid figure { position: relative; margin: 0; min-width: 0; }
-.photo-grid img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: .6rem; background: #e6ebe9; }
+.photo-grid img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: var(--radius-control); background: var(--surface-inset); }
 .photo-grid figcaption { overflow: hidden; margin-top: .2rem; color: var(--muted); font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
 .photo-grid figure > button { position: absolute; top: .3rem; right: .3rem; width: 1.8rem; height: 1.8rem; border: 0; border-radius: 50%; color: white; background: rgba(20, 25, 23, .8); }
 .item-photos { margin-top: .65rem; grid-template-columns: repeat(auto-fill, minmax(6rem, 9rem)); }
@@ -443,7 +446,7 @@ function dropItem(bag: PackingBag, targetId: string) {
 .subtle-upload { display: inline-block; margin-top: .55rem; color: var(--muted); font-size: .8rem; text-decoration: underline; }
 .add-item { justify-self: start; }
 .empty-state { padding: 2rem; text-align: center; color: var(--muted); }
-.danger-button { color: white; background: #a62929; border: 0; border-radius: .65rem; padding: .7rem 1rem; }
+.danger-button { padding: .7rem 1rem; border: 1px solid var(--danger-border); border-radius: var(--radius-control); color: var(--danger-text); background: var(--danger-soft); }
 @media (max-width: 760px) {
   .packing-heading { align-items: stretch; flex-direction: column; }
   .packing-progress { grid-template-columns: 1fr 1fr 1fr; }

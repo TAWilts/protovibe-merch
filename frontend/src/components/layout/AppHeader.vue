@@ -235,9 +235,9 @@ async function leavePOSMode() {
 .offline-sync-status {
   min-height: 31px;
   padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-small);
+  background: var(--surface-subtle);
   color: var(--muted);
   font: inherit;
   font-size: 0.76rem;

@@ -253,6 +253,7 @@ async function createArticle() {
     const created = await catalogueApi.create({
       name,
       default_sale_price_cents: 0,
+      defer_variants: true,
     })
     newArticleName.value = ''
     flash.success(t('articles.created'))
@@ -375,7 +376,10 @@ function onMinimumChange(variantId: number, raw: string) {
 
 async function applyMinimumToAll() {
   if (!selected.value || busy.value) return
-  const parsed = Number(minimumForAll.value.trim())
+  // Vue number inputs may assign a number even when the ref started as a
+  // string. Normalising first avoids calling trim() on a number and silently
+  // aborting the form submission in the browser.
+  const parsed = Number(String(minimumForAll.value).trim())
   if (!Number.isInteger(parsed) || parsed < 0) {
     flash.error(t('articles.invalidMinimum'))
     return
@@ -529,7 +533,7 @@ async function applyMinimumToAll() {
           </footer>
         </section>
 
-        <section class="table-section">
+        <section v-if="selected.variants.length" class="table-section">
           <div class="section-heading">
             <div>
               <h2>{{ t('articles.variants') }}</h2>
@@ -807,7 +811,7 @@ async function applyMinimumToAll() {
   width: 120px;
   height: 120px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   object-fit: cover;
 }
 
@@ -866,7 +870,7 @@ async function applyMinimumToAll() {
   margin: 4px 0 0;
   padding: 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
 }
 
 .import-preview > div {

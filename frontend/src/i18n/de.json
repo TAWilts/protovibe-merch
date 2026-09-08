@@ -27,6 +27,7 @@
     "leave": "POS Mode verlassen"
   },
   "common": {
+    "skipToContent": "Zum Hauptinhalt springen",
     "loading": "Wird geladen …",
     "save": "Speichern",
     "cancel": "Abbrechen",

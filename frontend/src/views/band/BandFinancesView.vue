@@ -550,7 +550,7 @@ async function cancelEntry(id: number) {
   margin: 4px 0 0;
   padding: 9px 12px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   color: var(--text);
   background: color-mix(in srgb, var(--panel-raised) 82%, transparent);
   cursor: pointer;

@@ -1,7 +1,7 @@
 <script setup lang="ts"></script>
 
 <template>
-  <main class="page-shell">
+  <main id="main-content" class="page-shell" tabindex="-1">
     <div class="page-title-row">
       <div>
         <p class="eyebrow">Fehler 404</p>

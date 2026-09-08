@@ -21,8 +21,8 @@ export default defineConfig({
         start_url: '/sales',
         scope: '/',
         display: 'standalone',
-        background_color: '#100d16',
-        theme_color: '#16131d',
+        background_color: '#101114',
+        theme_color: '#101114',
         icons: [
           { src: '/pwa-icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' },
         ],

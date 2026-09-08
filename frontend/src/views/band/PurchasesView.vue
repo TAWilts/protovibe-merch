@@ -932,14 +932,14 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
 .purchase-receipt-card {
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border-radius: var(--radius-panel);
+  background: var(--surface-panel);
 }
 
 .purchase-receipt-card.cancelled {
   opacity: .72;
   border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
-  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface-panel));
 }
 
 .cancelled-badge {

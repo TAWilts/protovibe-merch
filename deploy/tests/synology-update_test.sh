@@ -13,6 +13,7 @@ MERCH_IMAGE_REPOSITORY=ghcr.io/tawilts/protovibe-merch-multitenant
 MERCH_IMAGE_TAG=latest
 SYNOLOGY_DATA_ROOT=$TEST_ROOT/data
 HOST_PORT=8090
+PURCHASE_EDITING_ENABLED=true
 EOF
 
 cat > "$TEST_ROOT/bin/docker" <<'EOF'
@@ -77,7 +78,34 @@ if [ "$1" = "compose" ]; then
   exit 0
 fi
 
+if [ "$1" = "create" ]; then
+  echo fake-config-container
+  exit 0
+fi
+
+if [ "$1" = "cp" ]; then
+  cat > "$3" <<'COMPOSE'
+services:
+  backend:
+    environment:
+      PURCHASE_EDITING_ENABLED: ${PURCHASE_EDITING_ENABLED:-false}
+  db:
+    image: mariadb:11
+  web:
+    image: example/web
+COMPOSE
+  exit 0
+fi
+
+if [ "$1" = "rm" ]; then
+  exit 0
+fi
+
 if [ "$1" = "inspect" ]; then
+  if printf '%s' "$*" | grep -q 'Config.Env'; then
+    echo 'PURCHASE_EDITING_ENABLED=true'
+    exit 0
+  fi
   case "$*" in
     *db-container)
       echo "${FAKE_DB_HEALTH:-healthy}"

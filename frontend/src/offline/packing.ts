@@ -31,7 +31,22 @@ let syncing = false
 const authenticationPaused = new Set<string>()
 
 function clone(snapshot: PackingSnapshot): PackingSnapshot {
-  return structuredClone(snapshot)
+  // Pinia exposes nested state through Vue proxies. `structuredClone()` rejects
+  // those proxies with DataCloneError, which used to make every local packing
+  // mutation fail before it could reach IndexedDB. Rebuild the JSON-shaped
+  // snapshot explicitly so the result is plain, persistable data in every
+  // browser while retaining optional response metadata such as `replayed`.
+  return {
+    ...snapshot,
+    bags: snapshot.bags.map((bag) => ({
+      ...bag,
+      photos: bag.photos.map((photo) => ({ ...photo })),
+      items: bag.items.map((item) => ({
+        ...item,
+        photos: item.photos.map((photo) => ({ ...photo })),
+      })),
+    })),
+  }
 }
 
 function statusResolved(status: PackingStatus) {
@@ -153,7 +168,7 @@ export async function loadPackingSnapshot(context: PackingNamespace): Promise<Pa
 export async function savePackingSnapshot(context: PackingNamespace, snapshot: PackingSnapshot) {
   const db = await offlineDB()
   await db.put('packing_snapshots', {
-    namespace: packingNamespace(context), snapshot, savedAt: new Date().toISOString(),
+    namespace: packingNamespace(context), snapshot: clone(snapshot), savedAt: new Date().toISOString(),
   })
 }
 

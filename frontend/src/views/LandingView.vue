@@ -262,7 +262,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 </script>
 
 <template>
-  <div class="landing-page" :class="{ 'animations-paused': !pageActive }">
+  <div id="top" class="landing-page" :class="{ 'animations-paused': !pageActive }">
     <header class="landing-header">
       <a class="landing-brand" href="#top" aria-label="Merch Manager">
         <span class="brand-mark">M</span>
@@ -283,7 +283,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
       </div>
     </header>
 
-    <main id="top">
+    <main id="main-content" tabindex="-1">
       <section class="landing-section hero-section">
         <div class="hero-copy">
           <p class="landing-kicker">{{ t('landing.hero.kicker') }}</p>

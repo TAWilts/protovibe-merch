@@ -71,7 +71,8 @@ type articlePayload struct {
 	IsOffered             bool   `json:"is_offered"`
 	IsActive              bool   `json:"is_active"`
 	// ConfigurationComplete is false while an option group still has no
-	// values; such an article cannot be sold yet.
+	// values or the initial configuration has not generated variants yet;
+	// such an article cannot be sold yet.
 	ConfigurationComplete bool                 `json:"configuration_complete"`
 	TotalStock            int64                `json:"total_stock"`
 	OptionGroups          []optionGroupPayload `json:"option_groups"`
@@ -227,6 +228,7 @@ func (s *Server) buildArticles(c *gin.Context, id int64) ([]articlePayload, erro
 	}
 
 	variantsByArticle := map[int64][]variantPayload{}
+	activeVariantsByArticle := map[int64]int{}
 	totalStock := map[int64]int64{}
 	for _, variant := range variants {
 		position := stock[variant.ID]
@@ -250,6 +252,7 @@ func (s *Server) buildArticles(c *gin.Context, id int64) ([]articlePayload, erro
 		}
 		variantsByArticle[variant.ArticleID] = append(variantsByArticle[variant.ArticleID], payload)
 		if variant.IsActive {
+			activeVariantsByArticle[variant.ArticleID]++
 			totalStock[variant.ArticleID] += position.OnHand
 		}
 	}
@@ -257,7 +260,7 @@ func (s *Server) buildArticles(c *gin.Context, id int64) ([]articlePayload, erro
 	out := make([]articlePayload, 0, len(articles))
 	for _, article := range articles {
 		articleGroups := groupsByArticle[article.ID]
-		complete := true
+		complete := activeVariantsByArticle[article.ID] > 0
 		for _, group := range articleGroups {
 			if !group.IsActive {
 				continue
@@ -298,6 +301,7 @@ func (s *Server) buildArticles(c *gin.Context, id int64) ([]articlePayload, erro
 type createArticleRequest struct {
 	Name                  string `json:"name" binding:"required"`
 	DefaultSalePriceCents int64  `json:"default_sale_price_cents"`
+	DeferVariants         bool   `json:"defer_variants"`
 }
 
 func (s *Server) createArticle(c *gin.Context) {
@@ -309,7 +313,13 @@ func (s *Server) createArticle(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	// Purchase prices are transaction data, never article defaults.
-	article, err := s.catalogue.CreateArticle(ctx, req.Name, req.DefaultSalePriceCents)
+	var article *models.Article
+	var err error
+	if req.DeferVariants {
+		article, err = s.catalogue.CreateArticleDraft(ctx, req.Name, req.DefaultSalePriceCents)
+	} else {
+		article, err = s.catalogue.CreateArticle(ctx, req.Name, req.DefaultSalePriceCents)
+	}
 	if err != nil {
 		s.reportCatalogueError(c, err)
 		return

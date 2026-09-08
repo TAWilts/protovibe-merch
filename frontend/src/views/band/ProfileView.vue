@@ -404,7 +404,7 @@ async function regenerateCodes() {
   display: block;
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
   background: var(--input-bg);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   text-align: center;
@@ -414,7 +414,7 @@ async function regenerateCodes() {
   margin-bottom: 16px;
   padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--input-bg);
 }
 

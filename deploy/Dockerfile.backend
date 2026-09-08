@@ -20,10 +20,12 @@ COPY --from=build /out/importlegacy /usr/local/bin/importlegacy
 # Keep the NAS-side updater versioned with the backend image. The tiny DSM
 # bootstrap task extracts this file before every update run.
 COPY deploy/synology-update.sh /usr/local/share/merch-manager/synology-update.sh
+COPY deploy/docker-compose.synology.yml /usr/local/share/merch-manager/docker-compose.synology.yml
 # The named volume inherits this directory's ownership, so it has to exist in
 # the image; otherwise Docker creates the mountpoint as root and the unprivileged
 # process cannot write storage or backups.
 RUN chmod 755 /usr/local/share/merch-manager/synology-update.sh \
+ && chmod 644 /usr/local/share/merch-manager/docker-compose.synology.yml \
  && mkdir -p /data/storage /data/backups \
  && chown -R merch:merch /data
 USER merch

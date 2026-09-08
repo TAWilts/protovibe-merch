@@ -648,7 +648,7 @@ function collageCardStyle(index: number) {
   aspect-ratio: 4 / 3;
   object-fit: contain;
   object-position: center;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--input-bg);
 }
 
@@ -769,7 +769,7 @@ function collageCardStyle(index: number) {
   max-width: 100%;
   max-height: 100%;
   border: 3px solid #000;
-  border-radius: 5px;
+  border-radius: var(--radius-small);
   background: #000;
   box-shadow: 0 28px 75px rgba(0, 0, 0, 0.58);
   object-fit: contain;
@@ -856,7 +856,7 @@ function collageCardStyle(index: number) {
   margin: 0;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: #101015;
   box-shadow: 0 22px 52px rgba(0, 0, 0, 0.56);
 }

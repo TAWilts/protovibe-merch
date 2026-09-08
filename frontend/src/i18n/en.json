@@ -27,6 +27,7 @@
     "leave": "Leave POS mode"
   },
   "common": {
+    "skipToContent": "Skip to main content",
     "loading": "Loading …",
     "save": "Save",
     "cancel": "Cancel",

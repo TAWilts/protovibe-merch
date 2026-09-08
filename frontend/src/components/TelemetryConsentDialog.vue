@@ -88,7 +88,7 @@ async function save() {
   display: grid;
   place-items: center;
   padding: 18px;
-  background: rgb(3 7 18 / 72%);
+  background: rgb(var(--shadow-color) / .72);
   backdrop-filter: blur(8px);
 }
 
@@ -97,10 +97,10 @@ async function save() {
   max-height: calc(100vh - 36px);
   overflow: auto;
   padding: clamp(22px, 4vw, 36px);
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: var(--panel);
-  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-overlay);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-overlay);
 }
 
 .telemetry-dialog h2 {
@@ -110,9 +110,9 @@ async function save() {
 .telemetry-privacy {
   margin: 18px 0;
   padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--input-bg);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-panel);
+  background: var(--surface-inset);
 }
 
 .telemetry-privacy p {
