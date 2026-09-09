@@ -42,6 +42,7 @@ const variants = [11, 12].map((id) => ({
   combination_key: '',
   sale_price_cents: 2000,
   minimum_stock: null,
+  target_stock: null,
   is_offered: true,
   no_reorder: false,
   is_active: true,
@@ -119,6 +120,23 @@ describe('ArticlesView variant generation', () => {
       variants: [
         { id: 11, minimum_stock: 7 },
         { id: 12, minimum_stock: 7 },
+      ],
+    })
+  })
+
+  it('applies a numeric target stock value to every active variant', async () => {
+    list.mockResolvedValue({ articles: [confirmedArticle] })
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    await wrapper.get('.target-for-all input').setValue('12')
+    await wrapper.get('.target-for-all').trigger('submit')
+    await flushPromises()
+
+    expect(save).toHaveBeenCalledWith(1, {
+      variants: [
+        { id: 11, target_stock: 12 },
+        { id: 12, target_stock: 12 },
       ],
     })
   })

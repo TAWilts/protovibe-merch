@@ -27,7 +27,7 @@ import type {
   PlatformSettings,
   PlatformUser,
   ProfilePayload,
-  Purchase,
+  Purchase, RefillSuggestion,
   Queues,
   Role,
   Receipt,
@@ -315,8 +315,16 @@ export const purchasesApi = {
     prices_include_vat: boolean
     vat_rate_basis_points: number
     shipping_cost_cents: number
+    price_mode?: 'unit' | 'basket'
+    goods_total_cents?: number
     receipt_id?: string
-  }) => api.post<{ receipt_id: string; purchase_ids: number[]; total_cost_cents: number }>('/purchases', payload),
+  }) => api.post<{
+    receipt_id: string
+    purchase_ids: number[]
+    total_cost_cents: number
+    goods_total_cents: number
+    price_mode: 'unit' | 'basket'
+  }>('/purchases', payload),
   updateReceipt: (receiptId: string, payload: {
     items: { id: number; quantity: number; unit_cost_cents: number }[]
     purchased_on: string
@@ -325,7 +333,15 @@ export const purchasesApi = {
     prices_include_vat: boolean
     vat_rate_basis_points: number
     shipping_cost_cents: number
-  }) => api.patch<{ receipt_id: string; purchase_ids: number[]; total_cost_cents: number }>(
+    price_mode?: 'unit' | 'basket'
+    goods_total_cents?: number
+  }) => api.patch<{
+    receipt_id: string
+    purchase_ids: number[]
+    total_cost_cents: number
+    goods_total_cents: number
+    price_mode: 'unit' | 'basket'
+  }>(
     `/purchases/receipt/${encodeURIComponent(receiptId)}`, payload,
   ),
   update: (id: number, payload: { quantity: number; unit_cost_cents: number; comment?: string }) =>
@@ -339,6 +355,8 @@ export const purchasesApi = {
     api.patch<void>(`/purchase-receipts/${encodeURIComponent(receiptId)}/cancel`),
   lastCost: (variantId: number) =>
     api.get<{ unit_cost_cents: number; found: boolean }>(`/purchases/last-cost/${variantId}`),
+  refillSuggestions: () =>
+    api.get<{ items: RefillSuggestion[] }>('/purchases/refill-suggestions'),
 }
 
 /** Exports are plain links so the browser handles the download itself. */

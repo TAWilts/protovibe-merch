@@ -35,6 +35,7 @@ type variantPayload struct {
 	CombinationKey string  `json:"combination_key"`
 	SalePriceCents int64   `json:"sale_price_cents"`
 	MinimumStock   *int    `json:"minimum_stock"`
+	TargetStock    *int    `json:"target_stock"`
 	IsOffered      bool    `json:"is_offered"`
 	NoReorder      bool    `json:"no_reorder"`
 	IsActive       bool    `json:"is_active"`
@@ -248,6 +249,7 @@ func (s *Server) buildArticles(c *gin.Context, id int64, includeInactive bool) (
 			CombinationKey: variant.CombinationKey,
 			SalePriceCents: variant.SalePriceCents,
 			MinimumStock:   variant.MinimumStock,
+			TargetStock:    variant.TargetStock,
 			PhotoIDs:       emptyPhotos(variant.ID),
 			IsOffered:      variant.IsOffered,
 			NoReorder:      variant.NoReorder,
@@ -361,7 +363,8 @@ func (s *Server) saveArticle(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	if err := s.catalogue.ApplyConfiguration(ctx, id, cfg); err != nil {
+	withdrawal, err := s.catalogue.ApplyConfigurationWithWithdrawal(ctx, id, cfg)
+	if err != nil {
 		s.reportCatalogueError(c, err)
 		return
 	}
@@ -369,6 +372,7 @@ func (s *Server) saveArticle(c *gin.Context) {
 	s.audit.Log(ctx, actorFrom(c), audit.Entry{
 		Action: audit.ActionArticleUpdated, EntityType: "article", EntityID: &id,
 	})
+	s.logAutomaticWithdrawal(c, withdrawal.VariantIDs, withdrawal.ArticleIDs, "article_configuration")
 
 	payload, err := s.buildArticles(c, id, false)
 	if err != nil {
@@ -380,6 +384,18 @@ func (s *Server) saveArticle(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, payload[0])
+}
+
+func (s *Server) logAutomaticWithdrawal(c *gin.Context, variantIDs, articleIDs []int64, trigger string) {
+	if len(variantIDs) == 0 && len(articleIDs) == 0 {
+		return
+	}
+	s.audit.Log(c.Request.Context(), actorFrom(c), audit.Entry{
+		Action: audit.ActionCATAutoWithdrawn, EntityType: "catalogue",
+		Details: map[string]any{
+			"trigger": trigger, "variant_ids": variantIDs, "article_ids": articleIDs,
+		},
+	})
 }
 
 func (s *Server) deleteArticle(c *gin.Context) {
@@ -412,6 +428,10 @@ func (s *Server) reportCatalogueError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "invalid_name", err.Error())
 	case errors.Is(err, catalogue.ErrNegativePrice):
 		fail(c, http.StatusBadRequest, "invalid_price", err.Error())
+	case errors.Is(err, catalogue.ErrInvalidMinimumStock):
+		fail(c, http.StatusBadRequest, "invalid_minimum_stock", err.Error())
+	case errors.Is(err, catalogue.ErrInvalidTargetStock):
+		fail(c, http.StatusBadRequest, "invalid_target_stock", err.Error())
 	case errors.Is(err, catalogue.ErrArticleNotDraft):
 		fail(c, http.StatusConflict, "article_not_incomplete", err.Error())
 	case errors.Is(err, catalogue.ErrArticleInUse):

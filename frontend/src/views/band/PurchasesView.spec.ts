@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PurchasesView from './PurchasesView.vue'
 
-const { catalogueList } = vi.hoisted(() => ({ catalogueList: vi.fn() }))
+const { catalogueList, createPurchase, refillSuggestions } = vi.hoisted(() => ({
+  catalogueList: vi.fn(),
+  createPurchase: vi.fn(),
+  refillSuggestions: vi.fn(),
+}))
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key, locale: { value: 'de' } }),
@@ -44,9 +48,10 @@ vi.mock('@/api/endpoints', () => ({
       }],
     }),
     lastCost: vi.fn(),
-    create: vi.fn(),
+    create: createPurchase,
     updateReceipt: vi.fn(),
     cancelReceipt: vi.fn(),
+    refillSuggestions,
   },
   attachmentsApi: {
     invoiceUrl: (id: number) => `/invoice/${id}`,
@@ -60,6 +65,8 @@ vi.mock('@/api/endpoints', () => ({
 describe('PurchasesView receipt header', () => {
   beforeEach(() => {
     catalogueList.mockReset().mockResolvedValue({ articles: [] })
+    createPurchase.mockReset().mockResolvedValue({ receipt_id: 'E-2', purchase_ids: [1], total_cost_cents: 1000 })
+    refillSuggestions.mockReset().mockResolvedValue({ items: [] })
   })
 
   it('shows attachments and exposes enabled editing without expanding first', async () => {
@@ -114,5 +121,63 @@ describe('PurchasesView receipt header', () => {
     await articleButton!.trigger('click')
     expect(wrapper.text()).toContain('Deluxe')
     expect(wrapper.text()).not.toContain('Standard')
+  })
+
+  it('books a basket total without requiring unit prices', async () => {
+    catalogueList.mockResolvedValue({
+      articles: [{
+        id: 1,
+        name: 'Vinyl-Paket',
+        total_stock: 0,
+        option_groups: [],
+        variants: [{
+          id: 11, option_value_ids: [], combination_key: '', no_reorder: false,
+          is_active: true, is_offered: true, on_hand: 0,
+        }],
+      }],
+    })
+    const wrapper = mount(PurchasesView)
+    await flushPromises()
+
+    await wrapper.get('.selection-button').trigger('click')
+    const basketMode = wrapper.findAll('.price-mode-switch button')
+      .find((entry) => entry.text() === 'purchases.basketPrice')
+    await basketMode!.trigger('click')
+    await wrapper.findAll('button').find((entry) => entry.text() === 'purchases.addPosition')!.trigger('click')
+    await wrapper.get('.basket-price-field input').setValue('100,00')
+    await wrapper.findAll('button').find((entry) => entry.text() === 'purchases.book')!.trigger('click')
+    await flushPromises()
+
+    expect(createPurchase).toHaveBeenCalledWith(expect.objectContaining({
+      price_mode: 'basket',
+      goods_total_cents: 10000,
+      items: [{ variant_id: 11, quantity: 1, unit_cost_cents: 0 }],
+    }))
+  })
+
+  it('turns refill suggestions into a validated unit-price basket', async () => {
+    refillSuggestions.mockResolvedValue({ items: [{
+      article_id: 1,
+      variant_id: 11,
+      article_name: 'Shirt',
+      variant_label: 'Größe: M',
+      on_hand: 2,
+      target_stock: 7,
+      suggested_quantity: 5,
+      last_unit_cost_cents: 800,
+    }] })
+    const wrapper = mount(PurchasesView)
+    await flushPromises()
+
+    await wrapper.findAll('.purchase-title-actions button')
+      .find((entry) => entry.text() === 'purchases.refill')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.refill-row input[type="number"]').element).toHaveProperty('value', '5')
+    await wrapper.findAll('.confirmation-dialog button')
+      .find((entry) => entry.text() === 'purchases.takeAsCart')!.trigger('click')
+
+    expect(wrapper.find('.confirmation-dialog').exists()).toBe(false)
+    expect(wrapper.get('.cart-item').text()).toContain('Shirt')
+    expect(wrapper.get('.cart-item').text()).toContain('5 ×')
   })
 })

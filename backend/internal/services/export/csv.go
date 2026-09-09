@@ -381,7 +381,7 @@ func (s *Service) purchaseSheet(ctx context.Context) (*Sheet, error) {
 			entry.OptionText,
 			fmt.Sprintf("%d", purchase.Quantity),
 			money.FormatCSV(purchase.UnitCostCents),
-			money.FormatCSV(int64(purchase.Quantity) * purchase.UnitCostCents),
+			money.FormatCSV(purchase.LineTotalCostCents),
 			purchase.Supplier,
 			purchase.InvoiceReference,
 			purchase.Comment,

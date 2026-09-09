@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import { attachmentsApi, catalogueApi, purchasesApi, salesApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
-import type { Article, Attachment, Purchase, Variant } from '@/api/types'
+import type { Article, Attachment, Purchase, RefillSuggestion, Variant } from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
@@ -49,6 +49,8 @@ const selectedArticleId = ref<number | null>(null)
 const chosenValues = ref<Record<number, number>>({})
 const quantity = ref(1)
 const unitCostInput = ref('')
+const priceMode = ref<'unit' | 'basket'>('unit')
+const basketPriceInput = ref('')
 const pricesIncludeVat = ref(true)
 const vatRateInput = ref('19')
 const shippingCostInput = ref('0,00')
@@ -125,20 +127,28 @@ function netFromGross(cents: number, vatBasisPoints: number) {
 
 const vatRateBasisPoints = computed(() => parseVatRate(vatRateInput.value) ?? 1900)
 const shippingEnteredCents = computed(() => parseAmount(shippingCostInput.value))
+const basketEnteredCents = computed(() => parseAmount(basketPriceInput.value))
+const goodsEnteredCents = computed(() => priceMode.value === 'basket'
+  ? basketEnteredCents.value ?? 0
+  : cart.value.reduce((sum, line) => sum + line.quantity * line.unitCostCents, 0))
 const cartNetCents = computed(() => {
   const vat = vatRateBasisPoints.value
-  const goods = cart.value.reduce((sum, line) => {
-    const entered = line.quantity * line.unitCostCents
-    return sum + (pricesIncludeVat.value ? netFromGross(entered, vat) : entered)
-  }, 0)
+  const goods = priceMode.value === 'basket'
+    ? (pricesIncludeVat.value ? netFromGross(goodsEnteredCents.value, vat) : goodsEnteredCents.value)
+    : cart.value.reduce((sum, line) => {
+      const entered = line.quantity * line.unitCostCents
+      return sum + (pricesIncludeVat.value ? netFromGross(entered, vat) : entered)
+    }, 0)
   const shipping = shippingEnteredCents.value ?? 0
   return goods + (pricesIncludeVat.value ? netFromGross(shipping, vat) : shipping)
 })
 const cartGrossCents = computed(() => {
   const vat = vatRateBasisPoints.value
-  const goods = cart.value.reduce(
-    (sum, line) => sum + line.quantity * grossFromEntered(line.unitCostCents, pricesIncludeVat.value, vat), 0,
-  )
+  const goods = priceMode.value === 'basket'
+    ? grossFromEntered(goodsEnteredCents.value, pricesIncludeVat.value, vat)
+    : cart.value.reduce(
+      (sum, line) => sum + line.quantity * grossFromEntered(line.unitCostCents, pricesIncludeVat.value, vat), 0,
+    )
   const shipping = shippingEnteredCents.value ?? 0
   return goods + grossFromEntered(shipping, pricesIncludeVat.value, vat)
 })
@@ -150,6 +160,7 @@ interface PurchaseReceipt {
   invoiceReference: string
   positions: Purchase[]
   totalCostCents: number
+  priceMode: 'unit' | 'basket'
   pricesIncludeVat: boolean
   vatRateBasisPoints: number
   shippingCostCents: number
@@ -170,6 +181,7 @@ const visibleReceipts = computed(() => {
         invoiceReference: purchase.invoice_reference,
         positions: [],
         totalCostCents: 0,
+        priceMode: purchase.price_mode || 'unit',
         pricesIncludeVat: purchase.prices_include_vat,
         vatRateBasisPoints: purchase.vat_rate_basis_points || 1900,
         shippingCostCents: purchase.shipping_cost_cents,
@@ -324,6 +336,14 @@ function onUnitCostChanged() {
   cart.value = cart.value.map((line) => line.articleId === article.id ? { ...line, unitCostCents: cents } : line)
 }
 
+function changePriceMode(next: 'unit' | 'basket') {
+  if (next === priceMode.value) return
+  if (cart.value.length && !window.confirm(t('purchases.priceModeChangeConfirm'))) return
+  cart.value = []
+  priceMode.value = next
+  basketPriceInput.value = ''
+}
+
 /**
  * The stepper is the only way to change the amount on a tablet, so it must
  * never leave the field in a state the basket cannot use: clearing a number
@@ -340,8 +360,8 @@ function normalizeQuantity() {
 
 function addToCart() {
   const variant = selectedVariant.value
-  const cost = parseAmount(unitCostInput.value)
   if (!variant) return
+  const cost = priceMode.value === 'unit' ? parseAmount(unitCostInput.value) : 0
   if (cost === null || cost < 0) {
     flash.error(t('purchases.invalidPrice'))
     return
@@ -382,6 +402,15 @@ async function book() {
     flash.error(t('purchases.invalidShipping'))
     return
   }
+  let goodsTotal: number | undefined
+  if (priceMode.value === 'basket') {
+    const parsed = parseAmount(basketPriceInput.value)
+    if (parsed === null || parsed < 0) {
+      flash.error(t('purchases.invalidBasketTotal'))
+      return
+    }
+    goodsTotal = parsed
+  }
   busy.value = true
   try {
     const result = await purchasesApi.create({
@@ -396,6 +425,8 @@ async function book() {
       prices_include_vat: pricesIncludeVat.value,
       vat_rate_basis_points: vat,
       shipping_cost_cents: shipping,
+      price_mode: priceMode.value,
+      goods_total_cents: goodsTotal ?? undefined,
       receipt_id: receiptId.value,
     })
     flash.success(t('purchases.booked', { receipt: result.receipt_id }))
@@ -411,6 +442,7 @@ async function book() {
     supplier.value = ''
     invoiceReference.value = ''
     shippingCostInput.value = '0,00'
+    basketPriceInput.value = ''
     receiptInvoice.value = null
     if (receiptInvoiceInput.value) receiptInvoiceInput.value.value = ''
     await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
@@ -440,6 +472,8 @@ const editInvoiceReference = ref('')
 const editPricesIncludeVat = ref(true)
 const editVatRateInput = ref('19')
 const editShippingCostInput = ref('0,00')
+const editPriceMode = ref<'unit' | 'basket'>('unit')
+const editBasketPriceInput = ref('')
 const editLines = ref<ReceiptEditLine[]>([])
 
 function toMoneyInput(cents: number) {
@@ -452,11 +486,18 @@ function startEdit(receipt: PurchaseReceipt) {
   editSupplier.value = receipt.supplier
   editInvoiceReference.value = receipt.invoiceReference
   editPricesIncludeVat.value = receipt.pricesIncludeVat
+  editPriceMode.value = receipt.priceMode
   editVatRateInput.value = (receipt.vatRateBasisPoints / 100).toFixed(2).replace(/(?:[.,]00)$/, '').replace('.', ',')
   const enteredShipping = receipt.pricesIncludeVat
     ? receipt.shippingCostCents
     : netFromGross(receipt.shippingCostCents, receipt.vatRateBasisPoints)
   editShippingCostInput.value = toMoneyInput(enteredShipping)
+  const goodsGross = receipt.positions
+    .filter((purchase) => !purchase.is_cancelled)
+    .reduce((sum, purchase) => sum + purchase.total_cost_cents, 0)
+  editBasketPriceInput.value = toMoneyInput(receipt.pricesIncludeVat
+    ? goodsGross
+    : netFromGross(goodsGross, receipt.vatRateBasisPoints))
   editLines.value = receipt.positions.filter((purchase) => !purchase.is_cancelled).map((purchase) => ({
     id: purchase.id,
     label: `${purchase.article_name} — ${purchase.variant_label}`,
@@ -465,6 +506,34 @@ function startEdit(receipt: PurchaseReceipt) {
       ? purchase.unit_cost_cents
       : netFromGross(purchase.unit_cost_cents, receipt.vatRateBasisPoints)),
   }))
+}
+
+function changeEditPriceMode(next: 'unit' | 'basket') {
+  if (next === editPriceMode.value) return
+  if (next === 'basket') {
+    const entered = editLines.value.map((line) => parseAmount(line.unitCostInput))
+    if (entered.some((value) => value === null || value < 0) ||
+      editLines.value.some((line) => !Number.isInteger(line.quantity) || line.quantity <= 0)) {
+      flash.error(t('purchases.invalidPrice'))
+      return
+    }
+    editBasketPriceInput.value = toMoneyInput(editLines.value.reduce(
+      (sum, line, index) => sum + line.quantity * (entered[index] ?? 0), 0,
+    ))
+  } else {
+    const total = parseAmount(editBasketPriceInput.value)
+    const pieces = editLines.value.reduce((sum, line) => sum + line.quantity, 0)
+    if (total === null || total < 0 || pieces <= 0) {
+      flash.error(t('purchases.invalidBasketTotal'))
+      return
+    }
+    const effectiveUnit = Math.round(total / pieces)
+    editLines.value = editLines.value.map((line) => ({
+      ...line,
+      unitCostInput: toMoneyInput(effectiveUnit),
+    }))
+  }
+  editPriceMode.value = next
 }
 
 async function saveReceiptEdit() {
@@ -485,20 +554,31 @@ async function saveReceiptEdit() {
     quantity: line.quantity,
     unit_cost_cents: parseAmount(line.unitCostInput),
   }))
-  if (parsedItems.some((item) => item.quantity <= 0 || item.unit_cost_cents === null || item.unit_cost_cents < 0)) {
+  if (parsedItems.some((item) => item.quantity <= 0 || (editPriceMode.value === 'unit' && (item.unit_cost_cents === null || item.unit_cost_cents < 0)))) {
     flash.error(t('purchases.invalidPrice'))
     return
+  }
+  let goodsTotal: number | undefined
+  if (editPriceMode.value === 'basket') {
+    const parsed = parseAmount(editBasketPriceInput.value)
+    if (parsed === null || parsed < 0) {
+      flash.error(t('purchases.invalidBasketTotal'))
+      return
+    }
+    goodsTotal = parsed
   }
   busy.value = true
   try {
     await purchasesApi.updateReceipt(receipt.receiptId, {
-      items: parsedItems.map((item) => ({ id: item.id, quantity: item.quantity, unit_cost_cents: item.unit_cost_cents as number })),
+      items: parsedItems.map((item) => ({ id: item.id, quantity: item.quantity, unit_cost_cents: item.unit_cost_cents ?? 0 })),
       purchased_on: editPurchasedOn.value,
       supplier: editSupplier.value.trim(),
       invoice_reference: editInvoiceReference.value.trim(),
       prices_include_vat: editPricesIncludeVat.value,
       vat_rate_basis_points: vat,
       shipping_cost_cents: shipping,
+      price_mode: editPriceMode.value,
+      goods_total_cents: goodsTotal ?? undefined,
     })
     flash.success(t('purchases.updated'))
     editingReceipt.value = null
@@ -508,6 +588,64 @@ async function saveReceiptEdit() {
   } finally {
     busy.value = false
   }
+}
+
+interface RefillRow extends RefillSuggestion {
+  quantity: number
+  unitCostInput: string
+}
+
+const refillOpen = ref(false)
+const refillLoading = ref(false)
+const refillRows = ref<RefillRow[]>([])
+
+async function openRefill() {
+  refillOpen.value = true
+  refillLoading.value = true
+  refillRows.value = []
+  try {
+    const { items } = await purchasesApi.refillSuggestions()
+    refillRows.value = items.map((item) => ({
+      ...item,
+      quantity: item.suggested_quantity,
+      unitCostInput: item.last_unit_cost_cents === null
+        ? ''
+        : toMoneyInput(pricesIncludeVat.value
+          ? item.last_unit_cost_cents
+          : netFromGross(item.last_unit_cost_cents, vatRateBasisPoints.value)),
+    }))
+  } catch (error) {
+    report(error)
+  } finally {
+    refillLoading.value = false
+  }
+}
+
+function removeRefillRow(index: number) {
+  refillRows.value.splice(index, 1)
+}
+
+async function takeRefillAsCart() {
+  if (!refillRows.value.length) return
+  const valid = refillRows.value.every((row) =>
+    Number.isInteger(row.quantity) && row.quantity > 0 &&
+    parseAmount(row.unitCostInput) !== null && (parseAmount(row.unitCostInput) ?? -1) >= 0,
+  )
+  if (!valid) {
+    flash.error(t('purchases.invalidRefill'))
+    return
+  }
+  if (cart.value.length && !window.confirm(t('purchases.replaceCartConfirm'))) return
+  priceMode.value = 'unit'
+  basketPriceInput.value = ''
+  cart.value = refillRows.value.map((row) => ({
+    articleId: row.article_id,
+    variantId: row.variant_id,
+    label: row.variant_label ? `${row.article_name} — ${row.variant_label}` : row.article_name,
+    quantity: row.quantity,
+    unitCostCents: parseAmount(row.unitCostInput) ?? 0,
+  }))
+  refillOpen.value = false
 }
 
 /**
@@ -595,9 +733,14 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
         <p class="eyebrow">{{ t('purchases.eyebrow') }}</p>
         <h1>{{ t('purchases.title') }}</h1>
       </div>
-      <div class="receipt-preview">
-        <span>{{ t('sales.receiptId') }}</span>
-        <strong>{{ receiptId || t('sales.receiptLoading') }}</strong>
+      <div class="purchase-title-actions">
+        <button v-if="canManage" class="secondary-button" type="button" @click="openRefill">
+          {{ t('purchases.refill') }}
+        </button>
+        <div class="receipt-preview">
+          <span>{{ t('sales.receiptId') }}</span>
+          <strong>{{ receiptId || t('sales.receiptLoading') }}</strong>
+        </div>
       </div>
     </div>
 
@@ -649,7 +792,16 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
       </section>
 
       <section class="selection-panel sale-details">
-        <label>
+        <fieldset class="price-mode-switch">
+          <legend>{{ t('purchases.priceMode') }}</legend>
+          <button type="button" :class="{ active: priceMode === 'unit' }" @click="changePriceMode('unit')">
+            {{ t('purchases.pricePerItem') }}
+          </button>
+          <button type="button" :class="{ active: priceMode === 'basket' }" @click="changePriceMode('basket')">
+            {{ t('purchases.basketPrice') }}
+          </button>
+        </fieldset>
+        <label v-if="priceMode === 'unit'">
           {{ t('purchases.unitCost') }}
           <input v-model="unitCostInput" inputmode="decimal" :disabled="!selectedVariant" @change="onUnitCostChanged" />
         </label>
@@ -689,13 +841,20 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             <div v-for="(line, index) in cart" :key="index" class="cart-item">
               <span>
                 <strong>{{ line.label }}</strong>
-                <small>{{ line.quantity }} × {{ format(line.unitCostCents) }}</small>
+                <small v-if="priceMode === 'unit'">{{ line.quantity }} × {{ format(line.unitCostCents) }}</small>
+                <small v-else>{{ t('common.quantity') }}: {{ line.quantity }}</small>
               </span>
-              <b>{{ format(line.quantity * line.unitCostCents) }}</b>
+              <b v-if="priceMode === 'unit'">{{ format(line.quantity * line.unitCostCents) }}</b>
               <button class="icon-button" type="button" @click="removeLine(index)">×</button>
             </div>
           </div>
         </section>
+
+        <label v-if="priceMode === 'basket'" class="basket-price-field">
+          {{ t('purchases.basketPriceWithoutShipping') }}
+          <input v-model="basketPriceInput" inputmode="decimal" />
+          <small class="muted">{{ t('purchases.basketPriceHint') }}</small>
+        </label>
 
         <div class="field-grid two-columns purchase-tax-row">
           <label class="checkbox-row">
@@ -806,6 +965,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             <div class="receipt-meta">
               <span><b>{{ t('purchases.supplier') }}:</b> {{ receipt.supplier || '—' }}</span>
               <span><b>{{ t('purchases.invoiceReference') }}:</b> {{ receipt.invoiceReference || '—' }}</span>
+              <span><b>{{ t('purchases.priceMode') }}:</b> {{ t(receipt.priceMode === 'basket' ? 'purchases.basketPrice' : 'purchases.pricePerItem') }}</span>
               <span><b>{{ t('purchases.shippingCost') }}:</b> {{ format(receipt.shippingCostCents) }}</span>
             </div>
             <div class="table-scroll">
@@ -860,6 +1020,48 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
       @change="onFileChosen"
     />
 
+    <AppDialog v-if="refillOpen" :label="t('purchases.refillTitle')" @close="refillOpen = false">
+      <div class="stack-form refill-dialog">
+        <div>
+          <h2>{{ t('purchases.refillTitle') }}</h2>
+          <p class="muted">{{ t('purchases.refillHint') }}</p>
+        </div>
+        <TableSkeleton v-if="refillLoading" :label="t('common.loading')" :columns="5" />
+        <p v-else-if="!refillRows.length" class="muted">{{ t('purchases.refillEmpty') }}</p>
+        <div v-else class="refill-list">
+          <div v-for="(row, index) in refillRows" :key="row.variant_id" class="refill-row">
+            <span class="refill-product">
+              <strong>{{ row.article_name }}</strong>
+              <small>{{ row.variant_label || '—' }}</small>
+            </span>
+            <span class="refill-stock">
+              <small>{{ t('purchases.currentStock') }}</small>
+              <b>{{ row.on_hand }}</b>
+            </span>
+            <span class="refill-stock">
+              <small>{{ t('purchases.targetStock') }}</small>
+              <b>{{ row.target_stock }}</b>
+            </span>
+            <label>
+              {{ t('common.quantity') }}
+              <input v-model.number="row.quantity" type="number" min="1" step="1" inputmode="numeric" />
+            </label>
+            <label>
+              {{ t('purchases.unitCost') }}
+              <input v-model="row.unitCostInput" inputmode="decimal" :placeholder="t('purchases.missingLastCost')" />
+            </label>
+            <button class="icon-button danger-button" type="button" :aria-label="t('purchases.removeSuggestion')" @click="removeRefillRow(index)">×</button>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" @click="refillOpen = false">{{ t('common.cancel') }}</button>
+          <button class="primary-button" type="button" :disabled="refillLoading || !refillRows.length" @click="takeRefillAsCart">
+            {{ t('purchases.takeAsCart') }}
+          </button>
+        </div>
+      </div>
+    </AppDialog>
+
     <AppDialog v-if="editingReceipt" :label="t('purchases.editTitle')" :dismissible="!busy" @close="editingReceipt = null">
       <div class="stack-form">
         <div>
@@ -877,13 +1079,22 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
           <label>{{ t('purchases.vatRate') }}<input v-model="editVatRateInput" inputmode="decimal" /></label>
         </div>
         <label>{{ t('purchases.shippingCost') }}<input v-model="editShippingCostInput" inputmode="decimal" /></label>
+        <fieldset class="price-mode-switch">
+          <legend>{{ t('purchases.priceMode') }}</legend>
+          <button type="button" :class="{ active: editPriceMode === 'unit' }" @click="changeEditPriceMode('unit')">{{ t('purchases.pricePerItem') }}</button>
+          <button type="button" :class="{ active: editPriceMode === 'basket' }" @click="changeEditPriceMode('basket')">{{ t('purchases.basketPrice') }}</button>
+        </fieldset>
         <div class="edit-purchase-lines">
           <div v-for="line in editLines" :key="line.id" class="edit-purchase-line">
             <strong>{{ line.label }}</strong>
             <label>{{ t('common.quantity') }}<input v-model.number="line.quantity" type="number" min="1" /></label>
-            <label>{{ t('purchases.unitCost') }}<input v-model="line.unitCostInput" inputmode="decimal" /></label>
+            <label v-if="editPriceMode === 'unit'">{{ t('purchases.unitCost') }}<input v-model="line.unitCostInput" inputmode="decimal" /></label>
           </div>
         </div>
+        <label v-if="editPriceMode === 'basket'">
+          {{ t('purchases.basketPriceWithoutShipping') }}
+          <input v-model="editBasketPriceInput" inputmode="decimal" />
+        </label>
         <div class="dialog-actions">
           <button class="secondary-button" type="button" @click="editingReceipt = null">{{ t('common.cancel') }}</button>
           <button class="primary-button" type="button" :disabled="busy" @click="saveReceiptEdit">{{ t('common.save') }}</button>
@@ -929,6 +1140,87 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
 </template>
 
 <style scoped>
+.purchase-title-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.price-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+}
+
+.price-mode-switch legend {
+  grid-column: 1 / -1;
+  margin-bottom: 3px;
+  color: var(--text-muted);
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.price-mode-switch > button,
+.price-mode-switch > label {
+  min-height: 44px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.price-mode-switch > button.active {
+  border-color: var(--accent);
+  background: var(--surface-selected);
+}
+
+.price-mode-switch > label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+}
+
+.basket-price-field {
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+}
+
+.refill-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(60vh, 560px);
+  overflow: auto;
+}
+
+.refill-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.5fr) 74px 74px 100px 140px 44px;
+  gap: 10px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-muted);
+}
+
+.refill-product,
+.refill-stock {
+  display: grid;
+  gap: 2px;
+}
+
+.refill-product small,
+.refill-stock small {
+  color: var(--text-muted);
+}
+
 .selected-upload,
 .receipt-id-with-file {
   display: flex;
@@ -1136,6 +1428,14 @@ td a {
 
 @media (max-width: 700px) {
   .edit-purchase-line { grid-template-columns: 1fr; }
+
+  .refill-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .refill-product {
+    grid-column: 1 / -1;
+  }
 
   .purchase-receipt-card summary {
     grid-template-columns: 1fr auto;

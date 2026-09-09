@@ -17,6 +17,8 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/catalogue"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/money"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/receipt"
 )
 
@@ -30,6 +32,9 @@ var (
 	ErrAlreadyCancelled = errors.New("purchases: purchase is already cancelled")
 	ErrInvalidVAT       = errors.New("purchases: VAT rate must be between 0 and 100 percent")
 	ErrNegativeShipping = errors.New("purchases: shipping costs cannot be negative")
+	ErrInvalidPriceMode = errors.New("purchases: invalid price mode")
+	ErrBasketTotal      = errors.New("purchases: basket price mode requires a non-negative goods total")
+	ErrBasketLineEdit   = errors.New("purchases: basket-priced receipts must be edited as a complete receipt")
 )
 
 // Item is one position of a goods receipt.
@@ -50,7 +55,9 @@ type Request struct {
 	PricesIncludeVAT   *bool `json:"prices_include_vat"`
 	VATRateBasisPoints *int  `json:"vat_rate_basis_points"`
 	// Shipping uses the same net/gross interpretation as the item prices.
-	ShippingCostCents int64 `json:"shipping_cost_cents"`
+	ShippingCostCents int64                    `json:"shipping_cost_cents"`
+	PriceMode         models.PurchasePriceMode `json:"price_mode"`
+	GoodsTotalCents   *int64                   `json:"goods_total_cents"`
 	// ReceiptID is the preview the client displayed.
 	ReceiptID string `json:"receipt_id"`
 }
@@ -62,13 +69,15 @@ type ReceiptEditItem struct {
 }
 
 type ReceiptUpdateRequest struct {
-	Items              []ReceiptEditItem `json:"items"`
-	PurchasedOn        models.Date       `json:"purchased_on"`
-	Supplier           string            `json:"supplier"`
-	InvoiceReference   string            `json:"invoice_reference"`
-	PricesIncludeVAT   *bool             `json:"prices_include_vat"`
-	VATRateBasisPoints *int              `json:"vat_rate_basis_points"`
-	ShippingCostCents  int64             `json:"shipping_cost_cents"`
+	Items              []ReceiptEditItem        `json:"items"`
+	PurchasedOn        models.Date              `json:"purchased_on"`
+	Supplier           string                   `json:"supplier"`
+	InvoiceReference   string                   `json:"invoice_reference"`
+	PricesIncludeVAT   *bool                    `json:"prices_include_vat"`
+	VATRateBasisPoints *int                     `json:"vat_rate_basis_points"`
+	ShippingCostCents  int64                    `json:"shipping_cost_cents"`
+	PriceMode          models.PurchasePriceMode `json:"price_mode"`
+	GoodsTotalCents    *int64                   `json:"goods_total_cents"`
 }
 
 // Actor is who booked the receipt.
@@ -79,9 +88,31 @@ type Actor struct {
 
 // Result is the created goods receipt.
 type Result struct {
-	ReceiptID      string  `json:"receipt_id"`
-	PurchaseIDs    []int64 `json:"purchase_ids"`
-	TotalCostCents int64   `json:"total_cost_cents"`
+	ReceiptID               string                   `json:"receipt_id"`
+	PurchaseIDs             []int64                  `json:"purchase_ids"`
+	TotalCostCents          int64                    `json:"total_cost_cents"`
+	GoodsTotalCents         int64                    `json:"goods_total_cents"`
+	PriceMode               models.PurchasePriceMode `json:"price_mode"`
+	AutoWithdrawnVariantIDs []int64                  `json:"-"`
+	AutoWithdrawnArticleIDs []int64                  `json:"-"`
+}
+
+// RefillSuggestion is one active, reorderable variant below its configured
+// target inventory. LastUnitCostCents is nil until it has been bought before.
+type RefillSuggestion struct {
+	ArticleID         int64  `json:"article_id"`
+	VariantID         int64  `json:"variant_id"`
+	ArticleName       string `json:"article_name"`
+	VariantLabel      string `json:"variant_label"`
+	OnHand            int64  `json:"on_hand"`
+	TargetStock       int    `json:"target_stock"`
+	SuggestedQuantity int64  `json:"suggested_quantity"`
+	LastUnitCostCents *int64 `json:"last_unit_cost_cents"`
+}
+
+type preparedCost struct {
+	UnitCents int64
+	LineCents int64
 }
 
 // Service books goods receipts.
@@ -95,10 +126,58 @@ func NewService(database *gorm.DB) *Service {
 	return &Service{db: database, receipts: receipt.NewService(database)}
 }
 
+// RefillSuggestions returns the current gap to target for every active,
+// reorderable variant. Offered status is deliberately irrelevant: a band may
+// replenish an item before making it visible in the sales assortment again.
+func (s *Service) RefillSuggestions(ctx context.Context) ([]RefillSuggestion, error) {
+	var variants []models.Variant
+	if err := s.db.WithContext(ctx).Model(&models.Variant{}).
+		Joins("JOIN articles ON articles.id = variants.article_id").
+		Where("articles.is_active = ? AND variants.is_active = ? AND variants.no_reorder = ? AND variants.target_stock IS NOT NULL", true, true, false).
+		Order("articles.name, variants.id").Find(&variants).Error; err != nil {
+		return nil, err
+	}
+	stock, err := catalogue.NewService(s.db).StockMap(ctx)
+	if err != nil {
+		return nil, err
+	}
+	labels, err := catalogue.NewService(s.db).VariantLabels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]RefillSuggestion, 0, len(variants))
+	for _, variant := range variants {
+		if variant.TargetStock == nil || stock[variant.ID].OnHand >= int64(*variant.TargetStock) {
+			continue
+		}
+		cost, found, err := s.LastUnitCost(ctx, variant.ID)
+		if err != nil {
+			return nil, err
+		}
+		var lastCost *int64
+		if found {
+			lastCost = &cost
+		}
+		label := labels[variant.ID]
+		result = append(result, RefillSuggestion{
+			ArticleID: variant.ArticleID, VariantID: variant.ID,
+			ArticleName: label.ArticleName, VariantLabel: label.VariantLabel,
+			OnHand: stock[variant.ID].OnHand, TargetStock: *variant.TargetStock,
+			SuggestedQuantity: int64(*variant.TargetStock) - stock[variant.ID].OnHand,
+			LastUnitCostCents: lastCost,
+		})
+	}
+	return result, nil
+}
+
 // Create books a goods receipt with one or more positions.
 func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result, error) {
 	if len(req.Items) == 0 {
 		return nil, ErrEmptyReceipt
+	}
+	priceMode, costs, goodsGross, err := prepareCosts(req.Items, req.PriceMode, req.GoodsTotalCents, req.PricesIncludeVAT, req.VATRateBasisPoints)
+	if err != nil {
+		return nil, err
 	}
 	includeVAT, vatRate, shippingGross, err := pricingTerms(
 		req.PricesIncludeVAT, req.VATRateBasisPoints, req.ShippingCostCents,
@@ -124,19 +203,15 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
 		var total int64
 
 		for i, item := range req.Items {
-			if item.Quantity <= 0 {
-				return fmt.Errorf("%w: position %d", ErrInvalidQuantity, i+1)
-			}
-			if item.UnitCostCents < 0 {
-				return fmt.Errorf("%w: position %d", ErrNegativeCost, i+1)
-			}
-			grossUnitCost := GrossFromEntered(item.UnitCostCents, includeVAT, vatRate)
+			cost := costs[i]
 
 			purchase := &models.Purchase{
 				ReceiptID:          receiptID,
 				VariantID:          item.VariantID,
 				Quantity:           item.Quantity,
-				UnitCostCents:      grossUnitCost,
+				UnitCostCents:      cost.UnitCents,
+				PriceMode:          priceMode,
+				LineTotalCostCents: cost.LineCents,
 				PricesIncludeVAT:   includeVAT,
 				VATRateBasisPoints: vatRate,
 				ShippingCostCents:  shippingGross,
@@ -154,11 +229,11 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
 				return err
 			}
 			ids = append(ids, purchase.ID)
-			total += int64(item.Quantity) * grossUnitCost
+			total += cost.LineCents
 		}
 		total += shippingGross
 
-		result = &Result{ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total}
+		result = &Result{ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total, GoodsTotalCents: goodsGross, PriceMode: priceMode}
 		return nil
 	})
 	if err != nil {
@@ -173,14 +248,22 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
 // is a bookkeeping error, and leaving a phantom position behind would distort
 // the stock the band relies on at the next gig.
 func (s *Service) Update(ctx context.Context, id int64, item Item) error {
+	_, err := s.UpdateWithWithdrawal(ctx, id, item)
+	return err
+}
+
+// UpdateWithWithdrawal updates a legacy unit-priced position and reports any
+// catalogue entries that became unavailable because stock was reduced.
+func (s *Service) UpdateWithWithdrawal(ctx context.Context, id int64, item Item) (catalogue.AutoWithdrawal, error) {
+	withdrawal := catalogue.AutoWithdrawal{VariantIDs: []int64{}, ArticleIDs: []int64{}}
 	if item.Quantity <= 0 {
-		return ErrInvalidQuantity
+		return withdrawal, ErrInvalidQuantity
 	}
 	if item.UnitCostCents < 0 {
-		return ErrNegativeCost
+		return withdrawal, ErrNegativeCost
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var purchase models.Purchase
 		if err := tx.WithContext(ctx).
 			Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -193,6 +276,9 @@ func (s *Service) Update(ctx context.Context, id int64, item Item) error {
 		if purchase.IsCancelled {
 			return ErrAlreadyCancelled
 		}
+		if purchase.PriceMode == models.PurchasePriceBasket {
+			return ErrBasketLineEdit
+		}
 		if item.VariantID != 0 && item.VariantID != purchase.VariantID {
 			if err := validateVariants(ctx, tx, []Item{item}); err != nil {
 				return err
@@ -200,15 +286,22 @@ func (s *Service) Update(ctx context.Context, id int64, item Item) error {
 			purchase.VariantID = item.VariantID
 		}
 
-		return tx.WithContext(ctx).Model(&models.Purchase{}).Where("id = ?", id).
+		if err := tx.WithContext(ctx).Model(&models.Purchase{}).Where("id = ?", id).
 			Updates(map[string]any{
-				"variant_id":      purchase.VariantID,
-				"quantity":        item.Quantity,
-				"unit_cost_cents": item.UnitCostCents,
-				"comment":         strings.TrimSpace(item.Comment),
-				"updated_at":      time.Now().UTC(),
-			}).Error
+				"variant_id":            purchase.VariantID,
+				"quantity":              item.Quantity,
+				"unit_cost_cents":       item.UnitCostCents,
+				"line_total_cost_cents": int64(item.Quantity) * item.UnitCostCents,
+				"comment":               strings.TrimSpace(item.Comment),
+				"updated_at":            time.Now().UTC(),
+			}).Error; err != nil {
+			return err
+		}
+		var err error
+		withdrawal, err = catalogue.NewService(tx).AutoWithdrawDepleted(ctx, []int64{purchase.VariantID})
+		return err
 	})
+	return withdrawal, err
 }
 
 // UpdateReceipt corrects all active positions and shared receipt metadata atomically.
@@ -216,6 +309,14 @@ func (s *Service) Update(ctx context.Context, id int64, item Item) error {
 func (s *Service) UpdateReceipt(ctx context.Context, receiptID string, req ReceiptUpdateRequest) (*Result, error) {
 	if len(req.Items) == 0 {
 		return nil, ErrEmptyReceipt
+	}
+	costItems := make([]Item, len(req.Items))
+	for i, item := range req.Items {
+		costItems[i] = Item{Quantity: item.Quantity, UnitCostCents: item.UnitCostCents}
+	}
+	priceMode, costs, goodsGross, err := prepareCosts(costItems, req.PriceMode, req.GoodsTotalCents, req.PricesIncludeVAT, req.VATRateBasisPoints)
+	if err != nil {
+		return nil, err
 	}
 	includeVAT, vatRate, shippingGross, err := pricingTerms(
 		req.PricesIncludeVAT, req.VATRateBasisPoints, req.ShippingCostCents,
@@ -260,6 +361,7 @@ func (s *Service) UpdateReceipt(ctx context.Context, receiptID string, req Recei
 				"prices_include_vat":    includeVAT,
 				"vat_rate_basis_points": vatRate,
 				"shipping_cost_cents":   shippingGross,
+				"price_mode":            priceMode,
 				"updated_at":            now,
 			}).Error; err != nil {
 			return err
@@ -269,30 +371,38 @@ func (s *Service) UpdateReceipt(ctx context.Context, receiptID string, req Recei
 		ids := make([]int64, 0, len(req.Items))
 		var total int64
 		for index, item := range req.Items {
-			if item.Quantity <= 0 {
-				return fmt.Errorf("%w: position %d", ErrInvalidQuantity, index+1)
-			}
-			if item.UnitCostCents < 0 {
-				return fmt.Errorf("%w: position %d", ErrNegativeCost, index+1)
-			}
 			if _, ok := active[item.ID]; !ok || seen[item.ID] {
 				return ErrNotFound
 			}
 			seen[item.ID] = true
-			gross := GrossFromEntered(item.UnitCostCents, includeVAT, vatRate)
+			cost := costs[index]
 			if err := tx.WithContext(ctx).Model(&models.Purchase{}).Where("id = ?", item.ID).
 				Updates(map[string]any{
-					"quantity":        item.Quantity,
-					"unit_cost_cents": gross,
-					"updated_at":      now,
+					"quantity":              item.Quantity,
+					"unit_cost_cents":       cost.UnitCents,
+					"line_total_cost_cents": cost.LineCents,
+					"updated_at":            now,
 				}).Error; err != nil {
 				return err
 			}
 			ids = append(ids, item.ID)
-			total += int64(item.Quantity) * gross
+			total += cost.LineCents
 		}
 		total += shippingGross
-		result = &Result{ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total}
+		variantIDs := make([]int64, 0, len(active))
+		for _, position := range active {
+			variantIDs = append(variantIDs, position.VariantID)
+		}
+		withdrawal, err := catalogue.NewService(tx).AutoWithdrawDepleted(ctx, variantIDs)
+		if err != nil {
+			return err
+		}
+		result = &Result{
+			ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total,
+			GoodsTotalCents: goodsGross, PriceMode: priceMode,
+			AutoWithdrawnVariantIDs: withdrawal.VariantIDs,
+			AutoWithdrawnArticleIDs: withdrawal.ArticleIDs,
+		}
 		return nil
 	})
 	return result, err
@@ -301,7 +411,13 @@ func (s *Service) UpdateReceipt(ctx context.Context, receiptID string, req Recei
 // Cancel marks one purchase position as cancelled. The original data and all
 // invoice/receipt attachments remain available for audit.
 func (s *Service) Cancel(ctx context.Context, id int64, actor Actor) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	_, err := s.CancelWithWithdrawal(ctx, id, actor)
+	return err
+}
+
+func (s *Service) CancelWithWithdrawal(ctx context.Context, id int64, actor Actor) (catalogue.AutoWithdrawal, error) {
+	withdrawal := catalogue.AutoWithdrawal{VariantIDs: []int64{}, ArticleIDs: []int64{}}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var purchase models.Purchase
 		if err := tx.WithContext(ctx).
 			Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -325,16 +441,28 @@ func (s *Service) Cancel(ctx context.Context, id int64, actor Actor) error {
 		if actor.UserID > 0 {
 			updates["cancelled_by_user_id"] = actor.UserID
 		}
-		return tx.WithContext(ctx).Model(&models.Purchase{}).
+		if err := tx.WithContext(ctx).Model(&models.Purchase{}).
 			Where("id = ?", id).
-			Updates(updates).Error
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		var err error
+		withdrawal, err = catalogue.NewService(tx).AutoWithdrawDepleted(ctx, []int64{purchase.VariantID})
+		return err
 	})
+	return withdrawal, err
 }
 
 // CancelReceipt cancels every position of a goods receipt atomically. Files
 // stay attached to the receipt and can still be inspected later.
 func (s *Service) CancelReceipt(ctx context.Context, receiptID string, actor Actor) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	_, err := s.CancelReceiptWithWithdrawal(ctx, receiptID, actor)
+	return err
+}
+
+func (s *Service) CancelReceiptWithWithdrawal(ctx context.Context, receiptID string, actor Actor) (catalogue.AutoWithdrawal, error) {
+	withdrawal := catalogue.AutoWithdrawal{VariantIDs: []int64{}, ArticleIDs: []int64{}}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var positions []models.Purchase
 		if err := tx.WithContext(ctx).
 			Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -367,10 +495,20 @@ func (s *Service) CancelReceipt(ctx context.Context, receiptID string, actor Act
 		if actor.UserID > 0 {
 			updates["cancelled_by_user_id"] = actor.UserID
 		}
-		return tx.WithContext(ctx).Model(&models.Purchase{}).
+		if err := tx.WithContext(ctx).Model(&models.Purchase{}).
 			Where("receipt_id = ? AND is_cancelled = ?", receiptID, false).
-			Updates(updates).Error
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		variantIDs := make([]int64, 0, len(positions))
+		for _, position := range positions {
+			variantIDs = append(variantIDs, position.VariantID)
+		}
+		var err error
+		withdrawal, err = catalogue.NewService(tx).AutoWithdrawDepleted(ctx, variantIDs)
+		return err
 	})
+	return withdrawal, err
 }
 
 // Delete and DeleteReceipt remain as compatibility shims for older internal
@@ -397,7 +535,62 @@ func (s *Service) LastUnitCost(ctx context.Context, variantID int64) (int64, boo
 	if err != nil {
 		return 0, false, err
 	}
+	if purchase.Quantity > 0 && purchase.LineTotalCostCents > 0 {
+		return roundedUnitCost(purchase.LineTotalCostCents, purchase.Quantity), true, nil
+	}
 	return purchase.UnitCostCents, true, nil
+}
+
+func prepareCosts(items []Item, mode models.PurchasePriceMode, goodsTotal *int64, includeVAT *bool, rate *int) (models.PurchasePriceMode, []preparedCost, int64, error) {
+	if mode == "" {
+		mode = models.PurchasePriceUnit
+	}
+	if mode != models.PurchasePriceUnit && mode != models.PurchasePriceBasket {
+		return "", nil, 0, ErrInvalidPriceMode
+	}
+	include, vatRate, _, err := pricingTerms(includeVAT, rate, 0)
+	if err != nil {
+		return "", nil, 0, err
+	}
+	weights := make([]int64, len(items))
+	for i, item := range items {
+		if item.Quantity <= 0 {
+			return "", nil, 0, fmt.Errorf("%w: position %d", ErrInvalidQuantity, i+1)
+		}
+		if mode == models.PurchasePriceUnit && item.UnitCostCents < 0 {
+			return "", nil, 0, fmt.Errorf("%w: position %d", ErrNegativeCost, i+1)
+		}
+		weights[i] = int64(item.Quantity)
+	}
+
+	costs := make([]preparedCost, len(items))
+	if mode == models.PurchasePriceBasket {
+		if goodsTotal == nil || *goodsTotal < 0 {
+			return "", nil, 0, ErrBasketTotal
+		}
+		grossTotal := GrossFromEntered(*goodsTotal, include, vatRate)
+		shares := money.Distribute(grossTotal, weights)
+		for i, share := range shares {
+			costs[i] = preparedCost{UnitCents: roundedUnitCost(share, items[i].Quantity), LineCents: share}
+		}
+		return mode, costs, grossTotal, nil
+	}
+
+	var total int64
+	for i, item := range items {
+		unit := GrossFromEntered(item.UnitCostCents, include, vatRate)
+		line := int64(item.Quantity) * unit
+		costs[i] = preparedCost{UnitCents: unit, LineCents: line}
+		total += line
+	}
+	return mode, costs, total, nil
+}
+
+func roundedUnitCost(lineTotal int64, quantity int) int64 {
+	if quantity <= 0 {
+		return 0
+	}
+	return (lineTotal + int64(quantity)/2) / int64(quantity)
 }
 
 const DefaultVATRateBasisPoints = 1900

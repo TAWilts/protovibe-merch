@@ -152,6 +152,117 @@ func TestReceiptEditingUsesTheFeatureFlagAndUpdatesSharedTerms(t *testing.T) {
 	}
 }
 
+func TestBasketPricedPurchaseKeepsExactGoodsTotalAndShippingSeparate(t *testing.T) {
+	t.Setenv("PURCHASE_EDITING_ENABLED", "true")
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Basket-priced Stock")
+
+	created := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items": []any{
+			map[string]any{"variant_id": variants[0], "quantity": 2, "unit_cost_cents": 99999},
+			map[string]any{"variant_id": variants[1], "quantity": 1, "unit_cost_cents": 99999},
+		},
+		"purchased_on":          "2026-09-09",
+		"prices_include_vat":    false,
+		"vat_rate_basis_points": 1900,
+		"shipping_cost_cents":   100,
+		"price_mode":            "basket",
+		"goods_total_cents":     100,
+	})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("create basket-priced receipt: %d %v", created.Status, created.Body)
+	}
+	if created.Body["goods_total_cents"] != float64(119) || created.Body["total_cost_cents"] != float64(238) {
+		t.Fatalf("goods should be converted once and shipping separately: %v", created.Body)
+	}
+
+	listed := h.do(http.MethodGet, "/api/v1/purchases", nil)
+	rows := jsonList(listed.Body, "purchases")
+	if len(rows) != 2 {
+		t.Fatalf("expected two positions: %v", listed.Body)
+	}
+	first := jsonObject(rows[0])
+	second := jsonObject(rows[1])
+	if first["price_mode"] != "basket" || first["total_cost_cents"].(float64)+second["total_cost_cents"].(float64) != 119 {
+		t.Fatalf("exact basket allocation was not returned: %v", rows)
+	}
+
+	ids := jsonList(created.Body, "purchase_ids")
+	receiptID := created.Body["receipt_id"].(string)
+	updated := h.do(http.MethodPatch, "/api/v1/purchases/receipt/"+receiptID, map[string]any{
+		"items": []any{
+			map[string]any{"id": ids[0], "quantity": 1, "unit_cost_cents": 0},
+			map[string]any{"id": ids[1], "quantity": 1, "unit_cost_cents": 0},
+		},
+		"purchased_on": "2026-09-09", "prices_include_vat": true,
+		"vat_rate_basis_points": 1900, "shipping_cost_cents": 5,
+		"price_mode": "basket", "goods_total_cents": 101,
+	})
+	if updated.Status != http.StatusOK || updated.Body["goods_total_cents"] != float64(101) || updated.Body["total_cost_cents"] != float64(106) {
+		t.Fatalf("edit basket receipt: %d %v", updated.Status, updated.Body)
+	}
+
+	positionID := int64(ids[0].(float64))
+	lineEdit := h.do(http.MethodPatch, "/api/v1/purchases/"+itoa(positionID), map[string]any{
+		"quantity": 1, "unit_cost_cents": 1,
+	})
+	if lineEdit.Status != http.StatusConflict || lineEdit.Body["code"] != "basket_receipt_requires_receipt_edit" {
+		t.Fatalf("basket receipt line edit should require receipt editing: %d %v", lineEdit.Status, lineEdit.Body)
+	}
+}
+
+func TestRefillSuggestionsRespectTargetsAndLastCosts(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	articleID, variants := h.sellableArticle("Refill Stock")
+
+	created := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items":        []any{map[string]any{"variant_id": variants[0], "quantity": 2, "unit_cost_cents": 750}},
+		"purchased_on": "2026-09-09",
+	})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("seed purchase: %d %v", created.Status, created.Body)
+	}
+	invalidTarget := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"variants": []any{map[string]any{"id": variants[0], "target_stock": -1}},
+	})
+	if invalidTarget.Status != http.StatusBadRequest || invalidTarget.Body["code"] != "invalid_target_stock" {
+		t.Fatalf("negative target must be rejected: %d %v", invalidTarget.Status, invalidTarget.Body)
+	}
+	configured := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"variants": []any{
+			map[string]any{"id": variants[0], "target_stock": 5},
+			map[string]any{"id": variants[1], "target_stock": 4, "no_reorder": true},
+		},
+	})
+	if configured.Status != http.StatusOK {
+		t.Fatalf("configure targets: %d %v", configured.Status, configured.Body)
+	}
+
+	res := h.do(http.MethodGet, "/api/v1/purchases/refill-suggestions", nil)
+	if res.Status != http.StatusOK {
+		t.Fatalf("list refill suggestions: %d %v", res.Status, res.Body)
+	}
+	items := jsonList(res.Body, "items")
+	if len(items) != 1 {
+		t.Fatalf("no-reorder variants must be excluded: %v", res.Body)
+	}
+	item := jsonObject(items[0])
+	if item["variant_id"] != float64(variants[0]) || item["on_hand"] != float64(2) ||
+		item["target_stock"] != float64(5) || item["suggested_quantity"] != float64(3) ||
+		item["last_unit_cost_cents"] != float64(750) {
+		t.Fatalf("unexpected refill suggestion: %v", item)
+	}
+
+	h.signInAs(band, models.RoleMember)
+	if forbidden := h.do(http.MethodGet, "/api/v1/purchases/refill-suggestions", nil); forbidden.Status != http.StatusForbidden {
+		t.Fatalf("members must not load manager refill suggestions: %d %v", forbidden.Status, forbidden.Body)
+	}
+}
+
 func TestReceiptEditingIsReadOnlyWhenTheFlagIsDisabled(t *testing.T) {
 	t.Setenv("PURCHASE_EDITING_ENABLED", "false")
 	h := newHarness(t)

@@ -78,6 +78,9 @@ type Variant struct {
 	// MinimumStock nil means no warning is configured. An explicit 0 stays
 	// meaningful: warn only once the variant is actually sold out.
 	MinimumStock *int `json:"minimum_stock"`
+	// TargetStock is the desired inventory level used by refill suggestions.
+	// Nil means that no target has been configured; an explicit zero is valid.
+	TargetStock *int `json:"target_stock"`
 
 	IsOffered bool `gorm:"not null" json:"is_offered"`
 	NoReorder bool `gorm:"not null" json:"no_reorder"`

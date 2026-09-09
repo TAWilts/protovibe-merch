@@ -19,6 +19,7 @@ import (
 
 	"github.com/tawilts/protovibe-merch/backend/internal/auth"
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/catalogue"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/platform"
 	"github.com/tawilts/protovibe-merch/backend/internal/storage"
 	"github.com/tawilts/protovibe-merch/backend/internal/tenant"
@@ -561,7 +562,8 @@ func (i *destinationImporter) importAll(ctx context.Context, snap *snapshot) err
 			return err
 		}
 	}
-	return nil
+	_, err := catalogue.NewService(i.tx).AutoWithdrawDepleted(tenant.WithBand(ctx, i.bandID), nil)
+	return err
 }
 
 func (i *destinationImporter) importUsers(ctx context.Context, rows []row) error {
@@ -945,6 +947,8 @@ func (i *destinationImporter) importPurchases(ctx context.Context, rows []row) e
 			VariantID:          i.variantIDs[int64Value(r, "variant_id")],
 			Quantity:           intValue(r, "quantity"),
 			UnitCostCents:      int64Value(r, "unit_cost_cents"),
+			PriceMode:          models.PurchasePriceUnit,
+			LineTotalCostCents: int64Value(r, "quantity") * int64Value(r, "unit_cost_cents"),
 			PricesIncludeVAT:   true,
 			VATRateBasisPoints: 1900,
 			PurchasedOn:        purchasedOn,

@@ -289,7 +289,8 @@ func TestPreserveVariantsForNewOptionGroups(t *testing.T) {
 	// Book stock against it, so losing the variant would visibly lose history.
 	purchase := &models.Purchase{
 		ReceiptID: "E-TEST-1", VariantID: black.ID, Quantity: 12, UnitCostCents: 1200,
-		PurchasedOn: models.NewDate(2026, time.August, 1),
+		LineTotalCostCents: 14400,
+		PurchasedOn:        models.NewDate(2026, time.August, 1),
 	}
 	if err := f.db.WithContext(f.ctx).Create(purchase).Error; err != nil {
 		t.Fatalf("create purchase: %v", err)
@@ -350,7 +351,8 @@ func TestStockIsDerivedFromMovements(t *testing.T) {
 		}
 	}
 	create(&models.Purchase{
-		ReceiptID: "E-1", VariantID: variant.ID, Quantity: 20, UnitCostCents: 700, PurchasedOn: today,
+		ReceiptID: "E-1", VariantID: variant.ID, Quantity: 20, UnitCostCents: 700,
+		LineTotalCostCents: 14000, PurchasedOn: today,
 	})
 	create(&models.Sale{
 		ReceiptID: "V-1", LineType: models.SaleLineMerchandise, VariantID: models.VariantReference(variant.ID), Quantity: 3, UnitPriceCents: 1500,

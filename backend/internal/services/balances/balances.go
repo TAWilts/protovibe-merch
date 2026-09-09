@@ -160,8 +160,8 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 			variants.sale_price_cents,
 			variants.minimum_stock, variants.is_offered, variants.no_reorder, variants.is_active,
 			articles.is_offered AS article_is_offered, articles.is_active AS article_is_active,
-			COALESCE((SELECT SUM(p.quantity * p.unit_cost_cents) FROM purchases p
-				WHERE p.variant_id = variants.id), 0) AS purchase_cost_cents,
+			COALESCE((SELECT SUM(p.line_total_cost_cents) FROM purchases p
+				WHERE p.variant_id = variants.id AND p.is_cancelled = 0), 0) AS purchase_cost_cents,
 			COALESCE((SELECT SUM(s.amount_due_cents - s.discount_cents) FROM sales s
 				WHERE s.variant_id = variants.id AND s.is_cancelled = 0), 0) AS revenue_cents,
 			COALESCE((SELECT SUM(s.amount_due_cents - s.discount_cents + s.donation_cents) FROM sales s
@@ -298,12 +298,12 @@ func (s *Service) costBasis(ctx context.Context) (map[int64]int64, error) {
 	var rows []row
 	err := s.db.WithContext(ctx).Model(&models.Variant{}).
 		Select(`variants.id AS variant_id,
-			CASE WHEN COALESCE((SELECT SUM(p.quantity) FROM purchases p WHERE p.variant_id = variants.id), 0) > 0
+			CASE WHEN COALESCE((SELECT SUM(p.quantity) FROM purchases p WHERE p.variant_id = variants.id AND p.is_cancelled = 0), 0) > 0
 				-- The division yields a DECIMAL; money stays integer cents, so
 				-- it is rounded here rather than silently truncated later.
 				THEN CAST(ROUND(
-					(SELECT SUM(p.quantity * p.unit_cost_cents) FROM purchases p WHERE p.variant_id = variants.id)
-					/ (SELECT SUM(p.quantity) FROM purchases p WHERE p.variant_id = variants.id)
+					(SELECT SUM(p.line_total_cost_cents) FROM purchases p WHERE p.variant_id = variants.id AND p.is_cancelled = 0)
+					/ (SELECT SUM(p.quantity) FROM purchases p WHERE p.variant_id = variants.id AND p.is_cancelled = 0)
 				) AS SIGNED)
 				ELSE 0
 			END AS unit_cost_cents`).

@@ -176,6 +176,7 @@ func TestVariantOverrides(t *testing.T) {
 			ID:             variant.ID,
 			SalePriceCents: ptr(int64(5200)),
 			MinimumStock:   ptr(0),
+			TargetStock:    ptr(12),
 			NoReorder:      ptr(true),
 			IsOffered:      ptr(false),
 		}},
@@ -195,9 +196,12 @@ func TestVariantOverrides(t *testing.T) {
 	if stored.MinimumStock == nil || *stored.MinimumStock != 0 {
 		t.Fatalf("an explicit zero threshold must be stored: %v", stored.MinimumStock)
 	}
+	if stored.TargetStock == nil || *stored.TargetStock != 12 {
+		t.Fatalf("target stock was not stored: %v", stored.TargetStock)
+	}
 
 	clear := catalogue.ArticleConfiguration{
-		Variants: []catalogue.VariantInput{{ID: variant.ID, ClearMinimum: true}},
+		Variants: []catalogue.VariantInput{{ID: variant.ID, ClearMinimum: true, ClearTarget: true}},
 	}
 	if err := f.svc.ApplyConfiguration(f.ctx, article.ID, clear); err != nil {
 		t.Fatalf("clear: %v", err)
@@ -207,6 +211,9 @@ func TestVariantOverrides(t *testing.T) {
 	}
 	if stored.MinimumStock != nil {
 		t.Fatalf("clearing must remove the threshold, got %v", *stored.MinimumStock)
+	}
+	if stored.TargetStock != nil {
+		t.Fatalf("clearing must remove target stock, got %v", *stored.TargetStock)
 	}
 }
 

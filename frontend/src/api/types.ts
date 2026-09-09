@@ -223,6 +223,7 @@ export interface Variant {
   combination_key: string
   sale_price_cents: number
   minimum_stock: number | null
+  target_stock: number | null
   is_offered: boolean
   is_available_for_sale: boolean
   no_reorder: boolean
@@ -484,6 +485,8 @@ export interface Purchase {
   quantity: number
   unit_cost_cents: number
   total_cost_cents: number
+  line_total_cost_cents?: number
+  price_mode: 'unit' | 'basket'
   purchased_on: string
   supplier: string
   invoice_reference: string
@@ -513,6 +516,17 @@ export interface BandTransaction {
   is_cancelled: boolean
   created_by_username: string
   attachments: Attachment[]
+}
+
+export interface RefillSuggestion {
+  article_id: number
+  variant_id: number
+  article_name: string
+  variant_label: string
+  on_hand: number
+  target_stock: number
+  suggested_quantity: number
+  last_unit_cost_cents: number | null
 }
 
 export interface RecurringBandTransaction {

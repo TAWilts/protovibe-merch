@@ -116,7 +116,7 @@ func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, 
 		Where("is_cancelled = ?", false)
 	purchaseQuery = period.apply(purchaseQuery, "purchased_on")
 	if err := purchaseQuery.
-		Select("variant_id, COALESCE(SUM(quantity * unit_cost_cents), 0) AS cost_cents").
+		Select("variant_id, COALESCE(SUM(line_total_cost_cents), 0) AS cost_cents").
 		Group("variant_id").
 		Scan(&purchaseRows).Error; err != nil {
 		return nil, err
@@ -316,7 +316,7 @@ func (s *Service) costBasisAt(ctx context.Context, to *models.Date) (map[int64]i
 	}
 	if err := query.
 		Select(`variant_id, COALESCE(SUM(quantity), 0) AS quantity,
-			COALESCE(SUM(quantity * unit_cost_cents), 0) AS cost_cents`).
+			COALESCE(SUM(line_total_cost_cents), 0) AS cost_cents`).
 		Group("variant_id").
 		Scan(&rows).Error; err != nil {
 		return nil, err

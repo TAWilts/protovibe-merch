@@ -2,6 +2,15 @@ package models
 
 import "time"
 
+// PurchasePriceMode records whether the receipt was entered using individual
+// unit prices or one goods total for the complete basket.
+type PurchasePriceMode string
+
+const (
+	PurchasePriceUnit   PurchasePriceMode = "unit"
+	PurchasePriceBasket PurchasePriceMode = "basket"
+)
+
 // Purchase is one line of a goods-receipt receipt. Like sales, several lines
 // can share a ReceiptID. Booked purchases are never hard-deleted; corrections
 // remain visible and are removed from stock/finance totals by cancellation.
@@ -14,7 +23,11 @@ type Purchase struct {
 
 	Quantity int `gorm:"not null" json:"quantity"`
 	// UnitCostCents is canonical gross cost. Net user input is converted before storage.
-	UnitCostCents int64 `gorm:"not null" json:"unit_cost_cents"`
+	UnitCostCents int64             `gorm:"not null" json:"unit_cost_cents"`
+	PriceMode     PurchasePriceMode `gorm:"size:20;not null;default:'unit'" json:"price_mode"`
+	// LineTotalCostCents is the exact gross goods cost allocated to this line.
+	// It avoids losing rounding cents when one basket total spans many units.
+	LineTotalCostCents int64 `gorm:"not null;default:0" json:"line_total_cost_cents"`
 
 	// Receipt-level price metadata is repeated on each line, like supplier/date/reference.
 	PricesIncludeVAT   bool  `gorm:"not null" json:"prices_include_vat"`

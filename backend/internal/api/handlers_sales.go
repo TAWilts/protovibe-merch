@@ -282,6 +282,7 @@ func (s *Server) createSale(c *gin.Context) {
 				"offline":          offline != nil,
 			},
 		})
+		s.logAutomaticWithdrawal(c, result.AutoWithdrawnVariantIDs, result.AutoWithdrawnArticleIDs, "sale")
 		s.recordTelemetryEvent(c, "payment_method", req.PaymentMethod)
 		s.recordSaleTelemetry(c, "sale_created", result.SaleIDs)
 	}
@@ -391,6 +392,7 @@ func (s *Server) createHistoricalSale(c *gin.Context) {
 				"discount_cents": result.DiscountCents, "donation_cents": result.DonationCents,
 			},
 		})
+		s.logAutomaticWithdrawal(c, result.AutoWithdrawnVariantIDs, result.AutoWithdrawnArticleIDs, "historical_sale")
 	}
 	status := http.StatusCreated
 	if result.Replayed {

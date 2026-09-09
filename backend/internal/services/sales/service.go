@@ -47,12 +47,14 @@ type OfflineEvent struct {
 
 // Result is what the client gets back after a successful booking.
 type Result struct {
-	ReceiptID      string  `json:"receipt_id"`
-	SaleIDs        []int64 `json:"sale_ids"`
-	TotalDueCents  int64   `json:"total_due_cents"`
-	TotalPaidCents int64   `json:"total_paid_cents"`
-	DiscountCents  int64   `json:"discount_cents"`
-	DonationCents  int64   `json:"donation_cents"`
+	ReceiptID               string  `json:"receipt_id"`
+	SaleIDs                 []int64 `json:"sale_ids"`
+	TotalDueCents           int64   `json:"total_due_cents"`
+	TotalPaidCents          int64   `json:"total_paid_cents"`
+	DiscountCents           int64   `json:"discount_cents"`
+	DonationCents           int64   `json:"donation_cents"`
+	AutoWithdrawnVariantIDs []int64 `json:"-"`
+	AutoWithdrawnArticleIDs []int64 `json:"-"`
 	// Replayed marks an answer that came from the sync log rather than from a
 	// fresh booking, so the device can tell the two apart.
 	Replayed bool `json:"replayed"`
@@ -172,6 +174,18 @@ func (s *Service) book(ctx context.Context, req Request, actor Actor, offline *O
 			DiscountCents:  prepared.DiscountCents,
 			DonationCents:  prepared.DonationCents,
 		}
+		variantIDs := make([]int64, 0, len(prepared.Lines))
+		for _, line := range prepared.Lines {
+			if line.VariantID != nil {
+				variantIDs = append(variantIDs, *line.VariantID)
+			}
+		}
+		withdrawal, err := catalogue.NewService(tx).AutoWithdrawDepleted(ctx, variantIDs)
+		if err != nil {
+			return err
+		}
+		result.AutoWithdrawnVariantIDs = withdrawal.VariantIDs
+		result.AutoWithdrawnArticleIDs = withdrawal.ArticleIDs
 
 		if intent != nil {
 			if err := s.consumeIntent(ctx, tx, intent, result); err != nil {

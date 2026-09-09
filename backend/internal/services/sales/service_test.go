@@ -172,7 +172,7 @@ func TestSaleReducesDerivedStock(t *testing.T) {
 
 	purchase := &models.Purchase{
 		ReceiptID: "E-1", VariantID: variant.ID, Quantity: 10,
-		UnitCostCents: 900, PurchasedOn: f.today,
+		UnitCostCents: 900, LineTotalCostCents: 9000, PurchasedOn: f.today,
 	}
 	if err := f.db.WithContext(f.ctx).Create(purchase).Error; err != nil {
 		t.Fatalf("create purchase: %v", err)

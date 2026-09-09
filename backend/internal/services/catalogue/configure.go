@@ -36,6 +36,8 @@ type VariantInput struct {
 	// once sold out", which is why null and 0 must stay distinguishable.
 	MinimumStock *int  `json:"minimum_stock"`
 	ClearMinimum bool  `json:"clear_minimum_stock"`
+	TargetStock  *int  `json:"target_stock"`
+	ClearTarget  bool  `json:"clear_target_stock"`
 	IsOffered    *bool `json:"is_offered"`
 	NoReorder    *bool `json:"no_reorder"`
 }
@@ -51,7 +53,11 @@ type ArticleConfiguration struct {
 
 // ErrUnknownEntity is returned when a save references a group, value or
 // variant that does not belong to this article.
-var ErrUnknownEntity = errors.New("catalogue: referenced entity does not belong to this article")
+var (
+	ErrUnknownEntity       = errors.New("catalogue: referenced entity does not belong to this article")
+	ErrInvalidMinimumStock = errors.New("catalogue: minimum stock cannot be negative")
+	ErrInvalidTargetStock  = errors.New("catalogue: target stock cannot be negative")
+)
 
 // ApplyConfiguration saves an article's options, variants and prices in one
 // transaction.
@@ -63,7 +69,15 @@ var ErrUnknownEntity = errors.New("catalogue: referenced entity does not belong 
 // the existing variants onto its first value, so stock, prices and photos
 // survive the change.
 func (s *Service) ApplyConfiguration(ctx context.Context, articleID int64, cfg ArticleConfiguration) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	_, err := s.ApplyConfigurationWithWithdrawal(ctx, articleID, cfg)
+	return err
+}
+
+// ApplyConfigurationWithWithdrawal also reports catalogue rows that were
+// automatically removed after a no-reorder change on depleted stock.
+func (s *Service) ApplyConfigurationWithWithdrawal(ctx context.Context, articleID int64, cfg ArticleConfiguration) (AutoWithdrawal, error) {
+	withdrawal := AutoWithdrawal{VariantIDs: []int64{}, ArticleIDs: []int64{}}
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		txService := s.WithTx(tx)
 
 		var article models.Article
@@ -92,8 +106,18 @@ func (s *Service) ApplyConfiguration(ctx context.Context, articleID int64, cfg A
 			return err
 		}
 
-		return txService.applyVariantOverrides(ctx, tx, articleID, cfg.Variants)
+		if err := txService.applyVariantOverrides(ctx, tx, articleID, cfg.Variants); err != nil {
+			return err
+		}
+		var variantIDs []int64
+		if err := tx.WithContext(ctx).Model(&models.Variant{}).
+			Where("article_id = ?", articleID).Pluck("id", &variantIDs).Error; err != nil {
+			return err
+		}
+		withdrawal, err = txService.AutoWithdrawDepleted(ctx, variantIDs)
+		return err
 	})
+	return withdrawal, err
 }
 
 func applyArticleFields(ctx context.Context, tx *gorm.DB, article *models.Article, cfg ArticleConfiguration) error {
@@ -324,9 +348,18 @@ func (s *Service) applyVariantOverrides(ctx context.Context, tx *gorm.DB, articl
 			updates["minimum_stock"] = nil
 		case input.MinimumStock != nil:
 			if *input.MinimumStock < 0 {
-				return fmt.Errorf("catalogue: minimum stock cannot be negative")
+				return ErrInvalidMinimumStock
 			}
 			updates["minimum_stock"] = *input.MinimumStock
+		}
+		switch {
+		case input.ClearTarget:
+			updates["target_stock"] = nil
+		case input.TargetStock != nil:
+			if *input.TargetStock < 0 {
+				return ErrInvalidTargetStock
+			}
+			updates["target_stock"] = *input.TargetStock
 		}
 		if input.IsOffered != nil {
 			updates["is_offered"] = *input.IsOffered

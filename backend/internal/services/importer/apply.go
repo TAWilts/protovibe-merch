@@ -175,6 +175,7 @@ func (s *Service) Apply(ctx context.Context, kind Kind, rows []Row, on models.Da
 				purchase := &models.Purchase{
 					ReceiptID: receiptID, VariantID: variantID,
 					Quantity: row.Quantity, UnitCostCents: price,
+					PriceMode: models.PurchasePriceUnit, LineTotalCostCents: int64(row.Quantity) * price,
 					PurchasedOn: on, Supplier: row.Party,
 					CreatedAt: now, UpdatedAt: now,
 				}
@@ -204,6 +205,15 @@ func (s *Service) Apply(ctx context.Context, kind Kind, rows []Row, on models.Da
 			sale.CreatedByUserID = &actor.UserID
 			sale.CreatedByUsername = actor.Username
 			if err := tx.WithContext(ctx).Create(sale).Error; err != nil {
+				return err
+			}
+		}
+		if kind == KindSales {
+			ids := make([]int64, 0, len(variantIDs))
+			for _, id := range variantIDs {
+				ids = append(ids, id)
+			}
+			if _, err := txImporter.catalogue.AutoWithdrawDepleted(ctx, ids); err != nil {
 				return err
 			}
 		}

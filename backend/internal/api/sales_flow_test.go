@@ -30,6 +30,67 @@ func (h *harness) sellableArticle(name string) (int64, []int64) {
 	return int64(created.Body["id"].(float64)), ids
 }
 
+func TestSellingLastNoReorderUnitAutomaticallyWithdrawsVariantAndArticle(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	createdArticle := h.do(http.MethodPost, "/api/v1/articles", map[string]any{
+		"name": "Last-run Shirt", "default_sale_price_cents": 1800,
+	})
+	articleID := int64(createdArticle.Body["id"].(float64))
+	allVariants := jsonList(createdArticle.Body, "variants")
+	variantID := int64(jsonObject(allVariants[0])["id"].(float64))
+
+	stocked := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items":        []any{map[string]any{"variant_id": variantID, "quantity": 1, "unit_cost_cents": 500}},
+		"purchased_on": "2026-09-09",
+	})
+	if stocked.Status != http.StatusCreated {
+		t.Fatalf("stock variant: %d %v", stocked.Status, stocked.Body)
+	}
+	updates := make([]any, 0, len(allVariants))
+	for _, raw := range allVariants {
+		updates = append(updates, map[string]any{
+			"id": jsonObject(raw)["id"], "no_reorder": true,
+		})
+	}
+	configured := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{"variants": updates})
+	if configured.Status != http.StatusOK {
+		t.Fatalf("mark variants no-reorder: %d %v", configured.Status, configured.Body)
+	}
+	if configured.Body["is_offered"] != true {
+		t.Fatalf("article must remain offered while one no-reorder unit is in stock: %v", configured.Body)
+	}
+
+	sold := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items":          []any{map[string]any{"variant_id": variantID, "quantity": 1}},
+		"payment_method": "Bar", "is_paid": true, "is_received": true,
+		"amount_given_cents": 1800, "sold_on": "2026-09-09",
+	})
+	if sold.Status != http.StatusCreated {
+		t.Fatalf("sell last unit: %d %v", sold.Status, sold.Body)
+	}
+	reloaded := h.do(http.MethodGet, "/api/v1/articles/"+itoa(articleID), nil)
+	if reloaded.Body["is_offered"] != false {
+		t.Fatalf("article should be withdrawn after all active variants are depleted and no-reorder: %v", reloaded.Body)
+	}
+	for _, raw := range jsonList(reloaded.Body, "variants") {
+		variant := jsonObject(raw)
+		if variant["is_active"] == true && variant["is_offered"] != false {
+			t.Fatalf("active depleted no-reorder variant should be withdrawn: %v", variant)
+		}
+	}
+
+	var auditCount int64
+	if err := h.db.WithContext(h.ctx()).Model(&models.AuditLog{}).
+		Where("band_id = ? AND action = ?", band.ID, "catalogue.auto_withdrawn").Count(&auditCount).Error; err != nil {
+		t.Fatalf("count withdrawal audit: %v", err)
+	}
+	if auditCount == 0 {
+		t.Fatal("automatic withdrawal must be audited")
+	}
+}
+
 // TestSellAtTheStand walks the point-of-sale happy path over HTTP: preview the
 // receipt ID, book a two-position basket with an overpayment, and see the
 // stock and the donation land correctly.

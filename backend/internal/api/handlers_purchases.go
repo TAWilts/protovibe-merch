@@ -21,6 +21,7 @@ func (s *Server) registerPurchaseRoutes(g *gin.RouterGroup) {
 	read.GET("/last-cost/:id", s.lastPurchaseCost)
 
 	write := g.Group("/purchases", requireAuth(), requireBandRole(models.RoleManager))
+	write.GET("/refill-suggestions", s.refillSuggestions)
 	write.POST("", s.createPurchase)
 	write.PATCH("/:id", s.updatePurchase)
 	write.PATCH("/receipt/:receiptID", s.updatePurchaseReceipt)
@@ -33,28 +34,41 @@ func (s *Server) registerPurchaseRoutes(g *gin.RouterGroup) {
 	g.DELETE("/purchase-receipts/:receiptID", requireAuth(), requireBandRole(models.RoleManager), s.cancelPurchaseReceipt)
 }
 
+func (s *Server) refillSuggestions(c *gin.Context) {
+	items, err := s.purchases.RefillSuggestions(c.Request.Context())
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+	if items == nil {
+		items = []purchases.RefillSuggestion{}
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
 type purchasePayload struct {
-	ID                   int64       `json:"id"`
-	ReceiptID            string      `json:"receipt_id"`
-	VariantID            int64       `json:"variant_id"`
-	ArticleName          string      `json:"article_name"`
-	VariantLabel         string      `json:"variant_label"`
-	Quantity             int         `json:"quantity"`
-	UnitCostCents        int64       `json:"unit_cost_cents"`
-	TotalCostCents       int64       `json:"total_cost_cents"`
-	PurchasedOn          models.Date `json:"purchased_on"`
-	Supplier             string      `json:"supplier"`
-	InvoiceReference     string      `json:"invoice_reference"`
-	HasInvoiceFile       bool        `json:"has_invoice_file"`
-	HasReceiptAttachment bool        `json:"has_receipt_attachment"`
-	PricesIncludeVAT     bool        `json:"prices_include_vat"`
-	VATRateBasisPoints   int         `json:"vat_rate_basis_points"`
-	ShippingCostCents    int64       `json:"shipping_cost_cents"`
-	Comment              string      `json:"comment"`
-	IsCancelled          bool        `json:"is_cancelled"`
-	CancelledAt          *time.Time  `json:"cancelled_at,omitempty"`
-	CancelledByUsername  string      `json:"cancelled_by_username"`
-	CreatedByUsername    string      `json:"created_by_username"`
+	ID                   int64                    `json:"id"`
+	ReceiptID            string                   `json:"receipt_id"`
+	VariantID            int64                    `json:"variant_id"`
+	ArticleName          string                   `json:"article_name"`
+	VariantLabel         string                   `json:"variant_label"`
+	Quantity             int                      `json:"quantity"`
+	UnitCostCents        int64                    `json:"unit_cost_cents"`
+	TotalCostCents       int64                    `json:"total_cost_cents"`
+	PriceMode            models.PurchasePriceMode `json:"price_mode"`
+	PurchasedOn          models.Date              `json:"purchased_on"`
+	Supplier             string                   `json:"supplier"`
+	InvoiceReference     string                   `json:"invoice_reference"`
+	HasInvoiceFile       bool                     `json:"has_invoice_file"`
+	HasReceiptAttachment bool                     `json:"has_receipt_attachment"`
+	PricesIncludeVAT     bool                     `json:"prices_include_vat"`
+	VATRateBasisPoints   int                      `json:"vat_rate_basis_points"`
+	ShippingCostCents    int64                    `json:"shipping_cost_cents"`
+	Comment              string                   `json:"comment"`
+	IsCancelled          bool                     `json:"is_cancelled"`
+	CancelledAt          *time.Time               `json:"cancelled_at,omitempty"`
+	CancelledByUsername  string                   `json:"cancelled_by_username"`
+	CreatedByUsername    string                   `json:"created_by_username"`
 }
 
 // listPurchases returns the goods-receipt history, newest first.
@@ -97,7 +111,8 @@ func (s *Server) listPurchases(c *gin.Context) {
 			VariantLabel:         labels[row.VariantID].VariantLabel,
 			Quantity:             row.Quantity,
 			UnitCostCents:        row.UnitCostCents,
-			TotalCostCents:       int64(row.Quantity) * row.UnitCostCents,
+			TotalCostCents:       row.LineTotalCostCents,
+			PriceMode:            row.PriceMode,
 			PurchasedOn:          row.PurchasedOn,
 			Supplier:             row.Supplier,
 			InvoiceReference:     row.InvoiceReference,
@@ -156,9 +171,11 @@ func (s *Server) createPurchase(c *gin.Context) {
 	s.audit.Log(ctx, actorFrom(c), audit.Entry{
 		Action: audit.ActionPurchaseCreated, EntityType: "purchase",
 		Details: map[string]any{
-			"receipt_id":       result.ReceiptID,
-			"positions":        len(result.PurchaseIDs),
-			"total_cost_cents": result.TotalCostCents,
+			"receipt_id":        result.ReceiptID,
+			"positions":         len(result.PurchaseIDs),
+			"total_cost_cents":  result.TotalCostCents,
+			"goods_total_cents": result.GoodsTotalCents,
+			"price_mode":        result.PriceMode,
 		},
 	})
 	c.JSON(http.StatusCreated, result)
@@ -180,7 +197,8 @@ func (s *Server) updatePurchase(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	if err := s.purchases.Update(ctx, id, item); err != nil {
+	withdrawal, err := s.purchases.UpdateWithWithdrawal(ctx, id, item)
+	if err != nil {
 		s.reportPurchaseError(c, err)
 		return
 	}
@@ -189,6 +207,7 @@ func (s *Server) updatePurchase(c *gin.Context) {
 		Action: audit.ActionPurchaseUpdated, EntityType: "purchase", EntityID: &id,
 		Details: map[string]any{"quantity": item.Quantity, "unit_cost_cents": item.UnitCostCents},
 	})
+	s.logAutomaticWithdrawal(c, withdrawal.VariantIDs, withdrawal.ArticleIDs, "purchase_update")
 	c.Status(http.StatusNoContent)
 }
 
@@ -220,11 +239,14 @@ func (s *Server) updatePurchaseReceipt(c *gin.Context) {
 	s.audit.Log(ctx, actorFrom(c), audit.Entry{
 		Action: audit.ActionPurchaseUpdated, EntityType: "purchase_receipt",
 		Details: map[string]any{
-			"receipt_id":       receiptID,
-			"positions":        len(result.PurchaseIDs),
-			"total_cost_cents": result.TotalCostCents,
+			"receipt_id":        receiptID,
+			"positions":         len(result.PurchaseIDs),
+			"total_cost_cents":  result.TotalCostCents,
+			"goods_total_cents": result.GoodsTotalCents,
+			"price_mode":        result.PriceMode,
 		},
 	})
+	s.logAutomaticWithdrawal(c, result.AutoWithdrawnVariantIDs, result.AutoWithdrawnArticleIDs, "purchase_receipt_update")
 	c.JSON(http.StatusOK, result)
 }
 
@@ -236,9 +258,10 @@ func (s *Server) cancelPurchase(c *gin.Context) {
 
 	state := stateFrom(c)
 	ctx := c.Request.Context()
-	if err := s.purchases.Cancel(ctx, id, purchases.Actor{
+	withdrawal, err := s.purchases.CancelWithWithdrawal(ctx, id, purchases.Actor{
 		UserID: state.User.ID, Username: state.User.Username,
-	}); err != nil {
+	})
+	if err != nil {
 		s.reportPurchaseError(c, err)
 		return
 	}
@@ -246,6 +269,7 @@ func (s *Server) cancelPurchase(c *gin.Context) {
 	s.audit.Log(ctx, actorFrom(c), audit.Entry{
 		Action: audit.ActionPurchaseCancelled, EntityType: "purchase", EntityID: &id,
 	})
+	s.logAutomaticWithdrawal(c, withdrawal.VariantIDs, withdrawal.ArticleIDs, "purchase_cancel")
 	c.Status(http.StatusNoContent)
 }
 
@@ -258,9 +282,10 @@ func (s *Server) cancelPurchaseReceipt(c *gin.Context) {
 
 	state := stateFrom(c)
 	ctx := c.Request.Context()
-	if err := s.purchases.CancelReceipt(ctx, receiptID, purchases.Actor{
+	withdrawal, err := s.purchases.CancelReceiptWithWithdrawal(ctx, receiptID, purchases.Actor{
 		UserID: state.User.ID, Username: state.User.Username,
-	}); err != nil {
+	})
+	if err != nil {
 		s.reportPurchaseError(c, err)
 		return
 	}
@@ -269,6 +294,7 @@ func (s *Server) cancelPurchaseReceipt(c *gin.Context) {
 		Action: audit.ActionPurchaseCancelled, EntityType: "purchase_receipt",
 		Details: map[string]any{"receipt_id": receiptID, "attachments_kept": true},
 	})
+	s.logAutomaticWithdrawal(c, withdrawal.VariantIDs, withdrawal.ArticleIDs, "purchase_receipt_cancel")
 	c.Status(http.StatusNoContent)
 }
 
@@ -284,6 +310,12 @@ func (s *Server) reportPurchaseError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "invalid_quantity", err.Error())
 	case errors.Is(err, purchases.ErrNegativeCost), errors.Is(err, purchases.ErrNegativeShipping):
 		fail(c, http.StatusBadRequest, "invalid_cost", err.Error())
+	case errors.Is(err, purchases.ErrInvalidPriceMode):
+		fail(c, http.StatusBadRequest, "invalid_price_mode", err.Error())
+	case errors.Is(err, purchases.ErrBasketTotal):
+		fail(c, http.StatusBadRequest, "invalid_basket_total", err.Error())
+	case errors.Is(err, purchases.ErrBasketLineEdit):
+		fail(c, http.StatusConflict, "basket_receipt_requires_receipt_edit", err.Error())
 	case errors.Is(err, purchases.ErrInvalidVAT):
 		fail(c, http.StatusBadRequest, "invalid_vat", err.Error())
 	case errors.Is(err, purchases.ErrUnknownVariant):

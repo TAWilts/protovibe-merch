@@ -178,7 +178,8 @@ func TestArticleDeletionRejectsCompleteAndUsedDrafts(t *testing.T) {
 	}
 	purchase := &models.Purchase{
 		ReceiptID: "E-DRAFT", VariantID: variant.ID, Quantity: 1, UnitCostCents: 100,
-		PurchasedOn: models.NewDate(2026, time.September, 9),
+		LineTotalCostCents: 100,
+		PurchasedOn:        models.NewDate(2026, time.September, 9),
 	}
 	if err := h.db.WithContext(bandCtx).Create(purchase).Error; err != nil {
 		t.Fatalf("create purchase reference: %v", err)

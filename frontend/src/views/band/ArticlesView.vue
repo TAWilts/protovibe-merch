@@ -148,6 +148,7 @@ const variantPhotos = ref<Photo[]>([])
 const photoInput = ref<HTMLInputElement | null>(null)
 const photoUploading = ref(false)
 const minimumForAll = ref('')
+const targetForAll = ref('')
 
 async function openPhotos(variantId: number, label: string) {
   photosFor.value = { id: variantId, label }
@@ -384,6 +385,41 @@ async function applyMinimumToAll() {
     busy.value = false
   }
 }
+
+function onTargetChange(variantId: number, raw: string) {
+  const trimmed = raw.trim()
+  if (trimmed === '') {
+    saveVariant(variantId, { clear_target_stock: true })
+    return
+  }
+  const parsed = Number(trimmed)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    flash.error(t('articles.invalidTarget'))
+    return
+  }
+  saveVariant(variantId, { target_stock: parsed })
+}
+
+async function applyTargetToAll() {
+  if (!selected.value || busy.value) return
+  const parsed = Number(String(targetForAll.value).trim())
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    flash.error(t('articles.invalidTarget'))
+    return
+  }
+  busy.value = true
+  try {
+    await catalogueApi.save(selected.value.id, {
+      variants: activeVariants.value.map((variant) => ({ id: variant.id, target_stock: parsed })),
+    })
+    flash.success(t('articles.targetApplied', { count: activeVariants.value.length }))
+    await load(true)
+  } catch (error) {
+    report(error)
+  } finally {
+    busy.value = false
+  }
+}
 </script>
 
 <template>
@@ -561,6 +597,15 @@ async function applyMinimumToAll() {
                 {{ t('articles.applyToAll') }}
               </button>
             </form>
+            <form class="minimum-for-all target-for-all" @submit.prevent="applyTargetToAll">
+              <label>
+                {{ t('articles.targetForAll') }}
+                <input v-model="targetForAll" type="number" min="0" step="1" inputmode="numeric" />
+              </label>
+              <button class="secondary-button" type="submit" :disabled="busy || !activeVariants.length">
+                {{ t('articles.applyToAll') }}
+              </button>
+            </form>
           </div>
           <div class="table-scroll">
             <table>
@@ -570,6 +615,7 @@ async function applyMinimumToAll() {
                   <th class="numeric">{{ t('balances.onHand') }}</th>
                   <th class="numeric">{{ t('articles.salePrice') }}</th>
                   <th class="numeric">{{ t('balances.minimum') }}</th>
+                  <th class="numeric">{{ t('articles.targetStock') }}</th>
                   <th>{{ t('articles.offered') }}</th>
                   <th>{{ t('articles.reorder') }}</th>
                   <th>{{ t('articles.photos.column') }}</th>
@@ -600,6 +646,15 @@ async function applyMinimumToAll() {
                       inputmode="numeric"
                       :placeholder="t('articles.noWarning')"
                       @change="onMinimumChange(variant.id, ($event.target as HTMLInputElement).value)"
+                    />
+                  </td>
+                  <td class="numeric">
+                    <input
+                      class="cell-input"
+                      :value="variant.target_stock ?? ''"
+                      inputmode="numeric"
+                      :placeholder="t('articles.noTarget')"
+                      @change="onTargetChange(variant.id, ($event.target as HTMLInputElement).value)"
                     />
                   </td>
                   <td>
