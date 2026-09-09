@@ -192,21 +192,3 @@ func TestCatalogueIsBandScopedOverHTTP(t *testing.T) {
 		t.Fatalf("band A's article was modified: %v", reloaded.Body)
 	}
 }
-
-// TestPOSModeHidesManagementButKeepsSelling pins the restricted mode from the
-// client's perspective.
-func TestPOSModeHidesManagementButKeepsSelling(t *testing.T) {
-	h := newHarness(t)
-	band := h.makeBand()
-	h.signInAs(band, models.RoleManager)
-
-	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{"enabled": true}); res.Status != http.StatusOK {
-		t.Fatalf("enable POS mode: %d %v", res.Status, res.Body)
-	}
-	if res := h.do(http.MethodGet, "/api/v1/articles", nil); res.Status != http.StatusForbidden {
-		t.Fatalf("POS mode must block article management, got %d", res.Status)
-	}
-	if res := h.do(http.MethodGet, "/api/v1/assortment", nil); res.Status != http.StatusOK {
-		t.Fatalf("POS mode must keep the assortment readable, got %d %v", res.Status, res.Body)
-	}
-}

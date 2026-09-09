@@ -1,15 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
 import { useOfflineStore } from '@/stores/offline'
-import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 import { usePackingStore } from '@/stores/packing'
-import { ApiError } from '@/api/client'
 import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
-import AppDialog from '@/components/ui/AppDialog.vue'
 import AccountMenu from './AccountMenu.vue'
 
 /**
@@ -22,7 +19,6 @@ import AccountMenu from './AccountMenu.vue'
 const session = useSessionStore()
 const offline = useOfflineStore()
 const packing = usePackingStore()
-const flash = useFlashStore()
 const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
@@ -34,8 +30,6 @@ const platformOnly = computed(
 )
 /** A live support grant stands in for the band role in the navigation. */
 const viaGrant = computed(() => session.supportGrant !== null)
-const posExitPrompt = ref<{ password: string; code: string } | null>(null)
-const posBusy = ref(false)
 const combinedQueued = computed(() => offline.queued + packing.queued)
 const combinedSyncing = computed(() => offline.syncing || packing.syncing)
 const combinedOnline = computed(() => offline.online && packing.online)
@@ -49,9 +43,12 @@ interface NavLink {
   name: string
   label: string
   visible: boolean
-  /** Restricted links stay visible but inert while POS mode is active, so the
-   *  seller can see what exists without being able to reach it. */
-  posRestricted?: boolean
+}
+
+function personalFeatureVisible(preference: 'show_packing_list' | 'show_product_palette') {
+  // Sellers cannot configure the list and therefore always retain the two
+  // operational links. Members may hide them without disabling the modules.
+  return caps.value?.can_access_member_workflows !== true || session.user?.[preference] !== false
 }
 
 const links = computed<NavLink[]>(() => {
@@ -64,13 +61,13 @@ const links = computed<NavLink[]>(() => {
     // advertised as a current workflow.
     { name: 'history', label: t('nav.history'), visible: c.can_access_member_workflows || grant },
     { name: 'operations', label: t('nav.operations'), visible: c.can_access_member_workflows || grant },
-    { name: 'slideshow', label: t('nav.slideshow'), visible: (c.can_access_band_workflows || grant) && flags.value?.slideshow !== false },
-    { name: 'articles', label: t('nav.articles'), visible: c.can_manage_articles || grant, posRestricted: true },
-    { name: 'purchases', label: t('nav.purchases'), visible: c.can_access_member_workflows || grant, posRestricted: true },
-    { name: 'band-finances', label: t('nav.bandFinances'), visible: (c.can_access_member_workflows || grant) && flags.value?.band_finances !== false, posRestricted: true },
-    { name: 'balances', label: t('nav.balances'), visible: c.can_access_member_workflows || grant, posRestricted: true },
-    { name: 'packing-list', label: t('nav.packingList'), visible: (c.can_use_packing_list || grant) && flags.value?.packing_list !== false },
-    { name: 'administration', label: t('nav.administration'), visible: c.can_access_member_workflows || c.can_access_band_administration, posRestricted: true },
+    { name: 'slideshow', label: t('nav.slideshow'), visible: (c.can_access_band_workflows || grant) && personalFeatureVisible('show_product_palette') },
+    { name: 'articles', label: t('nav.articles'), visible: c.can_manage_articles || grant },
+    { name: 'purchases', label: t('nav.purchases'), visible: c.can_access_member_workflows || grant },
+    { name: 'band-finances', label: t('nav.bandFinances'), visible: (c.can_access_member_workflows || grant) && flags.value?.band_finances !== false },
+    { name: 'balances', label: t('nav.balances'), visible: c.can_access_member_workflows || grant },
+    { name: 'packing-list', label: t('nav.packingList'), visible: (c.can_use_packing_list || grant) && personalFeatureVisible('show_packing_list') },
+    { name: 'administration', label: t('nav.administration'), visible: c.can_access_member_workflows || c.can_access_band_administration },
   ].filter((link) => link.visible)
 })
 
@@ -86,38 +83,6 @@ async function signOut() {
   router.push({ name: 'login' })
 }
 
-function report(error: unknown) {
-  flash.error(
-    error instanceof ApiError
-      ? t(`errors.${error.detailCode ?? 'generic'}`, error.message)
-      : t('errors.network'),
-  )
-}
-
-async function togglePOSMode() {
-  if (session.posMode) {
-    posExitPrompt.value = { password: '', code: '' }
-    return
-  }
-  try {
-    await session.setPosMode(true)
-  } catch (error) {
-    report(error)
-  }
-}
-
-async function leavePOSMode() {
-  if (!posExitPrompt.value || posBusy.value) return
-  posBusy.value = true
-  try {
-    await session.setPosMode(false, posExitPrompt.value.password, posExitPrompt.value.code)
-    posExitPrompt.value = null
-  } catch (error) {
-    report(error)
-  } finally {
-    posBusy.value = false
-  }
-}
 </script>
 
 <template>
@@ -132,13 +97,7 @@ async function leavePOSMode() {
 
     <nav class="main-nav" :aria-label="t('nav.label')">
       <template v-for="link in links" :key="link.name">
-        <span
-          v-if="link.posRestricted && session.posMode"
-          class="pos-restricted-nav"
-          aria-disabled="true"
-        >{{ link.label }}</span>
         <RouterLink
-          v-else
           :to="{ name: link.name }"
           :class="{ active: isActive(link.name) }"
           :aria-current="isActive(link.name) ? 'page' : undefined"
@@ -164,21 +123,11 @@ async function leavePOSMode() {
 
     <div class="user-menu">
       <SupportMessageDialog v-if="caps?.can_access_band_workflows" />
-      <button
-        v-if="caps?.can_access_band_workflows && flags?.offline_sales !== false"
-        class="pos-mode-button"
-        :class="{ 'is-active': session.posMode }"
-        type="button"
-        :aria-pressed="session.posMode"
-        @click="togglePOSMode"
-      >
-        {{ t('nav.posMode') }}
-      </button>
 
       <!-- The sync state is always visible while selling: a seller at a stand
            must be able to tell at a glance whether their sales have landed. -->
       <button
-        v-if="route.name !== 'packing-list' && caps?.can_access_band_workflows && (flags?.offline_sales !== false || flags?.packing_list !== false)"
+        v-if="route.name !== 'packing-list' && caps?.can_access_band_workflows"
         class="offline-sync-status"
         :class="{ 'is-offline': !combinedOnline, 'has-queue': combinedQueued > 0 }"
         type="button"
@@ -201,40 +150,6 @@ async function leavePOSMode() {
     </div>
   </header>
 
-  <AppDialog v-if="posExitPrompt" :label="t('posExit.title')" :dismissible="!posBusy" @close="posExitPrompt = null">
-    <form @submit.prevent="leavePOSMode">
-      <p class="eyebrow">{{ t('posExit.eyebrow') }}</p>
-      <h2>{{ t('posExit.title') }}</h2>
-      <p>{{ t('posExit.intro') }}</p>
-      <label>
-        {{ t('posExit.password') }}
-        <input
-          v-model="posExitPrompt.password"
-          type="password"
-          autocomplete="current-password"
-          required
-          autofocus
-        />
-      </label>
-      <label v-if="caps?.sensitive_action_mfa_required">
-        {{ t('posExit.code') }}
-        <input
-          v-model="posExitPrompt.code"
-          inputmode="numeric"
-          autocomplete="one-time-code"
-          required
-        />
-      </label>
-      <div class="dialog-actions">
-        <button class="secondary-button" type="button" :disabled="posBusy" @click="posExitPrompt = null">
-          {{ t('common.cancel') }}
-        </button>
-        <button class="primary-button" type="submit" :disabled="posBusy">
-          {{ t('posExit.leave') }}
-        </button>
-      </div>
-    </form>
-  </AppDialog>
 </template>
 
 <style scoped>

@@ -25,16 +25,7 @@
     "administration": "Administration",
     "systemAdministration": "System administration",
     "updates": "Updates",
-    "statistics": "Statistics",
-    "posMode": "POS Mode"
-  },
-  "posExit": {
-    "eyebrow": "Protected POS mode",
-    "title": "Leave POS mode?",
-    "intro": "Enter your current password to unlock the restricted administration areas.",
-    "password": "Current password",
-    "code": "Authentication code",
-    "leave": "Leave POS mode"
+    "statistics": "Statistics"
   },
   "common": {
     "skipToContent": "Skip to main content",
@@ -318,7 +309,6 @@
     "sale_event_name_conflict": "An event with this name already exists.",
     "unknown_payment_method": "A payment QR code cannot be generated for this payment method.",
     "reauth_required": "Bitte bestätige dein Passwort erneut.",
-    "pos_mode_restricted": "Dieser Bereich ist im POS Mode gesperrt.",
     "insufficient_role": "Dafür fehlt dir die Berechtigung.",
     "csrf_failed": "The session has expired. Reload the page.",
     "maintenance": "Die Anwendung ist gerade in Wartung.",
@@ -958,6 +948,15 @@
   "administration": {
     "eyebrow": "Band-Administration",
     "title": "Verwaltung",
+    "personalFeatures": {
+      "title": "My features",
+      "intro": "Hide areas you personally do not need. The features remain available to the band and other members.",
+      "packingList": "Show packing list",
+      "packingListHint": "Shows the digital packing list in your navigation.",
+      "productPalette": "Show product range",
+      "productPaletteHint": "Shows the product range and slideshow in your navigation.",
+      "saved": "Personal feature selection saved."
+    },
     "events": {
       "title": "Events",
       "intro": "Manage events and choose the shared default for new sales.",
@@ -1258,7 +1257,7 @@
     "features": {
       "kicker": "Everything important in one place",
       "title": "From the first shirt to the final report.",
-      "mobile": { "title": "Built for the table", "text": "Short paths, large touch targets and a protected POS mode for shared devices." },
+      "mobile": { "title": "Built for the table", "text": "Short paths, large touch targets and offline-ready workflows for shared devices." },
       "payments": { "title": "Keep payments together", "text": "Record cash, PayPal or bank transfers and follow outstanding payments as complete carts." },
       "inventory": { "title": "Stock and purchasing", "text": "Variants, purchase prices, receipts and minimum stock remain connected." },
       "roles": { "title": "Clear responsibilities", "text": "Sellers, members, managers and band admins only see the areas they need." },

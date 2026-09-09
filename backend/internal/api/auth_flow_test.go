@@ -342,17 +342,17 @@ func TestCSRFIsEnforced(t *testing.T) {
 
 	valid := h.csrfToken
 	h.csrfToken = ""
-	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{"enabled": true}); res.Status != http.StatusForbidden {
+	if res := h.do(http.MethodPatch, "/api/v1/profile/features", map[string]any{"show_packing_list": false}); res.Status != http.StatusForbidden {
 		t.Fatalf("a request without a CSRF token must be refused, got %d %v", res.Status, res.Body)
 	}
 
 	h.csrfToken = "wrong-token"
-	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{"enabled": true}); res.Status != http.StatusForbidden {
+	if res := h.do(http.MethodPatch, "/api/v1/profile/features", map[string]any{"show_packing_list": false}); res.Status != http.StatusForbidden {
 		t.Fatalf("a wrong CSRF token must be refused, got %d", res.Status)
 	}
 
 	h.csrfToken = valid
-	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{"enabled": true}); res.Status != http.StatusOK {
+	if res := h.do(http.MethodPatch, "/api/v1/profile/features", map[string]any{"show_packing_list": false}); res.Status != http.StatusOK {
 		t.Fatalf("the valid token must be accepted: %d %v", res.Status, res.Body)
 	}
 }
@@ -386,50 +386,43 @@ func TestProfileRequiresFreshReauth(t *testing.T) {
 	}
 }
 
-// TestPOSModeBlocksRestrictedAreas pins that the restriction is enforced by
-// the server, not merely hidden in the client.
-func TestPOSModeBlocksRestrictedAreas(t *testing.T) {
+// TestPersonalFeatureVisibilityIsPerUserAndMemberOnly pins that optional
+// navigation entries are a personal preference rather than a band-wide flag.
+func TestPersonalFeatureVisibilityIsPerUserAndMemberOnly(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()
-	user := h.makeUser(&band.ID, models.RoleBandAdmin, "ein-langes-passwort")
+	member := h.makeUser(&band.ID, models.RoleMember, "ein-langes-passwort")
 
-	if res := h.signIn(band.Slug, user.Username, "ein-langes-passwort"); res.Status != http.StatusOK {
+	if res := h.signIn(band.Slug, member.Username, "ein-langes-passwort"); res.Status != http.StatusOK {
 		t.Fatalf("login failed: %d %v", res.Status, res.Body)
 	}
-	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{"enabled": true}); res.Status != http.StatusOK {
-		t.Fatalf("enabling POS mode failed: %d %v", res.Status, res.Body)
-	}
-
-	// The path need not exist yet; the guard runs before routing does not
-	// matter — what matters is that it is never a 404-shaped success.
-	if res := h.do(http.MethodGet, "/api/v1/purchases/anything", nil); res.Status != http.StatusForbidden {
-		t.Fatalf("POS mode must block purchases, got %d %v", res.Status, res.Body)
-	}
-	if res := h.do(http.MethodPost, "/api/v1/sales/historical", map[string]any{}); res.Status != http.StatusForbidden || res.Body["code"] != "pos_mode_restricted" {
-		t.Fatalf("POS mode must block historical sales, got %d %v", res.Status, res.Body)
-	}
-	if res := h.do(http.MethodGet, "/api/v1/me", nil); res.Status != http.StatusOK {
-		t.Fatalf("POS mode must keep the sales workflow usable: %d", res.Status)
-	}
-
-	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{
-		"enabled": false,
-	}); res.Status != http.StatusUnauthorized {
-		t.Fatalf("leaving POS mode without a password must fail: %d %v", res.Status, res.Body)
-	}
-	if res := h.do(http.MethodGet, "/api/v1/purchases/anything", nil); res.Status != http.StatusForbidden {
-		t.Fatalf("a failed unlock must leave POS mode active, got %d %v", res.Status, res.Body)
-	}
-	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{
-		"enabled": false, "password": "falsches-passwort",
-	}); res.Status != http.StatusUnauthorized {
-		t.Fatalf("a wrong password must not leave POS mode: %d %v", res.Status, res.Body)
-	}
-	unlocked := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{
-		"enabled": false, "password": "ein-langes-passwort",
+	updated := h.do(http.MethodPatch, "/api/v1/profile/features", map[string]any{
+		"show_packing_list":    false,
+		"show_product_palette": false,
 	})
-	if unlocked.Status != http.StatusOK || unlocked.Body["pos_mode"] != false {
-		t.Fatalf("the current password must unlock POS mode: %d %v", unlocked.Status, unlocked.Body)
+	if updated.Status != http.StatusOK || updated.Body["show_packing_list"] != false || updated.Body["show_product_palette"] != false {
+		t.Fatalf("saving personal feature visibility failed: %d %v", updated.Status, updated.Body)
+	}
+
+	me := h.do(http.MethodGet, "/api/v1/me", nil)
+	userPayload := jsonObject(me.Body["user"])
+	if userPayload["show_packing_list"] != false || userPayload["show_product_palette"] != false {
+		t.Fatalf("identity must expose the saved personal visibility: %v", me.Body)
+	}
+	var reloaded models.User
+	if err := h.db.WithContext(h.ctx()).First(&reloaded, member.ID).Error; err != nil {
+		t.Fatalf("reload member: %v", err)
+	}
+	if !reloaded.HidePackingList || !reloaded.HideProductPalette {
+		t.Fatalf("hidden feature preferences were not persisted: %+v", reloaded)
+	}
+
+	seller := h.makeUser(&band.ID, models.RoleSeller, "seller-passwort")
+	if res := h.signIn(band.Slug, seller.Username, "seller-passwort"); res.Status != http.StatusOK {
+		t.Fatalf("seller login failed: %d %v", res.Status, res.Body)
+	}
+	if res := h.do(http.MethodPatch, "/api/v1/profile/features", map[string]any{"show_packing_list": false}); res.Status != http.StatusForbidden || res.Body["code"] != "insufficient_role" {
+		t.Fatalf("seller must not change personal feature visibility: %d %v", res.Status, res.Body)
 	}
 }
 
@@ -501,7 +494,7 @@ func TestCSRFTokenSurvivesAPageReload(t *testing.T) {
 
 	// Simulate a reload: the in-memory token is gone, the cookies remain.
 	h.csrfToken = h.csrfCookie
-	if res := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{"enabled": true}); res.Status != http.StatusOK {
+	if res := h.do(http.MethodPatch, "/api/v1/profile/features", map[string]any{"show_packing_list": false}); res.Status != http.StatusOK {
 		t.Fatalf("a write after a reload must still work: %d %v", res.Status, res.Body)
 	}
 

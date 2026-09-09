@@ -60,12 +60,12 @@ func (s *Server) currentBand(c *gin.Context) {
 		Name:         band.Name,
 		ContactEmail: band.ContactEmail,
 		FeatureFlags: featureFlagsPayload{
-			Slideshow:    band.FeatureFlags.SlideshowEnabled(),
+			Slideshow:    true,
 			BandFinances: band.FeatureFlags.BandFinancesEnabled(),
 			PaymentQR:    band.FeatureFlags.PaymentQREnabled(),
 			OfflineSales: band.FeatureFlags.OfflineSalesEnabled(),
 			CSVImport:    band.FeatureFlags.CSVImportEnabled(),
-			PackingList:  band.FeatureFlags.PackingListEnabled(),
+			PackingList:  true,
 		},
 		MaintenanceMessage: band.MaintenanceMessage,
 	})

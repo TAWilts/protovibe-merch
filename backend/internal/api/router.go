@@ -12,9 +12,8 @@ import (
 
 // New builds the router.
 //
-// The middleware order deliberately mirrors the four before_request guards of
-// the Flask original: maintenance, session and CSRF, the platform-staff
-// boundary, and the POS-mode restrictions.
+// The middleware order deliberately keeps session, maintenance, feature,
+// CSRF and platform boundaries ahead of every API route.
 func New(s *Server) *gin.Engine {
 	if !s.cfg.IsDevelopment() {
 		gin.SetMode(gin.ReleaseMode)
@@ -47,7 +46,6 @@ func New(s *Server) *gin.Engine {
 		s.featureGuard(),
 		s.csrfGuard(),
 		s.platformBoundary(),
-		posModeGuard(),
 	} {
 		r.Use(underPrefix(apiPrefix, guard))
 	}

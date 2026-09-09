@@ -34,8 +34,8 @@ const routes: RouteRecordRaw[] = [
       { path: '/orders', name: 'orders', component: () => import('@/views/band/SalesView.vue') },
       { path: '/history', name: 'history', component: () => import('@/views/band/HistoryView.vue') },
       { path: '/operations', name: 'operations', component: () => import('@/views/band/OperationsView.vue') },
-      { path: '/packing-list', name: 'packing-list', component: () => import('@/views/band/PackingListView.vue'), meta: { feature: 'packing_list' } },
-      { path: '/slideshow', name: 'slideshow', component: () => import('@/views/band/SlideshowView.vue'), meta: { feature: 'slideshow' } },
+      { path: '/packing-list', name: 'packing-list', component: () => import('@/views/band/PackingListView.vue') },
+      { path: '/slideshow', name: 'slideshow', component: () => import('@/views/band/SlideshowView.vue') },
       { path: '/articles', name: 'articles', component: () => import('@/views/band/ArticlesView.vue') },
       { path: '/purchases', name: 'purchases', component: () => import('@/views/band/PurchasesView.vue') },
       { path: '/band-finances', name: 'band-finances', component: () => import('@/views/band/BandFinancesView.vue'), meta: { feature: 'band_finances' } },
@@ -116,7 +116,7 @@ router.beforeEach(async (to) => {
   // explicitly stored per band and user. It never grants access to a live
   // administration page after the server session can no longer be verified.
   if (session.offlineIdentity && to.name !== 'sales' && to.name !== 'packing-list') {
-    return session.featureFlags?.packing_list === false ? { name: 'sales' } : { name: 'packing-list' }
+    return session.user?.show_packing_list === false ? { name: 'sales' } : { name: 'packing-list' }
   }
 
   const caps = session.capabilities

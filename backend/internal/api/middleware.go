@@ -328,16 +328,12 @@ func (s *Server) featureGuard() gin.HandlerFunc {
 		var feature string
 		var enabled func(models.FeatureFlags) bool
 		switch {
-		case strings.HasPrefix(path, "/api/v1/slideshow"):
-			feature, enabled = "slideshow", func(f models.FeatureFlags) bool { return f.SlideshowEnabled() }
 		case strings.HasPrefix(path, "/api/v1/band-finances"):
 			feature, enabled = "band_finances", func(f models.FeatureFlags) bool { return f.BandFinancesEnabled() }
 		case strings.HasPrefix(path, "/api/v1/payment-qr"):
 			feature, enabled = "payment_qr", func(f models.FeatureFlags) bool { return f.PaymentQREnabled() }
 		case strings.HasPrefix(path, "/api/v1/imports"):
 			feature, enabled = "csv_import", func(f models.FeatureFlags) bool { return f.CSVImportEnabled() }
-		case strings.HasPrefix(path, "/api/v1/packing-list"):
-			feature, enabled = "packing_list", func(f models.FeatureFlags) bool { return f.PackingListEnabled() }
 		default:
 			c.Next()
 			return
@@ -471,29 +467,6 @@ func (s *Server) platformBoundary() gin.HandlerFunc {
 		if !state.Grant.AllowsWrite() && unsafeMethods[c.Request.Method] {
 			forbidden(c, "grant_read_only", "this support access grant is read-only")
 			return
-		}
-		c.Next()
-	}
-}
-
-// --- Guard 4: POS mode ----------------------------------------------------
-
-// posModeGuard enforces the restricted point-of-sale mode server-side, so a
-// device left unattended on a merch table cannot be talked into reaching
-// purchases, balances or administration.
-func posModeGuard() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		state := stateFrom(c)
-		if state == nil || !state.Session.POSMode {
-			c.Next()
-			return
-		}
-		path := c.Request.URL.Path
-		for _, prefix := range rbac.POSRestrictedPrefixes {
-			if strings.HasPrefix(path, prefix) {
-				forbidden(c, "pos_mode_restricted", "this area is disabled while POS mode is active")
-				return
-			}
 		}
 		c.Next()
 	}

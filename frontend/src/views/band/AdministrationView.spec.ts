@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AdministrationView from './AdministrationView.vue'
 
-const { paymentQrSettings, savePaymentQrSettings, grants, listUsers, events, createEvent, renameEvent, selectEvent, deleteEvent, session } = vi.hoisted(() => ({
+const { paymentQrSettings, savePaymentQrSettings, grants, listUsers, events, createEvent, renameEvent, selectEvent, deleteEvent, setFeatureVisibility, session } = vi.hoisted(() => ({
   paymentQrSettings: vi.fn(),
   savePaymentQrSettings: vi.fn(),
   grants: vi.fn(),
@@ -13,9 +13,12 @@ const { paymentQrSettings, savePaymentQrSettings, grants, listUsers, events, cre
   renameEvent: vi.fn(),
   selectEvent: vi.fn(),
   deleteEvent: vi.fn(),
+  setFeatureVisibility: vi.fn(),
   session: {
     featureFlags: { payment_qr: true },
-    capabilities: { is_band_admin: true, sensitive_action_mfa_required: false },
+    user: { show_packing_list: true, show_product_palette: true },
+    capabilities: { is_band_admin: true, can_access_member_workflows: true, sensitive_action_mfa_required: false },
+    setFeatureVisibility: vi.fn(),
   },
 }))
 
@@ -44,6 +47,11 @@ vi.mock('@/api/endpoints', () => ({
 describe('AdministrationView payment QR settings', () => {
   beforeEach(() => {
     session.capabilities.is_band_admin = true
+    session.capabilities.can_access_member_workflows = true
+    session.user.show_packing_list = true
+    session.user.show_product_palette = true
+    session.setFeatureVisibility = setFeatureVisibility
+    setFeatureVisibility.mockReset().mockResolvedValue({ show_packing_list: false, show_product_palette: true })
     grants.mockReset().mockResolvedValue({ grants: [] })
     listUsers.mockReset().mockResolvedValue({ users: [], assignable_roles: [] })
     events.mockReset().mockResolvedValue({ events: [], selected_event_id: 0 })
@@ -124,5 +132,18 @@ describe('AdministrationView payment QR settings', () => {
     await wrapper.get('.confirmation-dialog .danger-button').trigger('click')
     await flushPromises()
     expect(deleteEvent).toHaveBeenCalledWith(1)
+  })
+
+  it('lets members hide personal modules without changing band feature flags', async () => {
+    session.capabilities.is_band_admin = false
+    const wrapper = mount(AdministrationView)
+    await flushPromises()
+
+    const options = wrapper.findAll('.personal-feature-panel input[type="checkbox"]')
+    expect(options).toHaveLength(2)
+    await options[0]!.setValue(false)
+    await flushPromises()
+
+    expect(setFeatureVisibility).toHaveBeenCalledWith({ show_packing_list: false })
   })
 })

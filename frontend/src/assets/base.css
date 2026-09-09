@@ -68,10 +68,6 @@ textarea:focus-visible {
 .main-nav-divider { width: 1px; min-width: 1px; align-self: center; height: 25px; margin: 0 4px; background: var(--border); }
 .pos-restricted-nav { color: color-mix(in srgb, var(--muted) 48%, transparent); cursor: not-allowed; }
 .user-menu { margin-left: auto; display: flex; gap: 12px; align-items: center; color: var(--muted); font-size: .88rem; white-space: nowrap; }
-.pos-mode-form { margin: 0; }
-.pos-mode-button { min-height: 31px; padding: 5px 9px; border: 1px solid var(--border-default); border-radius: var(--radius-small); color: var(--text-secondary); background: var(--surface-subtle); font: inherit; font-size: .76rem; font-weight: 750; transition: color .15s, border-color .15s, background .15s, transform .12s; }
-.pos-mode-button:hover { color: var(--text-primary); border-color: var(--accent); background: var(--surface-hover); }
-.pos-mode-button.is-active { color: var(--warning-text); border-color: var(--warning-border); background: var(--warning-soft); }
 .text-button { border: 0; padding: 0; color: var(--muted); background: transparent; text-decoration: underline; text-underline-offset: 3px; }
 .user-identity { min-width: 0; display: inline-flex; align-items: center; gap: 7px; }
 .user-profile-link { padding: 5px 7px; border: 1px solid transparent; border-radius: var(--radius-small); color: var(--text-secondary); transition: color .15s, background .15s, border-color .15s, transform .12s; }
@@ -256,7 +252,6 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .selection-button:active:not(:disabled),
 .option-choice:active:not(:disabled),
 .icon-button:active:not(:disabled),
-.pos-mode-button:active:not(:disabled),
 .user-message-button:active:not(:disabled),
 .payment-qr-cancel:active:not(:disabled),
 .payment-qr-confirm:active:not(:disabled),
@@ -268,7 +263,6 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .selection-button:active:not(:disabled),
 .option-choice:active:not(:disabled),
 .icon-button:active:not(:disabled),
-.pos-mode-button:active:not(:disabled),
 .user-message-button:active:not(:disabled),
 .payment-qr-cancel:active:not(:disabled) { background: var(--surface-pressed); }
 

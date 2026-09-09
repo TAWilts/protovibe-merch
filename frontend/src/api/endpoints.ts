@@ -90,8 +90,6 @@ export const authApi = {
     }),
   logout: () => api.post<void>('/auth/logout'),
   me: () => api.get<Identity>('/me'),
-  setPosMode: (enabled: boolean, password = '', code = '') =>
-    api.post<{ pos_mode: boolean }>('/session/pos-mode', { enabled, password, code }),
 }
 
 /** Catalogue: the full view for management, the offered subset for selling. */
@@ -573,7 +571,18 @@ export const profileApi = {
     ui_theme?: string
     ui_language?: string
     show_variant_photos?: boolean
-  }) => api.patch<void>('/profile/personalization', payload),
+  }) => api.patch<{
+    ui_theme: string
+    ui_language: string
+    show_variant_photos: boolean
+  }>('/profile/personalization', payload),
+  featureVisibility: (payload: {
+    show_packing_list?: boolean
+    show_product_palette?: boolean
+  }) => api.patch<{
+    show_packing_list: boolean
+    show_product_palette: boolean
+  }>('/profile/features', payload),
   telemetry: (enabled: boolean) =>
     api.patch<{ telemetry_enabled: boolean; telemetry_decided: boolean }>(
       '/profile/telemetry',

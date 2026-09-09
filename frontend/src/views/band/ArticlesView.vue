@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 
 import { catalogueApi, photosApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
@@ -10,6 +11,7 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
+import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
 
 /**
@@ -24,6 +26,8 @@ const { t } = useI18n()
 const { format } = useMoney()
 const flash = useFlashStore()
 const session = useSessionStore()
+const offline = useOfflineStore()
+const router = useRouter()
 
 const articles = ref<Article[]>([])
 const loading = ref(true)
@@ -223,6 +227,14 @@ async function createArticle() {
   }
 }
 
+function startHistoricalSales() {
+  if (!offline.online) {
+    flash.error(t('sales.historicalOffline'))
+    return
+  }
+  void router.push({ name: 'sales', query: { mode: 'historical' } })
+}
+
 // A new value or group gets id 0, which is how the server tells "add this"
 // from "update that".
 function addValue(group: DraftGroup) {
@@ -363,13 +375,26 @@ async function applyMinimumToAll() {
         <p class="eyebrow">{{ t('articles.eyebrow') }}</p>
         <h1>{{ t('articles.title') }}</h1>
       </div>
+      <button
+        v-if="session.capabilities?.can_manage_purchases"
+        class="secondary-button"
+        type="button"
+        :disabled="!offline.online"
+        :title="!offline.online ? t('sales.historicalOffline') : undefined"
+        @click="startHistoricalSales"
+      >
+        {{ t('sales.historicalEnter') }}
+      </button>
+    </div>
+
+    <section class="article-create-panel">
       <form class="inline-form" @submit.prevent="createArticle">
         <input v-model="newArticleName" :placeholder="t('articles.newPlaceholder')" />
         <button class="primary-button" type="submit" :disabled="!newArticleName.trim() || busy">
           {{ t('articles.create') }}
         </button>
       </form>
-    </div>
+    </section>
 
     <TableSkeleton v-if="loading" :label="t('common.loading')" :rows="4" :columns="3" />
     <EmptyState v-else-if="loadFailed" tone="error" :title="t('errors.generic')">
@@ -659,6 +684,21 @@ async function applyMinimumToAll() {
 .article-layout > .selection-panel {
   position: sticky;
   top: 86px;
+}
+
+.article-create-panel {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 14px;
+}
+
+.article-create-panel .inline-form {
+  width: min(100%, 620px);
+}
+
+.article-create-panel input {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .article-layout .selection-button.selected {

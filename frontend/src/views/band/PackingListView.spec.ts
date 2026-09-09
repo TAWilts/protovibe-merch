@@ -6,7 +6,7 @@ import PackingListView from './PackingListView.vue'
 const { packing, session } = vi.hoisted(() => ({
   session: {
     identity: { user: { id: 4 }, band: { id: 9 } },
-    band: { id: 9 }, posMode: false,
+    band: { id: 9 },
     capabilities: { can_manage_packing_list: false },
   },
   packing: {
@@ -36,7 +36,6 @@ describe('PackingListView', () => {
     packing.mutate.mockReset().mockResolvedValue(undefined)
     packing.activate.mockReset().mockResolvedValue(undefined)
     session.capabilities.can_manage_packing_list = false
-    session.posMode = false
     packing.snapshot.bags[0]!.status = 'open'
     packing.snapshot.bags[0]!.items = [{
       id: '22222222-2222-4222-8222-222222222222', bag_id: '11111111-1111-4111-8111-111111111111',
@@ -58,7 +57,7 @@ describe('PackingListView', () => {
     })
   })
 
-  it('shows structure and reset controls to members outside POS mode', async () => {
+  it('shows structure and reset controls to members', async () => {
     session.capabilities.can_manage_packing_list = true
     const wrapper = mount(PackingListView)
     await flushPromises()

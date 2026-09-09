@@ -96,23 +96,6 @@ func For(user *models.User) Capabilities {
 	}
 }
 
-// POSRestrictedPrefixes are the API paths blocked while a session runs in POS
-// mode. The list is enforced on the server, exactly as in the original, so a
-// tampered client cannot reach purchases or administration from a device left
-// on a merch table.
-var POSRestrictedPrefixes = []string{
-	"/api/v1/articles",
-	"/api/v1/purchases",
-	"/api/v1/purchase-receipts",
-	"/api/v1/band-finances",
-	"/api/v1/balances",
-	"/api/v1/sales/historical",
-	"/api/v1/band-admin",
-	"/api/v1/platform",
-	"/api/v1/exports",
-	"/api/v1/imports",
-}
-
 // PlatformStaffAllowedPrefixes are the only paths platform accounts may use
 // without a live support-access grant. Everything else is band data.
 var PlatformStaffAllowedPrefixes = []string{
@@ -122,7 +105,6 @@ var PlatformStaffAllowedPrefixes = []string{
 	"/api/v1/profile",
 	"/api/v1/mfa",
 	"/api/v1/account",
-	"/api/v1/session",
 	// Anonymous onboarding remains public when a platform session cookie is
 	// present; it never reads band-scoped data.
 	"/api/v1/public",

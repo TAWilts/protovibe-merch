@@ -40,6 +40,8 @@ export interface CurrentUser {
   ui_theme: string
   ui_language: string
   show_variant_photos: boolean
+  show_packing_list: boolean
+  show_product_palette: boolean
   telemetry_enabled: boolean
   telemetry_decided: boolean
   mfa_enabled: boolean
@@ -67,7 +69,6 @@ export interface Identity {
   user: CurrentUser
   band?: IdentityBandSummary
   capabilities: Capabilities
-  pos_mode: boolean
   support_grant?: SupportGrantBanner
 }
 

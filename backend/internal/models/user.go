@@ -93,9 +93,11 @@ type User struct {
 	LastLoginAt    *time.Time `json:"last_login_at,omitempty"`
 
 	// Presentation preferences belong to the person, not to the band.
-	UITheme           string `gorm:"size:20;not null;default:'aurora'" json:"ui_theme"`
-	UILanguage        string `gorm:"size:5;not null;default:'de'" json:"ui_language"`
-	ShowVariantPhotos bool   `gorm:"not null" json:"show_variant_photos"`
+	UITheme            string `gorm:"size:20;not null;default:'aurora'" json:"ui_theme"`
+	UILanguage         string `gorm:"size:5;not null;default:'de'" json:"ui_language"`
+	ShowVariantPhotos  bool   `gorm:"not null" json:"show_variant_photos"`
+	HidePackingList    bool   `gorm:"not null" json:"-"`
+	HideProductPalette bool   `gorm:"not null" json:"-"`
 
 	// Telemetry is an individual, versioned decision. A nil decision timestamp
 	// or an older consent version means the current explanation has not been
@@ -131,9 +133,6 @@ type Session struct {
 	SessionVersion int    `gorm:"not null" json:"-"`
 	CSRFTokenHash  string `gorm:"size:64;not null" json:"-"`
 
-	// POSMode restricts the session to the sales workflow, matching the
-	// original's session['pos_mode'].
-	POSMode bool `gorm:"not null" json:"pos_mode"`
 	// ReauthAt stamps the last successful step-up confirmation.
 	ReauthAt *time.Time `json:"reauth_at,omitempty"`
 

@@ -16,10 +16,7 @@ vi.mock('@/stores/flash', () => ({
   useFlashStore: () => ({ success: vi.fn(), error: vi.fn() }),
 }))
 vi.mock('@/stores/session', () => ({
-  // This is the real transition state: entering POS mode updates pos_mode,
-  // while the account's management capability remains true.
   useSessionStore: () => ({
-    posMode: true,
     capabilities: { can_manage_slideshow: true },
   }),
 }))
@@ -36,9 +33,9 @@ vi.mock('@/api/endpoints', () => ({
   },
 }))
 
-describe('SlideshowView in POS mode', () => {
+describe('SlideshowView management', () => {
   beforeEach(() => {
-    listCatalogue.mockReset()
+    listCatalogue.mockReset().mockResolvedValue({ articles: [] })
     listPhotos.mockReset().mockResolvedValue({
       photos: [{
         id: 7,
@@ -62,11 +59,11 @@ describe('SlideshowView in POS mode', () => {
     })
   })
 
-  it('reloads photos in POS mode without the restricted catalogue request and starts playback', async () => {
+  it('loads the curator catalogue and starts playback', async () => {
     const wrapper = mount(SlideshowView)
     await flushPromises()
 
-    expect(listCatalogue).not.toHaveBeenCalled()
+    expect(listCatalogue).toHaveBeenCalled()
     expect(wrapper.get('.photo-card img').attributes('src')).toBe('/photos/7')
 
     await wrapper.get('.page-title-row .primary-button').trigger('click')

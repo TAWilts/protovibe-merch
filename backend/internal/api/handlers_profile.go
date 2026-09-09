@@ -27,6 +27,9 @@ func (s *Server) registerProfileRoutes(g *gin.RouterGroup) {
 	g.POST("/profile/reauth", requireAuth(), s.reauthenticate)
 	// This privacy choice must be reachable immediately after first login.
 	g.PATCH("/profile/telemetry", requireAuth(), s.updateTelemetryPreference)
+	// Optional band modules are always available. Members decide only whether
+	// their own navigation should show them; this is not an authorisation flag.
+	g.PATCH("/profile/features", requireAuth(), requireBandAccount(), requireBandRole(models.RoleMember), s.updateFeatureVisibility)
 
 	p := g.Group("/profile", requireAuth(), s.requireFreshReauth())
 	p.GET("", s.getProfile)
@@ -37,9 +40,6 @@ func (s *Server) registerProfileRoutes(g *gin.RouterGroup) {
 	p.POST("/mfa/disable", s.disableMFA)
 	p.POST("/mfa/recovery-codes", s.regenerateRecoveryCodes)
 
-	// POS mode is a per-session switch, not a profile setting. Entering stays
-	// quick; leaving verifies live credentials inside togglePOSMode.
-	g.POST("/session/pos-mode", requireAuth(), s.togglePOSMode)
 }
 
 type reauthRequest struct {
@@ -75,8 +75,7 @@ func (s *Server) reauthenticate(c *gin.Context) {
 
 // confirmCurrentCredentials verifies a live password (and, where configured,
 // the second factor). It deliberately does not honour an existing reauth
-// window: leaving POS mode must always require the person holding the device
-// to unlock it, matching the predecessor's protected exit.
+// window: every call verifies the current credentials independently.
 func (s *Server) confirmCurrentCredentials(c *gin.Context, password, code string) bool {
 	state := stateFrom(c)
 	if !auth.VerifyPassword(password, state.User.PasswordHash) {
@@ -106,7 +105,6 @@ func (s *Server) confirmCurrentCredentials(c *gin.Context, password, code string
 func (s *Server) getProfile(c *gin.Context) {
 	state := stateFrom(c)
 	payload := s.identityPayload(c.Request.Context(), state.User, state.Grant)
-	payload.POSMode = state.Session.POSMode
 	c.JSON(http.StatusOK, gin.H{
 		"profile":             payload,
 		"available_themes":    availableThemes,
@@ -114,6 +112,46 @@ func (s *Server) getProfile(c *gin.Context) {
 		"last_login_at":       state.User.LastLoginAt,
 		"mfa_enrolled_at":     state.User.MFAEnrolledAt,
 		"recovery_codes_left": len(state.User.MFARecoveryCodeHashes),
+	})
+}
+
+type featureVisibilityRequest struct {
+	ShowPackingList    *bool `json:"show_packing_list"`
+	ShowProductPalette *bool `json:"show_product_palette"`
+}
+
+// updateFeatureVisibility stores display choices for one band member. The
+// underlying modules stay enabled and directly reachable for the whole band.
+func (s *Server) updateFeatureVisibility(c *gin.Context) {
+	var req featureVisibilityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	state := stateFrom(c)
+	updates := map[string]any{}
+	if req.ShowPackingList != nil {
+		state.User.HidePackingList = !*req.ShowPackingList
+		updates["hide_packing_list"] = state.User.HidePackingList
+	}
+	if req.ShowProductPalette != nil {
+		state.User.HideProductPalette = !*req.ShowProductPalette
+		updates["hide_product_palette"] = state.User.HideProductPalette
+	}
+	if len(updates) == 0 {
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).
+		Model(state.User).Updates(updates).Error; err != nil {
+		serverError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"show_packing_list":    !state.User.HidePackingList,
+		"show_product_palette": !state.User.HideProductPalette,
 	})
 }
 
@@ -314,39 +352,4 @@ func (s *Server) updateOwnContactEmail(c *gin.Context) {
 	s.audit.Log(c.Request.Context(), actorFrom(c), audit.Entry{Action: "user.contact_email_changed",
 		EntityType: "user", EntityID: &state.User.ID})
 	c.JSON(http.StatusOK, gin.H{"contact_email": email})
-}
-
-type posModeRequest struct {
-	Enabled  bool   `json:"enabled"`
-	Password string `json:"password"`
-	Code     string `json:"code"`
-}
-
-// togglePOSMode switches the restricted point-of-sale mode for this session
-// only, so one phone on the merch table can be locked down without affecting
-// anyone else's login.
-func (s *Server) togglePOSMode(c *gin.Context) {
-	var req posModeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-
-	state := stateFrom(c)
-	if state.Session.POSMode && !req.Enabled {
-		if !s.confirmCurrentCredentials(c, req.Password, req.Code) {
-			return
-		}
-		if err := s.auth.MarkReauthenticated(c.Request.Context(), state.Session); err != nil {
-			serverError(c, err)
-			return
-		}
-		s.audit.Log(c.Request.Context(), actorFrom(c),
-			audit.Entry{Action: audit.ActionReauthenticated, EntityType: "session"})
-	}
-	if err := s.auth.SetPOSMode(c.Request.Context(), state.Session, req.Enabled); err != nil {
-		serverError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"pos_mode": state.Session.POSMode})
 }

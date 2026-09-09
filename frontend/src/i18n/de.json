@@ -25,16 +25,7 @@
     "administration": "Verwaltung",
     "systemAdministration": "System-Verwaltung",
     "updates": "Updates",
-    "statistics": "Statistik",
-    "posMode": "POS Mode"
-  },
-  "posExit": {
-    "eyebrow": "Geschützter POS Mode",
-    "title": "POS Mode verlassen?",
-    "intro": "Gib dein aktuelles Passwort ein, um die gesperrten Verwaltungsbereiche wieder freizuschalten.",
-    "password": "Aktuelles Passwort",
-    "code": "Bestätigungscode",
-    "leave": "POS Mode verlassen"
+    "statistics": "Statistik"
   },
   "common": {
     "skipToContent": "Zum Hauptinhalt springen",
@@ -318,7 +309,6 @@
     "sale_event_name_conflict": "Eine Veranstaltung mit diesem Namen existiert bereits.",
     "unknown_payment_method": "Für diese Bezahlart kann kein Zahlungs-QR-Code erzeugt werden.",
     "reauth_required": "Bitte bestätige dein Passwort erneut.",
-    "pos_mode_restricted": "Dieser Bereich ist im POS Mode gesperrt.",
     "insufficient_role": "Dafür fehlt dir die Berechtigung.",
     "csrf_failed": "Die Sitzung ist abgelaufen. Bitte neu laden.",
     "maintenance": "Die Anwendung ist gerade in Wartung.",
@@ -958,6 +948,15 @@
   "administration": {
     "eyebrow": "Band-Administration",
     "title": "Verwaltung",
+    "personalFeatures": {
+      "title": "Meine Funktionen",
+      "intro": "Blende Bereiche aus, die du persönlich nicht benötigst. Die Funktionen bleiben für die Band und andere Mitglieder verfügbar.",
+      "packingList": "Packliste anzeigen",
+      "packingListHint": "Zeigt die digitale Packliste in deiner Navigation.",
+      "productPalette": "Produktpalette anzeigen",
+      "productPaletteHint": "Zeigt die Produktpalette und Diashow in deiner Navigation.",
+      "saved": "Persönliche Funktionsauswahl gespeichert."
+    },
     "events": {
       "title": "Veranstaltungen",
       "intro": "Veranstaltungen verwalten und die gemeinsame Vorauswahl für den Verkauf festlegen.",
@@ -1267,7 +1266,7 @@
     "features": {
       "kicker": "Alles Wichtige an einem Ort",
       "title": "Vom ersten Shirt bis zur Abrechnung.",
-      "mobile": { "title": "Für den Stand gebaut", "text": "Kurze Wege, große Touch-Ziele und ein geschützter POS-Modus für gemeinsam genutzte Geräte." },
+      "mobile": { "title": "Für den Stand gebaut", "text": "Kurze Wege, große Touch-Ziele und offlinefähige Abläufe für gemeinsam genutzte Geräte." },
       "payments": { "title": "Zahlungen zusammenhalten", "text": "Bar, PayPal oder Überweisung erfassen und offene Zahlungen als vollständige Warenkörbe nachverfolgen." },
       "inventory": { "title": "Bestand und Einkauf", "text": "Varianten, Einkaufspreise, Belege und Mindestbestände bleiben miteinander verbunden." },
       "roles": { "title": "Klare Zuständigkeiten", "text": "Verkäufer, Mitglieder, Manager und Band-Admins sehen nur die Bereiche, die sie benötigen." },

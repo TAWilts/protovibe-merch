@@ -5,7 +5,7 @@ import SalesView from './SalesView.vue'
 
 const {
   assortment, catalogueList, book, bookHistorical, createEvent,
-  createPaymentQrIntent, events, queue, offlineState, sessionState,
+  createPaymentQrIntent, events, queue, offlineState, sessionState, route, routerReplace,
 } = vi.hoisted(() => {
   const queuedSale = vi.fn()
   return {
@@ -22,12 +22,16 @@ const {
       user: { username: 'seller', show_variant_photos: true },
       featureFlags: { payment_qr: true, offline_sales: true },
       capabilities: { can_access_member_workflows: true, can_manage_purchases: true },
-      posMode: false,
     },
+    route: { name: 'sales', query: {} as Record<string, string> },
+    routerReplace: vi.fn(),
   }
 })
 
-vi.mock('vue-router', () => ({ useRoute: () => ({ name: 'sales' }) }))
+vi.mock('vue-router', () => ({
+  useRoute: () => route,
+  useRouter: () => ({ replace: routerReplace }),
+}))
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: Record<string, unknown>) => (
@@ -88,7 +92,8 @@ describe('SalesView checkout', () => {
     queue.mockReset()
     offlineState.online = true
     sessionState.capabilities.can_manage_purchases = true
-    sessionState.posMode = false
+    route.query = {}
+    routerReplace.mockReset().mockResolvedValue(undefined)
     createPaymentQrIntent.mockReset()
     events.mockReset().mockResolvedValue({ events: [], selected_event_id: 0 })
     assortment.mockReset().mockResolvedValue({
@@ -346,29 +351,30 @@ describe('SalesView checkout', () => {
     expect(wrapper.find('button[aria-label="sales.deleteEvent"]').exists()).toBe(false)
   })
 
-  it('only offers historical mode to online managers outside POS mode', async () => {
-    sessionState.capabilities.can_manage_purchases = false
+  it('shows historical controls only when an online manager entered through articles', async () => {
     let wrapper = mount(SalesView)
     await flushPromises()
-    expect(wrapper.text()).not.toContain('sales.historicalEnter')
+    expect(wrapper.find('.historical-mode-note').exists()).toBe(false)
     wrapper.unmount()
 
+    route.query = { mode: 'historical' }
+    sessionState.capabilities.can_manage_purchases = false
+    wrapper = mount(SalesView)
+    await flushPromises()
+    expect(wrapper.find('.historical-mode-note').exists()).toBe(false)
+    expect(routerReplace).toHaveBeenCalledWith({ name: 'sales' })
+    wrapper.unmount()
+
+    routerReplace.mockClear()
     sessionState.capabilities.can_manage_purchases = true
     offlineState.online = false
     wrapper = mount(SalesView)
     await flushPromises()
-    expect(wrapper.get('.historical-mode-note button').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('sales.historicalOffline')
-    wrapper.unmount()
-
-    offlineState.online = true
-    sessionState.posMode = true
-    wrapper = mount(SalesView)
-    await flushPromises()
-    expect(wrapper.text()).not.toContain('sales.historicalEnter')
+    expect(wrapper.find('.historical-mode-note').exists()).toBe(false)
+    expect(routerReplace).toHaveBeenCalledWith({ name: 'sales' })
   })
 
-  it('books a historical event against withdrawn catalogue variants without the offline queue', async () => {
+  it('books a historical event against a non-offered current variant without the offline queue', async () => {
     events.mockResolvedValue({
       events: [{ id: 7, name: 'Archivfestival', last_selected_at: null }],
       selected_event_id: 0,
@@ -389,22 +395,21 @@ describe('SalesView checkout', () => {
           sale_price_cents: 1500,
           on_hand: 0,
           photo_ids: [],
-          is_active: false,
+          is_active: true,
           is_offered: false,
         }],
       }],
     })
 
+    route.query = { mode: 'historical' }
     const wrapper = mount(SalesView)
-    await flushPromises()
-    await button(wrapper, 'sales.historicalEnter').trigger('click')
     await flushPromises()
 
     expect(catalogueList).toHaveBeenCalledWith(true)
     expect(wrapper.text()).toContain('Altes Shirt')
     expect(wrapper.text()).toContain('sales.historicalNotOffered')
     await button(wrapper, 'Altes Shirt').trigger('click')
-    expect(wrapper.text()).toContain('sales.historicalWithdrawnVariant')
+    expect(wrapper.text()).toContain('sales.historicalNotOfferedVariant')
     await field(wrapper, 'sales.unitPrice').setValue('12,50')
     await button(wrapper, 'sales.addToCart').trigger('click')
     await button(wrapper, 'sales.paymentDetails').trigger('click')
@@ -429,6 +434,59 @@ describe('SalesView checkout', () => {
     expect(wrapper.get('.till-rail-receipt-id').text()).toBe('sales.receiptLoading')
   })
 
+  it('uses only the current option structure instead of resurrecting retired default variants', async () => {
+    catalogueList.mockResolvedValue({
+      articles: [
+        {
+          id: 2, name: 'Cap', is_active: true, is_offered: true,
+          configuration_complete: true, total_stock: 8,
+          option_groups: [
+            { id: 20, name: 'Größe', position: 0, is_active: false, values: [
+              { id: 201, value: 'S', position: 0, is_active: false },
+            ] },
+          ],
+          variants: [
+            { id: 21, combination_key: '', option_value_ids: [], sale_price_cents: 1800, on_hand: 8, photo_ids: [], is_active: true, is_offered: true },
+            { id: 22, combination_key: '201', option_value_ids: [201], sale_price_cents: 1800, on_hand: 0, photo_ids: [], is_active: false, is_offered: false },
+          ],
+        },
+        {
+          id: 3, name: 'CD', is_active: true, is_offered: true,
+          configuration_complete: true, total_stock: 52,
+          option_groups: [
+            { id: 30, name: 'Ausgabe', position: 0, is_active: true, values: [
+              { id: 301, value: 'Deluxe', position: 0, is_active: true },
+              { id: 302, value: 'Single', position: 1, is_active: true },
+            ] },
+            { id: 31, name: 'Größe', position: 1, is_active: true, values: [
+              { id: 311, value: 'XXL', position: 0, is_active: false },
+            ] },
+          ],
+          variants: [
+            { id: 31, combination_key: '301', option_value_ids: [301], sale_price_cents: 1200, on_hand: 20, photo_ids: [], is_active: true, is_offered: true },
+            { id: 32, combination_key: '302', option_value_ids: [302], sale_price_cents: 800, on_hand: 32, photo_ids: [], is_active: true, is_offered: true },
+            { id: 33, combination_key: '311', option_value_ids: [311], sale_price_cents: 800, on_hand: 0, photo_ids: [], is_active: false, is_offered: false },
+          ],
+        },
+      ],
+    })
+    route.query = { mode: 'historical' }
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    await button(wrapper, 'Cap').trigger('click')
+    expect(wrapper.findAll('.option-group')).toHaveLength(0)
+    expect(wrapper.get('.till-chosen').text()).toContain('Cap')
+
+    await button(wrapper, 'CD').trigger('click')
+    const groups = wrapper.findAll('.option-group')
+    expect(groups).toHaveLength(1)
+    expect(groups[0]!.text()).toContain('Ausgabe')
+    expect(groups[0]!.text()).toContain('Deluxe')
+    expect(groups[0]!.text()).toContain('Single')
+    expect(wrapper.text()).not.toContain('XXL')
+  })
+
   it('creates historical events without changing the shared live selection', async () => {
     catalogueList.mockResolvedValue({ articles: [{
       id: 1, name: 'Testshirt', is_active: true, is_offered: true,
@@ -436,9 +494,8 @@ describe('SalesView checkout', () => {
       variants: [{ id: 11, combination_key: '', option_value_ids: [], sale_price_cents: 2000, on_hand: 12, photo_ids: [], is_active: true, is_offered: true }],
     }] })
     createEvent.mockResolvedValue({ id: 9, name: 'Alter Gig' })
+    route.query = { mode: 'historical' }
     const wrapper = mount(SalesView)
-    await flushPromises()
-    await button(wrapper, 'sales.historicalEnter').trigger('click')
     await flushPromises()
     await button(wrapper, 'Testshirt').trigger('click')
     await button(wrapper, 'sales.addToCart').trigger('click')
@@ -459,9 +516,8 @@ describe('SalesView checkout', () => {
       variants: [{ id: 11, combination_key: '', option_value_ids: [], sale_price_cents: 2000, on_hand: 12, photo_ids: [], is_active: true, is_offered: true }],
     }] })
     bookHistorical.mockRejectedValueOnce(new Error('connection lost')).mockResolvedValueOnce({ receipt_id: 'V-1', sale_ids: [1] })
+    route.query = { mode: 'historical' }
     const wrapper = mount(SalesView)
-    await flushPromises()
-    await button(wrapper, 'sales.historicalEnter').trigger('click')
     await flushPromises()
     await button(wrapper, 'Testshirt').trigger('click')
     await button(wrapper, 'sales.addToCart').trigger('click')

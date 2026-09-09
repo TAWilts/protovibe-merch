@@ -15,9 +15,7 @@ const session = useSessionStore()
 const flash = useFlashStore()
 const router = useRouter()
 
-const canManage = computed(() => (
-  (session.capabilities?.can_manage_packing_list ?? false) && !session.posMode
-))
+const canManage = computed(() => session.capabilities?.can_manage_packing_list ?? false)
 const collapsed = ref<Set<string>>(new Set())
 const editor = ref<{
   kind: 'create_bag' | 'rename_bag' | 'create_item' | 'rename_item'

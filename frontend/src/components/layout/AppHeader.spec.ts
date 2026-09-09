@@ -1,20 +1,17 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AppHeader from './AppHeader.vue'
 
-const { setPosMode, session, route } = vi.hoisted(() => {
-  const setPosMode = vi.fn()
+const { session, route } = vi.hoisted(() => {
   return {
-    setPosMode,
     session: {
       isAuthenticated: true,
-      posMode: true,
-      user: { username: 'seller' },
+      user: { username: 'member', show_packing_list: true, show_product_palette: true },
       capabilities: {
         role_label: 'Verkäufer',
         can_access_band_workflows: true,
-        can_access_member_workflows: false,
+        can_access_member_workflows: true,
         can_access_system_administration: false,
         can_manage_articles: false,
         can_use_packing_list: true,
@@ -23,7 +20,6 @@ const { setPosMode, session, route } = vi.hoisted(() => {
       },
       featureFlags: { offline_sales: true, slideshow: true, packing_list: true },
       supportGrant: null,
-      setPosMode,
       logout: vi.fn(),
     },
     route: { name: 'sales' },
@@ -48,33 +44,15 @@ vi.mock('@/stores/flash', () => ({
 }))
 vi.mock('@/components/SupportMessageDialog.vue', () => ({ default: { template: '<span />' } }))
 
-describe('AppHeader POS exit', () => {
+describe('AppHeader navigation', () => {
   beforeEach(() => {
-    setPosMode.mockReset().mockResolvedValue(undefined)
     route.name = 'sales'
-    session.posMode = true
-    session.capabilities.can_access_member_workflows = false
-  })
-
-  it('asks for the current password before leaving POS mode', async () => {
-    const wrapper = mount(AppHeader)
-
-    await wrapper.get('.pos-mode-button').trigger('click')
-    expect(wrapper.find('.confirmation-dialog').exists()).toBe(true)
-    expect(setPosMode).not.toHaveBeenCalled()
-
-    await wrapper.get('.confirmation-dialog input[type="password"]').setValue('richtiges-passwort')
-    await wrapper.get('.confirmation-dialog form').trigger('submit')
-    await flushPromises()
-
-    expect(setPosMode).toHaveBeenCalledOnce()
-    expect(setPosMode).toHaveBeenCalledWith(false, 'richtiges-passwort', '')
-    expect(wrapper.find('.confirmation-dialog').exists()).toBe(false)
+    session.user.show_packing_list = true
+    session.user.show_product_palette = true
+    session.capabilities.can_access_member_workflows = true
   })
 
   it('places packing between balances and administration for members', () => {
-    session.posMode = false
-    session.capabilities.can_access_member_workflows = true
     const wrapper = mount(AppHeader)
     const text = wrapper.text()
 
@@ -86,5 +64,19 @@ describe('AppHeader POS exit', () => {
     route.name = 'packing-list'
     const wrapper = mount(AppHeader)
     expect(wrapper.find('.offline-sync-status').exists()).toBe(false)
+  })
+
+  it('honours personal feature visibility for members but not sellers', () => {
+    session.user.show_packing_list = false
+    session.user.show_product_palette = false
+    let wrapper = mount(AppHeader)
+    expect(wrapper.text()).not.toContain('nav.packingList')
+    expect(wrapper.text()).not.toContain('nav.slideshow')
+    wrapper.unmount()
+
+    session.capabilities.can_access_member_workflows = false
+    wrapper = mount(AppHeader)
+    expect(wrapper.text()).toContain('nav.packingList')
+    expect(wrapper.text()).toContain('nav.slideshow')
   })
 })

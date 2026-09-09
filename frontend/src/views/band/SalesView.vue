@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
 import {
@@ -36,6 +36,7 @@ import PaymentMethodIcon from '@/components/PaymentMethodIcon.vue'
  * "Größe" exist, it just renders whatever columns the article defines.
  */
 const route = useRoute()
+const router = useRouter()
 const { t } = useI18n()
 const { format } = useMoney()
 const flash = useFlashStore()
@@ -56,7 +57,6 @@ const historicalNetworkUncertain = ref(false)
 
 const canUseHistoricalMode = computed(() => (
   !isOrder.value
-  && !session.posMode
   && session.capabilities?.can_manage_purchases === true
 ))
 const today = (() => {
@@ -164,7 +164,8 @@ const visibleArticles = computed(() => {
   const needle = articleFilter.value.trim().toLowerCase()
   return articles.value.filter((article) => {
     if (historicalMode.value) {
-      return article.variants.length > 0 && (!needle || article.name.toLowerCase().includes(needle))
+      return article.variants.some((variant) => variant.is_active !== false)
+        && (!needle || article.name.toLowerCase().includes(needle))
     }
     const sellable = article.is_offered !== false
       && article.is_active !== false
@@ -180,19 +181,25 @@ const selectedArticle = computed(
 
 const sellableVariants = computed(() =>
   (selectedArticle.value?.variants ?? [])
-    .filter((variant) => historicalMode.value
-      || (variant.is_offered !== false && variant.is_active !== false)),
+    .filter((variant) => variant.is_active !== false
+      && (historicalMode.value || variant.is_offered !== false)),
 )
 
-/** The active option columns of the selected article, in the band's order. */
+/**
+ * The current option structure is identical in live and historical entry.
+ * Historical mode may bypass "offered", but must never resurrect retired
+ * setup groups or values: those were the source of ghost shirt sizes on caps
+ * and empty option rows on otherwise valid products.
+ */
 const optionGroups = computed(() =>
   (selectedArticle.value?.option_groups ?? [])
-    .filter((group) => historicalMode.value || group.is_active)
+    .filter((group) => group.is_active)
     .map((group) => ({
       ...group,
-      values: group.values.filter((value) => (historicalMode.value || value.is_active)
+      values: group.values.filter((value) => value.is_active
         && sellableVariants.value.some((variant) => variant.option_value_ids.includes(value.id))),
-    })),
+    }))
+    .filter((group) => group.values.length > 0),
 )
 
 /**
@@ -346,6 +353,13 @@ onMounted(async () => {
     refreshReceiptPreview(),
     loadPaymentQrAvailability(),
   ])
+  if (route.query.mode === 'historical') {
+    if (canUseHistoricalMode.value && offline.online) {
+      await setHistoricalMode(true, true)
+    } else {
+      await router.replace({ name: 'sales' })
+    }
+  }
   loading.value = false
   // Banners appear after the identity is known, which moves the till down.
   requestAnimationFrame(measureTill)
@@ -470,10 +484,6 @@ watch(isOrder, (order) => {
   checkoutStep.value = 1
 })
 
-watch(() => session.posMode, (posMode) => {
-  if (posMode && historicalMode.value) void setHistoricalMode(false, true)
-})
-
 async function setHistoricalMode(enabled: boolean, force = false) {
   if (enabled === historicalMode.value) return
   if (enabled && (!canUseHistoricalMode.value || !offline.online)) return
@@ -503,6 +513,9 @@ async function setHistoricalMode(enabled: boolean, force = false) {
   } else {
     soldBy.value = session.user?.username ?? ''
     await Promise.all([loadAssortment(), loadEvents(), refreshReceiptPreview()])
+    if (route.query.mode === 'historical') {
+      await router.replace({ name: 'sales' })
+    }
   }
 }
 
@@ -836,7 +849,7 @@ function resetAfterSale() {
   <main
     ref="tillEl"
     class="till checkout-till"
-    :class="[`checkout-step-${checkoutStep}`, { 'has-note': isOrder || historicalMode || canUseHistoricalMode }]"
+    :class="[`checkout-step-${checkoutStep}`, { 'has-note': isOrder || historicalMode }]"
   >
     <h1 class="visually-hidden">{{ isOrder ? t('sales.ordersTitle') : t('sales.title') }}</h1>
 
@@ -858,18 +871,18 @@ function resetAfterSale() {
     </nav>
 
     <p v-if="isOrder" class="till-mode-note">{{ t('sales.ordersHint') }}</p>
-    <div v-else-if="historicalMode || canUseHistoricalMode" class="till-mode-note historical-mode-note">
+    <div v-else-if="historicalMode" class="till-mode-note historical-mode-note">
       <span>
-        <strong>{{ historicalMode ? t('sales.historicalTitle') : t('sales.historicalOffer') }}</strong>
-        {{ historicalMode ? t('sales.historicalWorkflowHint') : t('sales.historicalOfferHint') }}
+        <strong>{{ t('sales.historicalTitle') }}</strong>
+        {{ t('sales.historicalWorkflowHint') }}
         <small v-if="!offline.online">{{ t('sales.historicalOffline') }}</small>
       </span>
       <button
         class="secondary-button"
         type="button"
-        :disabled="busy || (!historicalMode && !offline.online) || historicalNetworkUncertain"
-        @click="setHistoricalMode(!historicalMode)"
-      >{{ historicalMode ? t('sales.historicalLeave') : t('sales.historicalEnter') }}</button>
+        :disabled="busy || historicalNetworkUncertain"
+        @click="setHistoricalMode(false)"
+      >{{ t('sales.historicalLeave') }}</button>
     </div>
 
     <template v-if="checkoutStep === 1">

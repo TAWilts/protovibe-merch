@@ -96,11 +96,12 @@ async function saveTelemetry(enabled: boolean) {
 
 async function savePersonalization(payload: Record<string, unknown>) {
   try {
-    await profileApi.personalization(payload)
-    // Applied immediately so the change is visible where it was made.
-    if (typeof payload.ui_theme === 'string') {
-      document.documentElement.dataset.theme = payload.ui_theme
+    const saved = await profileApi.personalization(payload)
+    if (data.value) {
+      Object.assign(data.value.profile.user, saved)
     }
+    // Applied immediately so the change is visible where it was made.
+    document.documentElement.dataset.theme = saved.ui_theme
     await session.restore()
     flash.success(t('profile.saved'))
   } catch (error) {

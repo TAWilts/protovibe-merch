@@ -34,13 +34,7 @@ const collageModes = ref<CollageMode[]>(['scroll', 'reveal', 'filmstrip'])
 const articles = ref<Article[]>([])
 const uploadTarget = ref('')
 
-// Capabilities describe the account and deliberately stay unchanged when the
-// current session enters POS mode. Management endpoints are nevertheless
-// blocked there, so the component must include the session restriction when
-// deciding whether to load the catalogue or show curator controls.
-const canManage = computed(() => (
-  (session.capabilities?.can_manage_slideshow ?? false) && !session.posMode
-))
+const canManage = computed(() => session.capabilities?.can_manage_slideshow ?? false)
 const selected = computed(() => gallery.value.filter((photo) => photo.include_in_slideshow))
 
 /** Playback state. */
@@ -177,9 +171,7 @@ function scheduleImageFit() {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    // POS sessions may view and run the slideshow, but the management-only
-    // article endpoint is intentionally blocked there. Only curators need the
-    // catalogue for assigning uploads to variants.
+    // Only curators need the catalogue for assigning uploads to variants.
     const catalogueRequest = canManage.value
       ? catalogueApi.list()
       : Promise.resolve({ articles: [] as Article[] })

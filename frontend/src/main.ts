@@ -26,7 +26,7 @@ const packingStore = usePackingStore()
 packingStore.start()
 const sessionStore = useSessionStore()
 watch(() => sessionStore.identity, (identity) => {
-  if (identity?.band && identity.band.feature_flags.packing_list !== false) {
+  if (identity?.band) {
     void packingStore.prepare(identity)
   }
 }, { immediate: true })

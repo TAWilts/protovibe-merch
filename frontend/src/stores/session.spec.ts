@@ -5,22 +5,26 @@ import { ApiError } from '@/api/client'
 import type { Identity } from '@/api/types'
 import { useSessionStore } from './session'
 
-const { me } = vi.hoisted(() => ({ me: vi.fn() }))
+const { me, featureVisibility } = vi.hoisted(() => ({ me: vi.fn(), featureVisibility: vi.fn() }))
 vi.mock('@/api/endpoints', () => ({
-  authApi: { me, logout: vi.fn(), setPosMode: vi.fn() },
+  authApi: { me, logout: vi.fn() },
+  profileApi: { featureVisibility },
 }))
 
 const identity = {
-  user: { id: 7, username: 'thomas', role: 'member', ui_theme: 'aurora', ui_language: 'de' },
+  user: {
+    id: 7, username: 'thomas', role: 'member', ui_theme: 'aurora', ui_language: 'de',
+    show_packing_list: true, show_product_palette: true,
+  },
   band: { id: 12, slug: 'band', name: 'Band', feature_flags: { packing_list: true } },
   capabilities: { can_access_band_workflows: true },
-  pos_mode: false,
 } as Identity
 
 describe('offline session identity', () => {
   beforeEach(() => {
     localStorage.clear()
     me.mockReset()
+    featureVisibility.mockReset()
     setActivePinia(createPinia())
   })
 
@@ -46,5 +50,16 @@ describe('offline session identity', () => {
     await session.restore()
     expect(session.identity).toBeNull()
     expect(localStorage.getItem('protovibe.offline-identity.v1')).toBeNull()
+  })
+
+  it('updates and caches the current user feature visibility', async () => {
+    featureVisibility.mockResolvedValue({ show_packing_list: false, show_product_palette: true })
+    const session = useSessionStore()
+    session.adopt(identity)
+
+    await session.setFeatureVisibility({ show_packing_list: false })
+
+    expect(session.user?.show_packing_list).toBe(false)
+    expect(JSON.parse(localStorage.getItem('protovibe.offline-identity.v1')!).user.show_packing_list).toBe(false)
   })
 })

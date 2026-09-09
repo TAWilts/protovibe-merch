@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { authApi } from '@/api/endpoints'
+import { authApi, profileApi } from '@/api/endpoints'
 import { ApiError, setCsrfToken } from '@/api/client'
 import type { Identity } from '@/api/types'
 import { setLocale } from '@/i18n'
@@ -24,7 +24,6 @@ export const useSessionStore = defineStore('session', () => {
   const band = computed(() => identity.value?.band ?? null)
   const featureFlags = computed(() => identity.value?.band?.feature_flags ?? null)
   const capabilities = computed(() => identity.value?.capabilities ?? null)
-  const posMode = computed(() => identity.value?.pos_mode ?? false)
   const supportGrant = computed(() => identity.value?.support_grant ?? null)
   const isAuthenticated = computed(() => identity.value !== null)
 
@@ -99,11 +98,21 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function setPosMode(enabled: boolean, password = '', code = '') {
-    const result = await authApi.setPosMode(enabled, password, code)
+  async function setFeatureVisibility(payload: {
+    show_packing_list?: boolean
+    show_product_palette?: boolean
+  }) {
+    const result = await profileApi.featureVisibility(payload)
     if (identity.value) {
-      identity.value = { ...identity.value, pos_mode: result.pos_mode }
+      identity.value = {
+        ...identity.value,
+        user: { ...identity.value.user, ...result },
+      }
+      if (identity.value.band) {
+        localStorage.setItem(OFFLINE_IDENTITY_KEY, JSON.stringify(identity.value))
+      }
     }
+    return result
   }
 
   return {
@@ -113,7 +122,6 @@ export const useSessionStore = defineStore('session', () => {
     band,
     featureFlags,
     capabilities,
-    posMode,
     supportGrant,
     isAuthenticated,
     loading,
@@ -121,6 +129,6 @@ export const useSessionStore = defineStore('session', () => {
     adopt,
     restore,
     logout,
-    setPosMode,
+    setFeatureVisibility,
   }
 })

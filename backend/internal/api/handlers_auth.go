@@ -270,20 +270,21 @@ func (s *Server) reportAuthError(c *gin.Context, err error) {
 // meResponse is the identity bootstrap the Vue app reads on start.
 type meResponse struct {
 	User struct {
-		ID                int64       `json:"id"`
-		Username          string      `json:"username"`
-		Role              models.Role `json:"role"`
-		UITheme           string      `json:"ui_theme"`
-		UILanguage        string      `json:"ui_language"`
-		ShowVariantPhotos bool        `json:"show_variant_photos"`
-		TelemetryEnabled  bool        `json:"telemetry_enabled"`
-		TelemetryDecided  bool        `json:"telemetry_decided"`
-		MFAEnabled        bool        `json:"mfa_enabled"`
-		ContactEmail      string      `json:"contact_email"`
+		ID                 int64       `json:"id"`
+		Username           string      `json:"username"`
+		Role               models.Role `json:"role"`
+		UITheme            string      `json:"ui_theme"`
+		UILanguage         string      `json:"ui_language"`
+		ShowVariantPhotos  bool        `json:"show_variant_photos"`
+		ShowPackingList    bool        `json:"show_packing_list"`
+		ShowProductPalette bool        `json:"show_product_palette"`
+		TelemetryEnabled   bool        `json:"telemetry_enabled"`
+		TelemetryDecided   bool        `json:"telemetry_decided"`
+		MFAEnabled         bool        `json:"mfa_enabled"`
+		ContactEmail       string      `json:"contact_email"`
 	} `json:"user"`
 	Band         *bandSummary        `json:"band,omitempty"`
 	Capabilities rbac.Capabilities   `json:"capabilities"`
-	POSMode      bool                `json:"pos_mode"`
 	SupportGrant *supportGrantBanner `json:"support_grant,omitempty"`
 }
 
@@ -308,7 +309,6 @@ type supportGrantBanner struct {
 func (s *Server) me(c *gin.Context) {
 	state := stateFrom(c)
 	payload := s.identityPayload(c.Request.Context(), state.User, state.Grant)
-	payload.POSMode = state.Session.POSMode
 	c.JSON(http.StatusOK, payload)
 }
 
@@ -328,6 +328,8 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 	payload.User.UITheme = user.UITheme
 	payload.User.UILanguage = user.UILanguage
 	payload.User.ShowVariantPhotos = user.ShowVariantPhotos
+	payload.User.ShowPackingList = !user.HidePackingList
+	payload.User.ShowProductPalette = !user.HideProductPalette
 	payload.User.TelemetryEnabled = user.TelemetryEnabled
 	payload.User.TelemetryDecided = user.TelemetryDecidedAt != nil &&
 		user.TelemetryConsentVersion >= models.CurrentTelemetryConsentVersion
@@ -363,12 +365,12 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 			payload.Band = &bandSummary{
 				ID: band.ID, Slug: band.Slug, Name: band.Name,
 				FeatureFlags: featureFlagsPayload{
-					Slideshow:    band.FeatureFlags.SlideshowEnabled(),
+					Slideshow:    true,
 					BandFinances: band.FeatureFlags.BandFinancesEnabled(),
 					PaymentQR:    band.FeatureFlags.PaymentQREnabled(),
 					OfflineSales: band.FeatureFlags.OfflineSalesEnabled(),
 					CSVImport:    band.FeatureFlags.CSVImportEnabled(),
-					PackingList:  band.FeatureFlags.PackingListEnabled(),
+					PackingList:  true,
 				},
 				MaintenanceMessage: band.MaintenanceMessage,
 			}

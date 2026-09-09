@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ArticlesView from './ArticlesView.vue'
 
-const { list, create, save } = vi.hoisted(() => ({
+const { list, create, save, routerPush } = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   save: vi.fn(),
+  routerPush: vi.fn(),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -16,8 +17,13 @@ vi.mock('@/stores/flash', () => ({
   useFlashStore: () => ({ success: vi.fn(), error: vi.fn() }),
 }))
 vi.mock('@/stores/session', () => ({
-  useSessionStore: () => ({ featureFlags: { csv_import: true } }),
+  useSessionStore: () => ({
+    featureFlags: { csv_import: true },
+    capabilities: { can_manage_purchases: true },
+  }),
 }))
+vi.mock('@/stores/offline', () => ({ useOfflineStore: () => ({ online: true }) }))
+vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
 vi.mock('@/api/endpoints', () => ({
   catalogueApi: { list, create, save },
   photosApi: {
@@ -69,6 +75,7 @@ describe('ArticlesView variant generation', () => {
     list.mockReset()
     create.mockReset()
     save.mockReset().mockResolvedValue(confirmedArticle)
+    routerPush.mockReset().mockResolvedValue(undefined)
   })
 
   it('keeps the variant result hidden until a new article is confirmed', async () => {
@@ -80,8 +87,8 @@ describe('ArticlesView variant generation', () => {
     const wrapper = mount(ArticlesView)
     await flushPromises()
 
-    await wrapper.get('.inline-form input').setValue('Neuer Artikel')
-    await wrapper.get('.inline-form').trigger('submit')
+    await wrapper.get('.article-create-panel input').setValue('Neuer Artikel')
+    await wrapper.get('.article-create-panel form').trigger('submit')
     await flushPromises()
 
     expect(create).toHaveBeenCalledWith({
@@ -121,5 +128,18 @@ describe('ArticlesView variant generation', () => {
 
     expect(wrapper.find('input[type="file"][accept*="csv"]').exists()).toBe(false)
     expect(wrapper.find('.transaction-import-panel').exists()).toBe(false)
+  })
+
+  it('keeps article creation above the catalogue and starts historical entry from the old header action', async () => {
+    list.mockResolvedValue({ articles: [confirmedArticle] })
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    const createPanel = wrapper.get('.article-create-panel')
+    const catalogue = wrapper.get('.article-layout')
+    expect(createPanel.element.compareDocumentPosition(catalogue.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    await wrapper.get('.page-title-row .secondary-button').trigger('click')
+    expect(routerPush).toHaveBeenCalledWith({ name: 'sales', query: { mode: 'historical' } })
   })
 })

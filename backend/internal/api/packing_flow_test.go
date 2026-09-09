@@ -170,44 +170,8 @@ func TestPackingListTenantIsolationFeatureFlagAndPhotos(t *testing.T) {
 	if err := h.db.WithContext(h.ctx()).Model(second).Update("feature_flags", second.FeatureFlags).Error; err != nil {
 		t.Fatalf("disable packing flag: %v", err)
 	}
-	if result := h.do(http.MethodGet, "/api/v1/packing-list", nil); result.Status != http.StatusForbidden || result.Body["code"] != "feature_disabled" {
-		t.Fatalf("feature flag must guard API: %d %v", result.Status, result.Body)
-	}
-}
-
-func TestPackingListPOSModeKeepsCheckingButBlocksManagement(t *testing.T) {
-	h := newHarness(t)
-	band := h.makeBand()
-	h.signInAs(band, models.RoleMember)
-	bagID, itemID := packingUUID(), packingUUID()
-	createBag := packingOperation(packingUUID(), "create_bag", 1, map[string]any{"bag_id": bagID, "name": "Instrumente"})
-	if result := h.do(http.MethodPost, "/api/v1/packing-list/operations", createBag); result.Status != http.StatusOK {
-		t.Fatalf("create bag: %d %v", result.Status, result.Body)
-	}
-	createItem := packingOperation(packingUUID(), "create_item", 1, map[string]any{"bag_id": bagID, "item_id": itemID, "name": "Gitarre"})
-	if result := h.do(http.MethodPost, "/api/v1/packing-list/operations", createItem); result.Status != http.StatusOK {
-		t.Fatalf("create item: %d %v", result.Status, result.Body)
-	}
-	if result := h.do(http.MethodPost, "/api/v1/session/pos-mode", map[string]any{"enabled": true}); result.Status != http.StatusOK {
-		t.Fatalf("enter POS mode: %d %v", result.Status, result.Body)
-	}
 	if result := h.do(http.MethodGet, "/api/v1/packing-list", nil); result.Status != http.StatusOK {
-		t.Fatalf("POS mode must read packing list: %d %v", result.Status, result.Body)
-	}
-	status := packingOperation(packingUUID(), "set_item_status", 1, map[string]any{"item_id": itemID, "status": "packed"})
-	if result := h.do(http.MethodPost, "/api/v1/packing-list/operations", status); result.Status != http.StatusOK {
-		t.Fatalf("POS mode must check items: %d %v", result.Status, result.Body)
-	}
-	rename := packingOperation(packingUUID(), "rename_item", 1, map[string]any{"item_id": itemID, "name": "Bass"})
-	if result := h.do(http.MethodPost, "/api/v1/packing-list/operations", rename); result.Status != http.StatusForbidden || result.Body["code"] != "pos_mode_restricted" {
-		t.Fatalf("POS management must be blocked: %d %v", result.Status, result.Body)
-	}
-	photo := h.uploadPackingPhoto(map[string]string{
-		"event_id": packingUUID(), "device_id": "api-test-device", "client_created_at": "2026-09-08T10:00:00Z",
-		"photo_id": packingUUID(), "item_id": itemID,
-	}, samplePNG(t, 20, 20), "gitarre.png")
-	if photo.Status != http.StatusForbidden || photo.Body["code"] != "pos_mode_restricted" {
-		t.Fatalf("POS photo upload must be blocked: %d %v", photo.Status, photo.Body)
+		t.Fatalf("legacy band flag must no longer disable the always-available packing list: %d %v", result.Status, result.Body)
 	}
 }
 

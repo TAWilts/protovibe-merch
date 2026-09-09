@@ -144,12 +144,6 @@ func (s *Service) HasFreshReauth(session *models.Session) bool {
 		time.Since(*session.ReauthAt) <= s.reauthWindow
 }
 
-// SetPOSMode toggles the restricted point-of-sale mode of one session.
-func (s *Service) SetPOSMode(ctx context.Context, session *models.Session, enabled bool) error {
-	session.POSMode = enabled
-	return s.accountsDB(ctx).Model(session).Update("pos_mode", enabled).Error
-}
-
 // ApplySupportScope binds a platform session to one band under a live grant.
 func (s *Service) ApplySupportScope(ctx context.Context, session *models.Session, grant *models.SupportAccessGrant) error {
 	session.BandID = &grant.BandID

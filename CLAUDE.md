@@ -107,8 +107,9 @@ sind UTC (`NowFunc` in `db.Open`).
 
 `internal/api/router.go` registriert die Guards auf der Engine (nicht auf der
 Route-Group), damit auch unbekannte Pfade sie durchlaufen:
-`noStore → resolveSession → maintenanceGuard → csrfGuard → platformBoundary →
-posModeGuard`. `/healthz`, `/readyz`, `/metrics` liegen bewusst davor.
+`noStore → authRateLimit → resolveSession → maintenanceGuard → featureGuard →
+csrfGuard → platformBoundary`. `/healthz`, `/readyz`, `/metrics`
+liegen bewusst davor.
 
 - Auth: HttpOnly-Session-Cookie `merch_session` + Double-Submit-CSRF über
   Cookie `merch_csrf` und Header `X-CSRF-Token`.

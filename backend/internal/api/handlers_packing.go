@@ -46,10 +46,6 @@ func (s *Server) applyPackingOperation(c *gin.Context) {
 	}
 	state := stateFrom(c)
 	if operation.IsManagement() {
-		if state.Session.POSMode {
-			forbidden(c, "pos_mode_restricted", "packing-list management is disabled while POS mode is active")
-			return
-		}
 		if !state.User.Role.AtLeast(models.RoleMember) && state.Grant == nil {
 			forbidden(c, "insufficient_role", "this action requires the member role")
 			return
@@ -83,10 +79,6 @@ func (s *Server) applyPackingOperation(c *gin.Context) {
 
 func (s *Server) uploadPackingPhoto(c *gin.Context) {
 	state := stateFrom(c)
-	if state.Session.POSMode {
-		forbidden(c, "pos_mode_restricted", "packing-list management is disabled while POS mode is active")
-		return
-	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, photos.MaxUploadBytes+16*1024)
 	header, err := c.FormFile("file")
 	if err != nil {

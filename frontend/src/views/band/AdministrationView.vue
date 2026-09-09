@@ -21,6 +21,8 @@ const flash = useFlashStore()
 const session = useSessionStore()
 
 const isBandAdmin = computed(() => session.capabilities?.is_band_admin ?? false)
+const canCustomizeFeatures = computed(() => session.capabilities?.can_access_member_workflows ?? false)
+const featureVisibilityBusy = ref(false)
 const events = ref<SaleEvent[]>([])
 const eventEditor = ref<{ mode: 'create' | 'rename'; id?: number; name: string } | null>(null)
 const eventToDelete = ref<SaleEvent | null>(null)
@@ -144,6 +146,22 @@ async function deleteEvent() {
     report(error)
   } finally {
     eventBusy.value = false
+  }
+}
+
+async function saveFeatureVisibility(
+  key: 'show_packing_list' | 'show_product_palette',
+  visible: boolean,
+) {
+  if (featureVisibilityBusy.value) return
+  featureVisibilityBusy.value = true
+  try {
+    await session.setFeatureVisibility({ [key]: visible })
+    flash.success(t('administration.personalFeatures.saved'))
+  } catch (error) {
+    report(error)
+  } finally {
+    featureVisibilityBusy.value = false
   }
 }
 
@@ -279,6 +297,41 @@ function durationLabel(seconds: number): string {
         <h1>{{ t('administration.title') }}</h1>
       </div>
     </div>
+
+    <section v-if="canCustomizeFeatures" class="table-section personal-feature-panel">
+      <div class="section-heading">
+        <div>
+          <h2>{{ t('administration.personalFeatures.title') }}</h2>
+          <p>{{ t('administration.personalFeatures.intro') }}</p>
+        </div>
+      </div>
+      <div class="personal-feature-options">
+        <label class="checkbox-row">
+          <input
+            type="checkbox"
+            :checked="session.user?.show_packing_list !== false"
+            :disabled="featureVisibilityBusy"
+            @change="saveFeatureVisibility('show_packing_list', ($event.target as HTMLInputElement).checked)"
+          />
+          <span>
+            <strong>{{ t('administration.personalFeatures.packingList') }}</strong>
+            <small>{{ t('administration.personalFeatures.packingListHint') }}</small>
+          </span>
+        </label>
+        <label class="checkbox-row">
+          <input
+            type="checkbox"
+            :checked="session.user?.show_product_palette !== false"
+            :disabled="featureVisibilityBusy"
+            @change="saveFeatureVisibility('show_product_palette', ($event.target as HTMLInputElement).checked)"
+          />
+          <span>
+            <strong>{{ t('administration.personalFeatures.productPalette') }}</strong>
+            <small>{{ t('administration.personalFeatures.productPaletteHint') }}</small>
+          </span>
+        </label>
+      </div>
+    </section>
 
     <section class="table-section event-admin-panel">
       <div class="section-heading">
@@ -641,6 +694,31 @@ function durationLabel(seconds: number): string {
 </template>
 
 <style scoped>
+.personal-feature-options {
+  display: grid;
+  gap: 10px;
+}
+
+.personal-feature-options .checkbox-row {
+  align-items: flex-start;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+}
+
+.personal-feature-options .checkbox-row span,
+.personal-feature-options .checkbox-row small {
+  display: block;
+}
+
+.personal-feature-options .checkbox-row small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
 .event-admin-list {
   display: grid;
   gap: 8px;
