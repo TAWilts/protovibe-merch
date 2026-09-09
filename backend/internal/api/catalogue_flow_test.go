@@ -3,8 +3,11 @@ package api_test
 import (
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/tawilts/protovibe-merch/backend/internal/audit"
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/tenant"
 )
 
 // TestArticleLifecycleOverHTTP walks the management page's happy path: create
@@ -104,6 +107,89 @@ func TestArticleDraftDefersVariants(t *testing.T) {
 		if jsonObject(raw)["is_active"] != true {
 			t.Fatalf("the first generated grid must not contain retired variants: %v", saved.Body)
 		}
+	}
+}
+
+func TestIncompleteArticleAlwaysReturnsArraysAndCanBeDeleted(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+
+	article := &models.Article{Name: "Legacy Draft", IsOffered: true, IsActive: true}
+	bandCtx := tenant.WithBand(h.ctx(), band.ID)
+	if err := h.db.WithContext(bandCtx).Create(article).Error; err != nil {
+		t.Fatalf("create legacy article: %v", err)
+	}
+	group := &models.OptionGroup{ArticleID: article.ID, Name: "Legacy Option", IsActive: true}
+	if err := h.db.WithContext(bandCtx).Create(group).Error; err != nil {
+		t.Fatalf("create empty option group: %v", err)
+	}
+
+	loaded := h.do(http.MethodGet, "/api/v1/articles/"+itoa(article.ID), nil)
+	if loaded.Status != http.StatusOK || loaded.Body["configuration_complete"] != false {
+		t.Fatalf("legacy draft must remain editable: %d %v", loaded.Status, loaded.Body)
+	}
+	groups := jsonList(loaded.Body, "option_groups")
+	if len(groups) != 1 {
+		t.Fatalf("expected one option group: %v", loaded.Body)
+	}
+	if values, ok := jsonObject(groups[0])["values"].([]any); !ok || len(values) != 0 {
+		t.Fatalf("an empty option group must be encoded as [], got %T %v", jsonObject(groups[0])["values"], jsonObject(groups[0])["values"])
+	}
+	if variants, ok := loaded.Body["variants"].([]any); !ok || len(variants) != 0 {
+		t.Fatalf("an empty variant list must be encoded as [], got %T %v", loaded.Body["variants"], loaded.Body["variants"])
+	}
+
+	deleted := h.do(http.MethodDelete, "/api/v1/articles/"+itoa(article.ID), nil)
+	if deleted.Status != http.StatusNoContent {
+		t.Fatalf("delete legacy draft: %d %v", deleted.Status, deleted.Body)
+	}
+	if res := h.do(http.MethodGet, "/api/v1/articles/"+itoa(article.ID), nil); res.Status != http.StatusNotFound {
+		t.Fatalf("deleted draft must be gone: %d %v", res.Status, res.Body)
+	}
+	var logged int64
+	if err := h.db.Raw("SELECT COUNT(*) FROM audit_log WHERE band_id = ? AND action = ? AND entity_id = ?",
+		band.ID, audit.ActionArticleDeleted, article.ID).Scan(&logged).Error; err != nil {
+		t.Fatalf("read audit log: %v", err)
+	}
+	if logged != 1 {
+		t.Fatalf("expected one article deletion audit entry, got %d", logged)
+	}
+}
+
+func TestArticleDeletionRejectsCompleteAndUsedDrafts(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+
+	complete, _ := h.sellableArticle("Complete Article")
+	if res := h.do(http.MethodDelete, "/api/v1/articles/"+itoa(complete), nil); res.Status != http.StatusConflict || res.Body["code"] != "article_not_incomplete" {
+		t.Fatalf("complete article must not be deleted: %d %v", res.Status, res.Body)
+	}
+
+	article := &models.Article{Name: "Used Draft", IsOffered: true, IsActive: true}
+	bandCtx := tenant.WithBand(h.ctx(), band.ID)
+	if err := h.db.WithContext(bandCtx).Create(article).Error; err != nil {
+		t.Fatalf("create draft: %v", err)
+	}
+	variant := &models.Variant{ArticleID: article.ID, OptionValueIDs: models.JSONInt64Slice{}, CombinationKey: "", IsActive: false}
+	if err := h.db.WithContext(bandCtx).Create(variant).Error; err != nil {
+		t.Fatalf("create retired variant: %v", err)
+	}
+	purchase := &models.Purchase{
+		ReceiptID: "E-DRAFT", VariantID: variant.ID, Quantity: 1, UnitCostCents: 100,
+		PurchasedOn: models.NewDate(2026, time.September, 9),
+	}
+	if err := h.db.WithContext(bandCtx).Create(purchase).Error; err != nil {
+		t.Fatalf("create purchase reference: %v", err)
+	}
+	if res := h.do(http.MethodDelete, "/api/v1/articles/"+itoa(article.ID), nil); res.Status != http.StatusConflict || res.Body["code"] != "article_in_use" {
+		t.Fatalf("used draft must not be deleted: %d %v", res.Status, res.Body)
+	}
+
+	h.signInAs(band, models.RoleSeller)
+	if res := h.do(http.MethodDelete, "/api/v1/articles/"+itoa(article.ID), nil); res.Status != http.StatusForbidden {
+		t.Fatalf("seller must not delete drafts: %d %v", res.Status, res.Body)
 	}
 }
 

@@ -1,7 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PurchasesView from './PurchasesView.vue'
+
+const { catalogueList } = vi.hoisted(() => ({ catalogueList: vi.fn() }))
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key, locale: { value: 'de' } }),
@@ -13,7 +15,7 @@ vi.mock('@/stores/session', () => ({
   useSessionStore: () => ({ capabilities: { can_manage_purchases: true } }),
 }))
 vi.mock('@/api/endpoints', () => ({
-  catalogueApi: { list: vi.fn().mockResolvedValue({ articles: [] }) },
+  catalogueApi: { list: catalogueList },
   salesApi: { receiptPreview: vi.fn().mockResolvedValue({ receipt_id: 'E-2' }) },
   purchasesApi: {
     list: vi.fn().mockResolvedValue({
@@ -56,6 +58,10 @@ vi.mock('@/api/endpoints', () => ({
 }))
 
 describe('PurchasesView receipt header', () => {
+  beforeEach(() => {
+    catalogueList.mockReset().mockResolvedValue({ articles: [] })
+  })
+
   it('shows attachments and exposes enabled editing without expanding first', async () => {
     const wrapper = mount(PurchasesView)
     await flushPromises()
@@ -66,5 +72,47 @@ describe('PurchasesView receipt header', () => {
     expect(edit).toBeDefined()
     await edit!.trigger('click')
     expect(wrapper.get('.confirmation-dialog').text()).toContain('purchases.editTitle')
+  })
+
+  it('hides no-reorder variants but keeps withdrawn reorderable variants', async () => {
+    catalogueList.mockResolvedValue({
+      articles: [
+        {
+          id: 1,
+          name: 'Teilweise nachbestellbar',
+          option_groups: [{
+            id: 10,
+            name: 'Ausgabe',
+            position: 0,
+            is_active: true,
+            values: [
+              { id: 101, value: 'Standard', position: 0, is_active: true },
+              { id: 102, value: 'Deluxe', position: 1, is_active: true },
+            ],
+          }],
+          variants: [
+            { id: 11, option_value_ids: [101], combination_key: '101', no_reorder: true, is_active: true, is_offered: true },
+            { id: 12, option_value_ids: [102], combination_key: '102', no_reorder: false, is_active: false, is_offered: false },
+          ],
+        },
+        {
+          id: 2,
+          name: 'Komplett ausgemustert',
+          option_groups: [],
+          variants: [{ id: 21, option_value_ids: [], combination_key: '', no_reorder: true, is_active: true, is_offered: true }],
+        },
+      ],
+    })
+
+    const wrapper = mount(PurchasesView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Teilweise nachbestellbar')
+    expect(wrapper.text()).not.toContain('Komplett ausgemustert')
+    const articleButton = wrapper.findAll('button').find((entry) => entry.text().includes('Teilweise nachbestellbar'))
+    expect(articleButton).toBeDefined()
+    await articleButton!.trigger('click')
+    expect(wrapper.text()).toContain('Deluxe')
+    expect(wrapper.text()).not.toContain('Standard')
   })
 })

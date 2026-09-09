@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ArticlesView from './ArticlesView.vue'
 
-const { list, create, save, routerPush } = vi.hoisted(() => ({
+const { list, create, save, removeIncomplete, routerPush } = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   save: vi.fn(),
+  removeIncomplete: vi.fn(),
   routerPush: vi.fn(),
 }))
 
@@ -25,7 +26,7 @@ vi.mock('@/stores/session', () => ({
 vi.mock('@/stores/offline', () => ({ useOfflineStore: () => ({ online: true }) }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
 vi.mock('@/api/endpoints', () => ({
-  catalogueApi: { list, create, save },
+  catalogueApi: { list, create, save, removeIncomplete },
   photosApi: {
     fileUrl: (id: number) => `/photos/${id}`,
     list: vi.fn().mockResolvedValue({ photos: [] }),
@@ -75,6 +76,7 @@ describe('ArticlesView variant generation', () => {
     list.mockReset()
     create.mockReset()
     save.mockReset().mockResolvedValue(confirmedArticle)
+    removeIncomplete.mockReset().mockResolvedValue(undefined)
     routerPush.mockReset().mockResolvedValue(undefined)
   })
 
@@ -141,5 +143,29 @@ describe('ArticlesView variant generation', () => {
 
     await wrapper.get('.page-title-row .secondary-button').trigger('click')
     expect(routerPush).toHaveBeenCalledWith({ name: 'sales', query: { mode: 'historical' } })
+  })
+
+  it('opens legacy drafts with missing option values and deletes them after confirmation', async () => {
+    const legacyDraft = {
+      ...draftArticle,
+      id: 9,
+      name: 'zSonstiges',
+      option_groups: [{ id: 90, name: 'Option', position: 0, is_active: true, values: null }],
+    }
+    list.mockResolvedValue({ articles: [legacyDraft] })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('zSonstiges')
+    expect(wrapper.text()).toContain('articles.deleteIncomplete')
+    const deleteButton = wrapper.findAll('button').find((entry) => entry.text() === 'articles.deleteIncomplete')
+    expect(deleteButton).toBeDefined()
+    await deleteButton!.trigger('click')
+    await flushPromises()
+
+    expect(removeIncomplete).toHaveBeenCalledWith(9)
+    expect(wrapper.text()).not.toContain('zSonstiges')
   })
 })

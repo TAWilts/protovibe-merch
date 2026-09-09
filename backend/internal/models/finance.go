@@ -60,7 +60,7 @@ type BandTransaction struct {
 	UpdatedAt time.Time `gorm:"not null" json:"updated_at"`
 	Actor
 
-	Attachments []BandTransactionAttachment `gorm:"foreignKey:TransactionID" json:"attachments,omitempty"`
+	Attachments []BandTransactionAttachment `gorm:"foreignKey:TransactionID" json:"attachments"`
 }
 
 func (BandTransaction) TableName() string { return "band_transactions" }

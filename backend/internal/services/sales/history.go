@@ -21,16 +21,18 @@ type Position struct {
 	EventName       string      `json:"event_name"`
 	Comment         string      `json:"comment"`
 
-	VariantID         int64  `json:"variant_id"`
-	ArticleName       string `json:"article_name"`
-	VariantLabel      string `json:"variant_label"`
-	Quantity          int    `json:"quantity"`
-	UnitPriceCents    int64  `json:"unit_price_cents"`
-	AmountDueCents    int64  `json:"amount_due_cents"`
-	ShippingCostCents int64  `json:"shipping_cost_cents"`
-	DiscountCents     int64  `json:"discount_cents"`
-	AmountGivenCents  *int64 `json:"amount_given_cents"`
-	DonationCents     int64  `json:"donation_cents"`
+	LineType          models.SaleLineType `json:"line_type"`
+	VariantID         *int64              `json:"variant_id"`
+	LineDescription   string              `json:"line_description"`
+	ArticleName       string              `json:"article_name"`
+	VariantLabel      string              `json:"variant_label"`
+	Quantity          int                 `json:"quantity"`
+	UnitPriceCents    int64               `json:"unit_price_cents"`
+	AmountDueCents    int64               `json:"amount_due_cents"`
+	ShippingCostCents int64               `json:"shipping_cost_cents"`
+	DiscountCents     int64               `json:"discount_cents"`
+	AmountGivenCents  *int64              `json:"amount_given_cents"`
+	DonationCents     int64               `json:"donation_cents"`
 
 	IsPaid          bool                  `json:"is_paid"`
 	PaymentFollowUp bool                  `json:"payment_follow_up"`
@@ -142,7 +144,9 @@ func (r *saleRow) position() Position {
 		EventName:       r.EventName,
 		Comment:         r.Comment,
 
+		LineType:          r.LineType,
 		VariantID:         r.VariantID,
+		LineDescription:   r.LineDescription,
 		ArticleName:       r.ArticleName,
 		VariantLabel:      r.VariantLabel,
 		Quantity:          r.Quantity,
@@ -183,8 +187,19 @@ func (s *Service) loadPositions(ctx context.Context, keep func(*saleRow) bool) (
 
 	rows := make([]saleRow, 0, len(sales))
 	for _, sale := range sales {
-		label := labels[sale.VariantID]
-		row := saleRow{Sale: sale, ArticleName: label.ArticleName, VariantLabel: label.VariantLabel}
+		row := saleRow{Sale: sale}
+		if sale.VariantID != nil {
+			label := labels[*sale.VariantID]
+			row.ArticleName = label.ArticleName
+			row.VariantLabel = label.VariantLabel
+		} else {
+			row.ArticleName = sale.LineDescription
+			if sale.LineType == models.SaleLineDonation {
+				row.VariantLabel = "Spende"
+			} else {
+				row.VariantLabel = "Sonstiger Erlös"
+			}
+		}
 		if keep != nil && !keep(&row) {
 			continue
 		}

@@ -2,11 +2,12 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
-import { reportsApi } from '@/api/endpoints'
+import { bandFinanceAttachmentsApi, reportsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
-import type { BandLedger, BandTransaction } from '@/api/types'
+import type { Attachment, BandLedger, BandTransaction } from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import RecurringBandFinances from '@/components/RecurringBandFinances.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
@@ -29,6 +30,12 @@ const ledger = ref<BandLedger | null>(null)
 const loading = ref(true)
 const busy = ref(false)
 const editingId = ref<number | null>(null)
+const pendingFiles = ref<File[]>([])
+const financeFileInput = ref<HTMLInputElement | null>(null)
+const attachmentsFor = ref<BandTransaction | null>(null)
+const attachments = ref<Attachment[]>([])
+const attachmentBusy = ref(false)
+const failedUploadFiles = ref<File[]>([])
 const dateFrom = ref('')
 const dateTo = ref('')
 
@@ -183,6 +190,30 @@ function statusLabel(entry: BandTransaction) {
 function resetForm() {
   editingId.value = null
   form.value = freshForm()
+  pendingFiles.value = []
+  if (financeFileInput.value) financeFileInput.value.value = ''
+}
+
+function choosePendingFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  pendingFiles.value.push(...Array.from(input.files ?? []))
+  input.value = ''
+}
+
+function removePendingFile(index: number) {
+  pendingFiles.value.splice(index, 1)
+}
+
+async function uploadFiles(transactionId: number, files: File[]) {
+  const failed: File[] = []
+  for (const file of files) {
+    try {
+      await bandFinanceAttachmentsApi.upload(transactionId, file)
+    } catch {
+      failed.push(file)
+    }
+  }
+  return failed
 }
 
 function startEdit(entry: BandTransaction) {
@@ -216,15 +247,72 @@ async function submit() {
       await reportsApi.updateBandEntry(editingId.value, payload)
       flash.success(t('bandFinances.updated'))
     } else {
-      await reportsApi.createBandEntry({ ...payload, is_settled: form.value.is_settled })
+      const created = await reportsApi.createBandEntry({ ...payload, is_settled: form.value.is_settled })
+      const files = [...pendingFiles.value]
+      const failed = await uploadFiles(created.id, files)
       flash.success(t('bandFinances.saved'))
+      if (failed.length) {
+        failedUploadFiles.value = failed
+        attachmentsFor.value = created
+        flash.error(t('bandFinances.attachmentPartialFailure', { count: failed.length }))
+      }
     }
     resetForm()
     await load()
+    if (attachmentsFor.value) await loadFinanceAttachments()
   } catch (error) {
     report(error)
   } finally {
     busy.value = false
+  }
+}
+
+async function openFinanceAttachments(entry: BandTransaction) {
+  attachmentsFor.value = entry
+  failedUploadFiles.value = []
+  await loadFinanceAttachments()
+}
+
+async function loadFinanceAttachments() {
+  if (!attachmentsFor.value) return
+  try {
+    attachments.value = (await bandFinanceAttachmentsApi.list(attachmentsFor.value.id)).attachments
+  } catch (error) {
+    report(error)
+  }
+}
+
+async function addFinanceAttachments(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  if (!attachmentsFor.value || !files.length || attachmentBusy.value) return
+  attachmentBusy.value = true
+  failedUploadFiles.value = await uploadFiles(attachmentsFor.value.id, files)
+  await loadFinanceAttachments()
+  attachmentBusy.value = false
+  if (failedUploadFiles.value.length) {
+    flash.error(t('bandFinances.attachmentPartialFailure', { count: failedUploadFiles.value.length }))
+  }
+}
+
+async function retryFailedUploads() {
+  if (!attachmentsFor.value || !failedUploadFiles.value.length || attachmentBusy.value) return
+  attachmentBusy.value = true
+  failedUploadFiles.value = await uploadFiles(attachmentsFor.value.id, failedUploadFiles.value)
+  await loadFinanceAttachments()
+  attachmentBusy.value = false
+  if (!failedUploadFiles.value.length) flash.success(t('bandFinances.attachmentsUploaded'))
+}
+
+async function removeFinanceAttachment(file: Attachment) {
+  if (!attachmentsFor.value || !window.confirm(t('bandFinances.deleteAttachmentConfirm', { name: file.original_filename }))) return
+  try {
+    await bandFinanceAttachmentsApi.remove(attachmentsFor.value.id, file.id)
+    await loadFinanceAttachments()
+    await load()
+  } catch (error) {
+    report(error)
   }
 }
 
@@ -361,6 +449,28 @@ async function cancelEntry(id: number) {
               : t('bandFinances.openExpenseHint') }}
           </p>
 
+          <div v-if="editingId === null" class="finance-file-picker">
+            <label>
+              {{ t('bandFinances.attachments') }}
+              <input
+                ref="financeFileInput"
+                type="file"
+                accept="application/pdf,image/jpeg,image/png,image/webp"
+                multiple
+                @change="choosePendingFiles"
+              />
+            </label>
+            <ul v-if="pendingFiles.length" class="finance-file-list">
+              <li v-for="(file, index) in pendingFiles" :key="`${file.name}-${index}`">
+                <span>{{ file.name }}</span>
+                <button class="compact-button" type="button" @click="removePendingFile(index)">
+                  {{ t('common.delete') }}
+                </button>
+              </li>
+            </ul>
+            <p class="muted">{{ t('bandFinances.attachmentsHint') }}</p>
+          </div>
+
           <div class="form-actions">
             <button class="primary-button" type="submit" :disabled="!canSubmit">
               {{ editingId === null ? t('common.save') : t('bandFinances.saveChanges') }}
@@ -445,7 +555,16 @@ async function cancelEntry(id: number) {
                   {{ entry.category }}
                   <small v-if="entry.is_asset" class="asset-label">{{ t('bandFinances.assetShort') }}</small>
                 </td>
-                <td>{{ entry.description }}</td>
+                <td>
+                  {{ entry.description }}
+                  <button
+                    class="attachment-button"
+                    type="button"
+                    :title="t('bandFinances.manageAttachments')"
+                    :aria-label="t('bandFinances.attachmentCount', { count: entry.attachments?.length ?? 0 })"
+                    @click="openFinanceAttachments(entry)"
+                  >📎 <span>{{ entry.attachments?.length ?? 0 }}</span></button>
+                </td>
                 <td class="numeric" :class="entry.transaction_type">
                   {{ entry.transaction_type === 'expense' ? '−' : '+' }}{{ format(entry.amount_cents) }}
                 </td>
@@ -492,6 +611,44 @@ async function cancelEntry(id: number) {
         </div>
       </section>
     </template>
+
+    <AppDialog v-if="attachmentsFor" :label="t('bandFinances.manageAttachments')" @close="attachmentsFor = null">
+      <div class="stack-form">
+        <div>
+          <p class="eyebrow">{{ attachmentsFor.description }}</p>
+          <h2>{{ t('bandFinances.attachments') }}</h2>
+          <p class="muted">{{ t('bandFinances.attachmentsHint') }}</p>
+        </div>
+        <p v-if="!attachments.length" class="muted">{{ t('bandFinances.noAttachments') }}</p>
+        <ul v-else class="finance-file-list">
+          <li v-for="file in attachments" :key="file.id">
+            <a :href="bandFinanceAttachmentsApi.fileUrl(attachmentsFor.id, file.id)">{{ file.original_filename }}</a>
+            <button class="compact-button danger-button" type="button" @click="removeFinanceAttachment(file)">
+              {{ t('common.delete') }}
+            </button>
+          </li>
+        </ul>
+        <div v-if="failedUploadFiles.length" class="notice error">
+          <p>{{ t('bandFinances.attachmentPartialFailure', { count: failedUploadFiles.length }) }}</p>
+          <button class="secondary-button" type="button" :disabled="attachmentBusy" @click="retryFailedUploads">
+            {{ t('common.retry') }}
+          </button>
+        </div>
+        <label>
+          {{ t('bandFinances.addAttachments') }}
+          <input
+            type="file"
+            accept="application/pdf,image/jpeg,image/png,image/webp"
+            multiple
+            :disabled="attachmentBusy"
+            @change="addFinanceAttachments"
+          />
+        </label>
+        <div class="form-actions">
+          <button class="primary-button" type="button" @click="attachmentsFor = null">{{ t('common.close') }}</button>
+        </div>
+      </div>
+    </AppDialog>
   </main>
 </template>
 
@@ -542,6 +699,45 @@ async function cancelEntry(id: number) {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
+}
+
+.finance-file-picker {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-control);
+  background: var(--surface-muted);
+}
+
+.finance-file-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.finance-file-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  overflow-wrap: anywhere;
+}
+
+.attachment-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 44px;
+  min-height: 34px;
+  margin-left: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-small);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
 }
 
 .stack-form .settlement-checkbox {

@@ -31,6 +31,11 @@ var (
 	ErrNegativeAmount               = errors.New("sales: the amount given cannot be negative")
 	ErrDiscountConfirmationRequired = errors.New("sales: a payment below the amount due requires explicit discount confirmation")
 	ErrVariantNotOffered            = errors.New("sales: this variant is not currently offered")
+	ErrInvalidLineType              = errors.New("sales: invalid line type")
+	ErrMixedBasket                  = errors.New("sales: merchandise and special entries need separate receipts")
+	ErrInvalidDescription           = errors.New("sales: a description between 1 and 200 characters is required")
+	ErrInvalidSpecialAmount         = errors.New("sales: the special-entry amount must be positive")
+	ErrSpecialDelivery              = errors.New("sales: special entries cannot be shipped or left unpaid")
 	// ErrUnknownVariant covers both a typo and a variant belonging to another
 	// band — the tenant filter simply makes the row invisible here.
 	ErrUnknownVariant = errors.New("sales: unknown variant")
@@ -38,8 +43,13 @@ var (
 
 // BasketItem is one position a seller added at the stand.
 type BasketItem struct {
-	VariantID int64 `json:"variant_id"`
-	Quantity  int   `json:"quantity"`
+	// LineType may be omitted by existing clients; an empty value means
+	// merchandise. Special entries have no variant and carry their exact amount.
+	LineType    models.SaleLineType `json:"line_type,omitempty"`
+	VariantID   int64               `json:"variant_id,omitempty"`
+	Quantity    int                 `json:"quantity,omitempty"`
+	Description string              `json:"description,omitempty"`
+	AmountCents *int64              `json:"amount_cents,omitempty"`
 	// UnitPriceCents overrides the variant's price for this sale only. A nil
 	// value means "use the catalogue price", which is the normal case.
 	UnitPriceCents *int64 `json:"unit_price_cents"`
@@ -73,7 +83,9 @@ type Request struct {
 
 // Line is one prepared ledger row.
 type Line struct {
-	VariantID         int64
+	LineType          models.SaleLineType
+	VariantID         *int64
+	Description       string
 	Quantity          int
 	UnitPriceCents    int64
 	AmountDueCents    int64
@@ -131,7 +143,46 @@ func Prepare(req Request, prices map[int64]VariantPrice) (*Prepared, error) {
 
 	lines := make([]Line, 0, len(req.Items))
 	var totalDue int64
+	special := false
 	for i, item := range req.Items {
+		lineType := item.LineType
+		if lineType == "" {
+			lineType = models.SaleLineMerchandise
+		}
+		if lineType == models.SaleLineDonation || lineType == models.SaleLineMiscIncome {
+			if len(req.Items) != 1 {
+				return nil, ErrMixedBasket
+			}
+			description := strings.TrimSpace(item.Description)
+			if description == "" || len([]rune(description)) > 200 {
+				return nil, ErrInvalidDescription
+			}
+			if item.AmountCents == nil || *item.AmountCents <= 0 {
+				return nil, ErrInvalidSpecialAmount
+			}
+			if !req.IsPaid || !req.IsReceived || req.ShippingCostCents != 0 {
+				return nil, ErrSpecialDelivery
+			}
+			amount := *item.AmountCents
+			given := amount
+			line := Line{
+				LineType: lineType, Description: description, Quantity: 1,
+				AmountGivenCents: &given,
+			}
+			if lineType == models.SaleLineDonation {
+				line.DonationCents = amount
+			} else {
+				line.UnitPriceCents = amount
+				line.AmountDueCents = amount
+				totalDue = amount
+			}
+			lines = append(lines, line)
+			special = true
+			continue
+		}
+		if lineType != models.SaleLineMerchandise {
+			return nil, fmt.Errorf("%w: %q", ErrInvalidLineType, lineType)
+		}
 		if item.Quantity <= 0 {
 			return nil, fmt.Errorf("%w: position %d", ErrInvalidQuantity, i+1)
 		}
@@ -153,12 +204,26 @@ func Prepare(req Request, prices map[int64]VariantPrice) (*Prepared, error) {
 
 		due := unit * int64(item.Quantity)
 		totalDue += due
+		variantID := item.VariantID
 		lines = append(lines, Line{
-			VariantID:      item.VariantID,
+			LineType:       models.SaleLineMerchandise,
+			VariantID:      &variantID,
 			Quantity:       item.Quantity,
 			UnitPriceCents: unit,
 			AmountDueCents: due,
 		})
+	}
+	if special {
+		amount := *lines[0].AmountGivenCents
+		donation := lines[0].DonationCents
+		return &Prepared{
+			Lines: lines, TotalDueCents: totalDue, TotalPaidCents: amount,
+			DonationCents: donation, PaymentMethod: req.PaymentMethod,
+			IsPaid: true, IsReceived: true, DeliveryStatus: models.DeliveryNotApplicable,
+			CustomerName: name, CustomerAddress: address,
+			EventName: strings.TrimSpace(req.EventName), SoldBy: strings.TrimSpace(req.SoldBy),
+			Comment: strings.TrimSpace(req.Comment),
+		}, nil
 	}
 
 	if req.ShippingCostCents < 0 {

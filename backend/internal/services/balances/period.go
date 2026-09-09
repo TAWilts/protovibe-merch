@@ -231,6 +231,27 @@ func (s *Service) summaryPeriod(ctx context.Context, period Period, rows []Row) 
 		summary.PurchaseCostCents += row.ShippingCostCents
 	}
 
+	type specialTotals struct {
+		MiscIncome int64
+		Donations  int64
+		Collected  int64
+	}
+	var special specialTotals
+	specialQuery := s.db.WithContext(ctx).Model(&models.Sale{}).
+		Where("is_cancelled = ? AND line_type <> ?", false, models.SaleLineMerchandise)
+	specialQuery = period.apply(specialQuery, "sold_on")
+	if err := specialQuery.Select(`
+		COALESCE(SUM(CASE WHEN line_type = 'misc_income' AND is_paid = 1 THEN amount_due_cents ELSE 0 END), 0) AS misc_income,
+		COALESCE(SUM(CASE WHEN line_type = 'donation' AND is_paid = 1 THEN donation_cents ELSE 0 END), 0) AS donations,
+		COALESCE(SUM(CASE WHEN is_paid = 1 THEN amount_due_cents - discount_cents + donation_cents ELSE 0 END), 0) AS collected`).
+		Scan(&special).Error; err != nil {
+		return nil, err
+	}
+	summary.MiscIncomeCents = special.MiscIncome
+	summary.RevenueCents += special.MiscIncome
+	summary.DonationCents += special.Donations
+	summary.CollectedCents += special.Collected
+
 	summary.CashBalanceCents = summary.CollectedCents - summary.PurchaseCostCents
 
 	openQuery := s.db.WithContext(ctx).Model(&models.Sale{}).
@@ -368,7 +389,7 @@ func (s *Service) itemRankingsPeriod(ctx context.Context, period Period) (bySale
 func (s *Service) groupRankingPeriod(ctx context.Context, period Period, column string) ([]RankingEntry, error) {
 	type row struct {
 		Label       string
-		VariantID   int64
+		VariantID   *int64
 		Quantity    int64
 		IncomeCents int64
 	}
@@ -378,7 +399,7 @@ func (s *Service) groupRankingPeriod(ctx context.Context, period Period, column 
 	query = period.apply(query, "sold_on")
 	if err := query.
 		Select(column + ` AS label, variant_id,
-			SUM(quantity) AS quantity,
+			SUM(CASE WHEN line_type = 'merchandise' THEN quantity ELSE 0 END) AS quantity,
 			COALESCE(SUM(CASE WHEN is_paid = 1
 				THEN amount_due_cents - discount_cents ELSE 0 END), 0) AS income_cents`).
 		Group(column + ", variant_id").
@@ -399,7 +420,11 @@ func (s *Service) groupRankingPeriod(ctx context.Context, period Period, column 
 		}
 		aggregate.Quantity += entry.Quantity
 		aggregate.IncomeCents += entry.IncomeCents
-		aggregate.ProfitCents += entry.IncomeCents - entry.Quantity*basis[entry.VariantID]
+		cost := int64(0)
+		if entry.VariantID != nil {
+			cost = entry.Quantity * basis[*entry.VariantID]
+		}
+		aggregate.ProfitCents += entry.IncomeCents - cost
 	}
 	entries := make([]RankingEntry, 0, len(grouped))
 	for _, entry := range grouped {
@@ -442,7 +467,8 @@ func (s *Service) eventTimelinePeriod(ctx context.Context, period Period) ([]Eve
 		ID             int64
 		EventName      string
 		SoldOn         models.Date
-		VariantID      int64
+		VariantID      *int64
+		LineType       models.SaleLineType
 		Quantity       int64
 		IsPaid         bool
 		AmountDueCents int64
@@ -451,7 +477,7 @@ func (s *Service) eventTimelinePeriod(ctx context.Context, period Period) ([]Eve
 	var rows []saleRow
 	if err := s.db.WithContext(ctx).Model(&models.Sale{}).
 		Where("is_cancelled = ? AND TRIM(event_name) <> ''", false).
-		Select("id, event_name, sold_on, variant_id, quantity, is_paid, amount_due_cents, discount_cents").
+		Select("id, event_name, sold_on, variant_id, line_type, quantity, is_paid, amount_due_cents, discount_cents").
 		Order("sold_on, id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -494,8 +520,10 @@ func (s *Service) eventTimelinePeriod(ctx context.Context, period Period) ([]Eve
 			continue
 		}
 		current.hasValues = true
-		current.point.Quantity += row.Quantity
-		current.costCents += row.Quantity * basis[row.VariantID]
+		if row.LineType == models.SaleLineMerchandise && row.VariantID != nil {
+			current.point.Quantity += row.Quantity
+			current.costCents += row.Quantity * basis[*row.VariantID]
+		}
 		if row.IsPaid {
 			current.point.IncomeCents += row.AmountDueCents - row.DiscountCents
 		}

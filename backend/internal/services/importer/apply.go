@@ -188,7 +188,7 @@ func (s *Service) Apply(ctx context.Context, kind Kind, rows []Row, on models.Da
 
 			amountDue := int64(row.Quantity) * price
 			sale := &models.Sale{
-				ReceiptID: receiptID, VariantID: variantID,
+				ReceiptID: receiptID, LineType: models.SaleLineMerchandise, VariantID: models.VariantReference(variantID),
 				Quantity: row.Quantity, UnitPriceCents: price, AmountDueCents: amountDue,
 				AmountGivenCents: &amountDue,
 				PaymentMethod:    models.PaymentMethodOther,

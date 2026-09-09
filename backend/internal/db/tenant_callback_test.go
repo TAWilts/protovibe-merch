@@ -98,7 +98,8 @@ func tenantCases() []tenantCase {
 			build: func(f *fixtures) any {
 				return &models.Sale{
 					ReceiptID:      "V-TEST-001",
-					VariantID:      f.variant.ID,
+					LineType:       models.SaleLineMerchandise,
+					VariantID:      models.VariantReference(f.variant.ID),
 					Quantity:       1,
 					UnitPriceCents: 1800,
 					AmountDueCents: 1800,

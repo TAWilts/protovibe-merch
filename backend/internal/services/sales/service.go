@@ -132,7 +132,9 @@ func (s *Service) book(ctx context.Context, req Request, actor Actor, offline *O
 		for _, line := range prepared.Lines {
 			sale := &models.Sale{
 				ReceiptID:         receiptID,
+				LineType:          line.LineType,
 				VariantID:         line.VariantID,
+				LineDescription:   line.Description,
 				Quantity:          line.Quantity,
 				UnitPriceCents:    line.UnitPriceCents,
 				AmountDueCents:    line.AmountDueCents,
@@ -331,6 +333,9 @@ func loadPrices(ctx context.Context, tx *gorm.DB, items []BasketItem) (map[int64
 	ids := make([]int64, 0, len(items))
 	seen := map[int64]bool{}
 	for _, item := range items {
+		if item.LineType == models.SaleLineDonation || item.LineType == models.SaleLineMiscIncome {
+			continue
+		}
 		if !seen[item.VariantID] {
 			seen[item.VariantID] = true
 			ids = append(ids, item.VariantID)
@@ -391,6 +396,13 @@ func (s *Service) QuotePaymentTotal(ctx context.Context, req Request) (int64, er
 // transfer reference. Browser text is deliberately not accepted here: the
 // reference must describe the same variants that the server has just priced.
 func (s *Service) PaymentQRDescriptions(ctx context.Context, items []BasketItem) ([]string, error) {
+	if len(items) == 1 && (items[0].LineType == models.SaleLineDonation || items[0].LineType == models.SaleLineMiscIncome) {
+		description := strings.Join(strings.Fields(items[0].Description), " ")
+		if description == "" {
+			return nil, ErrInvalidDescription
+		}
+		return []string{description}, nil
+	}
 	labels, err := catalogue.NewService(s.db).VariantLabels(ctx)
 	if err != nil {
 		return nil, err

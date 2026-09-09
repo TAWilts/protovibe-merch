@@ -308,7 +308,15 @@ func (s *Service) salesSheet(ctx context.Context) (*Sheet, error) {
 
 	rows := make([][]string, 0, len(sales))
 	for _, sale := range sales {
-		entry := contexts[sale.VariantID]
+		articleName, optionText, variantID := "", "", ""
+		quantity, unitPrice := "", ""
+		if sale.VariantID != nil {
+			entry := contexts[*sale.VariantID]
+			articleName, optionText = entry.ArticleName, entry.OptionText
+			variantID = fmt.Sprintf("%d", *sale.VariantID)
+			quantity = fmt.Sprintf("%d", sale.Quantity)
+			unitPrice = money.FormatCSV(sale.UnitPriceCents)
+		}
 		given := ""
 		if sale.AmountGivenCents != nil {
 			given = money.FormatCSV(*sale.AmountGivenCents)
@@ -316,10 +324,13 @@ func (s *Service) salesSheet(ctx context.Context) (*Sheet, error) {
 		rows = append(rows, []string{
 			sale.ReceiptID,
 			sale.SoldOn.String(),
-			entry.ArticleName,
-			entry.OptionText,
-			fmt.Sprintf("%d", sale.Quantity),
-			money.FormatCSV(sale.UnitPriceCents),
+			string(sale.LineType),
+			sale.LineDescription,
+			variantID,
+			articleName,
+			optionText,
+			quantity,
+			unitPrice,
 			money.FormatCSV(sale.AmountDueCents),
 			money.FormatCSV(sale.ShippingCostCents),
 			money.FormatCSV(sale.DiscountCents),
@@ -341,7 +352,7 @@ func (s *Service) salesSheet(ctx context.Context) (*Sheet, error) {
 	return &Sheet{
 		Name: string(KindSales),
 		Header: []string{
-			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Versandkosten",
+			"Beleg-ID", "Datum", "Buchungsart", "Freitext", "Varianten-ID", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Versandkosten",
 			"Rabatt", "Gegeben", "Spende", "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus",
 			"Storniert", "Kundenname", "Adresse", "Veranstaltung", "Verkauft von", "Kommentar",
 		},

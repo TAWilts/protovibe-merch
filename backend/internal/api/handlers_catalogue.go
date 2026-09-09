@@ -22,6 +22,7 @@ func (s *Server) registerCatalogueRoutes(g *gin.RouterGroup) {
 	write := g.Group("/articles", requireAuth(), requireBandRole(models.RoleManager))
 	write.POST("", s.createArticle)
 	write.PUT("/:id", s.saveArticle)
+	write.DELETE("/:id", s.deleteArticle)
 
 	g.GET("/assortment", requireAuth(), requireBandRole(models.RoleSeller), s.getAssortment)
 }
@@ -226,9 +227,13 @@ func (s *Server) buildArticles(c *gin.Context, id int64, includeInactive bool) (
 	}
 	groupsByArticle := map[int64][]optionGroupPayload{}
 	for _, group := range groups {
+		groupValues := valuesByGroup[group.ID]
+		if groupValues == nil {
+			groupValues = []optionValuePayload{}
+		}
 		groupsByArticle[group.ArticleID] = append(groupsByArticle[group.ArticleID], optionGroupPayload{
 			ID: group.ID, Name: group.Name, Position: group.Position, IsActive: group.IsActive,
-			Values: valuesByGroup[group.ID],
+			Values: groupValues,
 		})
 	}
 
@@ -377,6 +382,27 @@ func (s *Server) saveArticle(c *gin.Context) {
 	c.JSON(http.StatusOK, payload[0])
 }
 
+func (s *Server) deleteArticle(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	ctx := c.Request.Context()
+	name, paths, err := s.catalogue.DeleteIncomplete(ctx, id)
+	if err != nil {
+		s.reportCatalogueError(c, err)
+		return
+	}
+	for _, path := range paths {
+		s.removeStoredFile(ctx, path)
+	}
+	s.audit.Log(ctx, actorFrom(c), audit.Entry{
+		Action: audit.ActionArticleDeleted, EntityType: "article", EntityID: &id,
+		Details: map[string]any{"name": name, "incomplete": true},
+	})
+	c.Status(http.StatusNoContent)
+}
+
 // reportCatalogueError maps the service errors onto stable API codes.
 func (s *Server) reportCatalogueError(c *gin.Context, err error) {
 	switch {
@@ -386,6 +412,10 @@ func (s *Server) reportCatalogueError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "invalid_name", err.Error())
 	case errors.Is(err, catalogue.ErrNegativePrice):
 		fail(c, http.StatusBadRequest, "invalid_price", err.Error())
+	case errors.Is(err, catalogue.ErrArticleNotDraft):
+		fail(c, http.StatusConflict, "article_not_incomplete", err.Error())
+	case errors.Is(err, catalogue.ErrArticleInUse):
+		fail(c, http.StatusConflict, "article_in_use", err.Error())
 	case errors.Is(err, catalogue.ErrUnknownEntity):
 		fail(c, http.StatusBadRequest, "unknown_entity", err.Error())
 	default:

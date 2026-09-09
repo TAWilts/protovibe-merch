@@ -104,10 +104,20 @@ export const catalogueApi = {
     defer_variants?: boolean
   }) => api.post<Article>('/articles', payload),
   save: (id: number, payload: unknown) => api.put<Article>(`/articles/${id}`, payload),
+  removeIncomplete: (id: number) => api.delete<void>(`/articles/${id}`),
 }
 
 export interface BookSalePayload {
-  items: { variant_id: number; quantity: number; unit_price_cents?: number }[]
+  items: ({
+    variant_id: number
+    quantity: number
+    unit_price_cents?: number
+    line_type?: 'merchandise'
+  } | {
+    line_type: 'donation' | 'misc_income'
+    description: string
+    amount_cents: number
+  })[]
   payment_method: string
   is_paid: boolean
   is_received: boolean
@@ -130,7 +140,16 @@ export interface BookSalePayload {
 }
 
 export interface HistoricalSalePayload {
-  items: { variant_id: number; quantity: number; unit_price_cents: number }[]
+  items: ({
+    variant_id: number
+    quantity: number
+    unit_price_cents: number
+    line_type?: 'merchandise'
+  } | {
+    line_type: 'donation' | 'misc_income'
+    description: string
+    amount_cents: number
+  })[]
   sale_event_id: number
   sold_on: string
   amount_given_cents: number
@@ -270,6 +289,20 @@ export const reportsApi = {
     api.patch<void>(`/band-finances/recurring/${id}/active`, { active }),
   deleteRecurringBandEntry: (id: number) =>
     api.delete<void>(`/band-finances/recurring/${id}`),
+}
+
+export const bandFinanceAttachmentsApi = {
+  list: (transactionId: number) =>
+    api.get<{ attachments: Attachment[] }>(`/band-finances/${transactionId}/attachments`),
+  upload: (transactionId: number, file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return api.post<Attachment>(`/band-finances/${transactionId}/attachments`, body, { raw: true })
+  },
+  remove: (transactionId: number, attachmentId: number) =>
+    api.delete<void>(`/band-finances/${transactionId}/attachments/${attachmentId}`),
+  fileUrl: (transactionId: number, attachmentId: number) =>
+    `/api/v1/band-finances/${transactionId}/attachments/${attachmentId}`,
 }
 
 export const purchasesApi = {

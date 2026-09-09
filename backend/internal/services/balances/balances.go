@@ -56,6 +56,7 @@ type Summary struct {
 	CollectedCents    int64 `json:"collected_cents"`
 	DiscountCents     int64 `json:"discount_cents"`
 	DonationCents     int64 `json:"donation_cents"`
+	MiscIncomeCents   int64 `json:"misc_income_cents"`
 	// CollectedCents already includes donations actually received.
 	// CashBalanceCents is collected − goods received.
 	CashBalanceCents int64 `json:"cash_balance_cents"`

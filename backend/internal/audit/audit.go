@@ -55,6 +55,7 @@ const (
 
 	ActionArticleCreated        = "article.created"
 	ActionArticleUpdated        = "article.updated"
+	ActionArticleDeleted        = "article.deleted"
 	ActionSaleCreated           = "sale.created"
 	ActionHistoricalSaleCreated = "sale.historical_created"
 	ActionSaleCancelled         = "sale.cancelled"

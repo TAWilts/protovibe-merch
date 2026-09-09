@@ -353,12 +353,12 @@ func TestStockIsDerivedFromMovements(t *testing.T) {
 		ReceiptID: "E-1", VariantID: variant.ID, Quantity: 20, UnitCostCents: 700, PurchasedOn: today,
 	})
 	create(&models.Sale{
-		ReceiptID: "V-1", VariantID: variant.ID, Quantity: 3, UnitPriceCents: 1500,
+		ReceiptID: "V-1", LineType: models.SaleLineMerchandise, VariantID: models.VariantReference(variant.ID), Quantity: 3, UnitPriceCents: 1500,
 		AmountDueCents: 4500, PaymentMethod: models.PaymentMethodCash, IsPaid: true, IsReceived: true,
 		DeliveryStatus: models.DeliveryNotApplicable, SoldOn: today,
 	})
 	create(&models.Sale{
-		ReceiptID: "V-2", VariantID: variant.ID, Quantity: 5, UnitPriceCents: 1500,
+		ReceiptID: "V-2", LineType: models.SaleLineMerchandise, VariantID: models.VariantReference(variant.ID), Quantity: 5, UnitPriceCents: 1500,
 		AmountDueCents: 7500, PaymentMethod: models.PaymentMethodCash, IsPaid: true, IsReceived: true,
 		DeliveryStatus: models.DeliveryNotApplicable, SoldOn: today, IsCancelled: true,
 	})

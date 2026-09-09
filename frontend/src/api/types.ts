@@ -261,6 +261,8 @@ export interface BasketLine {
   quantity: number
   unitPriceCents: number
   onHand: number
+  lineType?: 'merchandise' | 'donation' | 'misc_income'
+  description?: string
 }
 
 export interface SaleResult {
@@ -285,7 +287,9 @@ export interface Position {
   customer_address: string
   event_name: string
   comment: string
-  variant_id: number
+  line_type: 'merchandise' | 'donation' | 'misc_income'
+  variant_id: number | null
+  line_description: string
   article_name: string
   variant_label: string
   quantity: number
@@ -366,6 +370,7 @@ export interface BalanceSummary {
   collected_cents: number
   discount_cents: number
   donation_cents: number
+  misc_income_cents: number
   cash_balance_cents: number
   outstanding_cents: number
   pending_delivery_count: number
@@ -413,6 +418,8 @@ export interface BalancesPayload {
 
 export interface FinanceReportSummary {
   merch_revenue_cents: number
+  misc_income_cents: number
+  total_revenue_cents: number
   merch_collected_cents: number
   discount_cents: number
   donation_cents: number
@@ -505,6 +512,7 @@ export interface BandTransaction {
   settled_by_username: string
   is_cancelled: boolean
   created_by_username: string
+  attachments: Attachment[]
 }
 
 export interface RecurringBandTransaction {

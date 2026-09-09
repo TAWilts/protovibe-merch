@@ -28,6 +28,8 @@ type FinanceReport struct {
 
 type FinanceReportSummary struct {
 	MerchRevenueCents        int64 `json:"merch_revenue_cents"`
+	MiscIncomeCents          int64 `json:"misc_income_cents"`
+	TotalRevenueCents        int64 `json:"total_revenue_cents"`
 	MerchCollectedCents      int64 `json:"merch_collected_cents"`
 	DiscountCents            int64 `json:"discount_cents"`
 	DonationCents            int64 `json:"donation_cents"`
@@ -102,7 +104,9 @@ func (s *Service) FinanceReport(ctx context.Context, period Period) (*FinanceRep
 		}
 	}
 
-	report.Summary.MerchRevenueCents = payload.Summary.RevenueCents
+	report.Summary.MerchRevenueCents = payload.Summary.RevenueCents - payload.Summary.MiscIncomeCents
+	report.Summary.MiscIncomeCents = payload.Summary.MiscIncomeCents
+	report.Summary.TotalRevenueCents = payload.Summary.RevenueCents
 	report.Summary.MerchCollectedCents = payload.Summary.CollectedCents
 	report.Summary.DiscountCents = payload.Summary.DiscountCents
 	report.Summary.DonationCents = payload.Summary.DonationCents

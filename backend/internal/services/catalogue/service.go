@@ -28,6 +28,8 @@ var (
 	ErrArticleNotFound = errors.New("catalogue: article not found")
 	ErrInvalidName     = errors.New("catalogue: invalid name")
 	ErrNegativePrice   = errors.New("catalogue: prices cannot be negative")
+	ErrArticleNotDraft = errors.New("catalogue: only incomplete articles can be deleted")
+	ErrArticleInUse    = errors.New("catalogue: article is referenced by stock movements")
 )
 
 // Service owns article, option and variant persistence.
@@ -287,4 +289,104 @@ func (s *Service) createArticle(ctx context.Context, name string, defaultSaleCen
 		return nil, err
 	}
 	return article, nil
+}
+
+// DeleteIncomplete removes a draft that has never entered the stock ledger.
+// Accounting references are checked inside the same transaction as deletion,
+// so a concurrent booking cannot turn the hard delete into lost history.
+func (s *Service) DeleteIncomplete(ctx context.Context, articleID int64) (string, []string, error) {
+	var name string
+	var paths []string
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var article models.Article
+		if err := tx.WithContext(ctx).First(&article, articleID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrArticleNotFound
+			}
+			return err
+		}
+		name = article.Name
+
+		var activeVariants int64
+		if err := tx.WithContext(ctx).Model(&models.Variant{}).
+			Where("article_id = ? AND is_active = ?", articleID, true).
+			Count(&activeVariants).Error; err != nil {
+			return err
+		}
+		complete := activeVariants > 0
+		var activeGroups []models.OptionGroup
+		if err := tx.WithContext(ctx).
+			Where("article_id = ? AND is_active = ?", articleID, true).
+			Find(&activeGroups).Error; err != nil {
+			return err
+		}
+		for _, group := range activeGroups {
+			var values int64
+			if err := tx.WithContext(ctx).Model(&models.OptionValue{}).
+				Where("option_group_id = ? AND is_active = ?", group.ID, true).
+				Count(&values).Error; err != nil {
+				return err
+			}
+			if values == 0 {
+				complete = false
+			}
+		}
+		if complete {
+			return ErrArticleNotDraft
+		}
+
+		var variantIDs []int64
+		if err := tx.WithContext(ctx).Model(&models.Variant{}).
+			Where("article_id = ?", articleID).Pluck("id", &variantIDs).Error; err != nil {
+			return err
+		}
+		if len(variantIDs) > 0 {
+			var purchases, sales int64
+			if err := tx.WithContext(ctx).Model(&models.Purchase{}).
+				Where("variant_id IN ?", variantIDs).Count(&purchases).Error; err != nil {
+				return err
+			}
+			if err := tx.WithContext(ctx).Model(&models.Sale{}).
+				Where("variant_id IN ?", variantIDs).Count(&sales).Error; err != nil {
+				return err
+			}
+			if purchases > 0 || sales > 0 {
+				return ErrArticleInUse
+			}
+
+			var photos []models.VariantPhoto
+			if err := tx.WithContext(ctx).Where("variant_id IN ?", variantIDs).Find(&photos).Error; err != nil {
+				return err
+			}
+			for _, photo := range photos {
+				paths = append(paths, photo.FilePath)
+			}
+			if err := tx.WithContext(ctx).Where("variant_id IN ?", variantIDs).
+				Delete(&models.VariantPhoto{}).Error; err != nil {
+				return err
+			}
+			if err := tx.WithContext(ctx).Where("id IN ?", variantIDs).
+				Delete(&models.Variant{}).Error; err != nil {
+				return err
+			}
+		}
+
+		var groupIDs []int64
+		if err := tx.WithContext(ctx).Model(&models.OptionGroup{}).
+			Where("article_id = ?", articleID).Pluck("id", &groupIDs).Error; err != nil {
+			return err
+		}
+		if len(groupIDs) > 0 {
+			if err := tx.WithContext(ctx).Where("option_group_id IN ?", groupIDs).
+				Delete(&models.OptionValue{}).Error; err != nil {
+				return err
+			}
+			if err := tx.WithContext(ctx).Where("id IN ?", groupIDs).
+				Delete(&models.OptionGroup{}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.WithContext(ctx).Delete(&models.Article{}, articleID).Error
+	})
+	return name, paths, err
 }

@@ -58,6 +58,21 @@ const visible = computed(() => {
       .includes(needle)
   })
 })
+
+function receiptAmount(receipt: Receipt) {
+  return receipt.positions[0]?.line_type === 'donation' ? receipt.total_given_cents : receipt.total_due_cents
+}
+
+function receiptType(receipt: Receipt) {
+  const type = receipt.positions[0]?.line_type
+  if (type === 'donation') return t('sales.specialDonation')
+  if (type === 'misc_income') return t('sales.specialMiscIncome')
+  return t('history.merchandise')
+}
+
+function isMerchandise(position: Receipt['positions'][number]) {
+  return !position.line_type || position.line_type === 'merchandise'
+}
 onMounted(load)
 
 function exportVisible() {
@@ -66,6 +81,7 @@ function exportVisible() {
     [
       t('common.date'),
       t('history.receipt'),
+      t('history.type'),
       t('sales.event'),
       t('sales.soldBy'),
       t('sales.paymentMethod'),
@@ -78,10 +94,11 @@ function exportVisible() {
     visible.value.map((receipt) => [
       receipt.sold_on,
       receipt.receipt_id,
+      receiptType(receipt),
       receipt.event_name,
       receipt.sold_by,
       receipt.payment_method,
-      format(receipt.total_due_cents),
+      format(receiptAmount(receipt)),
       receipt.discount_cents ? format(receipt.discount_cents) : '',
       format(receipt.total_given_cents),
       receipt.donation_cents ? format(receipt.donation_cents) : '',
@@ -182,6 +199,7 @@ async function confirmCancel() {
             <tr>
               <th></th>
               <th>{{ t('history.receipt') }}</th>
+              <th>{{ t('history.type') }}</th>
               <th>{{ t('common.date') }}</th>
               <th>{{ t('sales.event') }}</th>
               <th>{{ t('sales.soldBy') }}</th>
@@ -202,11 +220,12 @@ async function confirmCancel() {
                   </button>
                 </td>
                 <td><code>{{ receipt.receipt_id }}</code></td>
+                <td>{{ receiptType(receipt) }}</td>
                 <td>{{ receipt.sold_on }}</td>
                 <td>{{ receipt.event_name || '—' }}</td>
                 <td>{{ receipt.sold_by || '—' }}</td>
                 <td>{{ receipt.payment_method }}</td>
-                <td class="numeric">{{ format(receipt.total_due_cents) }}</td>
+                <td class="numeric">{{ format(receiptAmount(receipt)) }}</td>
                 <td class="numeric">{{ receipt.discount_cents ? format(receipt.discount_cents) : '—' }}</td>
                 <td class="numeric">{{ format(receipt.total_given_cents) }}</td>
                 <td class="numeric">{{ receipt.donation_cents ? format(receipt.donation_cents) : '—' }}</td>
@@ -224,7 +243,7 @@ async function confirmCancel() {
 
               <tr v-if="expanded.has(receipt.receipt_id)" class="expanded-row">
                 <td></td>
-                <td colspan="10">
+                <td colspan="11">
                   <div class="receipt-detail">
                     <table class="nested-table">
                       <tbody>
@@ -237,9 +256,15 @@ async function confirmCancel() {
                             <strong>{{ position.article_name }}</strong>
                             <small>{{ position.variant_label }}</small>
                           </td>
-                          <td class="numeric">{{ position.quantity }} ×</td>
-                          <td class="numeric">{{ format(position.unit_price_cents) }}</td>
-                          <td class="numeric">{{ format(position.amount_due_cents) }}</td>
+                          <template v-if="isMerchandise(position)">
+                            <td class="numeric">{{ position.quantity }} ×</td>
+                            <td class="numeric">{{ format(position.unit_price_cents) }}</td>
+                            <td class="numeric">{{ format(position.amount_due_cents) }}</td>
+                          </template>
+                          <template v-else>
+                            <td colspan="2">{{ position.line_type === 'donation' ? t('sales.specialDonation') : t('sales.specialMiscIncome') }}</td>
+                            <td class="numeric">{{ format(position.line_type === 'donation' ? position.donation_cents : position.amount_due_cents) }}</td>
+                          </template>
                           <td>
                             <span v-if="position.is_cancelled" class="status danger">
                               {{ t('history.cancelledLabel') }}

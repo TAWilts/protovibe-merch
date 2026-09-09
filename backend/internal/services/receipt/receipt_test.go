@@ -101,7 +101,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) addSale(receiptID string) {
 	f.t.Helper()
 	sale := &models.Sale{
-		ReceiptID: receiptID, VariantID: f.variant.ID, Quantity: 1,
+		ReceiptID: receiptID, LineType: models.SaleLineMerchandise, VariantID: models.VariantReference(f.variant.ID), Quantity: 1,
 		UnitPriceCents: 1800, AmountDueCents: 1800,
 		PaymentMethod: models.PaymentMethodCash, IsPaid: true, IsReceived: true,
 		DeliveryStatus: models.DeliveryNotApplicable, SoldOn: f.today,

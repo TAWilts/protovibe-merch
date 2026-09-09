@@ -268,6 +268,11 @@ func (s *Service) List(ctx context.Context) (*Ledger, error) {
 	if ledger.Entries == nil {
 		ledger.Entries = []models.BandTransaction{}
 	}
+	for i := range ledger.Entries {
+		if ledger.Entries[i].Attachments == nil {
+			ledger.Entries[i].Attachments = []models.BandTransactionAttachment{}
+		}
+	}
 
 	byCategory := map[string]*CategoryTotal{}
 	order := make([]string, 0)

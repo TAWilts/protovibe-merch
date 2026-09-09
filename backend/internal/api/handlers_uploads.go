@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/tawilts/protovibe-merch/backend/internal/audit"
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
 	"github.com/tawilts/protovibe-merch/backend/internal/storage"
 	"github.com/tawilts/protovibe-merch/backend/internal/tenant"
@@ -32,6 +33,10 @@ func (s *Server) registerUploadRoutes(g *gin.RouterGroup) {
 	members.GET("/purchases/:id/invoice", s.downloadPurchaseInvoice)
 	members.GET("/purchase-receipts/:receiptID/attachments", s.listReceiptAttachments)
 	members.GET("/purchase-receipts/:receiptID/attachments/:attachmentID", s.downloadReceiptAttachment)
+	members.GET("/band-finances/:id/attachments", s.listBandTransactionAttachments)
+	members.POST("/band-finances/:id/attachments", s.uploadBandTransactionAttachment)
+	members.GET("/band-finances/:id/attachments/:attachmentID", s.downloadBandTransactionAttachment)
+	members.DELETE("/band-finances/:id/attachments/:attachmentID", s.deleteBandTransactionAttachment)
 }
 
 // uploadedFile is one validated upload, ready to be written to the store.
@@ -331,6 +336,123 @@ func (s *Server) loadAttachment(c *gin.Context) (*models.PurchaseReceiptAttachme
 		return nil, false
 	}
 	return &attachment, true
+}
+
+func (s *Server) loadBandTransaction(c *gin.Context) (*models.BandTransaction, bool) {
+	id, ok := pathID(c)
+	if !ok {
+		return nil, false
+	}
+	var transaction models.BandTransaction
+	if err := s.db.WithContext(c.Request.Context()).First(&transaction, id).Error; err != nil {
+		fail(c, http.StatusNotFound, "not_found", "no such band transaction")
+		return nil, false
+	}
+	return &transaction, true
+}
+
+func (s *Server) listBandTransactionAttachments(c *gin.Context) {
+	transaction, ok := s.loadBandTransaction(c)
+	if !ok {
+		return
+	}
+	var rows []models.BandTransactionAttachment
+	if err := s.db.WithContext(c.Request.Context()).Where("transaction_id = ?", transaction.ID).
+		Order("id").Find(&rows).Error; err != nil {
+		serverError(c, err)
+		return
+	}
+	payload := make([]attachmentPayload, 0, len(rows))
+	for _, row := range rows {
+		payload = append(payload, attachmentPayload{ID: row.ID, OriginalFilename: row.OriginalFilename, SizeBytes: row.SizeBytes})
+	}
+	c.JSON(http.StatusOK, gin.H{"attachments": payload})
+}
+
+func (s *Server) uploadBandTransactionAttachment(c *gin.Context) {
+	transaction, ok := s.loadBandTransaction(c)
+	if !ok {
+		return
+	}
+	upload, ok := s.readUpload(c, "file")
+	if !ok {
+		return
+	}
+	if closer, exists := c.Get("upload_closer"); exists {
+		defer closer.(io.Closer).Close()
+	}
+	if !s.checkStorageQuota(c, upload.Size, 0) {
+		return
+	}
+	ctx := c.Request.Context()
+	object, err := s.files.Put(ctx, tenant.MustBandID(ctx), storage.CategoryInvoice, upload.MediaType, upload.Reader)
+	if err != nil {
+		serverError(c, err)
+		return
+	}
+	state := stateFrom(c)
+	attachment := &models.BandTransactionAttachment{
+		TransactionID: transaction.ID, FilePath: object.Key,
+		OriginalFilename: upload.Filename, SizeBytes: object.SizeBytes,
+		CreatedAt: time.Now().UTC(),
+	}
+	attachment.CreatedByUserID = &state.User.ID
+	attachment.CreatedByUsername = state.User.Username
+	if err := s.db.WithContext(ctx).Create(attachment).Error; err != nil {
+		s.removeStoredFile(ctx, object.Key)
+		serverError(c, err)
+		return
+	}
+	s.audit.Log(ctx, actorFrom(c), audit.Entry{
+		Action: "band_transaction.attachment_added", EntityType: "band_transaction", EntityID: &transaction.ID,
+		Details: map[string]any{"filename": attachment.OriginalFilename, "size_bytes": attachment.SizeBytes},
+	})
+	c.JSON(http.StatusCreated, attachmentPayload{ID: attachment.ID, OriginalFilename: attachment.OriginalFilename, SizeBytes: attachment.SizeBytes})
+}
+
+func (s *Server) loadBandTransactionAttachment(c *gin.Context) (*models.BandTransactionAttachment, *models.BandTransaction, bool) {
+	transaction, ok := s.loadBandTransaction(c)
+	if !ok {
+		return nil, nil, false
+	}
+	attachmentID, ok := parsePathID(c, "attachmentID")
+	if !ok {
+		return nil, nil, false
+	}
+	var attachment models.BandTransactionAttachment
+	if err := s.db.WithContext(c.Request.Context()).
+		Where("id = ? AND transaction_id = ?", attachmentID, transaction.ID).
+		First(&attachment).Error; err != nil {
+		fail(c, http.StatusNotFound, "not_found", "no such attachment")
+		return nil, nil, false
+	}
+	return &attachment, transaction, true
+}
+
+func (s *Server) downloadBandTransactionAttachment(c *gin.Context) {
+	attachment, _, ok := s.loadBandTransactionAttachment(c)
+	if !ok {
+		return
+	}
+	s.serveStoredFile(c, attachment.FilePath, attachment.OriginalFilename)
+}
+
+func (s *Server) deleteBandTransactionAttachment(c *gin.Context) {
+	attachment, transaction, ok := s.loadBandTransactionAttachment(c)
+	if !ok {
+		return
+	}
+	ctx := c.Request.Context()
+	if err := s.db.WithContext(ctx).Delete(&models.BandTransactionAttachment{}, attachment.ID).Error; err != nil {
+		serverError(c, err)
+		return
+	}
+	s.removeStoredFile(ctx, attachment.FilePath)
+	s.audit.Log(ctx, actorFrom(c), audit.Entry{
+		Action: "band_transaction.attachment_removed", EntityType: "band_transaction", EntityID: &transaction.ID,
+		Details: map[string]any{"filename": attachment.OriginalFilename, "size_bytes": attachment.SizeBytes},
+	})
+	c.Status(http.StatusNoContent)
 }
 
 // serveStoredFile streams a stored file back.

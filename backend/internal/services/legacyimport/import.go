@@ -1021,7 +1021,8 @@ func (i *destinationImporter) importSales(ctx context.Context, rows []row) error
 		record := models.Sale{
 			Tenant:           models.Tenant{BandID: i.bandID},
 			ReceiptID:        stringValue(r, "receipt_id"),
-			VariantID:        i.variantIDs[int64Value(r, "variant_id")],
+			LineType:         models.SaleLineMerchandise,
+			VariantID:        models.VariantReference(i.variantIDs[int64Value(r, "variant_id")]),
 			Quantity:         intValue(r, "quantity"),
 			UnitPriceCents:   int64Value(r, "unit_price_cents"),
 			AmountDueCents:   int64Value(r, "amount_due_cents"),

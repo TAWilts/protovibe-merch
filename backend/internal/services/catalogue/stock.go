@@ -58,7 +58,7 @@ func (s *Service) StockMapAt(ctx context.Context, to *models.Date) (map[int64]St
 
 	var sales []movement
 	saleQuery := s.db.WithContext(ctx).Model(&models.Sale{}).
-		Where("is_cancelled = ?", false)
+		Where("is_cancelled = ? AND line_type = ? AND variant_id IS NOT NULL", false, models.SaleLineMerchandise)
 	if to != nil {
 		saleQuery = saleQuery.Where("sold_on <= ?", *to)
 	}

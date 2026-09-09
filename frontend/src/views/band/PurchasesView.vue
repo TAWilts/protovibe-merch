@@ -63,17 +63,29 @@ interface CartLine {
 }
 const cart = ref<CartLine[]>([])
 
-const selectedArticle = computed(
-  () => articles.value.find((article) => article.id === selectedArticleId.value) ?? null,
+const purchasableArticles = computed(() =>
+  articles.value.filter((article) => article.variants.some((variant) => !variant.no_reorder)),
 )
 
-/** Purchases may target a withdrawn variant: restocking something that left
- *  the assortment is legitimate bookkeeping, so nothing is filtered here. */
-const optionGroups = computed(() =>
-  (selectedArticle.value?.option_groups ?? [])
-    .filter((group) => group.is_active)
-    .map((group) => ({ ...group, values: group.values.filter((value) => value.is_active) })),
+const selectedArticle = computed(
+	() => purchasableArticles.value.find((article) => article.id === selectedArticleId.value) ?? null,
 )
+
+/** Withdrawn merchandise remains bookable for historical corrections, but an
+ * explicit no-reorder decision removes that exact combination from the picker. */
+const purchasableVariants = computed(() =>
+  selectedArticle.value?.variants.filter((variant) => !variant.no_reorder) ?? [],
+)
+const optionGroups = computed(() => {
+  const used = new Set(purchasableVariants.value.flatMap((variant) => variant.option_value_ids))
+  return (selectedArticle.value?.option_groups ?? [])
+    .filter((group) => group.is_active)
+    .map((group) => ({
+      ...group,
+      values: (group.values ?? []).filter((value) => value.is_active && used.has(value.id)),
+    }))
+    .filter((group) => group.values.length > 0)
+})
 
 const selectedVariant = computed<Variant | null>(() => {
   const article = selectedArticle.value
@@ -81,7 +93,7 @@ const selectedVariant = computed<Variant | null>(() => {
   const chosen = optionGroups.value.map((group) => chosenValues.value[group.id])
   if (chosen.some((value) => value === undefined)) return null
   const wanted = [...chosen].sort((a, b) => a - b).join('|')
-  return article.variants.find((variant) => variant.combination_key === wanted) ?? null
+  return purchasableVariants.value.find((variant) => variant.combination_key === wanted) ?? null
 })
 
 const variantLabel = computed(() => {
@@ -230,6 +242,10 @@ onMounted(async () => {  await Promise.all([loadArticles(), loadPurchases(), ref
 async function loadArticles() {
   try {
     articles.value = (await catalogueApi.list()).articles
+    if (!purchasableArticles.value.some((article) => article.id === selectedArticleId.value)) {
+      selectedArticleId.value = null
+      chosenValues.value = {}
+    }
   } catch {
     flash.error(t('errors.generic'))
   }
@@ -261,8 +277,12 @@ async function refreshPreview() {
 function selectArticle(article: Article) {
   selectedArticleId.value = article.id
   chosenValues.value = {}
+  const firstVariant = article.variants.find((variant) => !variant.no_reorder)
+  if (!firstVariant) return
   for (const group of article.option_groups.filter((entry) => entry.is_active)) {
-    const first = group.values.find((value) => value.is_active)
+    const first = (group.values ?? []).find(
+      (value) => value.is_active && firstVariant.option_value_ids.includes(value.id),
+    )
     if (first) chosenValues.value[group.id] = first.id
   }
 }
@@ -298,7 +318,7 @@ function onUnitCostChanged() {
     flash.error(t('purchases.invalidPrice'))
     return
   }
-  if (!article || cents === null || article.variants.filter((variant) => variant.is_active).length <= 1) return
+  if (!article || cents === null || purchasableVariants.value.length <= 1) return
   if (!window.confirm(t('purchases.applyPriceToVariants'))) return
   rememberedArticleCost.value = { ...rememberedArticleCost.value, [article.id]: unitCostInput.value }
   cart.value = cart.value.map((line) => line.articleId === article.id ? { ...line, unitCostCents: cents } : line)
@@ -587,7 +607,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
         <p class="panel-hint">{{ t('sales.articlesHint') }}</p>
         <div class="button-list">
           <button
-            v-for="article in articles"
+            v-for="article in purchasableArticles"
             :key="article.id"
             type="button"
             class="selection-button"
@@ -597,7 +617,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
             <span>{{ article.name }}</span>
             <small>{{ t('sales.inStock', { count: article.total_stock }) }}</small>
           </button>
-          <p v-if="!loading && !articles.length" class="muted">{{ t('sales.noArticles') }}</p>
+          <p v-if="!loading && !purchasableArticles.length" class="muted">{{ t('sales.noArticles') }}</p>
         </div>
       </aside>
 

@@ -11,6 +11,10 @@ const (
 	PaymentMethodOther    = "Sonstiges"
 )
 
+// VariantReference is a small convenience for legacy importers and fixtures
+// that construct a stock-bearing sale directly.
+func VariantReference(id int64) *int64 { return &id }
+
 // PaymentMethods is the ordered list shown in the UI.
 var PaymentMethods = []string{
 	PaymentMethodCash,
@@ -19,6 +23,16 @@ var PaymentMethods = []string{
 	PaymentMethodCard,
 	PaymentMethodOther,
 }
+
+// SaleLineType distinguishes stock-bearing merchandise from ledger-only
+// receipts such as a donation or another small income booked at the till.
+type SaleLineType string
+
+const (
+	SaleLineMerchandise SaleLineType = "merchandise"
+	SaleLineDonation    SaleLineType = "donation"
+	SaleLineMiscIncome  SaleLineType = "misc_income"
+)
 
 // DeliveryStatus tracks a sale that was not handed over at the counter.
 type DeliveryStatus string
@@ -38,8 +52,10 @@ type Sale struct {
 	ID int64 `gorm:"primaryKey" json:"id"`
 	Tenant
 
-	ReceiptID string `gorm:"size:40;not null;index" json:"receipt_id"`
-	VariantID int64  `gorm:"not null;index" json:"variant_id"`
+	ReceiptID       string       `gorm:"size:40;not null;index" json:"receipt_id"`
+	LineType        SaleLineType `gorm:"size:20;not null;default:'merchandise'" json:"line_type"`
+	VariantID       *int64       `gorm:"index" json:"variant_id"`
+	LineDescription string       `gorm:"size:200;not null;default:''" json:"line_description"`
 
 	Quantity       int   `gorm:"not null" json:"quantity"`
 	UnitPriceCents int64 `gorm:"not null" json:"unit_price_cents"`

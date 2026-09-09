@@ -84,6 +84,87 @@ func TestSellAtTheStand(t *testing.T) {
 	}
 }
 
+func TestSpecialIncomeSalesAreStockNeutralAndReportedSeparately(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Special Line Stock")
+
+	book := func(lineType, description string, amount int) response {
+		return h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+			"items": []any{map[string]any{
+				"line_type": lineType, "description": description, "amount_cents": amount,
+			}},
+			"payment_method": "Bar", "is_paid": true, "is_received": true,
+			"sold_on": "2026-09-09",
+		})
+	}
+
+	donation := book("donation", "Hutspende", 750)
+	if donation.Status != http.StatusCreated || donation.Body["total_due_cents"] != float64(0) ||
+		donation.Body["total_paid_cents"] != float64(750) || donation.Body["donation_cents"] != float64(750) {
+		t.Fatalf("unexpected donation result: %d %v", donation.Status, donation.Body)
+	}
+	misc := book("misc_income", "Pfandbecher", 400)
+	if misc.Status != http.StatusCreated || misc.Body["total_due_cents"] != float64(400) ||
+		misc.Body["total_paid_cents"] != float64(400) || misc.Body["donation_cents"] != float64(0) {
+		t.Fatalf("unexpected misc-income result: %d %v", misc.Status, misc.Body)
+	}
+	if got := h.onHand(variants[0]); got != 0 {
+		t.Fatalf("special lines must not move stock, got %d", got)
+	}
+
+	history := h.do(http.MethodGet, "/api/v1/history", nil)
+	if history.Status != http.StatusOK || len(jsonList(history.Body, "receipts")) != 2 {
+		t.Fatalf("special receipts missing from history: %d %v", history.Status, history.Body)
+	}
+	seen := map[string]bool{}
+	for _, rawReceipt := range jsonList(history.Body, "receipts") {
+		position := jsonObject(jsonList(jsonObject(rawReceipt), "positions")[0])
+		seen[position["line_type"].(string)] = position["variant_id"] == nil && position["line_description"] != ""
+	}
+	if !seen["donation"] || !seen["misc_income"] {
+		t.Fatalf("history must expose both special types without variants: %v", history.Body)
+	}
+
+	summary := jsonObject(h.do(http.MethodGet, "/api/v1/balances", nil).Body["summary"])
+	if summary["misc_income_cents"] != float64(400) || summary["revenue_cents"] != float64(400) ||
+		summary["donation_cents"] != float64(750) || summary["collected_cents"] != float64(1150) {
+		t.Fatalf("special income was not separated correctly: %v", summary)
+	}
+}
+
+func TestSpecialSaleRejectsMixedReceiptsAndSupportsIdempotentOfflineReplay(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Mixed Receipt")
+
+	mixed := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items": []any{
+			map[string]any{"variant_id": variants[0], "quantity": 1},
+			map[string]any{"line_type": "donation", "description": "Spende", "amount_cents": 100},
+		},
+		"payment_method": "Bar", "is_paid": true, "is_received": true, "sold_on": "2026-09-09",
+	})
+	if mixed.Status != http.StatusBadRequest || mixed.Body["code"] != "mixed_basket" {
+		t.Fatalf("mixed receipt must be rejected: %d %v", mixed.Status, mixed.Body)
+	}
+
+	queued := map[string]any{
+		"items":          []any{map[string]any{"line_type": "donation", "description": "Spende", "amount_cents": 300}},
+		"payment_method": "PayPal", "is_paid": true, "is_received": true, "sold_on": "2026-09-09",
+		"client_event_id": "special-offline-1", "client_device_id": "phone-1",
+	}
+	first := h.do(http.MethodPost, "/api/v1/sales", queued)
+	second := h.do(http.MethodPost, "/api/v1/sales", queued)
+	if first.Status != http.StatusCreated || second.Status != http.StatusOK || second.Body["replayed"] != true ||
+		first.Body["receipt_id"] != second.Body["receipt_id"] {
+		t.Fatalf("special offline replay is not idempotent: first=%d %v second=%d %v",
+			first.Status, first.Body, second.Status, second.Body)
+	}
+}
+
 func TestShipmentChargesGrossShippingCosts(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()
@@ -613,3 +694,41 @@ func TestHistoricalSaleBooksOverpaymentAsDonation(t *testing.T) {
 		t.Fatalf("historical overpayment must become a donation: %d %v", booked.Status, booked.Body)
 	}
 }
+
+func TestHistoricalSpecialIncomeUsesEventAndIdempotencyWithoutStock(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Historical Special Stock")
+	createdEvent := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{"name": "Archivkasse", "select": false})
+	eventID := int64(createdEvent.Body["id"].(float64))
+
+	payload := map[string]any{
+		"items": []any{map[string]any{
+			"line_type": "misc_income", "description": "Pfand", "amount_cents": 900,
+		}},
+		"sale_event_id": eventID, "sold_on": "2026-08-27", "amount_given_cents": 900,
+		"client_event_id": "historical-special-1", "client_device_id": "archive-desktop",
+		"client_created_at": "2026-09-08T12:00:00Z",
+	}
+	first := h.do(http.MethodPost, "/api/v1/sales/historical", payload)
+	second := h.do(http.MethodPost, "/api/v1/sales/historical", payload)
+	if first.Status != http.StatusCreated || first.Body["total_due_cents"] != float64(900) ||
+		second.Status != http.StatusOK || second.Body["replayed"] != true {
+		t.Fatalf("historical special replay failed: first=%d %v second=%d %v",
+			first.Status, first.Body, second.Status, second.Body)
+	}
+	if got := h.onHand(variants[0]); got != 0 {
+		t.Fatalf("historical special income must not move stock, got %d", got)
+	}
+	var row models.Sale
+	if err := h.db.WithContext(h.ctx()).Where("band_id = ? AND receipt_id = ?", band.ID, first.Body["receipt_id"]).First(&row).Error; err != nil {
+		t.Fatalf("read sale: %v", err)
+	}
+	if row.LineType != models.SaleLineMiscIncome || row.VariantID != nil || row.LineDescription != "Pfand" ||
+		row.EventName != "Archivkasse" || row.SoldBy != historicalUnassignedSellerForTest {
+		t.Fatalf("historical special metadata mismatch: %+v", row)
+	}
+}
+
+const historicalUnassignedSellerForTest = "Historisch / nicht zugeordnet"

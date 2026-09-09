@@ -72,8 +72,15 @@ const selectedArticleId = ref<number | null>(null)
 const chosenValues = ref<Record<number, number>>({})
 const quantity = ref(1)
 const unitPriceInput = ref('')
+const specialMode = ref(false)
+const specialType = ref<'donation' | 'misc_income'>('donation')
+const specialDescription = ref('Spende')
+const specialAmountInput = ref('')
 
 const basket = ref<BasketLine[]>([])
+const hasSpecialBasket = computed(() => basket.value.some(
+  (line) => line.lineType === 'donation' || line.lineType === 'misc_income',
+))
 const paymentMethod = ref('Bar')
 const amountGivenInput = ref('')
 const discountConfirmed = ref(false)
@@ -110,7 +117,7 @@ const shipReady = computed(
 
 type CheckoutStep = 1 | 2 | 3
 const checkoutStep = ref<CheckoutStep>(1)
-const needsShipping = computed(() => !historicalMode.value && (isOrder.value || shipOpen.value))
+const needsShipping = computed(() => !historicalMode.value && !hasSpecialBasket.value && (isOrder.value || shipOpen.value))
 
 /**
  * The till claims exactly the space left below whatever is above it.
@@ -176,7 +183,7 @@ const visibleArticles = computed(() => {
 })
 
 const selectedArticle = computed(
-  () => articles.value.find((article) => article.id === selectedArticleId.value) ?? null,
+  () => specialMode.value ? null : articles.value.find((article) => article.id === selectedArticleId.value) ?? null,
 )
 
 const sellableVariants = computed(() =>
@@ -319,10 +326,14 @@ const variantPhotoSelection = computed(() => {
 
 const variantPhotos = computed(() => variantPhotoSelection.value?.urls ?? [])
 
-
-
+const specialAmountCents = computed(() => parseAmount(specialAmountInput.value))
 const canAddToCart = computed(
-  () => selectedVariant.value !== null && quantity.value > 0 && parseAmount(unitPriceInput.value) !== null,
+  () => specialMode.value
+    ? specialDescription.value.trim().length > 0
+      && specialDescription.value.trim().length <= 200
+      && specialAmountCents.value !== null
+      && specialAmountCents.value > 0
+    : selectedVariant.value !== null && quantity.value > 0 && parseAmount(unitPriceInput.value) !== null,
 )
 const canBook = computed(() => basket.value.length > 0 && !busy.value)
 const paymentStepReady = computed(() => {
@@ -427,6 +438,9 @@ async function refreshReceiptPreview() {
 }
 
 function selectArticle(article: Article) {
+  if (hasSpecialBasket.value && !window.confirm(t('sales.specialDiscardCart'))) return
+  if (hasSpecialBasket.value) basket.value = []
+  specialMode.value = false
   selectedArticleId.value = article.id
   chosenValues.value = {}
   // Pre-select the first value of every column so a single-option article is
@@ -439,6 +453,20 @@ function selectArticle(article: Article) {
 
 function chooseValue(groupId: number, valueId: number) {
   chosenValues.value = { ...chosenValues.value, [groupId]: valueId }
+}
+
+function selectSpecial() {
+  if (isOrder.value) return
+  if (basket.value.length > 0 && !hasSpecialBasket.value && !window.confirm(t('sales.specialDiscardCart'))) return
+  if (basket.value.length > 0 && !hasSpecialBasket.value) basket.value = []
+  selectedArticleId.value = null
+  chosenValues.value = {}
+  unitPriceInput.value = ''
+  specialMode.value = false
+  specialType.value = 'donation'
+  specialDescription.value = 'Spende'
+  specialAmountInput.value = ''
+  specialMode.value = true
 }
 
 function historicalArticleStatus(article: Article) {
@@ -458,6 +486,13 @@ function historicalVariantStatus(variant: Variant) {
 watch(selectedVariant, (variant) => {
   if (variant) {
     unitPriceInput.value = (variant.sale_price_cents / 100).toFixed(2).replace('.', ',')
+  }
+})
+
+watch(specialType, (next, previous) => {
+  const oldDefault = previous === 'donation' ? 'Spende' : 'Sonstiges'
+  if (!specialDescription.value.trim() || specialDescription.value === oldDefault) {
+    specialDescription.value = next === 'donation' ? 'Spende' : 'Sonstiges'
   }
 })
 
@@ -532,12 +567,19 @@ async function setHistoricalMode(enabled: boolean, force = false) {
 /** Builds the request body once, so the code and the booking agree exactly. */
 function salePayload(): BookSalePayload {
   const paid = !needsShipping.value || !shipPayLater.value
+  const items: BookSalePayload['items'] = hasSpecialBasket.value
+    ? basket.value.map((line) => ({
+        line_type: line.lineType as 'donation' | 'misc_income',
+        description: line.description ?? line.label,
+        amount_cents: line.unitPriceCents,
+      }))
+    : basket.value.map((line) => ({
+        variant_id: line.variantId,
+        quantity: line.quantity,
+        unit_price_cents: line.unitPriceCents,
+      }))
   return {
-    items: basket.value.map((line) => ({
-      variant_id: line.variantId,
-      quantity: line.quantity,
-      unit_price_cents: line.unitPriceCents,
-    })),
+    items,
     payment_method: paymentMethod.value,
     // A sale at the stand is money taken and goods handed over. The flags stay
     // in the payload because the server and the worklists are built on them;
@@ -547,7 +589,9 @@ function salePayload(): BookSalePayload {
     shipping_cost_cents: needsShipping.value ? (shippingCostCents.value ?? 0) : 0,
     // Handing the surplus back means the band kept the amount due, and that is
     // what the server must record — anything more becomes a donation there.
-    amount_given_cents: paid
+    amount_given_cents: hasSpecialBasket.value
+      ? saleTotalCents.value
+      : paid
       ? (paymentMethod.value === 'Bar' && surplusMode.value === 'change' ? saleTotalCents.value : amountGivenCents.value)
       : null,
     discount_confirmed: paid && discountCents.value > 0 && discountConfirmed.value,
@@ -696,6 +740,23 @@ function normalizeQuantity() {
 }
 
 function addToCart() {
+  if (specialMode.value) {
+    const amount = specialAmountCents.value
+    const description = specialDescription.value.trim()
+    if (amount === null || amount <= 0 || !description || description.length > 200) return
+    basket.value = [{
+      variantId: 0,
+      articleId: 0,
+      label: description,
+      description,
+      lineType: specialType.value,
+      quantity: 1,
+      unitPriceCents: amount,
+      onHand: 1,
+    }]
+    amountGivenInput.value = (amount / 100).toFixed(2).replace('.', ',')
+    return
+  }
   const variant = selectedVariant.value
   const price = parseAmount(unitPriceInput.value)
   if (!variant || price === null || !selectedArticle.value) return
@@ -747,11 +808,17 @@ async function bookHistorical(): Promise<boolean> {
   try {
     if (!historicalRetry.value) {
       historicalRetry.value = {
-        items: basket.value.map((line) => ({
-          variant_id: line.variantId,
-          quantity: line.quantity,
-          unit_price_cents: line.unitPriceCents,
-        })),
+        items: hasSpecialBasket.value
+          ? basket.value.map((line) => ({
+              line_type: line.lineType as 'donation' | 'misc_income',
+              description: line.description ?? line.label,
+              amount_cents: line.unitPriceCents,
+            }))
+          : basket.value.map((line) => ({
+              variant_id: line.variantId,
+              quantity: line.quantity,
+              unit_price_cents: line.unitPriceCents,
+            })),
         sale_event_id: selectedEventId.value,
         sold_on: historicalSoldOn.value,
         amount_given_cents: amountGivenCents.value ?? 0,
@@ -835,6 +902,10 @@ function resetAfterSale() {
   mobileCartOpen.value = false
   checkoutStep.value = 1
   qrIntent.value = null
+  specialMode.value = false
+  specialType.value = 'donation'
+  specialDescription.value = 'Spende'
+  specialAmountInput.value = ''
   if (historicalMode.value) {
     historicalSoldOn.value = ''
     selectedEventId.value = 0
@@ -909,6 +980,16 @@ function resetAfterSale() {
               </span>
               <small>{{ article.total_stock }}</small>
             </button>
+            <button
+              v-if="!isOrder"
+              type="button"
+              class="selection-button special-selection-button"
+              :class="{ selected: specialMode }"
+              @click="selectSpecial"
+            >
+              <span>{{ t('sales.specialEntry') }}</span>
+              <small>{{ t('sales.specialEntryHint') }}</small>
+            </button>
             <p v-if="!loading && !visibleArticles.length" class="muted">{{ t('sales.noArticles') }}</p>
           </div>
         </div>
@@ -916,6 +997,12 @@ function resetAfterSale() {
 
       <section class="till-column till-variant">
         <div class="till-scroll">
+          <div v-if="specialMode" class="special-entry-intro">
+            <p class="eyebrow">{{ t('sales.specialEntry') }}</p>
+            <h2>{{ t('sales.specialEntryTitle') }}</h2>
+            <p class="muted">{{ t('sales.specialEntryIntro') }}</p>
+          </div>
+          <template v-else>
           <div class="option-groups">
             <div v-if="!selectedArticle" class="empty-selection">{{ t('sales.pickArticle') }}</div>
             <div v-for="group in optionGroups" :key="group.id" class="option-group">
@@ -964,8 +1051,30 @@ function resetAfterSale() {
               />
             </div>
           </div>
+          </template>
         </div>
         <footer class="till-compose">
+          <template v-if="specialMode">
+            <label>
+              {{ t('sales.specialType') }}
+              <select v-model="specialType">
+                <option value="donation">{{ t('sales.specialDonation') }}</option>
+                <option value="misc_income">{{ t('sales.specialMiscIncome') }}</option>
+              </select>
+            </label>
+            <label>
+              {{ t('sales.specialDescription') }}
+              <input v-model="specialDescription" maxlength="200" />
+            </label>
+            <label class="till-price">
+              {{ t('sales.specialAmount') }}
+              <input v-model="specialAmountInput" inputmode="decimal" placeholder="0,00" />
+            </label>
+            <button class="secondary-button till-add" type="button" :disabled="!canAddToCart" @click="addToCart">
+              {{ basket.length ? t('sales.specialUpdate') : t('sales.addToCart') }}
+            </button>
+          </template>
+          <template v-else>
           <label class="till-price">
             {{ t('sales.unitPrice') }}
             <input v-model="unitPriceInput" inputmode="decimal" :disabled="!selectedVariant" />
@@ -981,6 +1090,7 @@ function resetAfterSale() {
           <button class="secondary-button till-add" type="button" :disabled="!canAddToCart" @click="addToCart">
             {{ t('sales.addToCart') }}
           </button>
+          </template>
         </footer>
       </section>
 
@@ -1020,7 +1130,7 @@ function resetAfterSale() {
               <span class="till-line-label">{{ line.label }}</span>
               <b>{{ format(line.quantity * line.unitPriceCents) }}</b>
               <small class="till-line-unit">{{ t('sales.perUnit', { price: format(line.unitPriceCents) }) }}</small>
-              <span class="till-line-stepper">
+              <span v-if="!line.lineType || line.lineType === 'merchandise'" class="till-line-stepper">
                 <button
                   type="button"
                   :class="{ 'is-remove': line.quantity <= 1 }"
@@ -1036,6 +1146,9 @@ function resetAfterSale() {
                 <span class="till-line-qty">{{ line.quantity }}</span>
                 <button type="button" :aria-label="t('common.increase')" @click="stepLine(index, 1)">+</button>
               </span>
+              <button v-else class="compact-button danger-button" type="button" @click="removeLine(index)">
+                {{ t('sales.removeLine') }}
+              </button>
               <small v-if="line.onHand <= 0" class="stock-sale-warning till-line-warning">{{ t('sales.stockWarning') }}</small>
             </div>
           </div>
@@ -1077,7 +1190,7 @@ function resetAfterSale() {
           <p v-if="!historicalMode && qrSetupMissing" class="notice payment-qr-setup-hint">
             {{ t('sales.paymentQrSetupHint') }}
           </p>
-          <div v-if="historicalMode || !needsShipping || !shipPayLater" class="till-given">
+          <div v-if="(historicalMode || !needsShipping || !shipPayLater) && !hasSpecialBasket" class="till-given">
             <label>
               <span>{{ t('sales.amountActuallyPaid') }}</span>
               <input v-model="amountGivenInput" inputmode="decimal" :placeholder="format(saleTotalCents)" />
@@ -1123,7 +1236,7 @@ function resetAfterSale() {
           <label>{{ t('common.comment') }}<textarea v-model="comment" rows="3" /></label>
         </section>
 
-        <section v-if="!historicalMode" class="checkout-group">
+        <section v-if="!historicalMode && !hasSpecialBasket" class="checkout-group">
           <h3>{{ t('sales.shipmentTitle') }}</h3>
           <label v-if="!isOrder" class="checkbox-row">
             <input v-model="shipOpen" type="checkbox" />
@@ -1186,8 +1299,8 @@ function resetAfterSale() {
             {{ t('sales.historicalNegativeStock') }}
           </p>
           <p v-else-if="hasOutOfStockItem" class="stock-sale-warning" role="status">{{ t('sales.stockWarning') }}</p>
-          <div v-for="line in basket" :key="line.variantId" class="checkout-review-line">
-            <span>{{ line.quantity }}× {{ line.label }}</span>
+          <div v-for="(line, index) in basket" :key="`${line.variantId}-${index}`" class="checkout-review-line">
+            <span>{{ line.lineType && line.lineType !== 'merchandise' ? line.label : `${line.quantity}× ${line.label}` }}</span>
             <b>{{ format(line.quantity * line.unitPriceCents) }}</b>
           </div>
           <div v-if="needsShipping && (shippingCostCents ?? 0) > 0" class="checkout-review-line">
@@ -1543,6 +1656,28 @@ function resetAfterSale() {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   text-align: center;
+}
+
+.special-selection-button {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-default));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
+}
+
+.special-selection-button:hover,
+.special-selection-button.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-selected));
+}
+
+.special-entry-intro {
+  padding: 18px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-panel);
+  background: var(--surface-muted);
+}
+
+.special-entry-intro h2 {
+  margin: 4px 0 8px;
 }
 
 .checkout-payment-grid.is-historical {

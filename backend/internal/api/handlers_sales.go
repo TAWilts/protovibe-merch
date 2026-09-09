@@ -333,7 +333,7 @@ func (s *Server) createHistoricalSale(c *gin.Context) {
 		return
 	}
 	for _, item := range req.Items {
-		if item.UnitPriceCents == nil {
+		if item.LineType != models.SaleLineDonation && item.LineType != models.SaleLineMiscIncome && item.UnitPriceCents == nil {
 			fail(c, http.StatusBadRequest, "historical_price_required", "every historical position requires its unit price")
 			return
 		}
@@ -440,9 +440,9 @@ func (s *Server) recordSaleTelemetry(c *gin.Context, eventType string, saleIDs [
 	variantIDs := make([]int64, 0, len(saleRows))
 	seenVariants := map[int64]bool{}
 	for _, sale := range saleRows {
-		if !seenVariants[sale.VariantID] {
-			seenVariants[sale.VariantID] = true
-			variantIDs = append(variantIDs, sale.VariantID)
+		if sale.VariantID != nil && !seenVariants[*sale.VariantID] {
+			seenVariants[*sale.VariantID] = true
+			variantIDs = append(variantIDs, *sale.VariantID)
 		}
 	}
 
@@ -459,10 +459,13 @@ func (s *Server) recordSaleTelemetry(c *gin.Context, eventType string, saleIDs [
 	}
 
 	for _, sale := range saleRows {
+		if sale.VariantID == nil {
+			continue
+		}
 		snapshot := telemetrysvc.SaleSnapshot{
 			BandID:          sale.BandID,
 			SaleID:          sale.ID,
-			ArticleID:       articleByVariant[sale.VariantID],
+			ArticleID:       articleByVariant[*sale.VariantID],
 			Quantity:        sale.Quantity,
 			UnitPriceCents:  sale.UnitPriceCents,
 			AmountCents:     sale.AmountDueCents - sale.DiscountCents,
@@ -491,6 +494,16 @@ func (s *Server) reportSalesError(c *gin.Context, err error) {
 			"the payment code is expired, cancelled or already redeemed")
 	case errors.Is(err, sales.ErrEmptyBasket):
 		fail(c, http.StatusBadRequest, "empty_basket", err.Error())
+	case errors.Is(err, sales.ErrInvalidLineType):
+		fail(c, http.StatusBadRequest, "invalid_line_type", err.Error())
+	case errors.Is(err, sales.ErrMixedBasket):
+		fail(c, http.StatusBadRequest, "mixed_basket", err.Error())
+	case errors.Is(err, sales.ErrInvalidDescription):
+		fail(c, http.StatusBadRequest, "invalid_description", err.Error())
+	case errors.Is(err, sales.ErrInvalidSpecialAmount):
+		fail(c, http.StatusBadRequest, "invalid_special_amount", err.Error())
+	case errors.Is(err, sales.ErrSpecialDelivery):
+		fail(c, http.StatusBadRequest, "special_delivery", err.Error())
 	case errors.Is(err, sales.ErrContactRequired):
 		fail(c, http.StatusBadRequest, "contact_required", err.Error())
 	case errors.Is(err, sales.ErrDiscountConfirmationRequired):

@@ -58,8 +58,8 @@ func parseExport(t *testing.T, body []byte) ([]string, [][]string) {
 	return records[0], records[1:]
 }
 
-// TestExportHeadersMatchTheOriginal pins the exact column names, because a
-// band may already have spreadsheets and filters built on them.
+// TestExportHeadersMatchTheOriginal pins the exact column names. New sale-line
+// metadata stays additive so merchandise exports retain all existing fields.
 func TestExportHeadersMatchTheOriginal(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()
@@ -71,7 +71,7 @@ func TestExportHeadersMatchTheOriginal(t *testing.T) {
 			"Mindestbestandswarnung", "Verkaufspreis", "Nachbestellen", "Angeboten", "Status",
 		},
 		"verkaeufe": {
-			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Versandkosten",
+			"Beleg-ID", "Datum", "Buchungsart", "Freitext", "Varianten-ID", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Versandkosten",
 			"Rabatt", "Gegeben", "Spende", "Bezahlart", "Bezahlt", "Artikel erhalten", "Versandstatus",
 			"Storniert", "Kundenname", "Adresse", "Veranstaltung", "Verkauft von", "Kommentar",
 		},

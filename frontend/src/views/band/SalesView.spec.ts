@@ -234,6 +234,55 @@ describe('SalesView checkout', () => {
     expect(book).toHaveBeenCalledOnce()
   })
 
+  it('books Spende/Sonstiges as a separate stock-neutral receipt', async () => {
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    await button(wrapper, 'sales.specialEntry').trigger('click')
+    expect(wrapper.text()).toContain('sales.specialEntryTitle')
+    const typeSelect = wrapper.find('.till-compose select')
+    expect(typeSelect.exists()).toBe(true)
+    await typeSelect.setValue('misc_income')
+    await field(wrapper, 'sales.specialDescription').setValue('Pfandbecher')
+    await field(wrapper, 'sales.specialAmount').setValue('12,50')
+    await button(wrapper, 'sales.addToCart').trigger('click')
+    await button(wrapper, 'sales.paymentDetails').trigger('click')
+
+    expect(wrapper.text()).not.toContain('sales.shipmentTitle')
+    expect(wrapper.text()).not.toContain('sales.amountActuallyPaid')
+    await button(wrapper, 'common.confirm').trigger('click')
+    await button(wrapper, 'sales.book').trigger('click')
+    await flushPromises()
+
+    expect(book).toHaveBeenCalledWith(expect.objectContaining({
+      items: [{ line_type: 'misc_income', description: 'Pfandbecher', amount_cents: 1250 }],
+      amount_given_cents: 1250,
+      shipping_cost_cents: 0,
+      is_paid: true,
+      is_received: true,
+    }))
+    expect(queue).not.toHaveBeenCalled()
+  })
+
+  it('puts a live donation into the existing offline queue after a network failure', async () => {
+    book.mockRejectedValueOnce(new Error('offline'))
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    await button(wrapper, 'sales.specialEntry').trigger('click')
+    await field(wrapper, 'sales.specialAmount').setValue('5,00')
+    await button(wrapper, 'sales.addToCart').trigger('click')
+    await button(wrapper, 'sales.paymentDetails').trigger('click')
+    await button(wrapper, 'common.confirm').trigger('click')
+    await button(wrapper, 'sales.book').trigger('click')
+    await flushPromises()
+
+    expect(queue).toHaveBeenCalledWith(expect.objectContaining({
+      items: [{ line_type: 'donation', description: 'Spende', amount_cents: 500 }],
+      amount_given_cents: 500,
+    }))
+  })
+
   it('adds gross shipping costs to a sale booked for shipping', async () => {
     const wrapper = mount(SalesView)
     await flushPromises()
@@ -432,6 +481,36 @@ describe('SalesView checkout', () => {
     expect(queue).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('sales.historicalTitle')
     expect(wrapper.get('.till-rail-receipt-id').text()).toBe('sales.receiptLoading')
+  })
+
+  it('books historical misc income with the historical event metadata', async () => {
+    events.mockResolvedValue({ events: [{ id: 7, name: 'Archivfestival' }], selected_event_id: 0 })
+    catalogueList.mockResolvedValue({ articles: [] })
+    route.query = { mode: 'historical' }
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    await button(wrapper, 'sales.specialEntry').trigger('click')
+    await wrapper.get('.till-compose select').setValue('misc_income')
+    await field(wrapper, 'sales.specialDescription').setValue('Pfand')
+    await field(wrapper, 'sales.specialAmount').setValue('9,00')
+    await button(wrapper, 'sales.addToCart').trigger('click')
+    await button(wrapper, 'sales.paymentDetails').trigger('click')
+    await field(wrapper, 'sales.historicalDate').setValue('2026-08-27')
+    const eventSelect = wrapper.findAll('label').find((entry) => entry.text().includes('sales.event'))?.find('select')
+    if (!eventSelect?.exists()) throw new Error('event selector not found')
+    await eventSelect.setValue('7')
+    await button(wrapper, 'common.confirm').trigger('click')
+    await button(wrapper, 'sales.historicalBook').trigger('click')
+    await flushPromises()
+
+    expect(bookHistorical).toHaveBeenCalledWith(expect.objectContaining({
+      items: [{ line_type: 'misc_income', description: 'Pfand', amount_cents: 900 }],
+      sale_event_id: 7,
+      sold_on: '2026-08-27',
+      amount_given_cents: 900,
+    }))
+    expect(queue).not.toHaveBeenCalled()
   })
 
   it('uses only the current option structure instead of resurrecting retired default variants', async () => {

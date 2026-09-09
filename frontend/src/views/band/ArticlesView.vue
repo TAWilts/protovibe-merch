@@ -108,7 +108,7 @@ function toInput(cents: number) {
 function variantLabel(article: Article, optionValueIds: number[]): string {
   const parts: { position: number; text: string }[] = []
   for (const group of article.option_groups) {
-    const value = group.values.find((entry) => optionValueIds.includes(entry.id))
+    const value = (group.values ?? []).find((entry) => optionValueIds.includes(entry.id))
     if (value) {
       parts.push({ position: group.position, text: `${group.name}: ${value.value}` })
     }
@@ -131,7 +131,7 @@ function select(id: number) {
       .map((group) => ({
         id: group.id,
         name: group.name,
-        values: group.values
+        values: (group.values ?? [])
           .filter((value) => value.is_active)
           .map((value) => ({ id: value.id, value: value.value })),
       })),
@@ -220,6 +220,24 @@ async function createArticle() {
     flash.success(t('articles.created'))
     selectedId.value = created.id
     await load()
+  } catch (error) {
+    report(error)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function removeIncompleteArticle() {
+  const article = selected.value
+  if (!article || article.configuration_complete || busy.value) return
+  if (!window.confirm(t('articles.deleteIncompleteConfirm', { name: article.name }))) return
+  busy.value = true
+  try {
+    await catalogueApi.removeIncomplete(article.id)
+    articles.value = articles.value.filter((entry) => entry.id !== article.id)
+    selectedId.value = null
+    if (articles.value.length) select(articles.value[0].id)
+    flash.success(t('articles.deleted'))
   } catch (error) {
     report(error)
   } finally {
@@ -515,6 +533,15 @@ async function applyMinimumToAll() {
           <footer class="article-form-actions">
             <button class="primary-button" type="button" :disabled="busy" @click="save">
               {{ t('articles.saveConfiguration') }}
+            </button>
+            <button
+              v-if="!selected.configuration_complete"
+              class="danger-button"
+              type="button"
+              :disabled="busy"
+              @click="removeIncompleteArticle"
+            >
+              {{ t('articles.deleteIncomplete') }}
             </button>
           </footer>
         </section>

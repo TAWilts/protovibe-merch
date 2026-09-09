@@ -221,6 +221,8 @@ async function printFinanceReport() {
     const s = report.summary
     const summaryRows = reportRows([
       [t('balances.reportMerchRevenue'), format(s.merch_revenue_cents)],
+      [t('balances.miscIncome'), format(s.misc_income_cents)],
+      [t('balances.reportTotalRevenue'), format(s.total_revenue_cents)],
       [t('balances.reportCollected'), format(s.merch_collected_cents)],
       [t('balances.discount'), format(s.discount_cents)],
       [t('balances.donation'), format(s.donation_cents)],
@@ -367,6 +369,10 @@ td:last-child, th:last-child { text-align: right; }
         <article class="metric-card">
           <span>{{ t('balances.donation') }}</span>
           <strong>{{ format(data.summary.donation_cents) }}</strong>
+        </article>
+        <article class="metric-card">
+          <span>{{ t('balances.miscIncome') }}</span>
+          <strong>{{ format(data.summary.misc_income_cents) }}</strong>
         </article>
         <article class="metric-card">
           <span>{{ t('balances.cashBalance') }}</span>

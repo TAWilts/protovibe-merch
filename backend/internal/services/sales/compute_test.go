@@ -328,3 +328,83 @@ func TestUnknownVariantIsRejected(t *testing.T) {
 		t.Fatalf("an unknown variant must be rejected as a client error, got %v", err)
 	}
 }
+
+func TestSpecialSaleLinesHaveDedicatedAccounting(t *testing.T) {
+	amount := int64(1250)
+	for _, tc := range []struct {
+		name         string
+		lineType     models.SaleLineType
+		wantDue      int64
+		wantDonation int64
+	}{
+		{name: "donation", lineType: models.SaleLineDonation, wantDonation: amount},
+		{name: "misc income", lineType: models.SaleLineMiscIncome, wantDue: amount},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := counterSale(sales.BasketItem{
+				LineType: tc.lineType, Description: "Hutgeld", AmountCents: &amount,
+			})
+			got, err := sales.Prepare(req, priceList())
+			if err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			if got.TotalDueCents != tc.wantDue || got.TotalPaidCents != amount || got.DonationCents != tc.wantDonation {
+				t.Fatalf("unexpected totals: %+v", got)
+			}
+			if len(got.Lines) != 1 || got.Lines[0].VariantID != nil || got.Lines[0].Quantity != 1 {
+				t.Fatalf("a special entry must be stock-neutral and self-contained: %+v", got.Lines)
+			}
+			if got.Lines[0].LineType != tc.lineType || got.Lines[0].Description != "Hutgeld" {
+				t.Fatalf("type and description were not preserved: %+v", got.Lines[0])
+			}
+		})
+	}
+}
+
+func TestSpecialSaleValidation(t *testing.T) {
+	amount := int64(500)
+	invalidAmount := int64(0)
+	cases := []struct {
+		name    string
+		request sales.Request
+		want    error
+	}{
+		{
+			name: "mixed basket",
+			request: counterSale(
+				sales.BasketItem{VariantID: 1, Quantity: 1},
+				sales.BasketItem{LineType: models.SaleLineDonation, Description: "Spende", AmountCents: &amount},
+			),
+			want: sales.ErrMixedBasket,
+		},
+		{
+			name:    "empty description",
+			request: counterSale(sales.BasketItem{LineType: models.SaleLineDonation, AmountCents: &amount}),
+			want:    sales.ErrInvalidDescription,
+		},
+		{
+			name:    "zero amount",
+			request: counterSale(sales.BasketItem{LineType: models.SaleLineMiscIncome, Description: "Sonstiges", AmountCents: &invalidAmount}),
+			want:    sales.ErrInvalidSpecialAmount,
+		},
+		{
+			name: "shipment",
+			request: func() sales.Request {
+				req := counterSale(sales.BasketItem{LineType: models.SaleLineDonation, Description: "Spende", AmountCents: &amount})
+				req.IsReceived = false
+				req.CustomerName = "Alex"
+				req.CustomerAddress = "Musterweg 1"
+				return req
+			}(),
+			want: sales.ErrSpecialDelivery,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := sales.Prepare(tc.request, priceList()); !errors.Is(err, tc.want) {
+				t.Fatalf("expected %v, got %v", tc.want, err)
+			}
+		})
+	}
+}
