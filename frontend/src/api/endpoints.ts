@@ -1,4 +1,4 @@
-import { api } from './client'
+import { api, apiUrl, request } from './client'
 import type { TelemetryPayload } from './telemetry-types'
 import type {
   Article,
@@ -47,7 +47,7 @@ import type {
 
 /** Anonymous onboarding. Status secrets are always sent in the body. */
 export const registrationApi = {
-  config: () => api.get<{ registration_enabled: boolean }>('/public/registrations/config'),
+  config: () => api.get<{ registration_enabled: boolean; sandbox_enabled: boolean }>('/public/registrations/config'),
   create: (payload: {
     band_name: string
     band_slug: string
@@ -90,6 +90,17 @@ export const authApi = {
     }),
   logout: () => api.post<void>('/auth/logout'),
   me: () => api.get<Identity>('/me'),
+}
+
+export const sandboxApi = {
+	start: () => request<LoginResponse>('/session', { method: 'POST', apiMode: 'sandbox' }),
+	me: () => request<Identity>('/me', { method: 'GET', apiMode: 'sandbox' }),
+	reset: () => request<LoginResponse>('/reset', { method: 'POST', apiMode: 'sandbox' }),
+	setRole: (role: Extract<Role, 'seller' | 'member' | 'manager' | 'band_admin'>) =>
+		request<LoginResponse>('/role', { method: 'PATCH', body: { role }, apiMode: 'sandbox' }),
+	setTutorial: (visible: boolean, restart = false) =>
+		request<void>('/tutorial', { method: 'PATCH', body: { visible, restart }, apiMode: 'sandbox' }),
+	discard: () => request<void>('/session', { method: 'DELETE', apiMode: 'sandbox' }),
 }
 
 /** Catalogue: the full view for management, the offered subset for selling. */
@@ -236,7 +247,7 @@ export const packingApi = {
     body.append('file', input.file, input.filename)
     return api.post<PackingSnapshot>('/packing-list/photos', body, { raw: true })
   },
-  photoUrl: (id: string) => `/api/v1/packing-list/photos/${encodeURIComponent(id)}/file`,
+  photoUrl: (id: string) => apiUrl(`/packing-list/photos/${encodeURIComponent(id)}/file`),
 }
 
 function periodQuery(from = '', to = '') {
@@ -302,7 +313,7 @@ export const bandFinanceAttachmentsApi = {
   remove: (transactionId: number, attachmentId: number) =>
     api.delete<void>(`/band-finances/${transactionId}/attachments/${attachmentId}`),
   fileUrl: (transactionId: number, attachmentId: number) =>
-    `/api/v1/band-finances/${transactionId}/attachments/${attachmentId}`,
+    apiUrl(`/band-finances/${transactionId}/attachments/${attachmentId}`),
 }
 
 export const purchasesApi = {
@@ -361,8 +372,8 @@ export const purchasesApi = {
 
 /** Exports are plain links so the browser handles the download itself. */
 export const exportUrls = {
-  csv: (kind: 'artikel' | 'verkaeufe' | 'einkaeufe' | 'bestand') => `/api/v1/exports/${kind}.csv`,
-  zip: () => '/api/v1/exports/all.zip',
+  csv: (kind: 'artikel' | 'verkaeufe' | 'einkaeufe' | 'bestand') => apiUrl(`/exports/${kind}.csv`),
+  zip: () => apiUrl('/exports/all.zip'),
 }
 
 /** The control plane. Every call here requires a platform account. */
@@ -536,7 +547,7 @@ export const attachmentsApi = {
     )
   },
   removeInvoice: (purchaseId: number) => api.delete<void>(`/purchases/${purchaseId}/invoice`),
-  invoiceUrl: (purchaseId: number) => `/api/v1/purchases/${purchaseId}/invoice`,
+  invoiceUrl: (purchaseId: number) => apiUrl(`/purchases/${purchaseId}/invoice`),
 
   list: (receiptId: string) =>
     api.get<{ attachments: Attachment[] }>(
@@ -556,7 +567,7 @@ export const attachmentsApi = {
       `/purchase-receipts/${encodeURIComponent(receiptId)}/attachments/${attachmentId}`,
     ),
   fileUrl: (receiptId: string, attachmentId: number) =>
-    `/api/v1/purchase-receipts/${encodeURIComponent(receiptId)}/attachments/${attachmentId}`,
+    apiUrl(`/purchase-receipts/${encodeURIComponent(receiptId)}/attachments/${attachmentId}`),
 }
 
 export type CollageMode = 'scroll' | 'reveal' | 'filmstrip'
@@ -589,7 +600,7 @@ export const photosApi = {
     collage_interval: number
     collage_modes: CollageMode[]
   }) => api.patch<void>('/slideshow/settings', payload),
-  fileUrl: (id: number) => `/api/v1/photos/${id}/file`,
+  fileUrl: (id: number) => apiUrl(`/photos/${id}/file`),
 }
 
 export const bandUsersApi = {
@@ -634,6 +645,7 @@ export const profileApi = {
     show_packing_list: boolean
     show_product_palette: boolean
   }>('/profile/features', payload),
+  markSandboxIntroSeen: () => api.patch<void>('/profile/sandbox-intro', {}),
   telemetry: (enabled: boolean) =>
     api.patch<{ telemetry_enabled: boolean; telemetry_decided: boolean }>(
       '/profile/telemetry',

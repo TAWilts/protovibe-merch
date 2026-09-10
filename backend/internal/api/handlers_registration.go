@@ -54,7 +54,10 @@ func (s *Server) registrationLimit(limiter *requestLimiter) gin.HandlerFunc {
 }
 
 func (s *Server) registrationConfig(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"registration_enabled": s.cfg.PublicRegistrationEnabled})
+	c.JSON(http.StatusOK, gin.H{
+		"registration_enabled": s.cfg.PublicRegistrationEnabled,
+		"sandbox_enabled":      s.cfg.SandboxEnabled,
+	})
 }
 
 type publicRegistrationRequest struct {

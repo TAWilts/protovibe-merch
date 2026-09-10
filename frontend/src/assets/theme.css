@@ -131,3 +131,12 @@ html[data-theme="midnight"] {
   --on-accent: #101832;
   --shadow-color: 5 9 20;
 }
+
+/* The sandbox keeps a distinct amber accent independent of the user's theme;
+   the persistent banner still carries the textual warning for accessibility. */
+html[data-sandbox] {
+  --accent: #e5ad45;
+  --on-accent: #241700;
+  --focus-ring: #ffd98f;
+  --page-color: #e5ad45;
+}

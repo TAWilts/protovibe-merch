@@ -32,6 +32,17 @@ watch(() => sessionStore.identity, (identity) => {
 
 setUnauthorizedHandler(() => {
   if (!sessionStore.isAuthenticated) return
+  if (sessionStore.isSandbox) {
+    void sessionStore.leaveSandbox().then((restored) => {
+      void router.replace(restored
+        ? { name: sessionStore.capabilities?.is_platform_staff ? 'platform-dashboard' : 'sales' }
+        : { name: 'landing' })
+    }).catch(() => {
+      sessionStore.clear()
+      void router.replace({ name: 'landing' })
+    })
+    return
+  }
   const previousPath = router.currentRoute.value.fullPath
   sessionStore.clear()
   if (router.currentRoute.value.name !== 'login') {

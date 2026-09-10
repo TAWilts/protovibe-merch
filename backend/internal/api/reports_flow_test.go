@@ -136,6 +136,9 @@ func TestNoReorderOnlyBecomesObsoleteAtZeroStock(t *testing.T) {
 	if len(jsonList(balances, "obsolete_rows")) != 0 {
 		t.Fatalf("stocked goods must remain in the normal balance: %v", balances["obsolete_rows"])
 	}
+	if got := jsonObject(jsonList(balances, "reorder_rows")[0])["stock_mode"]; got != "clearance" {
+		t.Fatalf("no-reorder offered goods should report clearance, got %v", got)
+	}
 	h.do(http.MethodPost, "/api/v1/sales", map[string]any{
 		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 2}},
 		"payment_method": "Bar", "is_paid": true, "is_received": true, "sold_on": "2026-09-07",
@@ -149,6 +152,35 @@ func TestNoReorderOnlyBecomesObsoleteAtZeroStock(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("depleted no-reorder goods must be obsolete: %v", balances["obsolete_rows"])
+	}
+}
+
+func TestBalanceStockModeUsesCurrentVariantStateForDateRanges(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	articleID, variants := h.sellableArticle("On-demand Shirt")
+	if saved := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"variants": []any{map[string]any{"id": variants[0], "target_stock": 0}},
+	}); saved.Status != http.StatusOK {
+		t.Fatalf("set on-demand mode: %d %v", saved.Status, saved.Body)
+	}
+
+	for _, path := range []string{"/api/v1/balances", "/api/v1/balances?from=2020-01-01&to=2030-01-01"} {
+		body := h.do(http.MethodGet, path, nil).Body
+		found := false
+		for _, raw := range jsonList(body, "reorder_rows") {
+			row := jsonObject(raw)
+			if int64(row["variant_id"].(float64)) == variants[0] {
+				found = true
+				if row["stock_mode"] != "on_demand" {
+					t.Fatalf("%s used %v instead of current on-demand state", path, row["stock_mode"])
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("variant missing from %s", path)
+		}
 	}
 }
 

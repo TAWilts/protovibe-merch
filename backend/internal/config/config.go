@@ -77,6 +77,13 @@ type Config struct {
 
 	// Temporary feature flag. When false, already booked purchases are read-only.
 	PurchaseEditingEnabled bool
+
+	// Disposable public demo tenants.
+	SandboxEnabled           bool
+	SandboxIdleTTL           time.Duration
+	SandboxMaxActive         int
+	SandboxStorageQuotaBytes int64
+	SandboxStartsPerHour     int
 }
 
 // placeholderValues are the literal strings shipped in .env.example. Booting
@@ -137,6 +144,11 @@ func Load() (*Config, error) {
 		PublicBaseURL:             strings.TrimRight(env("PUBLIC_BASE_URL", "http://localhost:8000"), "/"),
 		PublicRegistrationEnabled: envBool("PUBLIC_REGISTRATION_ENABLED", false),
 		PurchaseEditingEnabled:    envBool("PURCHASE_EDITING_ENABLED", false),
+		SandboxEnabled:            envBool("SANDBOX_ENABLED", true),
+		SandboxIdleTTL:            envDuration("SANDBOX_IDLE_TTL_SECONDS", 24*time.Hour),
+		SandboxMaxActive:          envInt("SANDBOX_MAX_ACTIVE", 100),
+		SandboxStorageQuotaBytes:  int64(envInt("SANDBOX_STORAGE_QUOTA_BYTES", 25*1024*1024)),
+		SandboxStartsPerHour:      envInt("SANDBOX_STARTS_PER_HOUR", 3),
 	}
 
 	if raw := os.Getenv("TRUSTED_PROXIES"); raw != "" {
@@ -198,6 +210,9 @@ func (c *Config) validate() error {
 	}
 	if c.BackupRetentionDays < 1 {
 		return fmt.Errorf("BACKUP_RETENTION_DAYS must be at least 1")
+	}
+	if c.SandboxIdleTTL < time.Minute || c.SandboxMaxActive < 1 || c.SandboxStorageQuotaBytes < 1 || c.SandboxStartsPerHour < 1 {
+		return fmt.Errorf("sandbox limits must be positive and SANDBOX_IDLE_TTL_SECONDS must be at least 60")
 	}
 	return nil
 }

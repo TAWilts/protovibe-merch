@@ -4,6 +4,41 @@
     "open": "Open account menu",
     "profile": "Profile and appearance"
   },
+  "sandbox": {
+    "badge": "SANDBOX",
+    "banner": "SANDBOX – no impact on your real band",
+    "remaining": "Automatically deleted after inactivity · remaining: {time}",
+    "minutes": "{count} min",
+    "hours": "{count} hrs",
+    "role": "Demo role",
+    "roles": { "seller": "Seller", "member": "Member", "manager": "Manager", "band_admin": "Band admin" },
+    "start": "Start sandbox",
+    "reset": "Restore sample data",
+    "resetConfirm": "Discard this sandbox and all changes, then start again with fresh sample data?",
+    "resetDone": "The sandbox has been restored to its sample data.",
+    "leave": "Leave sandbox",
+    "discard": "Delete sandbox permanently",
+    "discardConfirm": "Permanently delete this sandbox and all data created in it? This cannot be undone.",
+    "administrationRestricted": "Accounts, support access and real payment destinations are not changed in the sandbox. Switch the demo role at any time in the sandbox banner.",
+    "invite": {
+      "title": "Try it first, then use it with confidence",
+      "text": "The sandbox lets you explore the complete application with sample data and the real business rules.",
+      "isolated": "Every booking remains fully isolated from your real band.",
+      "expires": "The data is automatically deleted after 24 hours of inactivity.",
+      "roles": "You can switch between all four band roles at any time.",
+      "skip": "Not now"
+    },
+    "tutorial": {
+      "title": "Sandbox tasks",
+      "hint": "A suggested tour through the application",
+      "catalogue": "Product and variant",
+      "purchase": "Book a purchase",
+      "sale": "Book a sale",
+      "balance": "Stock and balances",
+      "hide": "Hide",
+      "restart": "Restart task list"
+    }
+  },
   "notFound": {
     "title": "Page not found",
     "message": "The requested address does not exist or has moved.",
@@ -290,6 +325,7 @@
   },
   "errors": {
     "generic": "That did not work. Please try again.",
+    "sandbox_external_action_blocked": "This function is disabled in the sandbox because it would affect external systems or production administration.",
     "network": "Could not connect to the server.",
     "invalid_credentials": "The username or password is incorrect.",
     "invalid_mfa_code": "The confirmation code is incorrect.",
@@ -1304,6 +1340,15 @@
       "inventory": { "title": "Inventory that explains itself", "text": "Sales and purchases move stock automatically. Minimum levels show what should be reordered before the next gig." },
       "slideshow": { "title": "Turn the catalogue into a storefront", "text": "Product photos are fully visible as single slides or calm mosaics – ideal for a second display at the merch table." }
     },
+    "sandbox": {
+      "kicker": "Explore without consequences",
+      "title": "The complete application as a sandbox.",
+      "lead": "Use the real Merch Manager screens and rules without creating a band or touching production data.",
+      "isolated": "Your own fully isolated demo tenant",
+      "expires": "Automatically deleted after 24 hours of inactivity",
+      "realApp": "Sample data, role switching and guided tasks",
+      "start": "Start the full sandbox"
+    },
     "miniApp": {
       "kicker": "Try it yourself",
       "title": "Four views. One small interactive demo.",
@@ -1434,7 +1479,10 @@
         "registration_not_approved": "The request has not been approved yet.",
         "credentials_claimed": "The credentials have already been retrieved.",
         "credentials_unavailable": "The credentials are no longer available.",
-        "rate_limited": "Too many attempts. Wait a while and try again."
+        "rate_limited": "Too many attempts. Wait a while and try again.",
+        "sandbox_disabled": "The sandbox is disabled on this instance.",
+        "sandbox_rate_limited": "Too many sandboxes were started from this connection. Please try again later.",
+        "sandbox_capacity_reached": "All sandbox slots are currently in use. Please try again later."
       }
     },
     "faq": {

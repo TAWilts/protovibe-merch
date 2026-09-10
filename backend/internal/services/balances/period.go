@@ -80,6 +80,7 @@ func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, 
 		ArticleName      string
 		SalePriceCents   int64
 		MinimumStock     *int
+		TargetStock      *int
 		IsOffered        bool
 		ArticleIsOffered bool
 		ArticleIsActive  bool
@@ -90,7 +91,7 @@ func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, 
 	err := s.db.WithContext(ctx).Model(&models.Variant{}).
 		Select(`variants.id, variants.article_id, articles.name AS article_name,
 			variants.sale_price_cents,
-			variants.minimum_stock, variants.is_offered, variants.no_reorder, variants.is_active,
+			variants.minimum_stock, variants.target_stock, variants.is_offered, variants.no_reorder, variants.is_active,
 			articles.is_offered AS article_is_offered, articles.is_active AS article_is_active`).
 		Joins("JOIN articles ON articles.id = variants.article_id").
 		Scan(&variants).Error
@@ -176,6 +177,7 @@ func (s *Service) variantRowsPeriod(ctx context.Context, period Period) ([]Row, 
 			DiscountCents:      sale.DiscountCents,
 			DonationCents:      sale.DonationCents,
 			SalePriceCents:     variant.SalePriceCents,
+			StockMode:          catalogue.StockModeForFields(variant.IsOffered, variant.NoReorder, variant.TargetStock),
 			IsOffered:          variant.IsOffered,
 			IsAvailableForSale: variant.IsActive && variant.ArticleIsActive && variant.IsOffered && variant.ArticleIsOffered,
 			NoReorder:          variant.NoReorder,

@@ -33,4 +33,15 @@ describe('public landing route', () => {
     await router.replace({ name: 'login' })
     expect(router.currentRoute.value.name).toBe('login')
   })
+
+  it('keeps the full sandbox in its own route namespace', () => {
+    const sales = router.resolve('/sandbox/sales')
+    const balances = router.resolve('/sandbox/balances')
+    const administration = router.resolve('/sandbox/administration')
+    expect(sales.name).toBe('sandbox-sales')
+    expect(balances.name).toBe('sandbox-balances')
+    expect(administration.name).toBe('sandbox-administration')
+    expect(sales.matched[0].meta.sandbox).toBe(true)
+    expect(sales.matched[0].path).toBe('/sandbox')
+  })
 })

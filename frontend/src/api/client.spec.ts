@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, request, setCsrfToken, setUnauthorizedHandler } from './client'
+import { ApiError, request, setApiMode, setCsrfToken, setUnauthorizedHandler } from './client'
 
 describe('API client', () => {
   beforeEach(() => {
     document.cookie = 'merch_csrf=; Max-Age=0; Path=/'
     setCsrfToken('')
+    setApiMode('normal')
     setUnauthorizedHandler()
   })
 
@@ -57,6 +58,18 @@ describe('API client', () => {
       detailCode: 'feature_disabled',
       message: 'disabled',
     })
+  })
+
+  it('uses the separate sandbox prefix and CSRF cookie', async () => {
+    document.cookie = 'merch_sandbox_csrf=sandbox-token; Path=/'
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await request('/sales', { method: 'POST', body: {}, apiMode: 'sandbox' })
+
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/v1/sandbox/sales')
+    expect(new Headers(options.headers).get('X-CSRF-Token')).toBe('sandbox-token')
   })
 
   it('notifies the app shell when a request loses its session', async () => {

@@ -8,6 +8,7 @@ import type { BalanceRow, BalancesPayload, FinanceReport, RankingEntry } from '@
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import { useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
+import { useSessionStore } from '@/stores/session'
 import IncomeChart from '@/components/IncomeChart.vue'
 import EventTimelineChart from '@/components/EventTimelineChart.vue'
 import BalanceTable, { type BalanceSortKey } from '@/components/BalanceTable.vue'
@@ -23,6 +24,7 @@ import AppToggle from '@/components/ui/AppToggle.vue'
 const { t } = useI18n()
 const { format } = useMoney()
 const flash = useFlashStore()
+const session = useSessionStore()
 
 const data = ref<BalancesPayload | null>(null)
 const loading = ref(true)
@@ -73,7 +75,8 @@ function sourceRows(view: BalanceView) {
 function sortableValue(row: BalanceRow, key: BalanceSortKey): string | number | null {
   if (key === 'article_name') return `${row.article_name}\u0000${row.variant_label}`
   if (key === 'minimum_stock') return row.minimum_stock
-  if (key === 'below_minimum' || key === 'no_reorder' || key === 'is_available_for_sale') return row[key] ? 1 : 0
+  if (key === 'below_minimum') return row[key] ? 1 : 0
+  if (key === 'stock_mode') return ['stocked', 'on_demand', 'clearance', 'paused', 'discontinued'].indexOf(row.stock_mode)
   return row[key]
 }
 
@@ -138,8 +141,7 @@ function downloadCsv(kind: 'inventory' | 'articles') {
         ['Gekauft', (row) => row.purchased], ['Verkauft', (row) => row.sold],
         ['Aktueller Bestand', (row) => row.on_hand], ['Mindestbestand', (row) => row.minimum_stock ?? ''],
         ['Mindestbestandswarnung', (row) => row.below_minimum ? 'ja' : 'nein'],
-        ['Nachbestellen', (row) => row.no_reorder ? 'nein' : 'ja'],
-        ['Angeboten', (row) => row.is_available_for_sale ? 'ja' : 'nein'],
+        [t('articles.stockMode'), (row) => t(`articles.stockModes.${row.stock_mode}.label`)],
         ['Ausgaben', (row) => format(row.purchase_cost_cents)], ['Umsatz', (row) => format(row.revenue_cents)],
         ['Eingenommen', (row) => format(row.collected_cents)], ['Rabatt', (row) => format(row.discount_cents)],
         ['Spenden', (row) => format(row.donation_cents)],
@@ -148,11 +150,11 @@ function downloadCsv(kind: 'inventory' | 'articles') {
         ['Artikel', (row) => row.article_name], ['Optionen', (row) => row.variant_label],
         ['Verkaufspreis', (row) => format(row.sale_price_cents)],
         ['Mindestbestand', (row) => row.minimum_stock ?? ''],
-        ['Nachbestellen', (row) => row.no_reorder ? 'nein' : 'ja'],
-        ['Angeboten', (row) => row.is_available_for_sale ? 'ja' : 'nein'],
+        [t('articles.stockMode'), (row) => t(`articles.stockModes.${row.stock_mode}.label`)],
         ['Status', (row) => row.is_active ? 'aktiv' : 'inaktiv'],
       ]
   const output: unknown[][] = []
+  if (session.isSandbox) output.push(['SANDBOX – DEMO-DATEN, KEINE PRODUKTIVDATEN'], [])
   let hasRows = false
   for (const view of ['reorder', 'obsolete'] as const) {
     const rows = sortedRows(view)
@@ -176,7 +178,7 @@ function downloadCsv(kind: 'inventory' | 'articles') {
   const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
     .toISOString()
     .slice(0, 10)
-  link.download = `${kind === 'inventory' ? 'bestand' : 'artikel'}-${localDate}.csv`
+  link.download = `${session.isSandbox ? 'DEMO_' : ''}${kind === 'inventory' ? 'bestand' : 'artikel'}-${localDate}.csv`
   document.body.append(link)
   link.click()
   link.remove()

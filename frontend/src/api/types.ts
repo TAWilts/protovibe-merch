@@ -46,6 +46,18 @@ export interface CurrentUser {
   telemetry_decided: boolean
   mfa_enabled: boolean
   contact_email: string
+	sandbox_intro_seen: boolean
+}
+
+export interface SandboxIdentity {
+	id: number
+	expires_at: string
+	demo_role: Extract<Role, 'seller' | 'member' | 'manager' | 'band_admin'>
+	template_version: number
+	tutorial_state: Record<'catalogue' | 'purchase' | 'sale' | 'balance', boolean>
+	tutorial_visible: boolean
+	storage_used_bytes: number
+	storage_quota_bytes: number
 }
 
 export interface IdentityBandSummary {
@@ -70,6 +82,8 @@ export interface Identity {
   band?: IdentityBandSummary
   capabilities: Capabilities
   support_grant?: SupportGrantBanner
+  sandbox?: SandboxIdentity
+  sandbox_available?: boolean
 }
 
 export interface LoginResponse {
@@ -360,6 +374,7 @@ export interface BalanceRow {
   discount_cents: number
   donation_cents: number
   sale_price_cents: number
+	stock_mode: StockMode
   is_offered: boolean
   is_available_for_sale: boolean
   no_reorder: boolean
@@ -396,6 +411,8 @@ export interface DailyIncome {
   income_cents: number
   sale_count: number
 }
+
+export type StockMode = 'stocked' | 'on_demand' | 'clearance' | 'paused' | 'discontinued'
 
 export interface EventTimelinePoint {
   key: string

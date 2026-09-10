@@ -89,8 +89,9 @@ type User struct {
 	// Bumping SessionVersion invalidates every existing session for this user.
 	// Password changes, role changes, deactivation and the admin center's
 	// session-kill all use it.
-	SessionVersion int        `gorm:"not null;default:0" json:"-"`
-	LastLoginAt    *time.Time `json:"last_login_at,omitempty"`
+	SessionVersion     int        `gorm:"not null;default:0" json:"-"`
+	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
+	SandboxIntroSeenAt *time.Time `json:"sandbox_intro_seen_at,omitempty"`
 
 	// Presentation preferences belong to the person, not to the band.
 	UITheme            string `gorm:"size:20;not null;default:'aurora'" json:"ui_theme"`
@@ -129,6 +130,9 @@ type Session struct {
 	// ActingGrantID marks a session that is operating under support access.
 	// Every audit entry written by this session carries it.
 	ActingGrantID *int64 `gorm:"index" json:"acting_grant_id,omitempty"`
+	// SandboxEnvironmentID is set only on the separate disposable-session
+	// cookie. Normal and sandbox sessions therefore cannot be confused.
+	SandboxEnvironmentID *int64 `gorm:"index" json:"sandbox_environment_id,omitempty"`
 
 	SessionVersion int    `gorm:"not null" json:"-"`
 	CSRFTokenHash  string `gorm:"size:64;not null" json:"-"`

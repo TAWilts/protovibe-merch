@@ -20,6 +20,9 @@ const { session, route, routerReplace } = vi.hoisted(() => {
       },
       featureFlags: { offline_sales: true, slideshow: true, packing_list: true },
       supportGrant: null,
+      isSandbox: false,
+      enterSandbox: vi.fn(),
+      setSandboxTutorial: vi.fn(),
       logout: vi.fn(),
     },
     route: { name: 'sales' },
@@ -87,7 +90,7 @@ describe('AppHeader navigation', () => {
     route.name = routeName
     const wrapper = mount(AppHeader)
 
-    await wrapper.get('.account-popover button').trigger('click')
+    await wrapper.findAll('.account-popover button').at(-1)!.trigger('click')
 
     expect(session.logout).toHaveBeenCalledOnce()
     expect(routerReplace).toHaveBeenCalledWith({ name: 'login' })

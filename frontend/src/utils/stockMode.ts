@@ -1,6 +1,6 @@
-import type { Variant } from '@/api/types'
+import type { StockMode, Variant } from '@/api/types'
 
-export type StockMode = 'stocked' | 'on_demand' | 'clearance' | 'paused' | 'discontinued'
+export type { StockMode } from '@/api/types'
 export type DisplayStockMode = StockMode | 'mixed'
 
 type StockFields = Pick<Variant, 'is_offered' | 'no_reorder' | 'target_stock'>

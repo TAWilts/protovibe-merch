@@ -74,6 +74,12 @@ npm run dev                   # http://localhost:5173, /api wird auf :8000 gepro
 Öffentliche Band-Anfragen bleiben standardmäßig deaktiviert und werden mit
 `PUBLIC_REGISTRATION_ENABLED=true` eingeschaltet.
 
+Die Landingpage bietet standardmäßig eine vollständige, serverseitig isolierte
+Sandbox mit Beispieldaten an. Sie lässt sich mit `SANDBOX_ENABLED=false`
+abschalten. Ablaufzeit, Kapazität, IP-Limit und Speicherquote werden über die
+`SANDBOX_*`-Werte aus `.env.example` konfiguriert; Sandbox-Daten werden nach
+24 Stunden Inaktivität automatisch entfernt.
+
 ## Gesamter Stack
 
 ```bash

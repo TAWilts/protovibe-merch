@@ -1,18 +1,20 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError } from '@/api/client'
+import { ApiError, getApiMode } from '@/api/client'
 import type { Identity } from '@/api/types'
 import { useSessionStore } from './session'
 
-const { me, logout, featureVisibility } = vi.hoisted(() => ({
+const { me, logout, featureVisibility, sandboxStart } = vi.hoisted(() => ({
   me: vi.fn(),
   logout: vi.fn(),
   featureVisibility: vi.fn(),
+  sandboxStart: vi.fn(),
 }))
 vi.mock('@/api/endpoints', () => ({
   authApi: { me, logout },
   profileApi: { featureVisibility },
+  sandboxApi: { start: sandboxStart },
 }))
 
 const identity = {
@@ -30,6 +32,7 @@ describe('offline session identity', () => {
     me.mockReset()
     logout.mockReset()
     featureVisibility.mockReset()
+    sandboxStart.mockReset()
     setActivePinia(createPinia())
   })
 
@@ -89,5 +92,24 @@ describe('offline session identity', () => {
 
     await expect(session.logout()).resolves.toBe(false)
     expect(session.identity).toBeNull()
+  })
+
+  it('enters the sandbox without overwriting the cached real identity', async () => {
+    const session = useSessionStore()
+    session.adopt(identity)
+    const sandboxIdentity = {
+      ...identity,
+      user: { ...identity.user, id: 99, username: 'Demo' },
+      band: { ...identity.band!, id: 77, slug: 'sandbox-demo', name: 'Demo Band' },
+      sandbox: { id: 4, expires_at: '2026-09-11T00:00:00Z', demo_role: 'band_admin', template_version: 1, tutorial_state: { catalogue: false, purchase: false, sale: false, balance: false }, tutorial_visible: true, storage_used_bytes: 0, storage_quota_bytes: 26214400 },
+    } as Identity
+    sandboxStart.mockResolvedValue({ session: sandboxIdentity, csrf_token: 'csrf' })
+
+    await session.enterSandbox()
+
+    expect(session.isSandbox).toBe(true)
+    expect(getApiMode()).toBe('sandbox')
+    expect(JSON.parse(localStorage.getItem('protovibe.offline-identity.v1')!).user.id).toBe(7)
+    expect(document.title).toContain('SANDBOX')
   })
 })

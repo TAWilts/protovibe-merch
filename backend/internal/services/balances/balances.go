@@ -34,12 +34,13 @@ type Row struct {
 	MinimumStock *int `json:"minimum_stock"`
 	BelowMinimum bool `json:"below_minimum"`
 
-	PurchaseCostCents int64 `json:"purchase_cost_cents"`
-	RevenueCents      int64 `json:"revenue_cents"`
-	CollectedCents    int64 `json:"collected_cents"`
-	DiscountCents     int64 `json:"discount_cents"`
-	DonationCents     int64 `json:"donation_cents"`
-	SalePriceCents    int64 `json:"sale_price_cents"`
+	PurchaseCostCents int64               `json:"purchase_cost_cents"`
+	RevenueCents      int64               `json:"revenue_cents"`
+	CollectedCents    int64               `json:"collected_cents"`
+	DiscountCents     int64               `json:"discount_cents"`
+	DonationCents     int64               `json:"donation_cents"`
+	SalePriceCents    int64               `json:"sale_price_cents"`
+	StockMode         catalogue.StockMode `json:"stock_mode"`
 
 	IsOffered bool `json:"is_offered"`
 	// IsAvailableForSale also includes the article-level flags. A variant may
@@ -146,6 +147,7 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 		ArticleIsOffered  bool
 		ArticleIsActive   bool
 		NoReorder         bool
+		TargetStock       *int
 		IsActive          bool
 		PurchaseCostCents int64
 		RevenueCents      int64
@@ -158,7 +160,7 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 	err := s.db.WithContext(ctx).Model(&models.Variant{}).
 		Select(`variants.id AS variant_id, variants.article_id, articles.name AS article_name,
 			variants.sale_price_cents,
-			variants.minimum_stock, variants.is_offered, variants.no_reorder, variants.is_active,
+			variants.minimum_stock, variants.target_stock, variants.is_offered, variants.no_reorder, variants.is_active,
 			articles.is_offered AS article_is_offered, articles.is_active AS article_is_active,
 			COALESCE((SELECT SUM(p.line_total_cost_cents) FROM purchases p
 				WHERE p.variant_id = variants.id AND p.is_cancelled = 0), 0) AS purchase_cost_cents,
@@ -209,6 +211,7 @@ func (s *Service) variantRows(ctx context.Context) ([]Row, error) {
 			DiscountCents:      entry.DiscountCents,
 			DonationCents:      entry.DonationCents,
 			SalePriceCents:     entry.SalePriceCents,
+			StockMode:          catalogue.StockModeForFields(entry.IsOffered, entry.NoReorder, entry.TargetStock),
 			IsOffered:          entry.IsOffered,
 			IsAvailableForSale: entry.IsActive && entry.ArticleIsActive && entry.IsOffered && entry.ArticleIsOffered,
 			NoReorder:          entry.NoReorder,

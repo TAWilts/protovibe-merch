@@ -4,6 +4,41 @@
     "open": "Kontomenü öffnen",
     "profile": "Profil und Darstellung"
   },
+  "sandbox": {
+    "badge": "SANDBOX",
+    "banner": "SANDBOX – keine Auswirkungen auf deine echte Band",
+    "remaining": "Automatische Löschung nach Inaktivität · verbleibend: {time}",
+    "minutes": "{count} Min.",
+    "hours": "{count} Std.",
+    "role": "Demo-Rolle",
+    "roles": { "seller": "Verkäufer", "member": "Mitglied", "manager": "Manager", "band_admin": "Band-Admin" },
+    "start": "Sandbox starten",
+    "reset": "Ausgangsdaten wiederherstellen",
+    "resetConfirm": "Die aktuelle Sandbox und alle Änderungen verwerfen und mit frischen Beispieldaten neu beginnen?",
+    "resetDone": "Die Sandbox wurde auf die Ausgangsdaten zurückgesetzt.",
+    "leave": "Sandbox verlassen",
+    "discard": "Sandbox endgültig löschen",
+    "discardConfirm": "Die Sandbox und alle darin erzeugten Daten endgültig löschen? Dieser Vorgang kann nicht rückgängig gemacht werden.",
+    "administrationRestricted": "Konten, Supportzugriffe und echte Zahlungsziele werden in der Sandbox nicht verändert. Die Demo-Rolle wechselst du jederzeit im Sandbox-Banner.",
+    "invite": {
+      "title": "Erst ausprobieren, dann sicher anwenden",
+      "text": "In der Sandbox kannst du die vollständige Anwendung mit Beispieldaten und echten Geschäftsregeln kennenlernen.",
+      "isolated": "Alle Buchungen bleiben vollständig von deiner echten Band getrennt.",
+      "expires": "Die Daten werden nach 24 Stunden Inaktivität automatisch gelöscht.",
+      "roles": "Du kannst jederzeit zwischen allen vier Bandrollen wechseln.",
+      "skip": "Jetzt nicht"
+    },
+    "tutorial": {
+      "title": "Sandbox-Aufgaben",
+      "hint": "Ein möglicher Rundgang durch die Anwendung",
+      "catalogue": "Artikel und Variante",
+      "purchase": "Einkauf buchen",
+      "sale": "Verkauf buchen",
+      "balance": "Bestand und Bilanz",
+      "hide": "Ausblenden",
+      "restart": "Aufgabenliste neu starten"
+    }
+  },
   "notFound": {
     "title": "Seite nicht gefunden",
     "message": "Die aufgerufene Adresse existiert nicht oder wurde verschoben.",
@@ -290,6 +325,7 @@
   },
   "errors": {
     "generic": "Das hat nicht funktioniert. Bitte versuche es erneut.",
+    "sandbox_external_action_blocked": "Diese Funktion ist in der Sandbox gesperrt, weil sie externe Systeme oder die echte Verwaltung beeinflussen würde.",
     "network": "Keine Verbindung zum Server.",
     "invalid_credentials": "Benutzername oder Passwort stimmt nicht.",
     "invalid_mfa_code": "Der Bestätigungscode stimmt nicht.",
@@ -1313,6 +1349,15 @@
         "text": "Produktbilder erscheinen vollständig skaliert als Einzelbild oder ruhiges Mosaik. Die Darstellung eignet sich für einen zweiten Bildschirm direkt am Stand."
       }
     },
+    "sandbox": {
+      "kicker": "Konsequenzlos ausprobieren",
+      "title": "Die vollständige Anwendung als Sandbox.",
+      "lead": "Arbeite mit den echten Masken und Regeln des Merch Managers – ohne eine Band anzulegen und ohne Produktionsdaten zu berühren.",
+      "isolated": "Eigener, vollständig isolierter Demo-Mandant",
+      "expires": "Automatische Löschung nach 24 Stunden Inaktivität",
+      "realApp": "Beispieldaten, Rollenwechsel und geführte Aufgaben",
+      "start": "Vollständige Sandbox starten"
+    },
     "miniApp": {
       "kicker": "Selbst ausprobieren",
       "title": "Vier Ansichten. Eine kleine echte Demo.",
@@ -1443,7 +1488,10 @@
         "registration_not_approved": "Die Anfrage wurde noch nicht freigegeben.",
         "credentials_claimed": "Die Zugangsdaten wurden bereits abgeholt.",
         "credentials_unavailable": "Die Zugangsdaten sind nicht mehr verfügbar.",
-        "rate_limited": "Zu viele Versuche. Bitte warte etwas und versuche es erneut."
+        "rate_limited": "Zu viele Versuche. Bitte warte etwas und versuche es erneut.",
+        "sandbox_disabled": "Die Sandbox ist auf dieser Instanz deaktiviert.",
+        "sandbox_rate_limited": "Von dieser Verbindung wurden zu viele Sandboxes gestartet. Bitte versuche es später erneut.",
+        "sandbox_capacity_reached": "Alle Sandbox-Plätze sind gerade belegt. Bitte versuche es später erneut."
       }
     },
     "faq": {

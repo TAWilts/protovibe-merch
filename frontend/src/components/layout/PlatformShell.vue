@@ -2,9 +2,11 @@
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useFlashStore } from '@/stores/flash'
 
 import { useSessionStore } from '@/stores/session'
 import FlashStack from '@/components/FlashStack.vue'
+import SandboxIntroDialog from '@/components/SandboxIntroDialog.vue'
 import SupportGrantBanner from './SupportGrantBanner.vue'
 import AccountMenu from './AccountMenu.vue'
 
@@ -19,6 +21,7 @@ const session = useSessionStore()
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
+const flash = useFlashStore()
 
 const isSystemAdmin = computed(() => session.capabilities?.is_system_admin ?? false)
 const links = computed(() => [
@@ -37,6 +40,15 @@ const links = computed(() => [
 async function signOut() {
   await session.logout()
   await router.replace({ name: 'login' })
+}
+
+async function startSandbox() {
+  try {
+    await session.enterSandbox()
+    await router.push({ name: 'sandbox-sales' })
+  } catch {
+    flash.error(t('errors.network'))
+  }
 }
 </script>
 
@@ -75,11 +87,14 @@ async function signOut() {
       <AccountMenu
         :username="session.user?.username ?? ''"
         :role-label="session.capabilities?.role_label ?? ''"
+        :sandbox-available="session.identity?.sandbox_available"
         @logout="signOut"
+        @sandbox="startSandbox"
       />
     </div>
   </header>
 
+  <SandboxIntroDialog />
   <FlashStack />
 
   <div v-if="!isSystemAdmin" class="platform-role-note">

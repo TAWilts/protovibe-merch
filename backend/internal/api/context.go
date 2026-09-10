@@ -19,8 +19,9 @@ type RequestState struct {
 	User    *models.User
 	// Grant is set only when platform staff operate under a live
 	// support-access grant.
-	Grant *models.SupportAccessGrant
-	Caps  rbac.Capabilities
+	Grant   *models.SupportAccessGrant
+	Caps    rbac.Capabilities
+	Sandbox *models.SandboxEnvironment
 }
 
 // stateFrom returns the resolved request state, or nil for an anonymous request.

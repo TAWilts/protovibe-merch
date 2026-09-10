@@ -30,6 +30,7 @@ var (
 	ErrRunNotFound = errors.New("backup: no such backup run")
 	ErrDumpFailed  = errors.New("backup: the database dump failed")
 	ErrUnsafePath  = errors.New("backup: run path is outside the backup root")
+	ErrSandboxBand = errors.New("backup: sandbox tenants are not included in backups")
 )
 
 // bandScopedTables are dumped with a band_id filter for a per-band backup.
@@ -82,6 +83,16 @@ type Actor struct {
 // dump starts, so a crash mid-dump leaves a visible "running" entry rather
 // than silence.
 func (s *Service) Run(ctx context.Context, bandID *int64, trigger string, actor Actor) (*models.BackupRun, error) {
+	if bandID != nil {
+		var count int64
+		if err := s.crossBand(ctx).Model(&models.SandboxEnvironment{}).
+			Where("band_id = ?", *bandID).Count(&count).Error; err != nil {
+			return nil, err
+		}
+		if count > 0 {
+			return nil, ErrSandboxBand
+		}
+	}
 	started := time.Now().UTC()
 	run := &models.BackupRun{
 		BandID:            bandID,
@@ -167,8 +178,14 @@ func (s *Service) dump(ctx context.Context, bandID *int64, target string) error 
 		"--quick",
 		"--default-character-set=utf8mb4",
 	}
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
 	if bandID == nil {
-		args = append(args, "--databases", settings.database)
+		return s.dumpFull(ctx, settings, args, file)
 	} else {
 		// A per-band dump is data only: the schema belongs to the migrations,
 		// and a restore must not recreate tables from an older shape.
@@ -176,13 +193,91 @@ func (s *Service) dump(ctx context.Context, bandID *int64, target string) error 
 			"--where=band_id="+fmt.Sprint(*bandID), settings.database)
 		args = append(args, bandScopedTables...)
 	}
+	return s.runDump(ctx, settings, args, file)
+}
 
-	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
+// dumpFull writes the complete schema, then appends table data while omitting
+// every disposable sandbox row. A single mariadb-dump --where expression
+// applies to all tables, so the data phase intentionally invokes it per table.
+// This keeps full-instance backups useful without leaking demo tenants into
+// the production backup lifecycle.
+func (s *Service) dumpFull(ctx context.Context, settings *dsnSettings, baseArgs []string, file *os.File) error {
+	if err := s.runDump(ctx, settings, appendCopy(baseArgs, "--no-data", "--databases", settings.database), file); err != nil {
 		return err
 	}
-	defer file.Close()
 
+	type columnRow struct {
+		TableName  string `gorm:"column:table_name"`
+		ColumnName string `gorm:"column:column_name"`
+	}
+	var columns []columnRow
+	if err := s.crossBand(ctx).Raw(`
+		SELECT c.table_name, c.column_name
+		FROM information_schema.columns c
+		JOIN information_schema.tables t
+		  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+		WHERE c.table_schema = ? AND t.table_type = 'BASE TABLE'
+		ORDER BY c.table_name, c.ordinal_position`, settings.database).Scan(&columns).Error; err != nil {
+		return err
+	}
+
+	tables := make([]string, 0)
+	hasBandID := make(map[string]bool)
+	last := ""
+	for _, column := range columns {
+		if column.TableName != last {
+			tables = append(tables, column.TableName)
+			last = column.TableName
+		}
+		if column.ColumnName == "band_id" {
+			hasBandID[column.TableName] = true
+		}
+	}
+	for _, table := range tables {
+		where, include := productionBackupFilter(settings.database, table, hasBandID[table])
+		if !include {
+			continue
+		}
+		args := appendCopy(baseArgs, "--no-create-info", "--skip-triggers")
+		if where != "" {
+			args = append(args, "--where="+where)
+		}
+		args = append(args, settings.database, table)
+		if err := s.runDump(ctx, settings, args, file); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func productionBackupFilter(database, table string, hasBandID bool) (string, bool) {
+	sandboxTable := quoteSQLIdentifier(database) + ".`sandbox_environments`"
+	sandboxBands := "SELECT band_id FROM " + sandboxTable
+	sandboxUsers := "SELECT user_id FROM " + sandboxTable
+	switch table {
+	case "sandbox_environments":
+		return "", false
+	case "bands":
+		return "id NOT IN (" + sandboxBands + ")", true
+	case "pending_auth", "password_reset_challenges":
+		return "user_id NOT IN (" + sandboxUsers + ")", true
+	}
+	if hasBandID {
+		return "band_id IS NULL OR band_id NOT IN (" + sandboxBands + ")", true
+	}
+	return "", true
+}
+
+func quoteSQLIdentifier(value string) string {
+	return "`" + strings.ReplaceAll(value, "`", "``") + "`"
+}
+
+func appendCopy(values []string, additions ...string) []string {
+	result := append([]string(nil), values...)
+	return append(result, additions...)
+}
+
+func (s *Service) runDump(ctx context.Context, settings *dsnSettings, args []string, file *os.File) error {
 	command := exec.CommandContext(ctx, s.cfg.MysqldumpPath, args...)
 	command.Env = append(os.Environ(), "MYSQL_PWD="+settings.password)
 	command.Stdout = file

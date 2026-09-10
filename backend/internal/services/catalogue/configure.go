@@ -88,6 +88,9 @@ func (s *Service) ApplyConfigurationWithWithdrawal(ctx context.Context, articleI
 			}
 			return err
 		}
+		if err := validateOptionReferences(ctx, tx, articleID, cfg.OptionGroups); err != nil {
+			return err
+		}
 		if err := validateLockedOptionMembership(ctx, tx, articleID, cfg.OptionGroups); err != nil {
 			return err
 		}
@@ -122,6 +125,53 @@ func (s *Service) ApplyConfigurationWithWithdrawal(ctx context.Context, articleI
 		return err
 	})
 	return withdrawal, err
+}
+
+// validateOptionReferences keeps the ownership check ahead of business-rule
+// validation. Otherwise a payload containing a guessed group or value ID could
+// be reported as an attempted removal merely because it also omits the real
+// configuration. Unknown and cross-group references must always win.
+func validateOptionReferences(ctx context.Context, tx *gorm.DB, articleID int64, groups []OptionGroupInput) error {
+	if groups == nil {
+		return nil
+	}
+
+	var existingGroups []models.OptionGroup
+	if err := tx.WithContext(ctx).Where("article_id = ?", articleID).Find(&existingGroups).Error; err != nil {
+		return err
+	}
+	knownGroups := make(map[int64]bool, len(existingGroups))
+	groupIDs := make([]int64, 0, len(existingGroups))
+	for _, group := range existingGroups {
+		knownGroups[group.ID] = true
+		groupIDs = append(groupIDs, group.ID)
+	}
+
+	valueGroups := make(map[int64]int64)
+	if len(groupIDs) > 0 {
+		var existingValues []models.OptionValue
+		if err := tx.WithContext(ctx).Where("option_group_id IN ?", groupIDs).Find(&existingValues).Error; err != nil {
+			return err
+		}
+		for _, value := range existingValues {
+			valueGroups[value.ID] = value.OptionGroupID
+		}
+	}
+
+	for _, group := range groups {
+		if group.ID != 0 && !knownGroups[group.ID] {
+			return fmt.Errorf("%w: option group %d", ErrUnknownEntity, group.ID)
+		}
+		for _, value := range group.Values {
+			if value.ID == 0 {
+				continue
+			}
+			if group.ID == 0 || valueGroups[value.ID] != group.ID {
+				return fmt.Errorf("%w: option value %d", ErrUnknownEntity, value.ID)
+			}
+		}
+	}
+	return nil
 }
 
 // validateLockedOptionMembership makes the first generated variant grid the

@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
 import { usePackingStore } from '@/stores/packing'
+import { useFlashStore } from '@/stores/flash'
 import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
 import AccountMenu from './AccountMenu.vue'
 
@@ -19,6 +20,7 @@ import AccountMenu from './AccountMenu.vue'
 const session = useSessionStore()
 const offline = useOfflineStore()
 const packing = usePackingStore()
+const flash = useFlashStore()
 const router = useRouter()
 const route = useRoute()
 const { t } = useI18n()
@@ -71,11 +73,15 @@ const links = computed<NavLink[]>(() => {
   ].filter((link) => link.visible)
 })
 
+function routeName(name: string) {
+  return session.isSandbox ? `sandbox-${name}` : name
+}
+
 /** The divider separates selling from managing, as in the original. */
 const dividerAfter = 'slideshow'
 
 function isActive(name: string) {
-  return route.name === name
+  return route.name === routeName(name)
 }
 
 async function signOut() {
@@ -83,11 +89,40 @@ async function signOut() {
   await router.replace({ name: 'login' })
 }
 
+async function startSandbox() {
+  try {
+    await session.enterSandbox()
+    await router.push({ name: 'sandbox-sales' })
+  } catch {
+    flash.error(t('errors.network'))
+  }
+}
+
+async function restartTutorial() {
+  try {
+    await session.setSandboxTutorial(true, true)
+  } catch {
+    flash.error(t('errors.network'))
+  }
+}
+
+async function discardSandbox() {
+  if (!window.confirm(t('sandbox.discardConfirm'))) return
+  try {
+    const restored = await session.discardSandbox()
+    await router.replace(restored
+      ? { name: session.capabilities?.is_platform_staff ? 'platform-dashboard' : 'sales' }
+      : { name: 'landing' })
+  } catch {
+    flash.error(t('errors.network'))
+  }
+}
+
 </script>
 
 <template>
   <header v-if="session.isAuthenticated" class="app-header">
-    <RouterLink class="brand" :to="platformOnly ? { name: 'platform-dashboard' } : { name: 'sales' }">
+    <RouterLink class="brand" :to="platformOnly ? { name: 'platform-dashboard' } : { name: routeName('sales') }">
       <span class="brand-mark">P</span>
       <span class="brand-copy">
         <strong>{{ t('app.name') }}</strong>
@@ -98,7 +133,7 @@ async function signOut() {
     <nav class="main-nav" :aria-label="t('nav.label')">
       <template v-for="link in links" :key="link.name">
         <RouterLink
-          :to="{ name: link.name }"
+          :to="{ name: routeName(link.name) }"
           :class="{ active: isActive(link.name) }"
           :aria-current="isActive(link.name) ? 'page' : undefined"
         >{{ link.label }}</RouterLink>
@@ -109,7 +144,7 @@ async function signOut() {
         ></span>
       </template>
 
-      <template v-if="caps?.can_access_system_administration">
+      <template v-if="caps?.can_access_system_administration && !session.isSandbox">
         <span class="main-nav-divider" aria-hidden="true"></span>
         <RouterLink
           :to="{ name: 'platform-dashboard' }"
@@ -122,12 +157,12 @@ async function signOut() {
     </nav>
 
     <div class="user-menu">
-      <SupportMessageDialog v-if="caps?.can_access_band_workflows" />
+      <SupportMessageDialog v-if="caps?.can_access_band_workflows && !session.isSandbox" />
 
       <!-- The sync state is always visible while selling: a seller at a stand
            must be able to tell at a glance whether their sales have landed. -->
       <button
-        v-if="route.name !== 'packing-list' && caps?.can_access_band_workflows"
+        v-if="route.name !== 'packing-list' && route.name !== 'sandbox-packing-list' && caps?.can_access_band_workflows && !session.isSandbox"
         class="offline-sync-status"
         :class="{ 'is-offline': !combinedOnline, 'has-queue': combinedQueued > 0 }"
         type="button"
@@ -145,7 +180,12 @@ async function signOut() {
       <AccountMenu
         :username="session.user?.username ?? ''"
         :role-label="caps?.role_label ?? ''"
+        :sandbox="session.isSandbox"
+        :sandbox-available="session.identity?.sandbox_available"
         @logout="signOut"
+        @sandbox="startSandbox"
+        @tutorial="restartTutorial"
+        @discard-sandbox="discardSandbox"
       />
     </div>
   </header>

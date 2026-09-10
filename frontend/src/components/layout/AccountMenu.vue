@@ -6,9 +6,11 @@ import { useI18n } from 'vue-i18n'
 defineProps<{
   username: string
   roleLabel: string
+  sandbox?: boolean
+  sandboxAvailable?: boolean
 }>()
 
-const emit = defineEmits<{ logout: [] }>()
+const emit = defineEmits<{ logout: []; sandbox: []; tutorial: []; discardSandbox: [] }>()
 const { t } = useI18n()
 const menu = ref<HTMLDetailsElement | null>(null)
 
@@ -46,8 +48,15 @@ onUnmounted(() => document.removeEventListener('pointerdown', onDocumentPointerD
         <strong>{{ username }}</strong>
         <span>{{ roleLabel }}</span>
       </div>
-      <RouterLink :to="{ name: 'profile' }" @click="close">{{ t('accountMenu.profile') }}</RouterLink>
-      <button type="button" @click="emit('logout')">{{ t('common.logout') }}</button>
+      <template v-if="sandbox">
+        <button type="button" @click="emit('tutorial'); close()">{{ t('sandbox.tutorial.restart') }}</button>
+        <button type="button" @click="emit('discardSandbox'); close()">{{ t('sandbox.discard') }}</button>
+      </template>
+      <template v-else>
+        <RouterLink :to="{ name: 'profile' }" @click="close">{{ t('accountMenu.profile') }}</RouterLink>
+        <button v-if="sandboxAvailable" type="button" @click="emit('sandbox'); close()">{{ t('sandbox.start') }}</button>
+        <button type="button" @click="emit('logout')">{{ t('common.logout') }}</button>
+      </template>
     </div>
   </details>
 </template>

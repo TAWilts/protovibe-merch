@@ -67,7 +67,8 @@ type BandSummary struct {
 // Soft-deleted bands are included by default: the whole point of the grace
 // period is that an accidental deletion stays visible and recoverable.
 func (s *Service) ListBands(ctx context.Context, includeDeleted bool) ([]BandSummary, error) {
-	query := s.crossBand(ctx).Model(&models.Band{})
+	query := s.crossBand(ctx).Model(&models.Band{}).
+		Where("NOT EXISTS (SELECT 1 FROM sandbox_environments se WHERE se.band_id = bands.id)")
 	if !includeDeleted {
 		query = query.Where("deleted_at IS NULL")
 	}
@@ -178,7 +179,7 @@ func (s *Service) ListBands(ctx context.Context, includeDeleted bool) ([]BandSum
 // Band loads one band regardless of its lifecycle state.
 func (s *Service) Band(ctx context.Context, id int64) (*models.Band, error) {
 	var band models.Band
-	if err := s.crossBand(ctx).First(&band, id).Error; err != nil {
+	if err := s.crossBand(ctx).Where("NOT EXISTS (SELECT 1 FROM sandbox_environments se WHERE se.band_id = bands.id)").First(&band, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrBandNotFound
 		}

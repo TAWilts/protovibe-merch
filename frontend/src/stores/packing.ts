@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { packingApi } from '@/api/endpoints'
+import { apiUrl } from '@/api/client'
 import type { Identity, PackingOperation, PackingOperationType, PackingSnapshot } from '@/api/types'
 import {
   createPackingOperation,
@@ -87,7 +88,7 @@ export const usePackingStore = defineStore('packing', () => {
   function openEvents() {
     events?.close()
     if (!context.value || !online.value || typeof EventSource === 'undefined') return
-    events = new EventSource('/api/v1/packing-list/events')
+    events = new EventSource(apiUrl('/packing-list/events'))
     events.addEventListener('revision', () => scheduleSync(0))
     events.onerror = () => {
       events?.close()

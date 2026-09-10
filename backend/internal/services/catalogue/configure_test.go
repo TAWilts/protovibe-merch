@@ -309,6 +309,20 @@ func TestConfigurationRejectsForeignEntities(t *testing.T) {
 		t.Fatalf("expected a foreign option group to be rejected, got %v", err)
 	}
 
+	firstGroups := f.groupsOf(first.ID)
+	foreignValue := f.valuesOf(foreignGroup.ID)[0]
+	firstValues := inputsFrom(f.valuesOf(firstGroups[0].ID))
+	firstValues[0].ID = foreignValue.ID
+	cfg = catalogue.ArticleConfiguration{
+		OptionGroups: []catalogue.OptionGroupInput{
+			{ID: firstGroups[0].ID, Name: firstGroups[0].Name, Values: firstValues},
+			{ID: firstGroups[1].ID, Name: firstGroups[1].Name, Values: inputsFrom(f.valuesOf(firstGroups[1].ID))},
+		},
+	}
+	if err := f.svc.ApplyConfiguration(f.ctx, first.ID, cfg); !errors.Is(err, catalogue.ErrUnknownEntity) {
+		t.Fatalf("expected a foreign option value to be rejected, got %v", err)
+	}
+
 	foreignVariant := f.activeVariants(second.ID)[0]
 	cfg = catalogue.ArticleConfiguration{
 		Variants: []catalogue.VariantInput{{ID: foreignVariant.ID, SalePriceCents: ptr(int64(1))}},

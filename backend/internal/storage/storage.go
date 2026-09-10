@@ -45,6 +45,8 @@ type Store interface {
 	// UsageBytes reports how much a band currently stores, which is what the
 	// admin center's quota display reads.
 	UsageBytes(ctx context.Context, bandID int64) (int64, error)
+	// DeleteBand removes the complete isolated prefix of a disposable tenant.
+	DeleteBand(ctx context.Context, bandID int64) error
 }
 
 // Categories used by the application.
@@ -218,6 +220,21 @@ func (s *LocalStore) UsageBytes(ctx context.Context, bandID int64) (int64, error
 		return 0, err
 	}
 	return total, nil
+}
+
+func (s *LocalStore) DeleteBand(ctx context.Context, bandID int64) error {
+	if bandID <= 0 {
+		return fmt.Errorf("storage: invalid band id %d", bandID)
+	}
+	target := filepath.Join(s.root, fmt.Sprintf("band-%d", bandID))
+	relative, err := filepath.Rel(s.root, target)
+	if err != nil || relative == "." || strings.HasPrefix(relative, "..") || filepath.IsAbs(relative) {
+		return fmt.Errorf("storage: band path escapes root")
+	}
+	if err := os.RemoveAll(target); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // resolve turns a key into a path relative to LocalStore.root and refuses

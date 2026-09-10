@@ -28,6 +28,7 @@ import (
 	"github.com/tawilts/protovibe-merch/backend/internal/services/receipt"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/registration"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/sales"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/sandbox"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/telemetry"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/updates"
 	"github.com/tawilts/protovibe-merch/backend/internal/storage"
@@ -58,6 +59,7 @@ type Server struct {
 	registrations   *registration.Service
 	backups         *backup.Service
 	telemetry       *telemetry.Service
+	sandboxes       *sandbox.Service
 	metrics         *metrics
 	files           storage.Store
 
@@ -70,6 +72,7 @@ type Server struct {
 	authLimiter               *requestLimiter
 	registrationCreateLimiter *requestLimiter
 	registrationAccessLimiter *requestLimiter
+	sandboxStartLimiter       *requestLimiter
 }
 
 // settingsTTL is how long a cached copy of platform_settings is trusted.
@@ -87,7 +90,7 @@ func NewServer(cfg *config.Config, database *gorm.DB) (*Server, error) {
 	}
 
 	platformService := platform.NewService(database)
-	return &Server{
+	server := &Server{
 		cfg:             cfg,
 		db:              database,
 		auth:            authService,
@@ -124,7 +127,13 @@ func NewServer(cfg *config.Config, database *gorm.DB) (*Server, error) {
 		authLimiter:               newRequestLimiter(20, time.Minute),
 		registrationCreateLimiter: newRequestLimiter(3, time.Hour),
 		registrationAccessLimiter: newRequestLimiter(60, time.Hour),
-	}, nil
+		sandboxStartLimiter:       newRequestLimiter(cfg.SandboxStartsPerHour, time.Hour),
+	}
+	server.sandboxes = sandbox.NewService(database, files, sandbox.Config{
+		Enabled: cfg.SandboxEnabled, IdleTTL: cfg.SandboxIdleTTL,
+		MaxActive: cfg.SandboxMaxActive, StorageQuotaBytes: cfg.SandboxStorageQuotaBytes,
+	})
+	return server, nil
 }
 
 // platformSettings returns the instance configuration, cached briefly.
@@ -265,6 +274,9 @@ func (s *Server) Registrations() *registration.Service { return s.registrations 
 
 // PaymentQR exposes the payment-code service to the scheduler.
 func (s *Server) PaymentQR() *paymentqr.Service { return s.paymentQR }
+
+// Sandboxes exposes disposable-tenant housekeeping to the scheduler.
+func (s *Server) Sandboxes() *sandbox.Service { return s.sandboxes }
 
 // BandFinance exposes recurring ledger materialisation to the scheduler.
 func (s *Server) BandFinance() *bandfinance.Service { return s.bandFinance }

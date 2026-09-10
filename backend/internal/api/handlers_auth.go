@@ -61,6 +61,16 @@ func (s *Server) bandLookup(c *gin.Context, slug string) (*int64, bool) {
 		fail(c, http.StatusForbidden, "band_inactive", "this band is deactivated")
 		return nil, false
 	}
+	var sandboxCount int64
+	if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).
+		Model(&models.SandboxEnvironment{}).Where("band_id = ?", band.ID).Count(&sandboxCount).Error; err != nil {
+		serverError(c, err)
+		return nil, false
+	}
+	if sandboxCount > 0 {
+		fail(c, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
+		return nil, false
+	}
 	return &band.ID, true
 }
 
@@ -282,10 +292,24 @@ type meResponse struct {
 		TelemetryDecided   bool        `json:"telemetry_decided"`
 		MFAEnabled         bool        `json:"mfa_enabled"`
 		ContactEmail       string      `json:"contact_email"`
+		SandboxIntroSeen   bool        `json:"sandbox_intro_seen"`
 	} `json:"user"`
-	Band         *bandSummary        `json:"band,omitempty"`
-	Capabilities rbac.Capabilities   `json:"capabilities"`
-	SupportGrant *supportGrantBanner `json:"support_grant,omitempty"`
+	Band             *bandSummary        `json:"band,omitempty"`
+	Capabilities     rbac.Capabilities   `json:"capabilities"`
+	SupportGrant     *supportGrantBanner `json:"support_grant,omitempty"`
+	Sandbox          *sandboxIdentity    `json:"sandbox,omitempty"`
+	SandboxAvailable bool                `json:"sandbox_available"`
+}
+
+type sandboxIdentity struct {
+	ID                int64          `json:"id"`
+	ExpiresAt         string         `json:"expires_at"`
+	DemoRole          models.Role    `json:"demo_role"`
+	TemplateVersion   int            `json:"template_version"`
+	TutorialState     models.JSONMap `json:"tutorial_state"`
+	TutorialVisible   bool           `json:"tutorial_visible"`
+	StorageUsedBytes  int64          `json:"storage_used_bytes"`
+	StorageQuotaBytes int64          `json:"storage_quota_bytes"`
 }
 
 type bandSummary struct {
@@ -309,6 +333,9 @@ type supportGrantBanner struct {
 func (s *Server) me(c *gin.Context) {
 	state := stateFrom(c)
 	payload := s.identityPayload(c.Request.Context(), state.User, state.Grant)
+	if state.Sandbox != nil {
+		s.attachSandboxIdentity(c.Request.Context(), payload, state.Sandbox)
+	}
 	c.JSON(http.StatusOK, payload)
 }
 
@@ -335,6 +362,8 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 		user.TelemetryConsentVersion >= models.CurrentTelemetryConsentVersion
 	payload.User.MFAEnabled = user.MFAEnabled
 	payload.User.ContactEmail = user.ContactEmail
+	payload.User.SandboxIntroSeen = user.SandboxIntroSeenAt != nil
+	payload.SandboxAvailable = s.cfg.SandboxEnabled
 
 	bandID := user.BandID
 	if grant != nil {
@@ -377,4 +406,14 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 		}
 	}
 	return payload
+}
+
+func (s *Server) attachSandboxIdentity(ctx context.Context, payload *meResponse, env *models.SandboxEnvironment) {
+	used, _ := s.files.UsageBytes(ctx, env.BandID)
+	payload.Sandbox = &sandboxIdentity{
+		ID: env.ID, ExpiresAt: env.ExpiresAt.Format(time.RFC3339), TemplateVersion: env.TemplateVersion,
+		DemoRole:      payload.User.Role,
+		TutorialState: env.TutorialState, TutorialVisible: env.TutorialVisible,
+		StorageUsedBytes: used, StorageQuotaBytes: s.cfg.SandboxStorageQuotaBytes,
+	}
 }

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import LandingView from './LandingView.vue'
 
-const { config, create, status, claim, session, setMarketingLocale } = vi.hoisted(() => ({
+const { config, create, status, claim, session, setMarketingLocale, routerPush } = vi.hoisted(() => ({
   config: vi.fn(),
   create: vi.fn(),
   status: vi.fn(),
@@ -12,8 +12,10 @@ const { config, create, status, claim, session, setMarketingLocale } = vi.hoiste
     isAuthenticated: false,
     capabilities: null as null | { is_platform_staff: boolean; can_access_band_workflows: boolean },
     supportGrant: null,
+    enterSandbox: vi.fn(),
   },
   setMarketingLocale: vi.fn(),
+  routerPush: vi.fn(),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -25,6 +27,7 @@ vi.mock('@/i18n', () => ({
 }))
 vi.mock('vue-router', () => ({
   RouterLink: { props: ['to'], template: '<a><slot /></a>' },
+  useRouter: () => ({ push: routerPush }),
 }))
 vi.mock('@/stores/session', () => ({
   useSessionStore: () => session,
@@ -35,13 +38,15 @@ describe('LandingView registration', () => {
   beforeEach(() => {
     window.localStorage.clear()
     window.history.replaceState(null, '', '/')
-    config.mockReset().mockResolvedValue({ registration_enabled: true })
+    config.mockReset().mockResolvedValue({ registration_enabled: true, sandbox_enabled: true })
     create.mockReset()
     status.mockReset()
     claim.mockReset()
     setMarketingLocale.mockClear()
     session.isAuthenticated = false
     session.capabilities = null
+    session.enterSandbox.mockReset().mockResolvedValue({})
+    routerPush.mockReset().mockResolvedValue(undefined)
   })
 
   it('keeps the top anchor on the page frame and exposes the main-content target', () => {
@@ -110,7 +115,7 @@ describe('LandingView registration', () => {
   })
 
   it('shows the friendly disabled state instead of the request form', async () => {
-    config.mockResolvedValue({ registration_enabled: false })
+    config.mockResolvedValue({ registration_enabled: false, sandbox_enabled: true })
     const wrapper = mount(LandingView)
     await flushPromises()
 
@@ -127,5 +132,21 @@ describe('LandingView registration', () => {
     expect(wrapper.get('.landing-actions').text()).toContain('landing.nav.toAdmin')
     await wrapper.findAll('.landing-locale button')[1].trigger('click')
     expect(setMarketingLocale).toHaveBeenLastCalledWith('en')
+  })
+
+  it('starts the full server sandbox from the landing page', async () => {
+    const wrapper = mount(LandingView)
+    await wrapper.get('.sandbox-entry button').trigger('click')
+    await flushPromises()
+    expect(session.enterSandbox).toHaveBeenCalledOnce()
+    expect(routerPush).toHaveBeenCalledWith({ name: 'sandbox-sales' })
+    expect(wrapper.findComponent({ name: 'LandingMiniApp' }).exists()).toBe(false)
+  })
+
+  it('hides the sandbox entry when the instance disabled it', async () => {
+    config.mockResolvedValue({ registration_enabled: true, sandbox_enabled: false })
+    const wrapper = mount(LandingView)
+    await flushPromises()
+    expect(wrapper.find('.sandbox-entry').exists()).toBe(false)
   })
 })

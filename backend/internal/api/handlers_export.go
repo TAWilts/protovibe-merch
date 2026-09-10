@@ -54,9 +54,21 @@ func (s *Server) exportCSV(c *gin.Context, kind export.Kind) {
 	})
 
 	c.Header("Content-Type", "text/csv; charset=utf-8")
-	c.Header("Content-Disposition", `attachment; filename="`+s.exportFilename(sheet.Name)+`.csv"`)
-	if err := export.WriteCSV(c.Writer, sheet); err != nil {
-		_ = c.Error(err)
+	name := s.exportFilename(sheet.Name)
+	sandboxExport := stateFrom(c) != nil && stateFrom(c).Sandbox != nil
+	if sandboxExport {
+		name = "DEMO_" + name
+		c.Header("X-Merch-Sandbox", "demo-data")
+	}
+	c.Header("Content-Disposition", `attachment; filename="`+name+`.csv"`)
+	var writeErr error
+	if sandboxExport {
+		writeErr = export.WriteSandboxCSV(c.Writer, sheet)
+	} else {
+		writeErr = export.WriteCSV(c.Writer, sheet)
+	}
+	if writeErr != nil {
+		_ = c.Error(writeErr)
 	}
 }
 
@@ -69,9 +81,21 @@ func (s *Server) exportZIP(c *gin.Context) {
 	})
 
 	c.Header("Content-Type", "application/zip")
-	c.Header("Content-Disposition", `attachment; filename="`+s.exportFilename("export")+`.zip"`)
-	if err := s.exports.WriteZIP(ctx, c.Writer); err != nil {
-		_ = c.Error(err)
+	name := s.exportFilename("export")
+	sandboxExport := stateFrom(c) != nil && stateFrom(c).Sandbox != nil
+	if sandboxExport {
+		name = "DEMO_" + name
+		c.Header("X-Merch-Sandbox", "demo-data")
+	}
+	c.Header("Content-Disposition", `attachment; filename="`+name+`.zip"`)
+	var writeErr error
+	if sandboxExport {
+		writeErr = s.exports.WriteSandboxZIP(ctx, c.Writer)
+	} else {
+		writeErr = s.exports.WriteZIP(ctx, c.Writer)
+	}
+	if writeErr != nil {
+		_ = c.Error(writeErr)
 	}
 }
 

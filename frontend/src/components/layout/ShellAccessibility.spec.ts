@@ -14,6 +14,8 @@ const { session, routerReplace } = vi.hoisted(() => ({
       can_access_band_workflows: true,
     },
     supportGrant: null,
+    isSandbox: false,
+    enterSandbox: vi.fn(),
     logout: vi.fn(),
   },
   routerReplace: vi.fn(),
@@ -27,6 +29,7 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ replace: routerReplace }),
 }))
 vi.mock('@/stores/session', () => ({ useSessionStore: () => session }))
+vi.mock('@/stores/flash', () => ({ useFlashStore: () => ({ error: vi.fn() }) }))
 
 beforeEach(() => {
   session.logout.mockReset().mockResolvedValue(true)
@@ -45,6 +48,9 @@ describe.each([
           FlashStack: true,
           SupportGrantBanner: true,
           SystemStatusBanner: true,
+          SandboxBanner: true,
+          SandboxTutorial: true,
+          SandboxIntroDialog: true,
         },
       },
     })
@@ -66,7 +72,7 @@ describe('platform shell logout', () => {
         },
       },
     })
-    await wrapper.get('.account-popover button').trigger('click')
+    await wrapper.findAll('.account-popover button').at(-1)!.trigger('click')
 
     expect(session.logout).toHaveBeenCalledOnce()
     expect(routerReplace).toHaveBeenCalledWith({ name: 'login' })

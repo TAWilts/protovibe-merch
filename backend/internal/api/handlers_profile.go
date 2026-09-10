@@ -30,6 +30,7 @@ func (s *Server) registerProfileRoutes(g *gin.RouterGroup) {
 	// Optional band modules are always available. Members decide only whether
 	// their own navigation should show them; this is not an authorisation flag.
 	g.PATCH("/profile/features", requireAuth(), requireBandAccount(), requireBandRole(models.RoleMember), s.updateFeatureVisibility)
+	g.PATCH("/profile/sandbox-intro", requireAuth(), s.markSandboxIntroSeen)
 
 	p := g.Group("/profile", requireAuth(), s.requireFreshReauth())
 	p.GET("", s.getProfile)
@@ -40,6 +41,18 @@ func (s *Server) registerProfileRoutes(g *gin.RouterGroup) {
 	p.POST("/mfa/disable", s.disableMFA)
 	p.POST("/mfa/recovery-codes", s.regenerateRecoveryCodes)
 
+}
+
+func (s *Server) markSandboxIntroSeen(c *gin.Context) {
+	state := stateFrom(c)
+	now := time.Now().UTC()
+	if err := s.db.WithContext(tenant.WithCrossBandAccess(c.Request.Context())).Model(&models.User{}).
+		Where("id = ?", state.User.ID).Update("sandbox_intro_seen_at", now).Error; err != nil {
+		serverError(c, err)
+		return
+	}
+	state.User.SandboxIntroSeenAt = &now
+	c.Status(http.StatusNoContent)
 }
 
 type reauthRequest struct {

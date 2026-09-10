@@ -30,6 +30,16 @@ type SessionBundle struct {
 // CSRF token. Only their hashes are stored, so a database dump cannot be
 // replayed as a live session.
 func (s *Service) CreateSession(ctx context.Context, user *models.User, userAgent, ip string) (sessionToken, csrfToken string, err error) {
+	return s.createSession(ctx, user, nil, userAgent, ip)
+}
+
+// CreateSandboxSession creates the independently cookie-bound session used by
+// a disposable sandbox tenant.
+func (s *Service) CreateSandboxSession(ctx context.Context, user *models.User, environmentID int64, userAgent, ip string) (sessionToken, csrfToken string, err error) {
+	return s.createSession(ctx, user, &environmentID, userAgent, ip)
+}
+
+func (s *Service) createSession(ctx context.Context, user *models.User, environmentID *int64, userAgent, ip string) (sessionToken, csrfToken string, err error) {
 	sessionToken, err = RandomToken(32)
 	if err != nil {
 		return "", "", err
@@ -41,16 +51,17 @@ func (s *Service) CreateSession(ctx context.Context, user *models.User, userAgen
 
 	now := time.Now().UTC()
 	session := &models.Session{
-		ID:             HashToken(sessionToken),
-		UserID:         user.ID,
-		BandID:         user.BandID,
-		SessionVersion: user.SessionVersion,
-		CSRFTokenHash:  HashToken(csrfToken),
-		UserAgent:      truncate(userAgent, 255),
-		IPAddress:      truncate(ip, 45),
-		CreatedAt:      now,
-		LastSeenAt:     now,
-		ExpiresAt:      now.Add(s.sessionTTL),
+		ID:                   HashToken(sessionToken),
+		UserID:               user.ID,
+		BandID:               user.BandID,
+		SandboxEnvironmentID: environmentID,
+		SessionVersion:       user.SessionVersion,
+		CSRFTokenHash:        HashToken(csrfToken),
+		UserAgent:            truncate(userAgent, 255),
+		IPAddress:            truncate(ip, 45),
+		CreatedAt:            now,
+		LastSeenAt:           now,
+		ExpiresAt:            now.Add(s.sessionTTL),
 	}
 	if err := s.accountsDB(ctx).Create(session).Error; err != nil {
 		return "", "", err

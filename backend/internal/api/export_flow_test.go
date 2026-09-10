@@ -20,8 +20,15 @@ func (h *harness) download(path string) (int, []byte, string) {
 	if err != nil {
 		h.t.Fatalf("build request: %v", err)
 	}
-	if h.cookie != "" {
-		req.Header.Set("Cookie", h.cookie)
+	cookies := h.cookie
+	if h.sandboxCookie != "" {
+		if cookies != "" {
+			cookies += "; "
+		}
+		cookies += h.sandboxCookie
+	}
+	if cookies != "" {
+		req.Header.Set("Cookie", cookies)
 	}
 
 	res, err := h.server.Client().Do(req)
@@ -68,7 +75,7 @@ func TestExportHeadersMatchTheOriginal(t *testing.T) {
 	expected := map[string][]string{
 		"artikel": {
 			"Artikel-ID", "Artikel", "Varianten-ID", "Optionen", "Bestand", "Mindestbestand",
-			"Mindestbestandswarnung", "Verkaufspreis", "Nachbestellen", "Angeboten", "Status",
+			"Mindestbestandswarnung", "Verkaufspreis", "Bestandsmodus", "Status",
 		},
 		"verkaeufe": {
 			"Beleg-ID", "Datum", "Buchungsart", "Freitext", "Varianten-ID", "Artikel", "Optionen", "Stück", "Preis/Stück", "Betrag", "Versandkosten",
@@ -81,7 +88,7 @@ func TestExportHeadersMatchTheOriginal(t *testing.T) {
 		},
 		"bestand": {
 			"Artikel", "Optionen", "Gekauft", "Verkauft", "Aktueller Bestand", "Mindestbestand",
-			"Mindestbestandswarnung", "Nachbestellen", "Angeboten",
+			"Mindestbestandswarnung", "Bestandsmodus",
 		},
 	}
 
@@ -154,6 +161,9 @@ func TestExportContentUsesGermanConventions(t *testing.T) {
 	}
 	if byColumn["Gekauft"] != "10" || byColumn["Verkauft"] != "2" || byColumn["Aktueller Bestand"] != "8" {
 		t.Errorf("unexpected inventory row: %v", rows[0])
+	}
+	if byColumn["Bestandsmodus"] != "Lagerartikel" {
+		t.Errorf("unexpected stock mode: %q", byColumn["Bestandsmodus"])
 	}
 }
 

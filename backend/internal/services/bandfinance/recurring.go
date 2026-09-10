@@ -161,8 +161,9 @@ func (s *Service) MaterializeDueAll(ctx context.Context, through models.Date) (i
 		Model(&models.RecurringBandTransaction{}).
 		Select("recurring_band_transactions.id, recurring_band_transactions.band_id").
 		Joins("JOIN bands ON bands.id = recurring_band_transactions.band_id").
+		Joins("LEFT JOIN sandbox_environments se ON se.band_id = recurring_band_transactions.band_id").
 		Where("recurring_band_transactions.is_active = ? AND recurring_band_transactions.next_run_on <= ?", true, through).
-		Where("bands.is_active = ? AND bands.deleted_at IS NULL", true).
+		Where("bands.is_active = ? AND bands.deleted_at IS NULL AND se.id IS NULL", true).
 		Scan(&refs).Error
 	if err != nil {
 		return 0, err

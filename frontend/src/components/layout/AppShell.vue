@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { RouterLink, RouterView } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
 import AppHeader from './AppHeader.vue'
+import SandboxBanner from './SandboxBanner.vue'
+import SandboxTutorial from './SandboxTutorial.vue'
 import SupportGrantBanner from './SupportGrantBanner.vue'
 import SystemStatusBanner from './SystemStatusBanner.vue'
 import FlashStack from '@/components/FlashStack.vue'
+import SandboxIntroDialog from '@/components/SandboxIntroDialog.vue'
 import { useSessionStore } from '@/stores/session'
 
 /** The band-facing shell: header, support notice, flash messages, page. */
@@ -17,12 +20,22 @@ const { t } = useI18n()
 const viaGrant = computed(
   () => session.supportGrant !== null && !session.capabilities?.can_access_band_workflows,
 )
+
+function refreshSandboxProgress() {
+  if (session.isSandbox) void session.restore(false)
+}
+
+onMounted(() => window.addEventListener('sandbox-progress', refreshSandboxProgress))
+onUnmounted(() => window.removeEventListener('sandbox-progress', refreshSandboxProgress))
 </script>
 
 <template>
-  <SystemStatusBanner />
-  <SupportGrantBanner />
+  <SandboxBanner v-if="session.isSandbox" />
+  <SystemStatusBanner v-else />
+  <SupportGrantBanner v-if="!session.isSandbox" />
   <AppHeader />
+  <SandboxTutorial v-if="session.isSandbox" />
+  <SandboxIntroDialog v-else />
   <p v-if="viaGrant" class="grant-return">
     <RouterLink :to="{ name: 'platform-bands' }">{{ t('platform.backToAdmin') }}</RouterLink>
   </p>

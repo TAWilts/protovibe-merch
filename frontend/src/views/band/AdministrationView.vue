@@ -79,7 +79,7 @@ async function load() {
   try {
     const eventList = await salesApi.events()
     events.value = eventList.events
-    if (isBandAdmin.value) {
+    if (isBandAdmin.value && !session.isSandbox) {
       const [grantList, userList] = await Promise.all([
         bandAdminApi.grants(),
         bandUsersApi.list(),
@@ -405,7 +405,7 @@ function durationLabel(seconds: number): string {
       </form>
     </section>
 
-    <section v-if="isBandAdmin" class="table-section">
+    <section v-if="isBandAdmin && !session.isSandbox" class="table-section">
       <div class="section-heading">
         <div>
           <h2>{{ t('administration.support.title') }}</h2>
@@ -481,7 +481,7 @@ function durationLabel(seconds: number): string {
       </template>
     </section>
 
-    <section v-if="isBandAdmin" class="table-section">
+    <section v-if="isBandAdmin && !session.isSandbox" class="table-section">
       <div class="section-heading">
         <div>
           <h2>{{ t('administration.users.title') }}</h2>
@@ -605,6 +605,11 @@ function durationLabel(seconds: number): string {
         </table>
       </div>
       <p class="muted">{{ t('administration.users.deleteHint') }}</p>
+    </section>
+
+    <section v-if="isBandAdmin && session.isSandbox" class="table-section">
+      <h2>{{ t('sandbox.badge') }}</h2>
+      <p class="muted">{{ t('sandbox.administrationRestricted') }}</p>
     </section>
 
     <AppDialog v-if="eventEditor" :label="t(`administration.events.${eventEditor.mode}Title`)" :dismissible="!eventBusy" @close="eventEditor = null">

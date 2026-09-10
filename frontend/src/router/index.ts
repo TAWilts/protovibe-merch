@@ -45,6 +45,24 @@ const routes: RouteRecordRaw[] = [
     ],
   },
   {
+    path: '/sandbox',
+    component: () => import('@/components/layout/AppShell.vue'),
+    meta: { sandbox: true },
+    children: [
+      { path: '', redirect: { name: 'sandbox-sales' } },
+      { path: 'sales', name: 'sandbox-sales', component: () => import('@/views/band/SalesView.vue') },
+      { path: 'history', name: 'sandbox-history', component: () => import('@/views/band/HistoryView.vue') },
+      { path: 'operations', name: 'sandbox-operations', component: () => import('@/views/band/OperationsView.vue') },
+      { path: 'packing-list', name: 'sandbox-packing-list', component: () => import('@/views/band/PackingListView.vue') },
+      { path: 'slideshow', name: 'sandbox-slideshow', component: () => import('@/views/band/SlideshowView.vue') },
+      { path: 'articles', name: 'sandbox-articles', component: () => import('@/views/band/ArticlesView.vue') },
+      { path: 'purchases', name: 'sandbox-purchases', component: () => import('@/views/band/PurchasesView.vue') },
+      { path: 'band-finances', name: 'sandbox-band-finances', component: () => import('@/views/band/BandFinancesView.vue'), meta: { sandbox: true, feature: 'band_finances' } },
+      { path: 'balances', name: 'sandbox-balances', component: () => import('@/views/band/BalancesView.vue') },
+      { path: 'administration', name: 'sandbox-administration', component: () => import('@/views/band/AdministrationView.vue') },
+    ],
+  },
+  {
     // The admin center is its own shell: a platform account has no band data
     // at all unless a support grant is live, so the band navigation would only
     // offer locked doors.
@@ -85,8 +103,10 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const session = useSessionStore()
+  const sandboxRoute = to.matched.some((record) => record.meta.sandbox === true)
 
   if (to.meta.immediate) {
+    if (session.isSandbox) return { name: 'sandbox-sales' }
     if (!session.ready && !session.loading) void session.restore(false).catch(() => undefined)
     return true
   }
@@ -108,8 +128,19 @@ router.beforeEach(async (to) => {
     return true
   }
 
+  if (sandboxRoute && !session.isSandbox) {
+    return { name: 'landing' }
+  }
+
   if (!session.isAuthenticated) {
     return { name: 'login', query: { next: to.fullPath } }
+  }
+
+  if (!sandboxRoute && session.isSandbox) {
+    const regularName = String(to.name ?? '')
+    const sandboxName = `sandbox-${regularName}`
+    if (router.hasRoute(sandboxName)) return { name: sandboxName }
+    return { name: 'sandbox-sales' }
   }
 
   // A cached identity is enough to unlock only the workflows whose state is
@@ -132,7 +163,7 @@ router.beforeEach(async (to) => {
   }
   // The reverse: a band account has nothing to do in the control plane.
   if (caps && isPlatformRoute && !caps.can_access_system_administration) {
-    return { name: 'sales' }
+    return { name: session.isSandbox ? 'sandbox-sales' : 'sales' }
   }
 
   // A public marketing-language choice must not leak into the authenticated
@@ -144,7 +175,7 @@ router.beforeEach(async (to) => {
 
   const requiredFeature = to.meta.feature as keyof FeatureFlags | undefined
   if (requiredFeature && session.featureFlags?.[requiredFeature] === false) {
-    return { name: 'sales' }
+    return { name: session.isSandbox ? 'sandbox-sales' : 'sales' }
   }
 
   return true

@@ -53,7 +53,7 @@ func (s *Server) telemetryMiddleware() gin.HandlerFunc {
 		c.Next()
 
 		state := stateFrom(c)
-		if state == nil || state.User == nil ||
+		if state == nil || state.User == nil || state.Sandbox != nil ||
 			state.User.TelemetryDecidedAt == nil ||
 			state.User.TelemetryConsentVersion < models.CurrentTelemetryConsentVersion ||
 			!state.User.TelemetryEnabled {
@@ -360,7 +360,12 @@ func (s *Server) featureGuard() gin.HandlerFunc {
 // login share the same chain.
 func (s *Server) resolveSession() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token, err := c.Cookie(sessionCookieName)
+		sandboxRequest := strings.HasPrefix(c.Request.URL.Path, sandboxAPIPrefix)
+		cookieName := sessionCookieName
+		if sandboxRequest {
+			cookieName = sandboxSessionCookieName
+		}
+		token, err := c.Cookie(cookieName)
 		if err != nil || token == "" {
 			c.Next()
 			return
@@ -370,7 +375,11 @@ func (s *Server) resolveSession() gin.HandlerFunc {
 		if err != nil {
 			// Any invalid session is cleared rather than left to fail again on
 			// the next request.
-			s.clearSessionCookie(c)
+			if sandboxRequest {
+				s.clearSandboxCookies(c)
+			} else {
+				s.clearSessionCookie(c)
+			}
 			switch {
 			case errors.Is(err, auth.ErrNoSession),
 				errors.Is(err, auth.ErrSessionExpired),
@@ -380,6 +389,45 @@ func (s *Server) resolveSession() gin.HandlerFunc {
 			default:
 				serverError(c, err)
 				return
+			}
+		}
+		if sandboxRequest != (bundle.Session.SandboxEnvironmentID != nil) {
+			if sandboxRequest {
+				s.clearSandboxCookies(c)
+			} else {
+				s.clearSessionCookie(c)
+			}
+			c.Next()
+			return
+		}
+
+		var sandboxEnvironment *models.SandboxEnvironment
+		if bundle.Session.SandboxEnvironmentID != nil {
+			sandboxEnvironment, err = s.sandboxes.Load(c.Request.Context(), *bundle.Session.SandboxEnvironmentID)
+			if err != nil || bundle.User.BandID == nil || sandboxEnvironment.UserID != bundle.User.ID || sandboxEnvironment.BandID != *bundle.User.BandID {
+				s.clearSandboxCookies(c)
+				c.Next()
+				return
+			}
+			// A signed-in user's demo remains bound to that user's independent
+			// real session. On a shared browser, a later account must never
+			// inherit the previous account's disposable tenant merely because
+			// the sandbox cookie is still present.
+			if sandboxEnvironment.SourceUserID != nil {
+				realToken, cookieErr := c.Cookie(sessionCookieName)
+				realBundle, loadErr := s.auth.LoadSession(c.Request.Context(), realToken)
+				if cookieErr != nil || loadErr != nil || realBundle.Session.SandboxEnvironmentID != nil || realBundle.User.ID != *sandboxEnvironment.SourceUserID {
+					s.clearSandboxCookies(c)
+					c.Next()
+					return
+				}
+			}
+			_ = s.sandboxes.Touch(c.Request.Context(), sandboxEnvironment)
+			// Browser expiry must slide with server activity as well. Reissuing
+			// the same opaque tokens changes no session state and keeps the
+			// database write throttle in Touch intact.
+			if csrf, cookieErr := c.Cookie(sandboxCSRFCookieName); cookieErr == nil && csrf != "" {
+				s.setSandboxCookies(c, token, csrf)
 			}
 		}
 
@@ -393,6 +441,7 @@ func (s *Server) resolveSession() gin.HandlerFunc {
 			User:    bundle.User,
 			Grant:   bundle.Grant,
 			Caps:    caps,
+			Sandbox: sandboxEnvironment,
 		}
 		c.Set(ctxKeyRequestState, state)
 

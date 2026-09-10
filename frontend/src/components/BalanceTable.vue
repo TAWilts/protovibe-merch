@@ -12,8 +12,7 @@ export type BalanceSortKey =
   | 'on_hand'
   | 'minimum_stock'
   | 'below_minimum'
-  | 'no_reorder'
-  | 'is_available_for_sale'
+  | 'stock_mode'
   | 'purchase_cost_cents'
   | 'revenue_cents'
   | 'collected_cents'
@@ -39,8 +38,7 @@ const headers: Array<{ key: BalanceSortKey; label: string; numeric?: boolean }> 
   { key: 'on_hand', label: 'balances.onHand', numeric: true },
   { key: 'minimum_stock', label: 'balances.minimum', numeric: true },
   { key: 'below_minimum', label: 'balances.warning' },
-  { key: 'no_reorder', label: 'balances.reorder' },
-  { key: 'is_available_for_sale', label: 'balances.offered' },
+  { key: 'stock_mode', label: 'articles.stockMode' },
   { key: 'purchase_cost_cents', label: 'balances.cost', numeric: true },
   { key: 'revenue_cents', label: 'balances.revenue', numeric: true },
   { key: 'collected_cents', label: 'balances.collected', numeric: true },
@@ -122,8 +120,7 @@ function sortIcon(key: BalanceSortKey) {
               <span v-if="row.below_minimum" class="status warning">{{ t('balances.limitReached') }}</span>
               <span v-else>—</span>
             </td>
-            <td><span class="status" :class="row.no_reorder ? 'warning' : 'good'">{{ row.no_reorder ? t('common.no') : t('common.yes') }}</span></td>
-            <td><span class="status" :class="row.is_available_for_sale ? 'good' : 'warning'">{{ row.is_available_for_sale ? t('common.yes') : t('common.no') }}</span></td>
+            <td><span class="status stock-mode-status" :class="`stock-mode-${row.stock_mode}`">{{ t(`articles.stockModes.${row.stock_mode}.label`) }}</span></td>
             <td class="numeric">{{ format(row.purchase_cost_cents) }}</td>
             <td class="numeric">{{ format(row.revenue_cents) }}</td>
             <td class="numeric">{{ format(row.collected_cents) }}</td>
@@ -183,4 +180,13 @@ td small {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+.stock-mode-status {
+  white-space: nowrap;
+}
+.stock-mode-stocked { color: var(--success-text); background: var(--success-soft); }
+.stock-mode-on_demand { color: var(--accent-bright); background: var(--accent-soft); }
+.stock-mode-clearance { color: var(--warning-text); background: var(--warning-soft); }
+.stock-mode-paused { color: var(--text-secondary); background: var(--surface-subtle); }
+.stock-mode-discontinued { color: var(--danger-text); background: var(--danger-soft); }
 </style>

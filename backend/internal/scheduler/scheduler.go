@@ -20,6 +20,7 @@ import (
 	"github.com/tawilts/protovibe-merch/backend/internal/services/paymentqr"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/platform"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/registration"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/sandbox"
 )
 
 // Scheduler owns the cron jobs.
@@ -32,6 +33,7 @@ type Scheduler struct {
 	registrations *registration.Service
 	paymentQR     *paymentqr.Service
 	bandFinance   *bandfinance.Service
+	sandboxes     *sandbox.Service
 }
 
 // New builds the scheduler.
@@ -43,6 +45,7 @@ func New(
 	registrationService *registration.Service,
 	paymentQR *paymentqr.Service,
 	bandFinance *bandfinance.Service,
+	sandboxService *sandbox.Service,
 ) *Scheduler {
 	return &Scheduler{
 		cron:          cron.New(),
@@ -53,6 +56,7 @@ func New(
 		registrations: registrationService,
 		paymentQR:     paymentQR,
 		bandFinance:   bandFinance,
+		sandboxes:     sandboxService,
 	}
 }
 
@@ -121,6 +125,13 @@ func (s *Scheduler) housekeeping() {
 		slog.Error("could not prune backups", "error", err)
 	} else if removed > 0 {
 		slog.Info("backups pruned", "removed", removed)
+	}
+	if s.sandboxes != nil {
+		if removed, err := s.sandboxes.PurgeExpired(ctx); err != nil {
+			slog.Error("could not purge expired sandboxes", "error", err)
+		} else if removed > 0 {
+			slog.Info("expired sandboxes purged", "count", removed)
+		}
 	}
 }
 

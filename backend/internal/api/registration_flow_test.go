@@ -52,9 +52,10 @@ func cleanupRegistration(t *testing.T, h *harness, requestedSlug string) {
 func TestPublicRegistrationFlagAndRateLimit(t *testing.T) {
 	t.Run("disabled", func(t *testing.T) {
 		t.Setenv("PUBLIC_REGISTRATION_ENABLED", "false")
+		t.Setenv("SANDBOX_ENABLED", "false")
 		h := newHarness(t)
 		config := h.do(http.MethodGet, "/api/v1/public/registrations/config", nil)
-		if config.Status != http.StatusOK || config.Body["registration_enabled"] != false {
+		if config.Status != http.StatusOK || config.Body["registration_enabled"] != false || config.Body["sandbox_enabled"] != false {
 			t.Fatalf("disabled config: %d %v", config.Status, config.Body)
 		}
 		created := h.do(http.MethodPost, "/api/v1/public/registrations", map[string]any{

@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { authApi, profileApi } from '@/api/endpoints'
-import { ApiError, setCsrfToken } from '@/api/client'
-import type { Identity } from '@/api/types'
+import { authApi, profileApi, sandboxApi } from '@/api/endpoints'
+import { ApiError, setApiMode, setCsrfToken } from '@/api/client'
+import type { Identity, Role } from '@/api/types'
 import { setLocale } from '@/i18n'
 
 /**
@@ -26,11 +26,14 @@ export const useSessionStore = defineStore('session', () => {
   const capabilities = computed(() => identity.value?.capabilities ?? null)
   const supportGrant = computed(() => identity.value?.support_grant ?? null)
   const isAuthenticated = computed(() => identity.value !== null)
+  const isSandbox = computed(() => identity.value?.sandbox !== undefined)
 
   /** Applies account preferences that are available inside the app. */
   function applyPreferences(next: Identity | null) {
     const theme = next?.user.ui_theme ?? 'aurora'
     document.documentElement.dataset.theme = theme
+    document.documentElement.toggleAttribute('data-sandbox', Boolean(next?.sandbox))
+    document.title = next?.sandbox ? 'SANDBOX · Merch Manager' : 'Merch Manager'
     // Marketing and login are bilingual, but the authenticated application
     // remains German until its English catalogue is complete.
     setLocale('de')
@@ -44,7 +47,7 @@ export const useSessionStore = defineStore('session', () => {
   ) {
     identity.value = next
     offlineIdentity.value = fromOfflineCache
-    if (next?.band && !fromOfflineCache) {
+    if (next?.band && !next.sandbox && !fromOfflineCache) {
       // This deliberately stores only the already-public session identity.
       // Passwords, MFA secrets and recovery codes never enter this object.
       localStorage.setItem(OFFLINE_IDENTITY_KEY, JSON.stringify(next))
@@ -72,12 +75,20 @@ export const useSessionStore = defineStore('session', () => {
    * not an error, so it resolves to signed-out rather than throwing.
    */
   async function restore(applyUserPreferences = true) {
+    const sandboxRoute = window.location.pathname.startsWith('/sandbox')
+    setApiMode(sandboxRoute ? 'sandbox' : 'normal')
     loading.value = true
     try {
-      adopt(await authApi.me(), undefined, applyUserPreferences)
+      adopt(sandboxRoute ? await sandboxApi.me() : await authApi.me(), undefined, applyUserPreferences)
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        adopt(null, undefined, applyUserPreferences)
+        if (sandboxRoute) {
+          identity.value = null
+          offlineIdentity.value = false
+          setApiMode('normal')
+        } else {
+          adopt(null, undefined, applyUserPreferences)
+        }
       } else {
         const cached = cachedOfflineIdentity()
         if (!cached) throw error
@@ -104,9 +115,65 @@ export const useSessionStore = defineStore('session', () => {
     return serverSucceeded
   }
 
+  async function enterSandbox() {
+    setApiMode('sandbox')
+    try {
+      const result = await sandboxApi.start()
+      adopt(result.session ?? null, result.csrf_token)
+      return result.session ?? null
+    } catch (error) {
+      setApiMode('normal')
+      throw error
+    }
+  }
+
+  async function leaveSandbox() {
+    setApiMode('normal')
+    try {
+      adopt(await authApi.me())
+      return true
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        adopt(null)
+        return false
+      }
+      setApiMode('sandbox')
+      throw error
+    }
+  }
+
+  async function resetSandbox() {
+    const result = await sandboxApi.reset()
+    adopt(result.session ?? null, result.csrf_token)
+  }
+
+  async function setSandboxRole(role: Extract<Role, 'seller' | 'member' | 'manager' | 'band_admin'>) {
+    const result = await sandboxApi.setRole(role)
+    adopt(result.session ?? null)
+  }
+
+  async function setSandboxTutorial(visible: boolean, restart = false) {
+    await sandboxApi.setTutorial(visible, restart)
+    if (identity.value?.sandbox) {
+      identity.value.sandbox.tutorial_visible = visible
+      if (restart) identity.value.sandbox.tutorial_state = { catalogue: false, purchase: false, sale: false, balance: false }
+    }
+  }
+
+  async function discardSandbox() {
+    await sandboxApi.discard()
+    return leaveSandbox()
+  }
+
+  async function markSandboxIntroSeen() {
+    await profileApi.markSandboxIntroSeen()
+    if (identity.value) identity.value.user.sandbox_intro_seen = true
+  }
+
   function clear() {
     adopt(null)
     setCsrfToken('')
+    setApiMode('normal')
   }
 
   async function setFeatureVisibility(payload: {
@@ -135,6 +202,7 @@ export const useSessionStore = defineStore('session', () => {
     capabilities,
     supportGrant,
     isAuthenticated,
+    isSandbox,
     loading,
     ready,
     adopt,
@@ -142,5 +210,12 @@ export const useSessionStore = defineStore('session', () => {
     restore,
     logout,
     setFeatureVisibility,
+    enterSandbox,
+    leaveSandbox,
+    resetSandbox,
+    setSandboxRole,
+    setSandboxTutorial,
+    discardSandbox,
+    markSandboxIntroSeen,
   }
 })

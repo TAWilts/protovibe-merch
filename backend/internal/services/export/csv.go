@@ -99,6 +99,17 @@ func (s *Service) Build(ctx context.Context, kind Kind) (*Sheet, error) {
 
 // WriteCSV renders a sheet as UTF-8 CSV with a BOM and semicolon separators.
 func WriteCSV(w io.Writer, sheet *Sheet) error {
+	return writeCSV(w, sheet, "")
+}
+
+// WriteSandboxCSV adds an unmistakable first row. The ordinary export format
+// stays byte-for-byte compatible while a copied sandbox file cannot later be
+// mistaken for production bookkeeping.
+func WriteSandboxCSV(w io.Writer, sheet *Sheet) error {
+	return writeCSV(w, sheet, "SANDBOX – DEMO-DATEN, KEINE PRODUKTIVDATEN")
+}
+
+func writeCSV(w io.Writer, sheet *Sheet, notice string) error {
 	// The byte order mark is what makes Excel read the file as UTF-8 instead
 	// of the local code page, which is the difference between "Größe" and
 	// "GrÃ¶ÃŸe" in the band's spreadsheet.
@@ -109,6 +120,14 @@ func WriteCSV(w io.Writer, sheet *Sheet) error {
 	writer := csv.NewWriter(w)
 	writer.Comma = ';'
 
+	if notice != "" {
+		if err := writer.Write([]string{notice}); err != nil {
+			return err
+		}
+		if err := writer.Write([]string{}); err != nil {
+			return err
+		}
+	}
 	if err := writer.Write(sheet.Header); err != nil {
 		return err
 	}
@@ -117,6 +136,38 @@ func WriteCSV(w io.Writer, sheet *Sheet) error {
 	}
 	writer.Flush()
 	return writer.Error()
+}
+
+// WriteSandboxZIP marks both the archive entries and its contents as demo
+// data. It also includes a plain-language notice for recipients who open the
+// archive before any spreadsheet.
+func (s *Service) WriteSandboxZIP(ctx context.Context, w io.Writer) error {
+	archive := zip.NewWriter(w)
+	notice, err := archive.Create("SANDBOX-HINWEIS.txt")
+	if err != nil {
+		return err
+	}
+	if _, err := notice.Write([]byte("SANDBOX – Diese Dateien enthalten ausschließlich automatisch gelöschte Demo-Daten.\n")); err != nil {
+		return err
+	}
+	for _, kind := range AllKinds {
+		sheet, err := s.Build(ctx, kind)
+		if err != nil {
+			return err
+		}
+		entry, err := archive.Create("DEMO_" + sheet.Name + ".csv")
+		if err != nil {
+			return err
+		}
+		var buffer bytes.Buffer
+		if err := WriteSandboxCSV(&buffer, sheet); err != nil {
+			return err
+		}
+		if _, err := entry.Write(buffer.Bytes()); err != nil {
+			return err
+		}
+	}
+	return archive.Close()
 }
 
 // WriteZIP bundles every sheet into one archive.
@@ -151,6 +202,7 @@ type variantContext struct {
 	OptionText       string
 	SalePriceCents   int64
 	MinimumStock     *int
+	TargetStock      *int
 	IsOffered        bool
 	NoReorder        bool
 	IsActive         bool
@@ -170,6 +222,7 @@ func (s *Service) variantContexts(ctx context.Context) (map[int64]variantContext
 		OptionValueIDs   models.JSONInt64Slice
 		SalePriceCents   int64
 		MinimumStock     *int
+		TargetStock      *int
 		IsOffered        bool
 		NoReorder        bool
 		IsActive         bool
@@ -179,7 +232,7 @@ func (s *Service) variantContexts(ctx context.Context) (map[int64]variantContext
 	err := s.db.WithContext(ctx).Model(&models.Variant{}).
 		Select(`variants.id, variants.article_id, variants.option_value_ids,
 			variants.sale_price_cents,
-			variants.minimum_stock, variants.is_offered, variants.no_reorder, variants.is_active,
+			variants.minimum_stock, variants.target_stock, variants.is_offered, variants.no_reorder, variants.is_active,
 			articles.name AS article_name, articles.is_offered AS article_is_offered`).
 		Joins("JOIN articles ON articles.id = variants.article_id").
 		Order("articles.name, variants.id").
@@ -235,6 +288,7 @@ func (s *Service) variantContexts(ctx context.Context) (map[int64]variantContext
 			OptionText:       text,
 			SalePriceCents:   variant.SalePriceCents,
 			MinimumStock:     variant.MinimumStock,
+			TargetStock:      variant.TargetStock,
 			IsOffered:        variant.IsOffered,
 			NoReorder:        variant.NoReorder,
 			IsActive:         variant.IsActive,
@@ -279,8 +333,7 @@ func (s *Service) articleSheet(ctx context.Context) (*Sheet, error) {
 			minimumStockText(entry.MinimumStock),
 			yesNo(catalogue.IsAtOrBelowMinimum(position.OnHand, entry.MinimumStock)),
 			money.FormatCSV(entry.SalePriceCents),
-			yesNo(!entry.NoReorder),
-			yesNo(entry.ArticleIsOffered && entry.IsOffered),
+			catalogue.StockModeGermanLabel(catalogue.StockModeForFields(entry.IsOffered, entry.NoReorder, entry.TargetStock)),
 			status,
 		})
 	}
@@ -289,7 +342,7 @@ func (s *Service) articleSheet(ctx context.Context) (*Sheet, error) {
 		Name: string(KindArticles),
 		Header: []string{
 			"Artikel-ID", "Artikel", "Varianten-ID", "Optionen", "Bestand", "Mindestbestand",
-			"Mindestbestandswarnung", "Verkaufspreis", "Nachbestellen", "Angeboten", "Status",
+			"Mindestbestandswarnung", "Verkaufspreis", "Bestandsmodus", "Status",
 		},
 		Rows: rows,
 	}, nil
@@ -421,8 +474,7 @@ func (s *Service) inventorySheet(ctx context.Context) (*Sheet, error) {
 			fmt.Sprintf("%d", position.OnHand),
 			minimumStockText(entry.MinimumStock),
 			yesNo(catalogue.IsAtOrBelowMinimum(position.OnHand, entry.MinimumStock)),
-			yesNo(!entry.NoReorder),
-			yesNo(entry.ArticleIsOffered && entry.IsOffered),
+			catalogue.StockModeGermanLabel(catalogue.StockModeForFields(entry.IsOffered, entry.NoReorder, entry.TargetStock)),
 		})
 	}
 
@@ -430,7 +482,7 @@ func (s *Service) inventorySheet(ctx context.Context) (*Sheet, error) {
 		Name: string(KindInventory),
 		Header: []string{
 			"Artikel", "Optionen", "Gekauft", "Verkauft", "Aktueller Bestand", "Mindestbestand",
-			"Mindestbestandswarnung", "Nachbestellen", "Angeboten",
+			"Mindestbestandswarnung", "Bestandsmodus",
 		},
 		Rows: rows,
 	}, nil

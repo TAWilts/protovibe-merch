@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,6 +36,7 @@ func unique(prefix string) string {
 type harness struct {
 	t      *testing.T
 	server *httptest.Server
+	api    *api.Server
 	db     *gorm.DB
 	auth   *auth.Service
 
@@ -42,7 +44,10 @@ type harness struct {
 	csrfToken string
 	// csrfCookie mirrors what a browser would keep, so a test can simulate a
 	// page reload by discarding only the in-memory token.
-	csrfCookie string
+	csrfCookie        string
+	sandboxCookie     string
+	sandboxCSRFToken  string
+	sandboxCSRFCookie string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -94,7 +99,7 @@ func newHarness(t *testing.T) *harness {
 		}
 	})
 
-	return &harness{t: t, server: server, db: database, auth: authService}
+	return &harness{t: t, server: server, api: apiServer, db: database, auth: authService}
 }
 
 // ctx returns a cross-band context for direct fixture manipulation in tests.
@@ -129,11 +134,22 @@ func (h *harness) do(method, path string, payload any) response {
 		h.t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if h.cookie != "" {
-		req.Header.Set("Cookie", h.cookie)
+	cookies := h.cookie
+	if h.sandboxCookie != "" {
+		if cookies != "" {
+			cookies += "; "
+		}
+		cookies += h.sandboxCookie
 	}
-	if h.csrfToken != "" {
-		req.Header.Set("X-CSRF-Token", h.csrfToken)
+	if cookies != "" {
+		req.Header.Set("Cookie", cookies)
+	}
+	csrf := h.csrfToken
+	if strings.HasPrefix(path, "/api/v1/sandbox") {
+		csrf = h.sandboxCSRFToken
+	}
+	if csrf != "" {
+		req.Header.Set("X-CSRF-Token", csrf)
 	}
 
 	res, err := h.server.Client().Do(req)
@@ -156,6 +172,18 @@ func (h *harness) do(method, path string, payload any) response {
 			} else {
 				h.csrfCookie = cookie.Value
 			}
+		case "merch_sandbox_session":
+			if cookie.MaxAge < 0 {
+				h.sandboxCookie = ""
+			} else {
+				h.sandboxCookie = cookie.Name + "=" + cookie.Value
+			}
+		case "merch_sandbox_csrf":
+			if cookie.MaxAge < 0 {
+				h.sandboxCSRFCookie = ""
+			} else {
+				h.sandboxCSRFCookie = cookie.Value
+			}
 		}
 	}
 
@@ -176,6 +204,15 @@ func (h *harness) signIn(bandSlug, username, secret string) response {
 	})
 	if token, ok := res.Body["csrf_token"].(string); ok {
 		h.csrfToken = token
+	}
+	return res
+}
+
+func (h *harness) startSandbox() response {
+	h.t.Helper()
+	res := h.do(http.MethodPost, "/api/v1/sandbox/session", nil)
+	if token, ok := res.Body["csrf_token"].(string); ok {
+		h.sandboxCSRFToken = token
 	}
 	return res
 }

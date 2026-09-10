@@ -74,6 +74,7 @@ func New(s *Server) *gin.Engine {
 	s.registerPhotoRoutes(api)
 	s.registerPackingRoutes(api)
 	s.registerBandAdminRoutes(api)
+	s.registerSandboxRoutes(api)
 
 	// Unmatched paths must not slip past the guard chain with a bare 404. The
 	// group's middleware only runs for registered routes, so an explicit

@@ -69,6 +69,10 @@ func (s *Server) runBackup(c *gin.Context) {
 		UserID: state.User.ID, Username: state.User.Username,
 	})
 	if err != nil {
+		if errors.Is(err, backup.ErrSandboxBand) {
+			fail(c, http.StatusForbidden, "sandbox_backup_forbidden", err.Error())
+			return
+		}
 		fail(c, http.StatusInternalServerError, "backup_failed", err.Error())
 		return
 	}
