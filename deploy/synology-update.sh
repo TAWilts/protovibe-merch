@@ -319,7 +319,7 @@ mkdir -p "$PRE_UPDATE_DIR"
 chown 0:0 "$PRE_UPDATE_DIR"
 chmod 700 "$PRE_UPDATE_DIR"
 
-TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+TIMESTAMP="$(date +%Y%m%d-%H%M%S)-$$"
 DUMP_FILE="$PRE_UPDATE_DIR/merch-${TIMESTAMP}.sql"
 TEMP_DUMP="${DUMP_FILE}.tmp"
 
