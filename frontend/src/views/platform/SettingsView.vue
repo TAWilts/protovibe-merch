@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { platformApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { PlatformSettings, UpdateStatus } from '@/api/types'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -149,10 +150,7 @@ function saveSmtp() {
           </div>
         </div>
         <form class="stack-form" @submit.prevent="saveMaintenance">
-          <label class="checkbox-row">
-            <input v-model="settings.maintenance_enabled" type="checkbox" />
-            <span>{{ t('platform.settings.maintenanceEnabled') }}</span>
-          </label>
+          <AppToggle v-model="settings.maintenance_enabled" :label="t('platform.settings.maintenanceEnabled')" />
           <label>
             {{ t('platform.settings.maintenanceMessage') }}
             <input v-model="settings.maintenance_message" />
@@ -193,10 +191,7 @@ function saveSmtp() {
           </div>
         </div>
         <form class="stack-form" @submit.prevent="saveSmtp">
-          <label class="checkbox-row">
-            <input v-model="settings.smtp_enabled" type="checkbox" />
-            <span>{{ t('platform.settings.smtpEnabled') }}</span>
-          </label>
+          <AppToggle v-model="settings.smtp_enabled" :label="t('platform.settings.smtpEnabled')" />
           <div class="field-grid two-columns">
             <label>{{ t('platform.settings.smtpHost') }}<input v-model="settings.smtp_host" /></label>
             <label>{{ t('platform.settings.smtpPort') }}<input v-model.number="settings.smtp_port" type="number" /></label>

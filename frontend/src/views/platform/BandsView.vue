@@ -6,6 +6,7 @@ import { platformApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { BandSummary } from '@/api/types'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import TableSkeleton from '@/components/ui/TableSkeleton.vue'
@@ -250,10 +251,11 @@ function formatDate(value: string | null): string {
           {{ t('common.filter') }}
           <input v-model="filter" type="search" />
         </label>
-        <label class="checkbox-row">
-          <input v-model="includeDeleted" type="checkbox" @change="load" />
-          <span>{{ t('platform.bands.showDeleted') }}</span>
-        </label>
+        <AppToggle
+          v-model="includeDeleted"
+          :label="t('platform.bands.showDeleted')"
+          @update:model-value="load"
+        />
       </div>
     </div>
 
@@ -413,10 +415,7 @@ function formatDate(value: string | null): string {
           <p class="eyebrow">{{ quotaPrompt.band.name }}</p>
           <h2>{{ t('platform.bands.quotaEditTitle') }}</h2>
         </div>
-        <label class="checkbox-row">
-          <input v-model="quotaPrompt.inherit" type="checkbox" />
-          <span>{{ t('platform.bands.quotaInherit') }}</span>
-        </label>
+        <AppToggle v-model="quotaPrompt.inherit" :label="t('platform.bands.quotaInherit')" />
         <label v-if="!quotaPrompt.inherit">
           {{ t('platform.bands.quotaGb') }}
           <div class="quota-input">

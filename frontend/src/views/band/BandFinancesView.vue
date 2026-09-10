@@ -8,6 +8,7 @@ import type { Attachment, BandLedger, BandTransaction } from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import RecurringBandFinances from '@/components/RecurringBandFinances.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
@@ -421,25 +422,24 @@ async function cancelEntry(id: number) {
             <input v-model="form.description" required />
           </label>
 
-          <label
+          <AppToggle
             v-if="form.transaction_type === 'expense'"
             class="checkbox-row settlement-checkbox asset-checkbox"
-          >
-            <input v-model="form.is_asset" type="checkbox" />
-            <span>{{ t('bandFinances.asset') }}</span>
-          </label>
+            v-model="form.is_asset"
+            :label="t('bandFinances.asset')"
+          />
           <p v-if="form.transaction_type === 'expense'" class="muted settlement-hint">
             {{ t('bandFinances.assetHint') }}
           </p>
 
-          <label v-if="editingId === null" class="checkbox-row settlement-checkbox">
-            <input v-model="form.is_settled" type="checkbox" />
-            <span>
-              {{ form.transaction_type === 'income'
+          <AppToggle
+            v-if="editingId === null"
+            v-model="form.is_settled"
+            class="checkbox-row settlement-checkbox"
+            :label="form.transaction_type === 'income'
                 ? t('bandFinances.alreadyReceived')
-                : t('bandFinances.alreadyPaid') }}
-            </span>
-          </label>
+                : t('bandFinances.alreadyPaid')"
+          />
           <p
             v-if="editingId === null && !form.is_settled"
             class="muted settlement-hint"

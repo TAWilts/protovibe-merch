@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 
 import { authApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import { useSessionStore } from '@/stores/session'
 import type { LoginResponse } from '@/api/types'
 import { marketingLocale, setMarketingLocale, type Locale } from '@/i18n'
@@ -284,10 +285,11 @@ async function confirmReset() {
             {{ t('auth.secret') }}
             <input v-model="secret" type="password" autocomplete="current-password" required />
           </label>
-          <label class="checkbox-row remember-login">
-            <input v-model="rememberCredentials" type="checkbox" />
-            <span>{{ t('auth.rememberCredentials') }}</span>
-          </label>
+          <AppToggle
+            v-model="rememberCredentials"
+            class="remember-login"
+            :label="t('auth.rememberCredentials')"
+          />
           <button class="primary-button full-width" type="submit" :disabled="busy">
             {{ t('auth.signIn') }}
           </button>

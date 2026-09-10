@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import { platformApi } from '@/api/endpoints'
 import type { SupportAssignee, SupportMessage } from '@/api/types'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import { useFlashStore } from '@/stores/flash'
 
 /** The cross-band support inbox. */
@@ -67,10 +68,12 @@ async function resolve(message: SupportMessage, resolved: boolean) {
         <p class="eyebrow">{{ t('platform.eyebrow') }}</p>
         <h1>{{ t('platform.messages.title') }}</h1>
       </div>
-      <label class="checkbox-row data-toolbar">
-        <input v-model="openOnly" type="checkbox" @change="load" />
-        <span>{{ t('platform.messages.openOnly') }}</span>
-      </label>
+      <AppToggle
+        v-model="openOnly"
+        class="data-toolbar"
+        :label="t('platform.messages.openOnly')"
+        @update:model-value="load"
+      />
     </div>
 
     <section class="table-section">

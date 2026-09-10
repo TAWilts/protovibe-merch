@@ -11,6 +11,7 @@ import { useFlashStore } from '@/stores/flash'
 import IncomeChart from '@/components/IncomeChart.vue'
 import EventTimelineChart from '@/components/EventTimelineChart.vue'
 import BalanceTable, { type BalanceSortKey } from '@/components/BalanceTable.vue'
+import AppToggle from '@/components/ui/AppToggle.vue'
 
 /**
  * The balances page, ported from _old/templates/balances.html.
@@ -531,8 +532,8 @@ td:last-child, th:last-child { text-align: right; }
               {{ t('common.filter') }}
               <input v-model="filter" type="search" />
             </label>
-            <label class="balance-toggle"><input v-model="onlyPurchased" type="checkbox" /> {{ t('balances.onlyPurchased') }}</label>
-            <label class="balance-toggle"><input v-model="grouped" type="checkbox" /> {{ t('balances.groupByArticle') }}</label>
+            <AppToggle v-model="onlyPurchased" class="balance-toggle" :label="t('balances.onlyPurchased')" />
+            <AppToggle v-model="grouped" class="balance-toggle" :label="t('balances.groupByArticle')" />
             <button class="secondary-button" type="button" @click="downloadCsv('inventory')">{{ t('balances.exportStock') }}</button>
             <button class="secondary-button" type="button" @click="downloadCsv('articles')">{{ t('balances.exportArticles') }}</button>
           </div>

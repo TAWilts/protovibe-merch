@@ -6,6 +6,7 @@ import { bandAdminApi, bandUsersApi, salesApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { BandUser, PaymentQRSettings, Role, SaleEvent, SupportGrant } from '@/api/types'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -306,30 +307,24 @@ function durationLabel(seconds: number): string {
         </div>
       </div>
       <div class="personal-feature-options">
-        <label class="checkbox-row">
-          <input
-            type="checkbox"
-            :checked="session.user?.show_packing_list !== false"
+        <div class="personal-feature-option">
+          <AppToggle
+            :model-value="session.user?.show_packing_list !== false"
             :disabled="featureVisibilityBusy"
-            @change="saveFeatureVisibility('show_packing_list', ($event.target as HTMLInputElement).checked)"
+            :label="t('administration.personalFeatures.packingList')"
+            @update:model-value="saveFeatureVisibility('show_packing_list', $event)"
           />
-          <span>
-            <strong>{{ t('administration.personalFeatures.packingList') }}</strong>
-            <small>{{ t('administration.personalFeatures.packingListHint') }}</small>
-          </span>
-        </label>
-        <label class="checkbox-row">
-          <input
-            type="checkbox"
-            :checked="session.user?.show_product_palette !== false"
+          <small>{{ t('administration.personalFeatures.packingListHint') }}</small>
+        </div>
+        <div class="personal-feature-option">
+          <AppToggle
+            :model-value="session.user?.show_product_palette !== false"
             :disabled="featureVisibilityBusy"
-            @change="saveFeatureVisibility('show_product_palette', ($event.target as HTMLInputElement).checked)"
+            :label="t('administration.personalFeatures.productPalette')"
+            @update:model-value="saveFeatureVisibility('show_product_palette', $event)"
           />
-          <span>
-            <strong>{{ t('administration.personalFeatures.productPalette') }}</strong>
-            <small>{{ t('administration.personalFeatures.productPaletteHint') }}</small>
-          </span>
-        </label>
+          <small>{{ t('administration.personalFeatures.productPaletteHint') }}</small>
+        </div>
       </div>
     </section>
 
@@ -699,24 +694,23 @@ function durationLabel(seconds: number): string {
   gap: 10px;
 }
 
-.personal-feature-options .checkbox-row {
-  align-items: flex-start;
-  margin: 0;
+.personal-feature-option {
+  display: grid;
+  gap: 7px;
   padding: 12px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-control);
   background: var(--surface-subtle);
 }
 
-.personal-feature-options .checkbox-row span,
-.personal-feature-options .checkbox-row small {
-  display: block;
+.personal-feature-option .app-toggle {
+  width: 100%;
 }
 
-.personal-feature-options .checkbox-row small {
-  margin-top: 3px;
+.personal-feature-option > small {
   color: var(--muted);
   font-weight: 500;
+  line-height: 1.35;
 }
 
 .event-admin-list {

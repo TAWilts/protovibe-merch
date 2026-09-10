@@ -12,7 +12,7 @@ const { list, create, save, removeIncomplete, routerPush } = vi.hoisted(() => ({
 }))
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key }),
+  useI18n: () => ({ t: (key: string) => key, locale: { value: 'de' } }),
 }))
 vi.mock('@/stores/flash', () => ({
   useFlashStore: () => ({ success: vi.fn(), error: vi.fn() }),
@@ -139,6 +139,64 @@ describe('ArticlesView variant generation', () => {
         { id: 12, target_stock: 12 },
       ],
     })
+  })
+
+  it('applies one stock mode to active variants in a single catalogue save', async () => {
+    const retired = { ...variants[0], id: 99, is_active: false }
+    list.mockResolvedValue({ articles: [{ ...confirmedArticle, variants: [...variants, retired] }] })
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    await wrapper.get('.stock-mode-for-all select').setValue('clearance')
+    await flushPromises()
+
+    expect(save).toHaveBeenCalledTimes(1)
+    expect(save).toHaveBeenCalledWith(1, {
+      is_offered: true,
+      variants: [
+        { id: 11, is_offered: true, no_reorder: true },
+        { id: 12, is_offered: true, no_reorder: true },
+      ],
+    })
+    expect(JSON.stringify(save.mock.calls[0])).not.toContain('99')
+  })
+
+  it('shows mixed modes and reopens the article when one variant becomes offered', async () => {
+    const mixedArticle = {
+      ...confirmedArticle,
+      is_offered: false,
+      variants: [
+        { ...variants[0], is_offered: false, no_reorder: false, target_stock: 8 },
+        { ...variants[1], is_offered: false, no_reorder: true, target_stock: 4 },
+      ],
+    }
+    list.mockResolvedValue({ articles: [mixedArticle] })
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    expect((wrapper.get('.stock-mode-for-all select').element as HTMLSelectElement).value).toBe('mixed')
+    await wrapper.findAll('.stock-mode-cell select')[0]!.setValue('stocked')
+    await flushPromises()
+
+    expect(save).toHaveBeenCalledWith(1, {
+      is_offered: true,
+      variants: [{ id: 11, is_offered: true, no_reorder: false }],
+    })
+  })
+
+  it('locks the target field for on-demand variants', async () => {
+    list.mockResolvedValue({
+      articles: [{
+        ...confirmedArticle,
+        variants: [{ ...variants[0], target_stock: 0 }],
+      }],
+    })
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    const target = wrapper.get('tbody tr .numeric:nth-child(5) input')
+    expect(target.attributes()).toHaveProperty('disabled')
+    expect(wrapper.text()).toContain('articles.stockModes.on_demand.targetHint')
   })
 
   it('does not expose the legacy CSV import even when its dormant flag is enabled', async () => {

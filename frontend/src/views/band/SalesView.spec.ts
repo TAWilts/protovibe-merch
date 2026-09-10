@@ -290,7 +290,7 @@ describe('SalesView checkout', () => {
     await button(wrapper, 'sales.addToCart').trigger('click')
     await button(wrapper, 'sales.paymentDetails').trigger('click')
 
-    await field(wrapper, 'sales.bookShipment').setValue(true)
+    await button(wrapper, 'sales.bookShipment').trigger('click')
     await field(wrapper, 'sales.customerName').setValue('Alex Muster')
     await field(wrapper, 'sales.customerAddress').setValue('Musterweg 1')
     await field(wrapper, 'sales.shippingCostGross').setValue('4,99')

@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { catalogueApi, photosApi, type CollageMode } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { Article, Photo } from '@/api/types'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import { useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
@@ -457,10 +458,7 @@ function collageCardStyle(index: number) {
             </span>
           </label>
         </fieldset>
-        <label class="checkbox-row">
-          <input v-model="collagePrices" type="checkbox" />
-          <span>{{ t('slideshow.collagePrices') }}</span>
-        </label>
+        <AppToggle v-model="collagePrices" :label="t('slideshow.collagePrices')" />
         <button class="secondary-button" type="submit" :disabled="settingsSaving">
           {{ settingsSaving ? t('common.loading') : t('common.save') }}
         </button>
@@ -518,18 +516,17 @@ function collageCardStyle(index: number) {
             <small>{{ photo.variant_label || photo.original_filename }}</small>
           </figcaption>
           <div v-if="canManage" class="photo-actions">
-            <label class="checkbox-row">
-              <input
-                type="checkbox"
-                :checked="photo.include_in_slideshow"
-                @change="toggleInclude(photo)"
-              />
-              <span>{{ t('slideshow.include') }}</span>
-            </label>
-            <label v-if="photo.article_name" class="checkbox-row">
-              <input type="checkbox" :checked="photo.show_price" @change="togglePrice(photo)" />
-              <span>{{ t('slideshow.showPrice') }}</span>
-            </label>
+            <AppToggle
+              :model-value="photo.include_in_slideshow"
+              :label="t('slideshow.include')"
+              @update:model-value="toggleInclude(photo)"
+            />
+            <AppToggle
+              v-if="photo.article_name"
+              :model-value="photo.show_price"
+              :label="t('slideshow.showPrice')"
+              @update:model-value="togglePrice(photo)"
+            />
             <button class="compact-button danger-button" type="button" @click="remove(photo)">
               {{ t('common.delete') }}
             </button>

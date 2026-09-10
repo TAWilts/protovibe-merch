@@ -139,9 +139,9 @@ describe('AdministrationView payment QR settings', () => {
     const wrapper = mount(AdministrationView)
     await flushPromises()
 
-    const options = wrapper.findAll('.personal-feature-panel input[type="checkbox"]')
+    const options = wrapper.findAll('.personal-feature-panel .app-toggle')
     expect(options).toHaveLength(2)
-    await options[0]!.setValue(false)
+    await options[0]!.trigger('click')
     await flushPromises()
 
     expect(setFeatureVisibility).toHaveBeenCalledWith({ show_packing_list: false })

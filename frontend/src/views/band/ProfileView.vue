@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { profileApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { ProfilePayload } from '@/api/types'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 
@@ -281,14 +282,11 @@ async function regenerateCodes() {
             </select>
           </label>
         </div>
-        <label class="checkbox-row">
-          <input
-            type="checkbox"
-            :checked="data.profile.user.show_variant_photos"
-            @change="savePersonalization({ show_variant_photos: ($event.target as HTMLInputElement).checked })"
-          />
-          <span>{{ t('profile.showVariantPhotos') }}</span>
-        </label>
+        <AppToggle
+          :model-value="data.profile.user.show_variant_photos"
+          :label="t('profile.showVariantPhotos')"
+          @update:model-value="savePersonalization({ show_variant_photos: $event })"
+        />
       </section>
 
       <section class="table-section">
@@ -302,14 +300,11 @@ async function regenerateCodes() {
           <strong>{{ t('profile.telemetry.anonymousTitle') }}</strong>
           <p>{{ t('profile.telemetry.anonymousText') }}</p>
         </div>
-        <label class="checkbox-row">
-          <input
-            type="checkbox"
-            :checked="data.profile.user.telemetry_enabled"
-            @change="saveTelemetry(($event.target as HTMLInputElement).checked)"
-          />
-          <span>{{ t('profile.telemetry.allow') }}</span>
-        </label>
+        <AppToggle
+          :model-value="data.profile.user.telemetry_enabled"
+          :label="t('profile.telemetry.allow')"
+          @update:model-value="saveTelemetry($event)"
+        />
         <p class="muted">{{ t('profile.telemetry.stopHint') }}</p>
       </section>
 

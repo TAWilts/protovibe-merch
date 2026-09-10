@@ -12,6 +12,7 @@ import {
 } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import type {
   Article,
   BasketLine,
@@ -1238,10 +1239,7 @@ function resetAfterSale() {
 
         <section v-if="!historicalMode && !hasSpecialBasket" class="checkout-group">
           <h3>{{ t('sales.shipmentTitle') }}</h3>
-          <label v-if="!isOrder" class="checkbox-row">
-            <input v-model="shipOpen" type="checkbox" />
-            <span>{{ t('sales.bookShipment') }}</span>
-          </label>
+          <AppToggle v-if="!isOrder" v-model="shipOpen" :label="t('sales.bookShipment')" />
           <template v-if="needsShipping">
             <p class="muted">{{ t('sales.shipmentIntro') }}</p>
             <label>{{ t('sales.customerName') }}<input v-model="shipName" autocomplete="name" /></label>
@@ -1253,10 +1251,7 @@ function resetAfterSale() {
             <small v-if="shippingCostCents === null || shippingCostCents < 0" class="field-error">
               {{ t('sales.invalidShippingCost') }}
             </small>
-            <label class="checkbox-row">
-              <input v-model="shipPayLater" type="checkbox" />
-              <span>{{ t('sales.payLater') }}</span>
-            </label>
+            <AppToggle v-model="shipPayLater" :label="t('sales.payLater')" />
           </template>
         </section>
       </div>

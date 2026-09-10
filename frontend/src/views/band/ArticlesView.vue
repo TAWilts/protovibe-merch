@@ -13,6 +13,15 @@ import { useMoney, parseAmount } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
+import {
+  changesForStockMode,
+  commonStockMode,
+  stockModeForVariant,
+  stockModeOffers,
+  stockModes,
+  targetStockEditable,
+  type StockMode,
+} from '@/utils/stockMode'
 
 /**
  * Article management, ported from _old/templates/articles.html.
@@ -48,9 +57,8 @@ interface DraftGroup {
 const draft = ref<{
   name: string
   salePrice: string
-  isOffered: boolean
   groups: DraftGroup[]
-}>({ name: '', salePrice: '', isOffered: true, groups: [] })
+}>({ name: '', salePrice: '', groups: [] })
 
 const newArticleName = ref('')
 
@@ -62,6 +70,7 @@ const selected = computed(
  *  retired and shown read-only so their history stays visible. */
 const activeVariants = computed(() => selected.value?.variants.filter((v) => v.is_active) ?? [])
 const retiredVariants = computed(() => selected.value?.variants.filter((v) => !v.is_active) ?? [])
+const allVariantsMode = computed(() => commonStockMode(activeVariants.value))
 
 onMounted(load)
 
@@ -125,7 +134,6 @@ function select(id: number) {
   draft.value = {
     name: article.name,
     salePrice: toInput(article.default_sale_price_cents),
-    isOffered: article.is_offered,
     groups: article.option_groups
       .filter((group) => group.is_active)
       .map((group) => ({
@@ -303,7 +311,6 @@ async function save() {
     await catalogueApi.save(selected.value.id, {
       name: draft.value.name.trim(),
       default_sale_price_cents: sale,
-      is_offered: draft.value.isOffered,
       option_groups: draft.value.groups
         .filter((group) => group.name.trim())
         .map((group) => ({
@@ -378,6 +385,52 @@ async function applyMinimumToAll() {
       variants: activeVariants.value.map((variant) => ({ id: variant.id, minimum_stock: parsed })),
     })
     flash.success(t('articles.minimumApplied', { count: activeVariants.value.length }))
+    await load(true)
+  } catch (error) {
+    report(error)
+  } finally {
+    busy.value = false
+  }
+}
+
+function isStockMode(value: string): value is StockMode {
+  return stockModes.includes(value as StockMode)
+}
+
+function stockModeHint(mode: StockMode) {
+  return t(`articles.stockModes.${mode}.hint`)
+}
+
+async function applyVariantStockMode(variant: Article['variants'][number], rawMode: string) {
+  if (!selected.value || !isStockMode(rawMode)) return
+  const mode = rawMode
+  const payload: Record<string, unknown> = {
+    variants: [{ id: variant.id, ...changesForStockMode(variant, mode) }],
+  }
+  // Offering one variant must also reopen its article. Pausing one variant is
+  // deliberately not allowed to hide all of its siblings.
+  if (!selected.value.is_offered && stockModeOffers(mode)) payload.is_offered = true
+  try {
+    await catalogueApi.save(selected.value.id, payload)
+    await load(true)
+  } catch (error) {
+    report(error)
+  }
+}
+
+async function applyStockModeToAll(rawMode: string) {
+  if (!selected.value || busy.value || !isStockMode(rawMode)) return
+  const mode = rawMode
+  busy.value = true
+  try {
+    await catalogueApi.save(selected.value.id, {
+      is_offered: stockModeOffers(mode),
+      variants: activeVariants.value.map((variant) => ({
+        id: variant.id,
+        ...changesForStockMode(variant, mode),
+      })),
+    })
+    flash.success(t('articles.stockModeApplied', { count: activeVariants.value.length }))
     await load(true)
   } catch (error) {
     report(error)
@@ -494,12 +547,7 @@ async function applyTargetToAll() {
           <div class="article-form-group">
             <h3>{{ t('articles.basics') }}</h3>
             <label>{{ t('articles.name') }}<input v-model="draft.name" /></label>
-            <label class="checkbox-row">
-              <input v-model="draft.isOffered" type="checkbox" />
-              <span>{{ t('articles.offered') }}</span>
-            </label>
             <label>{{ t('articles.defaultSalePrice') }}<input v-model="draft.salePrice" inputmode="decimal" /></label>
-            <p v-if="!draft.isOffered" class="muted">{{ t('articles.withdrawnHint') }}</p>
           </div>
 
           <div class="article-form-group">
@@ -588,6 +636,26 @@ async function applyTargetToAll() {
               <h2>{{ t('articles.variants') }}</h2>
               <p>{{ t('articles.variantsHint') }}</p>
             </div>
+          </div>
+          <div class="variant-bulk-controls">
+            <strong>{{ t('articles.forAllVariants') }}</strong>
+            <label class="stock-mode-for-all">
+              {{ t('articles.stockMode') }}
+              <select
+                :value="allVariantsMode"
+                :disabled="busy || !activeVariants.length"
+                @change="applyStockModeToAll(($event.target as HTMLSelectElement).value)"
+              >
+                <option v-if="allVariantsMode === 'mixed'" value="mixed" disabled>
+                  {{ t('articles.stockModes.mixed.label') }}
+                </option>
+                <option v-for="mode in stockModes" :key="mode" :value="mode">
+                  {{ t(`articles.stockModes.${mode}.label`) }}
+                </option>
+              </select>
+              <small v-if="allVariantsMode !== 'mixed'">{{ stockModeHint(allVariantsMode) }}</small>
+              <small v-else>{{ t('articles.stockModes.mixed.hint') }}</small>
+            </label>
             <form class="minimum-for-all" @submit.prevent="applyMinimumToAll">
               <label>
                 {{ t('articles.minimumForAll') }}
@@ -616,8 +684,7 @@ async function applyTargetToAll() {
                   <th class="numeric">{{ t('articles.salePrice') }}</th>
                   <th class="numeric">{{ t('balances.minimum') }}</th>
                   <th class="numeric">{{ t('articles.targetStock') }}</th>
-                  <th>{{ t('articles.offered') }}</th>
-                  <th>{{ t('articles.reorder') }}</th>
+                  <th>{{ t('articles.stockMode') }}</th>
                   <th>{{ t('articles.photos.column') }}</th>
                 </tr>
               </thead>
@@ -654,22 +721,27 @@ async function applyTargetToAll() {
                       :value="variant.target_stock ?? ''"
                       inputmode="numeric"
                       :placeholder="t('articles.noTarget')"
+                      :disabled="!targetStockEditable(stockModeForVariant(variant))"
+                      :title="!targetStockEditable(stockModeForVariant(variant)) ? stockModeHint(stockModeForVariant(variant)) : undefined"
                       @change="onTargetChange(variant.id, ($event.target as HTMLInputElement).value)"
                     />
+                    <small v-if="stockModeForVariant(variant) === 'on_demand'" class="stock-mode-inline-hint">
+                      {{ t('articles.stockModes.on_demand.targetHint') }}
+                    </small>
                   </td>
-                  <td>
-                    <input
-                      type="checkbox"
-                      :checked="variant.is_offered"
-                      @change="saveVariant(variant.id, { is_offered: ($event.target as HTMLInputElement).checked })"
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="checkbox"
-                      :checked="!variant.no_reorder"
-                      @change="saveVariant(variant.id, { no_reorder: !($event.target as HTMLInputElement).checked })"
-                    />
+                  <td class="stock-mode-cell">
+                    <select
+                      :value="stockModeForVariant(variant)"
+                      :disabled="busy"
+                      :aria-label="`${t('articles.stockMode')}: ${variantLabel(selected, variant.option_value_ids) || t('articles.variant')}`"
+                      :title="stockModeHint(stockModeForVariant(variant))"
+                      @change="applyVariantStockMode(variant, ($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="mode in stockModes" :key="mode" :value="mode">
+                        {{ t(`articles.stockModes.${mode}.label`) }}
+                      </option>
+                    </select>
+                    <small>{{ stockModeHint(stockModeForVariant(variant)) }}</small>
                   </td>
                   <td>
                     <div class="variant-photo-cell">
@@ -858,6 +930,58 @@ async function applyTargetToAll() {
   width: 7rem;
 }
 
+.variant-bulk-controls {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1.2fr) repeat(2, minmax(13rem, 1fr));
+  align-items: end;
+  gap: 14px;
+  margin: 0 0 18px;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-control);
+  background: var(--surface-subtle);
+}
+
+.variant-bulk-controls > strong {
+  grid-column: 1 / -1;
+  color: var(--text-primary);
+  font-size: .82rem;
+}
+
+.stock-mode-for-all small,
+.stock-mode-cell small,
+.stock-mode-inline-hint {
+  display: block;
+  color: var(--muted);
+  font-size: .7rem;
+  line-height: 1.3;
+}
+
+.stock-mode-cell {
+  min-width: 13rem;
+}
+
+.stock-mode-cell select {
+  min-width: 11rem;
+}
+
+.stock-mode-cell small {
+  max-width: 18rem;
+  margin-top: 5px;
+}
+
+.cell-input:disabled {
+  opacity: .58;
+  cursor: not-allowed;
+}
+
+.stock-mode-inline-hint {
+  width: 8rem;
+  margin-top: 4px;
+  text-align: left;
+  white-space: normal;
+}
+
 .variant-photo-cell,
 .variant-photo-thumbnails {
   display: flex;
@@ -1035,28 +1159,6 @@ async function applyTargetToAll() {
   font-variant-numeric: tabular-nums;
 }
 
-/* The shared label styling stacks its text above the control, which looks
-   wrong for a checkbox; these put the box and its text on one line. */
-.checkbox-row {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
-  margin: 4px 0 14px;
-}
-
-.checkbox-row input[type='checkbox'] {
-  width: 1.05rem;
-  height: 1.05rem;
-  accent-color: var(--accent);
-}
-
-td input[type='checkbox'] {
-  width: 1.05rem;
-  height: 1.05rem;
-  accent-color: var(--accent);
-}
-
 .retired-variants {
   margin-top: 16px;
 }
@@ -1118,6 +1220,10 @@ td input[type='checkbox'] {
 
   .minimum-for-all {
     width: 100%;
+  }
+
+  .variant-bulk-controls {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .minimum-for-all label {

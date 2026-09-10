@@ -41,12 +41,11 @@ describe('LoginView handover link', () => {
 
     expect((wrapper.get('input[autocomplete="organization"]').element as HTMLInputElement).value).toBe('saved-band')
     expect((wrapper.get('input[autocomplete="username"]').element as HTMLInputElement).value).toBe('link-user')
-    expect((wrapper.get('input[type="checkbox"]').element as HTMLInputElement).checked).toBe(true)
+    expect(wrapper.get('.remember-login').attributes('aria-pressed')).toBe('true')
   })
 
   it('stores only band and username after accepted credentials and clears them when disabled', async () => {
     const wrapper = mount(LoginView)
-    const remember = wrapper.get('input[type="checkbox"]')
     await wrapper.get('input[type="password"]').setValue('top-secret')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -56,7 +55,10 @@ describe('LoginView handover link', () => {
     expect(stored).toContain('band-admin')
     expect(stored).not.toContain('top-secret')
 
-    await remember.setValue(false)
+    wrapper.unmount()
+    const rememberedWrapper = mount(LoginView)
+    await rememberedWrapper.get('.remember-login').trigger('click')
+    await flushPromises()
     expect(localStorage.getItem('protovibe.remembered-login.v1')).toBeNull()
   })
 })

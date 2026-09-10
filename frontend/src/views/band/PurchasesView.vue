@@ -7,6 +7,7 @@ import { ApiError } from '@/api/client'
 import type { Article, Attachment, Purchase, RefillSuggestion, Variant } from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
@@ -857,10 +858,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
         </label>
 
         <div class="field-grid two-columns purchase-tax-row">
-          <label class="checkbox-row">
-            <input v-model="pricesIncludeVat" type="checkbox" />
-            <span>{{ t('purchases.priceIncludesVat') }}</span>
-          </label>
+          <AppToggle v-model="pricesIncludeVat" :label="t('purchases.priceIncludesVat')" />
           <label>
             {{ t('purchases.vatRate') }}
             <input v-model="vatRateInput" inputmode="decimal" />
@@ -1075,7 +1073,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
         </div>
         <label>{{ t('purchases.invoiceReference') }}<input v-model="editInvoiceReference" /></label>
         <div class="field-grid two-columns">
-          <label class="checkbox-row"><input v-model="editPricesIncludeVat" type="checkbox" /><span>{{ t('purchases.priceIncludesVat') }}</span></label>
+          <AppToggle v-model="editPricesIncludeVat" :label="t('purchases.priceIncludesVat')" />
           <label>{{ t('purchases.vatRate') }}<input v-model="editVatRateInput" inputmode="decimal" /></label>
         </div>
         <label>{{ t('purchases.shippingCost') }}<input v-model="editShippingCostInput" inputmode="decimal" /></label>
