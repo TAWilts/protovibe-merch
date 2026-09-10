@@ -27,13 +27,22 @@ setting() {
   fail "Konfiguration $ENV_FILE fehlt."
 
 repository="$(setting MERCH_IMAGE_REPOSITORY)"
-tag="$(setting MERCH_IMAGE_TAG)"
+configured_tag="$(setting MERCH_IMAGE_TAG)"
+environment="$(setting ENVIRONMENT)"
 
 [ -n "$repository" ] ||
   repository="ghcr.io/tawilts/protovibe-merch-multitenant"
 
-[ -n "$tag" ] ||
-  tag="latest"
+case "$(printf '%s' "$environment" | tr '[:upper:]' '[:lower:]')" in
+  development)
+    tag="$(setting MERCH_DEVELOPMENT_IMAGE_TAG)"
+    [ -n "$tag" ] || tag="development"
+    ;;
+  *)
+    tag="$configured_tag"
+    [ -n "$tag" ] || tag="latest"
+    ;;
+esac
 
 image="${repository}:${tag}"
 tmp_update="${UPDATE_FILE}.new"
@@ -67,6 +76,7 @@ trap - 0 HUP INT TERM
 
 echo "Updater installiert: $UPDATE_FILE"
 
-export PROJECT_DIR ENV_FILE
+MERCH_IMAGE_TAG="$tag"
+export PROJECT_DIR ENV_FILE MERCH_IMAGE_TAG
 
 exec /bin/sh "$UPDATE_FILE"

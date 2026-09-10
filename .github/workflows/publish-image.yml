@@ -1,7 +1,8 @@
-name: Publish release images
+name: Publish release and development images
 
 on:
   push:
+    branches: [main]
     tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
@@ -13,6 +14,10 @@ on:
 permissions:
   contents: read
   packages: write
+
+concurrency:
+  group: publish-images-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 jobs:
   test:
@@ -32,7 +37,7 @@ jobs:
             dockerfile: deploy/Dockerfile.frontend
             suffix: "-web"
     env:
-      RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.image_tag || github.ref_name }}
+      RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.image_tag || github.ref_type == 'tag' && github.ref_name || format('development-{0}', github.sha) }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -49,10 +54,11 @@ jobs:
           # ghcr.io/.../protovibe-merch:latest tag untouched.
           images: ghcr.io/${{ github.repository }}-multitenant${{ matrix.suffix }}
           tags: |
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=ref,event=tag,enable=${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+            type=raw,value=development,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
             type=raw,value=${{ inputs.image_tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
             type=sha,prefix=sha-
       - uses: docker/build-push-action@v6
@@ -60,8 +66,9 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
-          # The release tag or explicit manual test tag is the version the app
-          # reports.
+          # Releases report their version tag. Every main push gets an
+          # immutable development version while the moving development tag
+          # lets a test server follow the newest successful push.
           build-args: |
             APP_VERSION=${{ env.RELEASE_VERSION }}
             VITE_PRIVACY_URL=${{ vars.PRIVACY_URL }}

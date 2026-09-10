@@ -11,6 +11,7 @@ touch "$TEST_ROOT/project/docker-compose.synology.yml"
 cat > "$TEST_ROOT/project/.env" <<EOF
 MERCH_IMAGE_REPOSITORY=ghcr.io/tawilts/protovibe-merch-multitenant
 MERCH_IMAGE_TAG=latest
+ENVIRONMENT=production
 SYNOLOGY_DATA_ROOT=$TEST_ROOT/data
 HOST_PORT=8090
 PURCHASE_EDITING_ENABLED=true
@@ -52,7 +53,7 @@ if [ "$1" = "compose" ]; then
       echo web-container
       ;;
     "pull backend web")
-      echo pull >> "$FAKE_LOG"
+      echo "pull:${MERCH_IMAGE_TAG:-unset}" >> "$FAKE_LOG"
       ;;
     "exec -T db "*)
       echo 'CREATE TABLE test (id INT);'
@@ -79,6 +80,7 @@ if [ "$1" = "compose" ]; then
 fi
 
 if [ "$1" = "create" ]; then
+  echo "create:$2" >> "$FAKE_LOG"
   echo fake-config-container
   exit 0
 fi
@@ -159,7 +161,7 @@ if run_update unhealthy; then
   exit 1
 fi
 
-if grep -q '^pull$' "$TEST_ROOT/calls.log"; then
+if grep -q '^pull:' "$TEST_ROOT/calls.log"; then
   echo "unhealthy database must not pull application images" >&2
   exit 1
 fi
@@ -180,8 +182,8 @@ fi
 
 run_update healthy
 
-grep -q '^pull$' "$TEST_ROOT/calls.log" || {
-  echo "healthy update must pull backend and web" >&2
+grep -q '^pull:latest$' "$TEST_ROOT/calls.log" || {
+  echo "production update must pull backend and web with the configured tag" >&2
   exit 1
 }
 
@@ -194,5 +196,22 @@ if ! find "$TEST_ROOT/data/pre-update" -name '*.sql.gz' -type f | grep -q .; the
   echo "healthy update must create a compressed pre-update dump" >&2
   exit 1
 fi
+
+# ENVIRONMENT is authoritative for the test server. The script exports the
+# moving development tag so Compose pulls both development images.
+sed -i 's/^ENVIRONMENT=production$/ENVIRONMENT=development/' "$TEST_ROOT/project/.env"
+: > "$TEST_ROOT/calls.log"
+
+run_update healthy
+
+grep -q '^pull:development$' "$TEST_ROOT/calls.log" || {
+  echo "development update must pull backend and web with the development tag" >&2
+  exit 1
+}
+
+grep -q '^create:ghcr.io/tawilts/protovibe-merch-multitenant:development$' "$TEST_ROOT/calls.log" || {
+  echo "development update must read Compose from the development backend image" >&2
+  exit 1
+}
 
 echo "synology update task tests passed"

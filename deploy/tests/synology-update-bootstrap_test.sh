@@ -10,6 +10,7 @@ mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/project"
 cat > "$TEST_ROOT/project/.env" <<EOF
 MERCH_IMAGE_REPOSITORY=ghcr.io/example/merch
 MERCH_IMAGE_TAG=v9.9.9
+ENVIRONMENT=production
 EOF
 
 cat > "$TEST_ROOT/bin/docker" <<'EOF'
@@ -76,6 +77,30 @@ grep -q 'fake-container:/usr/local/share/merch-manager/synology-update.sh' "$TES
 
 grep -q "^updater-ran:$TEST_ROOT/project$" "$TEST_ROOT/calls.log" || {
   echo "bootstrap must execute the freshly installed updater" >&2
+  exit 1
+}
+
+# A development server follows the image published by every successful push,
+# even when MERCH_IMAGE_TAG still points at the production release channel.
+cat > "$TEST_ROOT/project/.env" <<EOF
+MERCH_IMAGE_REPOSITORY=ghcr.io/example/merch
+MERCH_IMAGE_TAG=latest
+ENVIRONMENT=development
+EOF
+: > "$TEST_ROOT/calls.log"
+
+FAKE_LOG="$TEST_ROOT/calls.log" \
+PROJECT_DIR="$TEST_ROOT/project" \
+PATH="$TEST_ROOT/bin:$PATH" \
+  sh "$SCRIPT_DIR/synology-update-bootstrap.sh"
+
+grep -q '^pull:ghcr.io/example/merch:development$' "$TEST_ROOT/calls.log" || {
+  echo "development bootstrap must pull the development backend image" >&2
+  exit 1
+}
+
+grep -q '^create:ghcr.io/example/merch:development$' "$TEST_ROOT/calls.log" || {
+  echo "development bootstrap must extract the updater from the development image" >&2
   exit 1
 }
 

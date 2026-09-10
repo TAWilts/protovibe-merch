@@ -138,15 +138,32 @@ fi
 # ------------------------------------------------------------
 
 REPOSITORY="$(setting MERCH_IMAGE_REPOSITORY)"
-IMAGE_TAG="$(setting MERCH_IMAGE_TAG)"
+CONFIGURED_IMAGE_TAG="$(setting MERCH_IMAGE_TAG)"
+ENVIRONMENT="$(setting ENVIRONMENT)"
 DATA_ROOT="$(setting SYNOLOGY_DATA_ROOT)"
 HOST_PORT="$(setting HOST_PORT)"
+
+case "$(printf '%s' "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')" in
+  development)
+    IMAGE_TAG="$(setting MERCH_DEVELOPMENT_IMAGE_TAG)"
+    [ -n "$IMAGE_TAG" ] || IMAGE_TAG="development"
+    ;;
+  *)
+    IMAGE_TAG="$CONFIGURED_IMAGE_TAG"
+    ;;
+esac
 
 [ "$REPOSITORY" = "$EXPECTED_REPOSITORY" ] ||
   fail "Falsches Image-Repository: $REPOSITORY"
 
 [ -n "$IMAGE_TAG" ] ||
   fail "MERCH_IMAGE_TAG fehlt in .env."
+
+# Shell variables take precedence over --env-file interpolation. This makes
+# both backend and web use the selected development tag without rewriting the
+# server's persistent .env file.
+MERCH_IMAGE_TAG="$IMAGE_TAG"
+export MERCH_IMAGE_TAG
 
 [ "$DATA_ROOT" = "$EXPECTED_DATA_ROOT" ] ||
   fail "SYNOLOGY_DATA_ROOT muss $EXPECTED_DATA_ROOT sein."
@@ -163,6 +180,7 @@ APP_URL="http://127.0.0.1:${HOST_PORT}"
 echo
 echo "Deployment-Konfiguration:"
 echo "  Repository: $REPOSITORY"
+echo "  Umgebung:   ${ENVIRONMENT:-production}"
 echo "  Image-Tag:  $IMAGE_TAG"
 echo "  Daten:      $DATA_ROOT"
 echo "  Port:       $HOST_PORT"

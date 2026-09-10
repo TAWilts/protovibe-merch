@@ -30,15 +30,17 @@ docker login ghcr.io -u TAWilts
 
 Das Token wird dabei als Passwort eingegeben und gehört nicht in `.env`.
 
-## 2. Test-Images über GitHub Actions veröffentlichen
+## 2. Development-Images über GitHub Actions veröffentlichen
 
-Nach dem Merge dieser Dateien in den Default-Branch:
+Jeder Push auf `main` führt zuerst die vollständige Testsuite aus und
+veröffentlicht anschließend automatisch zwei Images:
 
-1. GitHub → **Actions** → **Publish release images** öffnen.
-2. **Run workflow** wählen und als `image_tag` zunächst `synology-test` setzen.
-3. Auf zwei veröffentlichte Pakete warten:
-   `ghcr.io/tawilts/protovibe-merch-multitenant:synology-test` und
-   `ghcr.io/tawilts/protovibe-merch-multitenant-web:synology-test`.
+- `ghcr.io/tawilts/protovibe-merch-multitenant:development`
+- `ghcr.io/tawilts/protovibe-merch-multitenant-web:development`
+
+Zusätzlich erhalten die Images einen Commit-bezogenen SHA-Tag. Über **Actions →
+Publish release and development images → Run workflow** kann bei Bedarf auch
+weiterhin ein frei gewählter Test-Tag veröffentlicht werden.
 
 Die getrennten Paketnamen sind absichtlich gewählt: Ein neues `latest` kann
 dadurch niemals vom Update-Task der bestehenden Legacy-Installation gezogen
@@ -71,7 +73,9 @@ chown -R 10001:10001 data/app
 
 In `.env` müssen vor dem Start mindestens diese Werte angepasst werden:
 
-- `MERCH_IMAGE_TAG=synology-test`
+- `ENVIRONMENT=development`
+- `MERCH_IMAGE_TAG=development` für den ersten manuellen Compose-Start; spätere
+  Updates wählen den Development-Tag bereits anhand von `ENVIRONMENT`
 - `PUBLIC_BASE_URL=http://<NAS-IP>:8090`
 - `PUBLIC_REGISTRATION_ENABLED=true`, wenn das öffentliche Anfrageformular
   auf der Landingpage verwendet werden soll
@@ -138,8 +142,11 @@ als `root` anlegen, zum Beispiel täglich. Befehl:
 ```
 
 Der kleine Bootstrap ist absichtlich stabil und bleibt auf dem NAS. Er liest
-`MERCH_IMAGE_REPOSITORY` und `MERCH_IMAGE_TAG` aus `.env`, zieht genau dieses
-Backend-Image, extrahiert dessen
+`ENVIRONMENT` aus `.env`. Bei `ENVIRONMENT=development` verwendet er automatisch
+den Tag `development`; optional kann dieser mit
+`MERCH_DEVELOPMENT_IMAGE_TAG` überschrieben werden. In allen anderen Umgebungen
+verwendet er wie bisher `MERCH_IMAGE_TAG`. Er zieht genau dieses Backend-Image,
+extrahiert dessen
 `/usr/local/share/merch-manager/synology-update.sh` atomar nach
 `/volume1/docker/protovibe-merch-multitenant-test/synology-update.sh` und führt
 anschließend diese Datei aus. Der Updater installiert außerdem die im selben
@@ -154,7 +161,7 @@ echten Update schreibt er einen MariaDB-Dump nach `data/pre-update`, ersetzt nur
 die geänderten App-Container und wartet auf beide Healthchecks. Das MariaDB-
 Major-Image wird bewusst nicht automatisch aktualisiert.
 
-Für einen festen Rollback `MERCH_IMAGE_TAG` auf einen veröffentlichten
-Versionstag setzen und `pull` plus `up -d` ausführen. Vor einem Downgrade immer
-den Datenbankstand sichern, da neuere Releases bereits Schema-Migrationen
-ausgeführt haben können.
+Für einen festen Rollback in Produktion `MERCH_IMAGE_TAG`, auf dem Testserver
+`MERCH_DEVELOPMENT_IMAGE_TAG`, auf einen veröffentlichten Versionstag setzen
+und den Update-Task ausführen. Vor einem Downgrade immer den Datenbankstand
+sichern, da neuere Releases bereits Schema-Migrationen ausgeführt haben können.
