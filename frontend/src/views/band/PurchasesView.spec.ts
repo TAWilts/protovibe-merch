@@ -3,10 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PurchasesView from './PurchasesView.vue'
 
-const { catalogueList, createPurchase, refillSuggestions } = vi.hoisted(() => ({
+const { catalogueList, createPurchase, refillSuggestions, attachmentList, attachmentUpload, attachmentRemove } = vi.hoisted(() => ({
   catalogueList: vi.fn(),
   createPurchase: vi.fn(),
   refillSuggestions: vi.fn(),
+  attachmentList: vi.fn(),
+  attachmentUpload: vi.fn(),
+  attachmentRemove: vi.fn(),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -56,9 +59,9 @@ vi.mock('@/api/endpoints', () => ({
   attachmentsApi: {
     invoiceUrl: (id: number) => `/invoice/${id}`,
     fileUrl: vi.fn(),
-    list: vi.fn().mockResolvedValue({ attachments: [] }),
-    upload: vi.fn(),
-    remove: vi.fn(),
+    list: attachmentList,
+    upload: attachmentUpload,
+    remove: attachmentRemove,
   },
 }))
 
@@ -67,6 +70,9 @@ describe('PurchasesView receipt header', () => {
     catalogueList.mockReset().mockResolvedValue({ articles: [] })
     createPurchase.mockReset().mockResolvedValue({ receipt_id: 'E-2', purchase_ids: [1], total_cost_cents: 1000 })
     refillSuggestions.mockReset().mockResolvedValue({ items: [] })
+    attachmentList.mockReset().mockResolvedValue({ attachments: [] })
+    attachmentUpload.mockReset().mockResolvedValue({ id: 2, original_filename: 'rechnung.pdf', size_bytes: 10 })
+    attachmentRemove.mockReset().mockResolvedValue(undefined)
   })
 
   it('shows attachments and exposes enabled editing without expanding first', async () => {
@@ -153,6 +159,121 @@ describe('PurchasesView receipt header', () => {
       goods_total_cents: 10000,
       items: [{ variant_id: 11, quantity: 1, unit_cost_cents: 0 }],
     }))
+  })
+
+  it('keeps multiple selected invoice files and uploads them after booking', async () => {
+    catalogueList.mockResolvedValue({
+      articles: [{
+        id: 1,
+        name: 'Vinyl-Paket',
+        total_stock: 0,
+        option_groups: [],
+        variants: [{
+          id: 11, option_value_ids: [], combination_key: '', no_reorder: false,
+          is_active: true, is_offered: true, on_hand: 0,
+        }],
+      }],
+    })
+    const wrapper = mount(PurchasesView)
+    await flushPromises()
+
+    await wrapper.get('.selection-button').trigger('click')
+    await wrapper.findAll('.price-mode-switch button')
+      .find((entry) => entry.text() === 'purchases.basketPrice')!.trigger('click')
+    await wrapper.findAll('button')
+      .find((entry) => entry.text() === 'purchases.addPosition')!.trigger('click')
+    await wrapper.get('.basket-price-field input').setValue('100,00')
+
+    const files = [
+      new File(['one'], 'rechnung-1.pdf', { type: 'application/pdf' }),
+      new File(['two'], 'entfernen.pdf', { type: 'application/pdf' }),
+      new File(['three'], 'rechnung-2.pdf', { type: 'application/pdf' }),
+    ]
+    const fileInput = wrapper.get('.purchase-invoice-picker input[type="file"]')
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: files })
+    await fileInput.trigger('change')
+    expect(wrapper.findAll('.pending-invoice-list li')).toHaveLength(3)
+
+    await wrapper.findAll('.pending-invoice-list button')[1].trigger('click')
+    expect(wrapper.findAll('.pending-invoice-list li')).toHaveLength(2)
+    await wrapper.findAll('button').find((entry) => entry.text() === 'purchases.book')!.trigger('click')
+    await flushPromises()
+
+    expect(attachmentUpload.mock.calls).toEqual([
+      ['E-2', files[0]],
+      ['E-2', files[2]],
+    ])
+  })
+
+  it('keeps successful uploads and retries only failed invoice files', async () => {
+    catalogueList.mockResolvedValue({
+      articles: [{
+        id: 1,
+        name: 'Vinyl-Paket',
+        total_stock: 0,
+        option_groups: [],
+        variants: [{
+          id: 11, option_value_ids: [], combination_key: '', no_reorder: false,
+          is_active: true, is_offered: true, on_hand: 0,
+        }],
+      }],
+    })
+    attachmentUpload
+      .mockResolvedValueOnce({ id: 2, original_filename: 'rechnung-1.pdf', size_bytes: 10 })
+      .mockRejectedValueOnce(new Error('upload failed'))
+      .mockResolvedValue({ id: 3, original_filename: 'rechnung-2.pdf', size_bytes: 10 })
+    const wrapper = mount(PurchasesView)
+    await flushPromises()
+
+    await wrapper.get('.selection-button').trigger('click')
+    await wrapper.findAll('.price-mode-switch button')
+      .find((entry) => entry.text() === 'purchases.basketPrice')!.trigger('click')
+    await wrapper.findAll('button')
+      .find((entry) => entry.text() === 'purchases.addPosition')!.trigger('click')
+    await wrapper.get('.basket-price-field input').setValue('100,00')
+
+    const files = [
+      new File(['one'], 'rechnung-1.pdf', { type: 'application/pdf' }),
+      new File(['two'], 'rechnung-2.pdf', { type: 'application/pdf' }),
+    ]
+    const fileInput = wrapper.get('.purchase-invoice-picker input[type="file"]')
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: files })
+    await fileInput.trigger('change')
+    await wrapper.findAll('button').find((entry) => entry.text() === 'purchases.book')!.trigger('click')
+    await flushPromises()
+
+    const failureNotice = wrapper.get('.confirmation-dialog .notice.error')
+    expect(failureNotice.text()).toContain('rechnung-2.pdf')
+    expect(attachmentUpload).toHaveBeenCalledTimes(2)
+
+    await failureNotice.get('button').trigger('click')
+    await flushPromises()
+    expect(attachmentUpload).toHaveBeenCalledTimes(3)
+    expect(attachmentUpload.mock.calls[2]).toEqual(['E-2', files[1]])
+    expect(wrapper.find('.confirmation-dialog .notice.error').exists()).toBe(false)
+  })
+
+  it('uploads several files selected in the existing receipt dialog', async () => {
+    const wrapper = mount(PurchasesView)
+    await flushPromises()
+
+    await wrapper.findAll('.receipt-actions button')
+      .find((entry) => entry.text() === 'purchases.invoiceAndAttachments')!.trigger('click')
+    await flushPromises()
+
+    const files = [
+      new File(['one'], 'nachtrag-1.pdf', { type: 'application/pdf' }),
+      new File(['two'], 'nachtrag-2.pdf', { type: 'application/pdf' }),
+    ]
+    const fileInput = wrapper.get('input[type="file"][hidden]')
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: files })
+    await fileInput.trigger('change')
+    await flushPromises()
+
+    expect(attachmentUpload.mock.calls).toEqual([
+      ['E-20260907-001', files[0]],
+      ['E-20260907-001', files[1]],
+    ])
   })
 
   it('turns refill suggestions into a validated unit-price basket', async () => {

@@ -383,9 +383,9 @@ func TestInvoiceUploadAndDownload(t *testing.T) {
 	}
 }
 
-// TestReceiptInvoiceBelongsToTheWholeBasket pins the current UI model: one
-// invoice is attached to the receipt, regardless of how many positions it has.
-func TestReceiptInvoiceBelongsToTheWholeBasket(t *testing.T) {
+// TestReceiptInvoicesBelongToTheWholeBasket pins the current UI model: several
+// invoices can be attached to the receipt, regardless of how many positions it has.
+func TestReceiptInvoicesBelongToTheWholeBasket(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()
 	h.signInAs(band, models.RoleManager)
@@ -403,18 +403,21 @@ func TestReceiptInvoiceBelongsToTheWholeBasket(t *testing.T) {
 	}
 	receiptID := created.Body["receipt_id"].(string)
 	path := "/api/v1/purchase-receipts/" + receiptID + "/attachments"
-	uploaded := h.upload(path, "warenkorb.pdf", "application/pdf", []byte("%PDF-1.4 basket invoice"))
-	if uploaded.Status != http.StatusCreated {
-		t.Fatalf("upload receipt invoice: %d %v", uploaded.Status, uploaded.Body)
+	firstUpload := h.upload(path, "rechnung-1.pdf", "application/pdf", []byte("%PDF-1.4 first basket invoice"))
+	secondUpload := h.upload(path, "rechnung-2.pdf", "application/pdf", []byte("%PDF-1.4 second basket invoice"))
+	if firstUpload.Status != http.StatusCreated || secondUpload.Status != http.StatusCreated {
+		t.Fatalf("upload receipt invoices: first=%d %v second=%d %v",
+			firstUpload.Status, firstUpload.Body, secondUpload.Status, secondUpload.Body)
 	}
 
 	listed := h.do(http.MethodGet, path, nil)
 	files := jsonList(listed.Body, "attachments")
-	if listed.Status != http.StatusOK || len(files) != 1 {
-		t.Fatalf("receipt invoice should be listed once: %d %v", listed.Status, listed.Body)
+	if listed.Status != http.StatusOK || len(files) != 2 {
+		t.Fatalf("both receipt invoices should be listed: %d %v", listed.Status, listed.Body)
 	}
-	if jsonObject(files[0])["original_filename"] != "warenkorb.pdf" {
-		t.Fatalf("unexpected attachment: %v", files[0])
+	if jsonObject(files[0])["original_filename"] != "rechnung-1.pdf" ||
+		jsonObject(files[1])["original_filename"] != "rechnung-2.pdf" {
+		t.Fatalf("unexpected attachments: %v", files)
 	}
 
 	if res := h.do(http.MethodDelete, "/api/v1/purchase-receipts/"+receiptID, nil); res.Status != http.StatusNoContent {

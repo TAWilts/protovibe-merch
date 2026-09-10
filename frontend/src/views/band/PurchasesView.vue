@@ -43,7 +43,7 @@ const receiptId = ref('')
 const purchasedOn = ref(new Date().toISOString().slice(0, 10))
 const supplier = ref('')
 const invoiceReference = ref('')
-const receiptInvoice = ref<File | null>(null)
+const receiptInvoices = ref<File[]>([])
 const receiptInvoiceInput = ref<HTMLInputElement | null>(null)
 
 const selectedArticleId = ref<number | null>(null)
@@ -431,22 +431,22 @@ async function book() {
       receipt_id: receiptId.value,
     })
     flash.success(t('purchases.booked', { receipt: result.receipt_id }))
-    if (receiptInvoice.value) {
-      try {
-        await attachmentsApi.upload(result.receipt_id, receiptInvoice.value)
-      } catch {
-        flash.error(t('purchases.invoiceUploadAfterBookingFailed', { receipt: result.receipt_id }))
-      }
-    }
+    const failedUploads = await uploadReceiptFiles(result.receipt_id, receiptInvoices.value)
     cart.value = []
     rememberedArticleCost.value = {}
     supplier.value = ''
     invoiceReference.value = ''
     shippingCostInput.value = '0,00'
     basketPriceInput.value = ''
-    receiptInvoice.value = null
+    receiptInvoices.value = []
     if (receiptInvoiceInput.value) receiptInvoiceInput.value.value = ''
     await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
+    if (failedUploads.length) {
+      attachmentsForReceiptId.value = result.receipt_id
+      failedUploadFiles.value = failedUploads
+      await loadAttachments()
+      flash.error(t('purchases.attachmentPartialFailure', { count: failedUploads.length }))
+    }
   } catch (error) {
     report(error)
   } finally {
@@ -454,9 +454,14 @@ async function book() {
   }
 }
 
-function clearReceiptInvoice() {
-  receiptInvoice.value = null
-  if (receiptInvoiceInput.value) receiptInvoiceInput.value.value = ''
+function chooseReceiptInvoices(event: Event) {
+  const input = event.target as HTMLInputElement
+  receiptInvoices.value.push(...Array.from(input.files ?? []))
+  input.value = ''
+}
+
+function removeReceiptInvoice(index: number) {
+  receiptInvoices.value.splice(index, 1)
 }
 
 interface ReceiptEditLine {
@@ -655,48 +660,95 @@ async function takeRefillAsCart() {
  * Receipt attachments belong to the whole basket rather than to one position.
  */
 const fileInput = ref<HTMLInputElement | null>(null)
-const attachmentsFor = ref<Purchase | null>(null)
+const attachmentsForReceiptId = ref<string | null>(null)
 const attachments = ref<Attachment[]>([])
+const attachmentBusy = ref(false)
+const failedUploadFiles = ref<File[]>([])
+
+async function uploadReceiptFiles(receiptID: string, files: File[]) {
+  const failed: File[] = []
+  for (const file of files) {
+    try {
+      await attachmentsApi.upload(receiptID, file)
+    } catch {
+      failed.push(file)
+    }
+  }
+  return failed
+}
 
 function pickAttachment() {
   fileInput.value?.click()
 }
 
-async function onFileChosen(event: Event) {
+async function onFilesChosen(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
+  const files = Array.from(input.files ?? [])
   // Cleared straight away so picking the same file twice still fires a change.
   input.value = ''
-  if (!file || !attachmentsFor.value) return
+  if (!files.length || !attachmentsForReceiptId.value || attachmentBusy.value) return
 
+  attachmentBusy.value = true
   try {
-    await attachmentsApi.upload(attachmentsFor.value.receipt_id, file)
-    flash.success(t('purchases.invoiceUploaded'))
+    const failed = await uploadReceiptFiles(attachmentsForReceiptId.value, files)
+    failedUploadFiles.value.push(...failed)
     await Promise.all([loadAttachments(), loadPurchases()])
-  } catch (error) {
-    report(error)
+    if (failed.length) {
+      flash.error(t('purchases.attachmentPartialFailure', { count: failed.length }))
+    } else {
+      flash.success(t('purchases.invoicesUploaded'))
+    }
+  } finally {
+    attachmentBusy.value = false
   }
 }
 
-async function openAttachments(purchase: Purchase) {
-  attachmentsFor.value = purchase
+async function retryFailedUploads() {
+  if (!attachmentsForReceiptId.value || !failedUploadFiles.value.length || attachmentBusy.value) return
+  attachmentBusy.value = true
+  try {
+    failedUploadFiles.value = await uploadReceiptFiles(
+      attachmentsForReceiptId.value,
+      failedUploadFiles.value,
+    )
+    await Promise.all([loadAttachments(), loadPurchases()])
+    if (failedUploadFiles.value.length) {
+      flash.error(t('purchases.attachmentPartialFailure', { count: failedUploadFiles.value.length }))
+    } else {
+      flash.success(t('purchases.invoicesUploaded'))
+    }
+  } finally {
+    attachmentBusy.value = false
+  }
+}
+
+async function openAttachments(receiptID: string) {
+  attachmentsForReceiptId.value = receiptID
   attachments.value = []
+  failedUploadFiles.value = []
   await loadAttachments()
 }
 
+function closeAttachments() {
+  if (attachmentBusy.value) return
+  attachmentsForReceiptId.value = null
+  attachments.value = []
+  failedUploadFiles.value = []
+}
+
 async function loadAttachments() {
-  if (!attachmentsFor.value) return
+  if (!attachmentsForReceiptId.value) return
   try {
-    attachments.value = (await attachmentsApi.list(attachmentsFor.value.receipt_id)).attachments
+    attachments.value = (await attachmentsApi.list(attachmentsForReceiptId.value)).attachments
   } catch (error) {
     report(error)
   }
 }
 
 async function removeAttachment(file: Attachment) {
-  if (!attachmentsFor.value) return
+  if (!attachmentsForReceiptId.value) return
   try {
-    await attachmentsApi.remove(attachmentsFor.value.receipt_id, file.id)
+    await attachmentsApi.remove(attachmentsForReceiptId.value, file.id)
     await Promise.all([loadAttachments(), loadPurchases()])
   } catch (error) {
     report(error)
@@ -879,18 +931,23 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
           <label>{{ t('purchases.supplier') }}<input v-model="supplier" /></label>
         </div>
         <label>{{ t('purchases.invoiceReference') }}<input v-model="invoiceReference" /></label>
-        <label>
+        <label class="purchase-invoice-picker">
           {{ t('purchases.invoiceFile') }}
           <input
             ref="receiptInvoiceInput"
             type="file"
             accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-            @change="receiptInvoice = ($event.target as HTMLInputElement).files?.[0] ?? null"
+            multiple
+            @change="chooseReceiptInvoices"
           />
-          <span v-if="receiptInvoice" class="selected-upload">
-            <span>{{ receiptInvoice.name }}</span>
-            <button class="compact-button danger-button" type="button" @click="clearReceiptInvoice">{{ t('common.delete') }}</button>
-          </span>
+          <ul v-if="receiptInvoices.length" class="attachment-file-list pending-invoice-list">
+            <li v-for="(file, index) in receiptInvoices" :key="`${file.name}-${file.size}-${index}`" class="attachment-file-row">
+              <span>{{ file.name }}</span>
+              <button class="compact-button danger-button" type="button" @click.stop.prevent="removeReceiptInvoice(index)">
+                {{ t('common.delete') }}
+              </button>
+            </li>
+          </ul>
           <small class="muted">{{ t('purchases.invoiceFileHint') }}</small>
         </label>
 
@@ -993,7 +1050,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
               </table>
             </div>
             <div class="receipt-actions">
-              <button class="secondary-button" type="button" @click="openAttachments(receipt.positions[0])">
+              <button class="secondary-button" type="button" @click="openAttachments(receipt.receiptId)">
                 {{ t('purchases.invoiceAndAttachments') }}
               </button>
               <button
@@ -1014,8 +1071,10 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
       ref="fileInput"
       type="file"
       accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+      multiple
       hidden
-      @change="onFileChosen"
+      :disabled="attachmentBusy"
+      @change="onFilesChosen"
     />
 
     <AppDialog v-if="refillOpen" :label="t('purchases.refillTitle')" @close="refillOpen = false">
@@ -1100,10 +1159,10 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
       </div>
     </AppDialog>
 
-    <AppDialog v-if="attachmentsFor" :label="t('purchases.invoiceAndAttachments')" @close="attachmentsFor = null">
+    <AppDialog v-if="attachmentsForReceiptId" :label="t('purchases.invoiceAndAttachments')" @close="closeAttachments">
       <div class="stack-form">
         <div>
-          <p class="eyebrow"><code>{{ attachmentsFor.receipt_id }}</code></p>
+          <p class="eyebrow"><code>{{ attachmentsForReceiptId }}</code></p>
           <h2>{{ t('purchases.invoiceAndAttachments') }}</h2>
           <p class="muted">{{ t('purchases.attachmentsHint') }}</p>
         </div>
@@ -1111,7 +1170,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
         <p v-if="!attachments.length" class="muted">{{ t('purchases.noAttachments') }}</p>
         <ul v-else class="attachment-file-list">
           <li v-for="file in attachments" :key="file.id" class="attachment-file-row">
-            <a :href="attachmentsApi.fileUrl(attachmentsFor.receipt_id, file.id)">
+            <a :href="attachmentsApi.fileUrl(attachmentsForReceiptId, file.id)">
               {{ file.original_filename }}
             </a>
             <span class="muted">{{ formatBytes(file.size_bytes) }}</span>
@@ -1124,11 +1183,23 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
           </li>
         </ul>
 
-        <div class="dialog-actions">
-          <button v-if="canManage" class="secondary-button" type="button" @click="pickAttachment">
-            {{ t('purchases.addAttachment') }}
+        <div v-if="failedUploadFiles.length" class="notice error">
+          <p>{{ t('purchases.attachmentPartialFailure', { count: failedUploadFiles.length }) }}</p>
+          <ul class="attachment-file-list">
+            <li v-for="(file, index) in failedUploadFiles" :key="`${file.name}-${file.size}-${index}`" class="attachment-file-row">
+              {{ file.name }}
+            </li>
+          </ul>
+          <button class="secondary-button" type="button" :disabled="attachmentBusy" @click="retryFailedUploads">
+            {{ t('common.retry') }}
           </button>
-          <button class="primary-button" type="button" @click="attachmentsFor = null">
+        </div>
+
+        <div class="dialog-actions">
+          <button v-if="canManage" class="secondary-button" type="button" :disabled="attachmentBusy" @click="pickAttachment">
+            {{ t('purchases.addAttachments') }}
+          </button>
+          <button class="primary-button" type="button" :disabled="attachmentBusy" @click="closeAttachments">
             {{ t('common.close') }}
           </button>
         </div>
@@ -1219,7 +1290,6 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
   color: var(--text-muted);
 }
 
-.selected-upload,
 .receipt-id-with-file {
   display: flex;
   gap: 8px;
