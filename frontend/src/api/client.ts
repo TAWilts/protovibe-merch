@@ -25,9 +25,15 @@ const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const CSRF_COOKIE = 'merch_csrf'
 
 let csrfToken = ''
+let unauthorizedHandler: ((path: string) => void) | undefined
 
 export function setCsrfToken(token: string) {
   csrfToken = token
+}
+
+/** Installed by the app shell to reconcile an expired server session. */
+export function setUnauthorizedHandler(handler?: (path: string) => void) {
+  unauthorizedHandler = handler
 }
 
 /**
@@ -87,6 +93,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const payload = isJson ? await response.json() : await response.text()
 
   if (!response.ok) {
+    if (response.status === 401) unauthorizedHandler?.(path)
     const body =
       isJson && typeof payload === 'object' && payload !== null
         ? (payload as { message?: unknown; code?: unknown })

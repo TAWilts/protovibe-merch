@@ -263,6 +263,58 @@ func TestRefillSuggestionsRespectTargetsAndLastCosts(t *testing.T) {
 	}
 }
 
+func TestRefillSuggestionsIncludeOnDemandDeficitsAndPausedStock(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	articleID, variants := h.sellableArticle("Stock Modes")
+
+	stocked := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items":        []any{map[string]any{"variant_id": variants[1], "quantity": 3, "unit_cost_cents": 500}},
+		"purchased_on": "2026-09-09",
+	})
+	if stocked.Status != http.StatusCreated {
+		t.Fatalf("stock paused variant: %d %v", stocked.Status, stocked.Body)
+	}
+
+	configured := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"variants": []any{
+			map[string]any{"id": variants[0], "target_stock": 0, "is_offered": true, "no_reorder": false},
+			map[string]any{"id": variants[1], "target_stock": 10, "is_offered": false, "no_reorder": false},
+		},
+	})
+	if configured.Status != http.StatusOK {
+		t.Fatalf("configure on-demand and paused modes: %d %v", configured.Status, configured.Body)
+	}
+
+	sold := h.do(http.MethodPost, "/api/v1/sales", map[string]any{
+		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 2}},
+		"payment_method": "Bar", "is_paid": true, "is_received": true,
+		"amount_given_cents": 3600, "sold_on": "2026-09-09",
+	})
+	if sold.Status != http.StatusCreated {
+		t.Fatalf("sell on-demand variant into negative stock: %d %v", sold.Status, sold.Body)
+	}
+
+	res := h.do(http.MethodGet, "/api/v1/purchases/refill-suggestions", nil)
+	if res.Status != http.StatusOK {
+		t.Fatalf("list mode refill suggestions: %d %v", res.Status, res.Body)
+	}
+	got := map[int64]map[string]any{}
+	for _, raw := range jsonList(res.Body, "items") {
+		item := jsonObject(raw)
+		got[int64(item["variant_id"].(float64))] = item
+	}
+	if item := got[variants[0]]; item == nil || item["on_hand"] != float64(-2) ||
+		item["target_stock"] != float64(0) || item["suggested_quantity"] != float64(2) {
+		t.Fatalf("unexpected on-demand suggestion: %v", item)
+	}
+	if item := got[variants[1]]; item == nil || item["on_hand"] != float64(3) ||
+		item["target_stock"] != float64(10) || item["suggested_quantity"] != float64(7) {
+		t.Fatalf("unexpected paused suggestion: %v", item)
+	}
+}
+
 func TestReceiptEditingIsReadOnlyWhenTheFlagIsDisabled(t *testing.T) {
 	t.Setenv("PURCHASE_EDITING_ENABLED", "false")
 	h := newHarness(t)

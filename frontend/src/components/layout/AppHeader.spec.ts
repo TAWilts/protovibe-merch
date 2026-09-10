@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AppHeader from './AppHeader.vue'
 
-const { session, route } = vi.hoisted(() => {
+const { session, route, routerReplace } = vi.hoisted(() => {
   return {
     session: {
       isAuthenticated: true,
@@ -23,13 +23,14 @@ const { session, route } = vi.hoisted(() => {
       logout: vi.fn(),
     },
     route: { name: 'sales' },
+    routerReplace: vi.fn(),
   }
 })
 
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('vue-router', () => ({
   useRoute: () => route,
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ replace: routerReplace }),
   RouterLink: { template: '<a><slot /></a>' },
 }))
 vi.mock('@/stores/session', () => ({ useSessionStore: () => session }))
@@ -50,6 +51,8 @@ describe('AppHeader navigation', () => {
     session.user.show_packing_list = true
     session.user.show_product_palette = true
     session.capabilities.can_access_member_workflows = true
+    session.logout.mockReset().mockResolvedValue(true)
+    routerReplace.mockReset().mockResolvedValue(undefined)
   })
 
   it('places packing between balances and administration for members', () => {
@@ -78,5 +81,15 @@ describe('AppHeader navigation', () => {
     wrapper = mount(AppHeader)
     expect(wrapper.text()).toContain('nav.packingList')
     expect(wrapper.text()).toContain('nav.slideshow')
+  })
+
+  it.each(['articles', 'purchases'])('logs out from %s and replaces the protected route with login', async (routeName) => {
+    route.name = routeName
+    const wrapper = mount(AppHeader)
+
+    await wrapper.get('.account-popover button').trigger('click')
+
+    expect(session.logout).toHaveBeenCalledOnce()
+    expect(routerReplace).toHaveBeenCalledWith({ name: 'login' })
   })
 })

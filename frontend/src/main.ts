@@ -14,22 +14,37 @@ import './assets/tablet.css'
 import { useOfflineStore } from './stores/offline'
 import { usePackingStore } from './stores/packing'
 import { useSessionStore } from './stores/session'
+import { setUnauthorizedHandler } from './api/client'
 
 const app = createApp(App)
-app.use(createPinia()).use(router).use(i18n)
+const pinia = createPinia()
+app.use(pinia).use(router).use(i18n)
+
+const packingStore = usePackingStore(pinia)
+const sessionStore = useSessionStore(pinia)
+watch(() => sessionStore.identity, (identity) => {
+  if (identity?.band) {
+    void packingStore.prepare(identity)
+  } else {
+    packingStore.resetSession()
+  }
+}, { immediate: true })
+
+setUnauthorizedHandler(() => {
+  if (!sessionStore.isAuthenticated) return
+  const previousPath = router.currentRoute.value.fullPath
+  sessionStore.clear()
+  if (router.currentRoute.value.name !== 'login') {
+    void router.replace({ name: 'login', query: { next: previousPath } })
+  }
+})
+
 app.mount('#app')
 
 // Wired after mounting so the connection listeners and the first queue flush
 // do not delay the first paint.
-useOfflineStore().start()
-const packingStore = usePackingStore()
+useOfflineStore(pinia).start()
 packingStore.start()
-const sessionStore = useSessionStore()
-watch(() => sessionStore.identity, (identity) => {
-  if (identity?.band) {
-    void packingStore.prepare(identity)
-  }
-}, { immediate: true })
 
 /**
  * Installs the service worker that carries the app shell.

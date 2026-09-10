@@ -90,12 +90,23 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function logout() {
+    let serverSucceeded = false
     try {
       await authApi.logout()
+      serverSucceeded = true
+    } catch {
+      // The browser can no longer safely use this identity even when the
+      // server cannot be reached. Keep the existing local-logout policy, but
+      // report the remote outcome to callers instead of pretending it worked.
     } finally {
-      adopt(null)
-      setCsrfToken('')
+      clear()
     }
+    return serverSucceeded
+  }
+
+  function clear() {
+    adopt(null)
+    setCsrfToken('')
   }
 
   async function setFeatureVisibility(payload: {
@@ -127,6 +138,7 @@ export const useSessionStore = defineStore('session', () => {
     loading,
     ready,
     adopt,
+    clear,
     restore,
     logout,
     setFeatureVisibility,

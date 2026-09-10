@@ -46,7 +46,9 @@
     "none": "Keine",
     "filter": "Filtern",
     "yes": "ja",
-    "no": "nein"
+    "no": "nein",
+    "on": "AN",
+    "off": "AUS"
   },
   "auth": {
     "signIn": "Anmelden",
@@ -710,7 +712,37 @@
     "saveConfiguration": "Konfiguration speichern",
     "saved": "Gespeichert.",
     "variants": "Varianten",
-    "variantsHint": "Preise, Mindest- und Sollbestände sowie Angebotsstatus je Variante. Leere Bestandsfelder deaktivieren die jeweilige Vorgabe; 0 ist ein gültiger Wert.",
+    "variantsHint": "Preise, Mindest- und Sollbestände sowie Bestandsmodus je Variante. Leere Bestandsfelder deaktivieren die jeweilige Vorgabe; 0 ist ein gültiger Wert.",
+    "forAllVariants": "Für alle Varianten",
+    "stockMode": "Bestandsmodus",
+    "stockModeApplied": "Bestandsmodus für {count} Varianten gespeichert.",
+    "stockModes": {
+      "stocked": {
+        "label": "Lagerartikel",
+        "hint": "Wird angeboten und kann auf den Sollbestand aufgefüllt werden."
+      },
+      "on_demand": {
+        "label": "Auf Bestellung",
+        "hint": "Wird angeboten, aber nicht auf Vorrat gehalten. Bedarf entsteht durch Verkäufe.",
+        "targetHint": "Kein Lagerbestand vorgesehen. Bedarf entsteht durch Verkäufe."
+      },
+      "clearance": {
+        "label": "Abverkauf",
+        "hint": "Restbestand wird verkauft, aber nicht nachbestellt. Bei Bestand 0 wird die Variante automatisch entfernt."
+      },
+      "paused": {
+        "label": "Pausiert",
+        "hint": "Wird aktuell nicht angeboten, kann aber weiterhin bevorratet werden."
+      },
+      "discontinued": {
+        "label": "Aus Sortiment",
+        "hint": "Wird nicht mehr angeboten und nicht mehr nachbestellt."
+      },
+      "mixed": {
+        "label": "Gemischt",
+        "hint": "Die aktiven Varianten verwenden unterschiedliche Bestandsmodi."
+      }
+    },
     "minimumForAll": "Mindestbestand für alle",
     "targetForAll": "Sollbestand für alle",
     "targetStock": "Sollbestand",

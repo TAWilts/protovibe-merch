@@ -46,7 +46,9 @@
     "none": "None",
     "filter": "Filter",
     "yes": "yes",
-    "no": "no"
+    "no": "no",
+    "on": "ON",
+    "off": "OFF"
   },
   "auth": {
     "signIn": "Sign in",
@@ -710,7 +712,37 @@
     "saveConfiguration": "Konfiguration speichern",
     "saved": "Gespeichert.",
     "variants": "Varianten",
-    "variantsHint": "Prices, minimum stock, target stock and offer status per variant. Empty stock fields disable the relevant setting; 0 is valid.",
+    "variantsHint": "Prices, minimum stock, target stock and stock mode per variant. Empty stock fields disable the relevant setting; 0 is valid.",
+    "forAllVariants": "For all variants",
+    "stockMode": "Stock mode",
+    "stockModeApplied": "Stock mode saved for {count} variants.",
+    "stockModes": {
+      "stocked": {
+        "label": "Stocked",
+        "hint": "Offered and can be replenished to the target stock."
+      },
+      "on_demand": {
+        "label": "On demand",
+        "hint": "Offered without holding stock. Demand is created by sales.",
+        "targetHint": "No stock is planned. Demand is created by sales."
+      },
+      "clearance": {
+        "label": "Clearance",
+        "hint": "Remaining stock is sold without reordering. At zero stock the variant is removed automatically."
+      },
+      "paused": {
+        "label": "Paused",
+        "hint": "Currently not offered, but can still be replenished."
+      },
+      "discontinued": {
+        "label": "Discontinued",
+        "hint": "No longer offered or reordered."
+      },
+      "mixed": {
+        "label": "Mixed",
+        "hint": "The active variants use different stock modes."
+      }
+    },
     "minimumForAll": "Mindestbestand für alle",
     "targetForAll": "Target stock for all",
     "targetStock": "Target stock",

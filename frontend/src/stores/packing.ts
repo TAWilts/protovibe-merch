@@ -177,9 +177,28 @@ export const usePackingStore = defineStore('packing', () => {
     poller = undefined
   }
 
+  /** Drops user- and band-scoped in-memory data without deleting offline data. */
+  function resetSession() {
+    deactivatePage()
+    if (timer !== undefined) window.clearTimeout(timer)
+    timer = undefined
+    for (const url of Object.values(photoURLs.value)) {
+      if (url.startsWith('blob:')) URL.revokeObjectURL(url)
+    }
+    context.value = null
+    snapshot.value = { revision: 0, generation: 1, bags: [] }
+    loading.value = false
+    syncing.value = false
+    queued.value = 0
+    messages.value = []
+    authenticationRequired.value = false
+    conflicts.value = []
+    photoURLs.value = {}
+  }
+
   return {
     snapshot, loading, syncing, queued, messages, conflicts, authenticationRequired, online, hasPending,
-    prepare, activate, deactivatePage, mutate, addPhoto, sync, start, photoURL, dismissMessage,
+    prepare, activate, deactivatePage, resetSession, mutate, addPhoto, sync, start, photoURL, dismissMessage,
     resolveConflict,
     saveLocal: () => context.value && savePackingSnapshot(context.value, snapshot.value),
   }

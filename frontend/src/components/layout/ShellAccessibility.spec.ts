@@ -1,10 +1,10 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AppShell from './AppShell.vue'
 import PlatformShell from './PlatformShell.vue'
 
-const { session } = vi.hoisted(() => ({
+const { session, routerReplace } = vi.hoisted(() => ({
   session: {
     user: { username: 'admin' },
     band: { name: 'Band' },
@@ -16,6 +16,7 @@ const { session } = vi.hoisted(() => ({
     supportGrant: null,
     logout: vi.fn(),
   },
+  routerReplace: vi.fn(),
 }))
 
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
@@ -23,9 +24,14 @@ vi.mock('vue-router', () => ({
   RouterLink: { name: 'RouterLink', props: ['to'], template: '<a><slot /></a>' },
   RouterView: { name: 'RouterView', template: '<div data-router-view />' },
   useRoute: () => ({ name: 'platform-dashboard' }),
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ replace: routerReplace }),
 }))
 vi.mock('@/stores/session', () => ({ useSessionStore: () => session }))
+
+beforeEach(() => {
+  session.logout.mockReset().mockResolvedValue(true)
+  routerReplace.mockReset().mockResolvedValue(undefined)
+})
 
 describe.each([
   ['band shell', AppShell],
@@ -46,5 +52,23 @@ describe.each([
 
     expect(target.attributes('tabindex')).toBe('-1')
     expect(target.element.nextElementSibling?.hasAttribute('data-router-view')).toBe(true)
+  })
+})
+
+describe('platform shell logout', () => {
+  it('replaces the current admin view with login', async () => {
+    const wrapper = mount(PlatformShell, {
+      global: {
+        stubs: {
+          FlashStack: true,
+          SupportGrantBanner: true,
+          RouterView: true,
+        },
+      },
+    })
+    await wrapper.get('.account-popover button').trigger('click')
+
+    expect(session.logout).toHaveBeenCalledOnce()
+    expect(routerReplace).toHaveBeenCalledWith({ name: 'login' })
   })
 })

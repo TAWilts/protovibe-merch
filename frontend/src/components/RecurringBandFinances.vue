@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { reportsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
 import type { RecurringBandTransaction } from '@/api/types'
+import AppToggle from '@/components/ui/AppToggle.vue'
 import { parseAmount, useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
 
@@ -171,25 +172,23 @@ async function deleteRule(rule: RecurringBandTransaction) {
         <input v-model="form.description" required />
       </label>
 
-      <label
+      <AppToggle
         v-if="form.transaction_type === 'expense'"
         class="checkbox-row settlement-checkbox"
-      >
-        <input v-model="form.is_asset" type="checkbox" />
-        <span>{{ t('bandFinances.asset') }}</span>
-      </label>
+        v-model="form.is_asset"
+        :label="t('bandFinances.asset')"
+      />
       <p v-if="form.transaction_type === 'expense'" class="muted settlement-hint">
         {{ t('bandFinances.assetHint') }}
       </p>
 
-      <label class="checkbox-row settlement-checkbox">
-        <input v-model="form.is_settled" type="checkbox" />
-        <span>
-          {{ form.transaction_type === 'income'
+      <AppToggle
+        v-model="form.is_settled"
+        class="checkbox-row settlement-checkbox"
+        :label="form.transaction_type === 'income'
             ? t('bandFinances.recurring.autoReceived')
-            : t('bandFinances.recurring.autoPaid') }}
-        </span>
-      </label>
+            : t('bandFinances.recurring.autoPaid')"
+      />
       <p v-if="!form.is_settled" class="muted settlement-hint">
         {{ t('bandFinances.recurring.openHint') }}
       </p>

@@ -5,9 +5,13 @@ import { ApiError } from '@/api/client'
 import type { Identity } from '@/api/types'
 import { useSessionStore } from './session'
 
-const { me, featureVisibility } = vi.hoisted(() => ({ me: vi.fn(), featureVisibility: vi.fn() }))
+const { me, logout, featureVisibility } = vi.hoisted(() => ({
+  me: vi.fn(),
+  logout: vi.fn(),
+  featureVisibility: vi.fn(),
+}))
 vi.mock('@/api/endpoints', () => ({
-  authApi: { me, logout: vi.fn() },
+  authApi: { me, logout },
   profileApi: { featureVisibility },
 }))
 
@@ -24,6 +28,7 @@ describe('offline session identity', () => {
   beforeEach(() => {
     localStorage.clear()
     me.mockReset()
+    logout.mockReset()
     featureVisibility.mockReset()
     setActivePinia(createPinia())
   })
@@ -61,5 +66,28 @@ describe('offline session identity', () => {
 
     expect(session.user?.show_packing_list).toBe(false)
     expect(JSON.parse(localStorage.getItem('protovibe.offline-identity.v1')!).user.show_packing_list).toBe(false)
+  })
+
+  it('clears user, capabilities and cached identity after a successful logout', async () => {
+    logout.mockResolvedValue(undefined)
+    const session = useSessionStore()
+    session.adopt(identity)
+
+    await expect(session.logout()).resolves.toBe(true)
+
+    expect(session.user).toBeNull()
+    expect(session.capabilities).toBeNull()
+    expect(session.band).toBeNull()
+    expect(session.isAuthenticated).toBe(false)
+    expect(localStorage.getItem('protovibe.offline-identity.v1')).toBeNull()
+  })
+
+  it('keeps the existing local-logout policy when the server cannot be reached', async () => {
+    logout.mockRejectedValue(new TypeError('network unavailable'))
+    const session = useSessionStore()
+    session.adopt(identity)
+
+    await expect(session.logout()).resolves.toBe(false)
+    expect(session.identity).toBeNull()
   })
 })

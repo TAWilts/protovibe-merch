@@ -80,7 +80,7 @@ function isActive(name: string) {
 
 async function signOut() {
   await session.logout()
-  router.push({ name: 'login' })
+  await router.replace({ name: 'login' })
 }
 
 </script>

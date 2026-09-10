@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, request, setCsrfToken } from './client'
+import { ApiError, request, setCsrfToken, setUnauthorizedHandler } from './client'
 
 describe('API client', () => {
   beforeEach(() => {
     document.cookie = 'merch_csrf=; Max-Age=0; Path=/'
     setCsrfToken('')
+    setUnauthorizedHandler()
   })
 
   afterEach(() => {
@@ -56,5 +57,19 @@ describe('API client', () => {
       detailCode: 'feature_disabled',
       message: 'disabled',
     })
+  })
+
+  it('notifies the app shell when a request loses its session', async () => {
+    const unauthorized = vi.fn()
+    setUnauthorizedHandler(unauthorized)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'expired' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ))
+
+    await expect(request('/articles')).rejects.toMatchObject({ status: 401 })
+    expect(unauthorized).toHaveBeenCalledWith('/articles')
   })
 })
