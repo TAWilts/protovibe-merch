@@ -29,17 +29,19 @@ func TestArticleLifecycleOverHTTP(t *testing.T) {
 	}
 	articleID := int64(created.Body["id"].(float64))
 
-	// Reduce the sizes to two and give one variant its own price.
+	// Rename one option, add a size and give one variant its own price. A
+	// generated configuration may be extended but no longer reduced.
 	groups := jsonList(created.Body, "option_groups")
 	colour := jsonObject(groups[0])
 	size := jsonObject(groups[1])
 	sizeValues := jsonList(size, "values")
+	sizeValues = append(sizeValues, map[string]any{"id": 0, "value": "XXL"})
 
 	variant := jsonObject(jsonList(created.Body, "variants")[0])
 	saved := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
 		"option_groups": []any{
-			map[string]any{"id": colour["id"], "name": colour["name"], "values": jsonList(colour, "values")},
-			map[string]any{"id": size["id"], "name": size["name"], "values": sizeValues[:2]},
+			map[string]any{"id": colour["id"], "name": "Colour", "values": jsonList(colour, "values")},
+			map[string]any{"id": size["id"], "name": size["name"], "values": sizeValues},
 		},
 		"variants": []any{
 			map[string]any{"id": variant["id"], "sale_price_cents": 2200, "minimum_stock": 3},
@@ -55,11 +57,14 @@ func TestArticleLifecycleOverHTTP(t *testing.T) {
 			active++
 		}
 	}
-	if active != 4 {
-		t.Fatalf("expected 2 colours x 2 sizes = 4 active variants, got %d", active)
+	if active != 12 {
+		t.Fatalf("expected 2 colours x 6 sizes = 12 active variants, got %d", active)
 	}
-	if got := len(jsonList(saved.Body, "variants")); got != 10 {
-		t.Fatalf("retired variants must remain readable, got %d rows", got)
+	if got := len(jsonList(saved.Body, "variants")); got != 12 {
+		t.Fatalf("all variants must remain readable, got %d rows", got)
+	}
+	if saved.Body["configuration_locked"] != true {
+		t.Fatalf("a generated configuration must be locked: %v", saved.Body)
 	}
 }
 
@@ -85,6 +90,9 @@ func TestArticleDraftDefersVariants(t *testing.T) {
 	if created.Body["configuration_complete"] != false {
 		t.Fatalf("an unconfirmed draft must be incomplete: %v", created.Body)
 	}
+	if created.Body["configuration_locked"] != false {
+		t.Fatalf("an unconfirmed draft must remain structurally editable: %v", created.Body)
+	}
 
 	if res := h.do(http.MethodGet, "/api/v1/assortment", nil); len(jsonList(res.Body, "articles")) != 0 {
 		t.Fatalf("an unconfirmed draft must not be sellable: %v", res.Body)
@@ -103,10 +111,50 @@ func TestArticleDraftDefersVariants(t *testing.T) {
 	if saved.Body["configuration_complete"] != true {
 		t.Fatalf("the confirmed article must be complete: %v", saved.Body)
 	}
+	if saved.Body["configuration_locked"] != true {
+		t.Fatalf("the first generated grid must lock structural removals: %v", saved.Body)
+	}
 	for _, raw := range jsonList(saved.Body, "variants") {
 		if jsonObject(raw)["is_active"] != true {
 			t.Fatalf("the first generated grid must not contain retired variants: %v", saved.Body)
 		}
+	}
+}
+
+func TestLockedArticleRejectsOptionRemovalAtomically(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+
+	created := h.do(http.MethodPost, "/api/v1/articles", map[string]any{
+		"name": "Locked HTTP Shirt", "default_sale_price_cents": 1800,
+	})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("create: %d %v", created.Status, created.Body)
+	}
+	articleID := int64(created.Body["id"].(float64))
+	groups := jsonList(created.Body, "option_groups")
+	colour := jsonObject(groups[0])
+	size := jsonObject(groups[1])
+	sizeValues := jsonList(size, "values")
+
+	blocked := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"name": "Must Not Persist",
+		"option_groups": []any{
+			map[string]any{"id": colour["id"], "name": colour["name"], "values": jsonList(colour, "values")},
+			map[string]any{"id": size["id"], "name": size["name"], "values": sizeValues[:len(sizeValues)-1]},
+		},
+	})
+	if blocked.Status != http.StatusConflict || blocked.Body["code"] != "option_removal_locked" {
+		t.Fatalf("expected locked removal conflict, got %d %v", blocked.Status, blocked.Body)
+	}
+
+	reloaded := h.do(http.MethodGet, "/api/v1/articles/"+itoa(articleID), nil)
+	if reloaded.Status != http.StatusOK || reloaded.Body["name"] != "Locked HTTP Shirt" {
+		t.Fatalf("a rejected save must not partially update the article: %d %v", reloaded.Status, reloaded.Body)
+	}
+	if got := len(jsonList(reloaded.Body, "variants")); got != 10 {
+		t.Fatalf("a rejected save must preserve all variants, got %d", got)
 	}
 }
 

@@ -243,6 +243,7 @@ export interface Article {
   is_offered: boolean
   is_active: boolean
   configuration_complete: boolean
+  configuration_locked: boolean
   total_stock: number
   option_groups: OptionGroup[]
   variants: Variant[]

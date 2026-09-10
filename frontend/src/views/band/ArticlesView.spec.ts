@@ -60,6 +60,7 @@ const confirmedArticle = {
   is_offered: true,
   is_active: true,
   configuration_complete: true,
+  configuration_locked: true,
   total_stock: 0,
   option_groups: [],
   variants,
@@ -69,11 +70,31 @@ const draftArticle = {
   ...confirmedArticle,
   name: 'Neuer Artikel',
   configuration_complete: false,
+  configuration_locked: false,
   variants: [],
+}
+
+const configuredOptionsArticle = {
+  ...confirmedArticle,
+  option_groups: [{
+    id: 21,
+    name: 'Größe',
+    position: 0,
+    is_active: true,
+    values: [
+      { id: 31, value: 'M', position: 0, is_active: true },
+      { id: 32, value: 'L', position: 1, is_active: true },
+    ],
+  }],
+  variants: [
+    { ...variants[0], option_value_ids: [31], combination_key: '31' },
+    { ...variants[1], option_value_ids: [32], combination_key: '32' },
+  ],
 }
 
 describe('ArticlesView variant generation', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     list.mockReset()
     create.mockReset()
     save.mockReset().mockResolvedValue(confirmedArticle)
@@ -243,5 +264,94 @@ describe('ArticlesView variant generation', () => {
 
     expect(removeIncomplete).toHaveBeenCalledWith(9)
     expect(wrapper.text()).not.toContain('zSonstiges')
+  })
+
+  it('allows structural deletion before the first save but protects persisted options afterwards', async () => {
+    list.mockResolvedValue({ articles: [{ ...configuredOptionsArticle, configuration_locked: false, configuration_complete: false, variants: [] }] })
+    let wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    expect(wrapper.findAll('.option-editor')).toHaveLength(1)
+    await wrapper.get('.option-editor-head .danger-button').trigger('click')
+    expect(wrapper.findAll('.option-editor')).toHaveLength(0)
+    wrapper.unmount()
+
+    list.mockResolvedValue({ articles: [configuredOptionsArticle] })
+    wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('articles.optionsLockedHint')
+    expect(wrapper.find('.option-editor-head .danger-button').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="articles.discardUnsavedValue"]').exists()).toBe(false)
+
+    await wrapper.get('.option-editor-values > .compact-button').trigger('click')
+    expect(wrapper.find('[aria-label="articles.discardUnsavedValue"]').exists()).toBe(true)
+    await wrapper.get('[aria-label="articles.discardUnsavedValue"]').trigger('click')
+    expect(wrapper.find('[aria-label="articles.discardUnsavedValue"]').exists()).toBe(false)
+  })
+
+  it('explains the first value of a later option and rehydrates its server ids after saving', async () => {
+    list.mockResolvedValue({ articles: [configuredOptionsArticle] })
+    const savedWithColour = {
+      ...configuredOptionsArticle,
+      option_groups: [
+        ...configuredOptionsArticle.option_groups,
+        {
+          id: 22,
+          name: 'Farbe',
+          position: 1,
+          is_active: true,
+          values: [{ id: 41, value: 'Schwarz', position: 0, is_active: true }],
+        },
+      ],
+    }
+    save.mockResolvedValue(savedWithColour)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    await wrapper.get('.article-form-group-head .secondary-button').trigger('click')
+    const newEditor = wrapper.findAll('.option-editor')[1]!
+    await newEditor.get('.option-editor-head input').setValue('Farbe')
+    await newEditor.get('.option-value-input input').setValue('Schwarz')
+
+    expect(newEditor.text()).toContain('articles.newOptionExistingHint')
+    expect(newEditor.text()).toContain('articles.existingConfiguration')
+    expect(newEditor.text()).toContain('articles.discardUnsavedOption')
+
+    await wrapper.get('.article-form-actions .primary-button').trigger('click')
+    await flushPromises()
+
+    expect(confirm).toHaveBeenCalledWith('articles.newOptionConfirm')
+    expect(save.mock.calls[0]?.[1]).toMatchObject({
+      option_groups: [
+        { id: 21, name: 'Größe', values: [{ id: 31, value: 'M' }, { id: 32, value: 'L' }] },
+        { id: 0, name: 'Farbe', values: [{ id: 0, value: 'Schwarz' }] },
+      ],
+    })
+
+    await wrapper.get('.article-form-actions .primary-button').trigger('click')
+    await flushPromises()
+
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(save.mock.calls[1]?.[1]).toMatchObject({
+      option_groups: [
+        { id: 21 },
+        { id: 22, values: [{ id: 41, value: 'Schwarz' }] },
+      ],
+    })
+  })
+
+  it('does not silently omit an incomplete option from the save payload', async () => {
+    list.mockResolvedValue({ articles: [configuredOptionsArticle] })
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    await wrapper.get('.article-form-group-head .secondary-button').trigger('click')
+    await wrapper.get('.article-form-actions .primary-button').trigger('click')
+    await flushPromises()
+
+    expect(save).not.toHaveBeenCalled()
   })
 })

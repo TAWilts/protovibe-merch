@@ -27,9 +27,9 @@ import {
  * Article management, ported from _old/templates/articles.html.
  *
  * The option columns are entirely generic: the page never knows that "Farbe"
- * or "Größe" exist, it edits whatever columns the band defined. Removing a
- * value does not delete it — the server deactivates it so historic receipts
- * keep resolving their names, and renaming one applies retroactively.
+ * or "Größe" exist, it edits whatever columns the band defined. Once the
+ * first variant grid has been generated, its stored options may be renamed,
+ * reordered and extended, but no longer removed.
  */
 const { t } = useI18n()
 const { format } = useMoney()
@@ -71,6 +71,12 @@ const selected = computed(
 const activeVariants = computed(() => selected.value?.variants.filter((v) => v.is_active) ?? [])
 const retiredVariants = computed(() => selected.value?.variants.filter((v) => !v.is_active) ?? [])
 const allVariantsMode = computed(() => commonStockMode(activeVariants.value))
+// This remains true after a variant grid has existed, even if legacy data has
+// since retired every variant. That keeps the UI aligned with the backend's
+// structural-removal guard.
+const configurationLocked = computed(
+  () => selected.value?.configuration_locked ?? selected.value?.configuration_complete ?? false,
+)
 
 onMounted(load)
 
@@ -269,6 +275,8 @@ function addValue(group: DraftGroup) {
 }
 
 function removeValue(group: DraftGroup, index: number) {
+  const value = group.values[index]
+  if (configurationLocked.value && value?.id !== 0) return
   group.values.splice(index, 1)
 }
 
@@ -289,6 +297,8 @@ function addGroup() {
 }
 
 function removeGroup(index: number) {
+  const group = draft.value.groups[index]
+  if (configurationLocked.value && group?.id !== 0) return
   draft.value.groups.splice(index, 1)
 }
 
@@ -298,31 +308,45 @@ function moveGroup(index: number, delta: number) {
 
 async function save() {
   if (!selected.value || busy.value) return
-  busy.value = true
 
   const sale = parseAmount(draft.value.salePrice)
   if (sale === null) {
     flash.error(t('articles.invalidPrice'))
-    busy.value = false
     return
   }
 
+  const preparedGroups = draft.value.groups.map((group) => ({
+    id: group.id,
+    name: group.name.trim(),
+    values: group.values.map((value) => ({ id: value.id, value: value.value.trim() })),
+  }))
+  if (preparedGroups.some((group) => !group.name || group.values.length === 0 || group.values.some((value) => !value.value))) {
+    flash.error(t('articles.incompleteOptions'))
+    return
+  }
+
+  const newGroups = configurationLocked.value
+    ? preparedGroups.filter((group) => group.id === 0)
+    : []
+  if (newGroups.length) {
+    const mappings = newGroups
+      .map((group) => `${group.name}: ${group.values[0]?.value ?? ''}`)
+      .join('\n')
+    if (!window.confirm(t('articles.newOptionConfirm', { mappings }))) return
+  }
+
+  busy.value = true
+
   try {
-    await catalogueApi.save(selected.value.id, {
+    const saved = await catalogueApi.save(selected.value.id, {
       name: draft.value.name.trim(),
       default_sale_price_cents: sale,
-      option_groups: draft.value.groups
-        .filter((group) => group.name.trim())
-        .map((group) => ({
-          id: group.id,
-          name: group.name.trim(),
-          values: group.values
-            .filter((value) => value.value.trim())
-            .map((value) => ({ id: value.id, value: value.value.trim() })),
-        })),
+      option_groups: preparedGroups,
     })
+    const index = articles.value.findIndex((article) => article.id === saved.id)
+    if (index >= 0) articles.value.splice(index, 1, saved)
+    select(saved.id)
     flash.success(t('articles.saved'))
-    await load(true)
   } catch (error) {
     report(error)
   } finally {
@@ -558,6 +582,9 @@ async function applyTargetToAll() {
               </button>
             </div>
             <p class="muted">{{ t('articles.optionsHint') }}</p>
+            <p v-if="configurationLocked" class="notice option-lock-hint">
+              {{ t('articles.optionsLockedHint') }}
+            </p>
 
             <div v-for="(group, groupIndex) in draft.groups" :key="groupIndex" class="option-editor">
               <div class="option-editor-head">
@@ -580,10 +607,19 @@ async function applyTargetToAll() {
                   >↓</button>
                 </div>
                 <input v-model="group.name" :placeholder="t('articles.optionName')" />
-                <button class="compact-button danger-button" type="button" @click="removeGroup(groupIndex)">
-                  {{ t('common.delete') }}
+                <button
+                  v-if="!configurationLocked || group.id === 0"
+                  class="compact-button"
+                  :class="{ 'danger-button': !configurationLocked }"
+                  type="button"
+                  @click="removeGroup(groupIndex)"
+                >
+                  {{ configurationLocked ? t('articles.discardUnsavedOption') : t('common.delete') }}
                 </button>
               </div>
+              <p v-if="configurationLocked && group.id === 0" class="notice new-option-notice">
+                {{ t('articles.newOptionExistingHint') }}
+              </p>
               <div class="option-editor-values">
                 <span v-for="(value, valueIndex) in group.values" :key="valueIndex" class="option-value-input">
                   <span class="value-reorder" :aria-label="t('articles.reorderValue')">
@@ -604,8 +640,19 @@ async function applyTargetToAll() {
                       @click="moveValue(group, valueIndex, 1)"
                     >→</button>
                   </span>
+                  <span
+                    v-if="configurationLocked && group.id === 0 && valueIndex === 0"
+                    class="existing-configuration-badge"
+                  >{{ t('articles.existingConfiguration') }}</span>
                   <input v-model="value.value" :placeholder="t('articles.optionValue')" />
-                  <button class="icon-button" type="button" @click="removeValue(group, valueIndex)">×</button>
+                  <button
+                    v-if="!configurationLocked || value.id === 0"
+                    class="icon-button"
+                    type="button"
+                    :title="configurationLocked ? t('articles.discardUnsavedValue') : t('common.delete')"
+                    :aria-label="configurationLocked ? t('articles.discardUnsavedValue') : t('common.delete')"
+                    @click="removeValue(group, valueIndex)"
+                  >×</button>
                 </span>
                 <button class="compact-button" type="button" @click="addValue(group)">
                   {{ t('common.add') }}
@@ -1133,6 +1180,22 @@ async function applyTargetToAll() {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.option-lock-hint,
+.new-option-notice {
+  margin-top: 10px;
+}
+
+.existing-configuration-badge {
+  padding: 3px 7px;
+  border: 1px solid var(--warning-border);
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .option-value-input {

@@ -75,10 +75,14 @@ type articlePayload struct {
 	// ConfigurationComplete is false while an option group still has no
 	// values or the initial configuration has not generated variants yet;
 	// such an article cannot be sold yet.
-	ConfigurationComplete bool                 `json:"configuration_complete"`
-	TotalStock            int64                `json:"total_stock"`
-	OptionGroups          []optionGroupPayload `json:"option_groups"`
-	Variants              []variantPayload     `json:"variants"`
+	ConfigurationComplete bool `json:"configuration_complete"`
+	// ConfigurationLocked becomes true as soon as this article has ever had a
+	// generated variant. It remains true even when legacy data contains only
+	// retired variants, so the editor and service enforce the same boundary.
+	ConfigurationLocked bool                 `json:"configuration_locked"`
+	TotalStock          int64                `json:"total_stock"`
+	OptionGroups        []optionGroupPayload `json:"option_groups"`
+	Variants            []variantPayload     `json:"variants"`
 }
 
 // listArticles returns the full catalogue including inactive variants, which
@@ -302,6 +306,7 @@ func (s *Server) buildArticles(c *gin.Context, id int64, includeInactive bool) (
 			IsOffered:             article.IsOffered,
 			IsActive:              article.IsActive,
 			ConfigurationComplete: complete,
+			ConfigurationLocked:   len(articleVariants) > 0,
 			TotalStock:            totalStock[article.ID],
 			OptionGroups:          articleGroups,
 			Variants:              articleVariants,
@@ -432,6 +437,10 @@ func (s *Server) reportCatalogueError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "invalid_minimum_stock", err.Error())
 	case errors.Is(err, catalogue.ErrInvalidTargetStock):
 		fail(c, http.StatusBadRequest, "invalid_target_stock", err.Error())
+	case errors.Is(err, catalogue.ErrInvalidOptionConfiguration):
+		fail(c, http.StatusBadRequest, "invalid_option_configuration", err.Error())
+	case errors.Is(err, catalogue.ErrOptionRemovalLocked):
+		fail(c, http.StatusConflict, "option_removal_locked", err.Error())
 	case errors.Is(err, catalogue.ErrArticleNotDraft):
 		fail(c, http.StatusConflict, "article_not_incomplete", err.Error())
 	case errors.Is(err, catalogue.ErrArticleInUse):

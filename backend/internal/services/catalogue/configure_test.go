@@ -72,11 +72,13 @@ func TestRenamingAnOptionValueIsRetroactive(t *testing.T) {
 	}
 }
 
-// TestDroppingAnOptionValueDeactivatesIt pins that removal is never a delete.
-func TestDroppingAnOptionValueDeactivatesIt(t *testing.T) {
+// TestDroppingAnOptionValueBeforeFirstSaveDeactivatesIt pins that an
+// unconfirmed draft can still be freely shaped. Once this save generates its
+// first variants, the same structural removal is locked.
+func TestDroppingAnOptionValueBeforeFirstSaveDeactivatesIt(t *testing.T) {
 	f := newFixture(t)
 
-	article, err := f.svc.CreateArticle(f.ctx, unique("Shirt "), 1800)
+	article, err := f.svc.CreateArticleDraft(f.ctx, unique("Shirt "), 1800)
 	if err != nil {
 		t.Fatalf("create article: %v", err)
 	}
@@ -109,6 +111,72 @@ func TestDroppingAnOptionValueDeactivatesIt(t *testing.T) {
 	}
 	if got := len(f.activeVariants(article.ID)); got != 4 {
 		t.Fatalf("expected 2 colours x 2 sizes = 4 variants, got %d", got)
+	}
+}
+
+func TestLockedConfigurationRejectsRemovalAtomically(t *testing.T) {
+	f := newFixture(t)
+
+	article, err := f.svc.CreateArticle(f.ctx, unique("Locked Shirt "), 1800)
+	if err != nil {
+		t.Fatalf("create article: %v", err)
+	}
+	groups := f.groupsOf(article.ID)
+	sizes := f.valuesOf(groups[1].ID)
+	renamed := "This must roll back"
+	cfg := catalogue.ArticleConfiguration{
+		Name: &renamed,
+		OptionGroups: []catalogue.OptionGroupInput{
+			{ID: groups[0].ID, Name: groups[0].Name, Values: inputsFrom(f.valuesOf(groups[0].ID))},
+			{ID: groups[1].ID, Name: groups[1].Name, Values: inputsFrom(sizes[:len(sizes)-1])},
+		},
+	}
+
+	err = f.svc.ApplyConfiguration(f.ctx, article.ID, cfg)
+	if !errors.Is(err, catalogue.ErrOptionRemovalLocked) {
+		t.Fatalf("expected locked-removal error, got %v", err)
+	}
+
+	var reloaded models.Article
+	if err := f.db.WithContext(f.ctx).First(&reloaded, article.ID).Error; err != nil {
+		t.Fatalf("reload article: %v", err)
+	}
+	if reloaded.Name != article.Name {
+		t.Fatalf("rejected save must be atomic, got name %q", reloaded.Name)
+	}
+	stored := f.valuesOf(groups[1].ID)
+	if !stored[len(stored)-1].IsActive {
+		t.Fatal("the omitted value must remain active")
+	}
+	if got := len(f.activeVariants(article.ID)); got != 10 {
+		t.Fatalf("the variant grid must remain intact, got %d active variants", got)
+	}
+
+	err = f.svc.ApplyConfiguration(f.ctx, article.ID, catalogue.ArticleConfiguration{
+		OptionGroups: []catalogue.OptionGroupInput{
+			{ID: groups[0].ID, Name: groups[0].Name, Values: inputsFrom(f.valuesOf(groups[0].ID))},
+		},
+	})
+	if !errors.Is(err, catalogue.ErrOptionRemovalLocked) {
+		t.Fatalf("expected group-removal lock, got %v", err)
+	}
+}
+
+func TestEveryOptionGroupRequiresAValue(t *testing.T) {
+	f := newFixture(t)
+	article, err := f.svc.CreateArticleDraft(f.ctx, unique("Incomplete Options "), 1800)
+	if err != nil {
+		t.Fatalf("create draft: %v", err)
+	}
+
+	err = f.svc.ApplyConfiguration(f.ctx, article.ID, catalogue.ArticleConfiguration{
+		OptionGroups: []catalogue.OptionGroupInput{{Name: "Farbe", Values: []catalogue.OptionValueInput{}}},
+	})
+	if !errors.Is(err, catalogue.ErrInvalidOptionConfiguration) {
+		t.Fatalf("expected incomplete-option error, got %v", err)
+	}
+	if got := len(f.activeVariants(article.ID)); got != 0 {
+		t.Fatalf("an invalid first save must not generate variants, got %d", got)
 	}
 }
 

@@ -295,6 +295,13 @@ func TestPreserveVariantsForNewOptionGroups(t *testing.T) {
 	if err := f.db.WithContext(f.ctx).Create(purchase).Error; err != nil {
 		t.Fatalf("create purchase: %v", err)
 	}
+	photo := &models.VariantPhoto{
+		VariantID: black.ID, FilePath: unique("variant-photo-"), OriginalFilename: "black-shirt.png",
+		IncludeInSlideshow: true, ShowPrice: true, CreatedAt: time.Now().UTC(),
+	}
+	if err := f.db.WithContext(f.ctx).Create(photo).Error; err != nil {
+		t.Fatalf("create variant photo: %v", err)
+	}
 
 	// Add a size dimension and migrate onto its first value before syncing.
 	_, sizeIDs := f.addOptionGroup(article.ID, "Größe", 1, "M", "L")
@@ -329,6 +336,13 @@ func TestPreserveVariantsForNewOptionGroups(t *testing.T) {
 	}
 	if stock[black.ID].OnHand != 12 {
 		t.Fatalf("the booked stock must follow the variant, got %+v", stock[black.ID])
+	}
+	var reloadedPhoto models.VariantPhoto
+	if err := f.db.WithContext(f.ctx).First(&reloadedPhoto, photo.ID).Error; err != nil {
+		t.Fatalf("reload variant photo: %v", err)
+	}
+	if reloadedPhoto.VariantID != black.ID {
+		t.Fatalf("the picture must remain on the migrated variant, got variant %d", reloadedPhoto.VariantID)
 	}
 }
 
