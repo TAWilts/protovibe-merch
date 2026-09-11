@@ -3,13 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PurchasesView from './PurchasesView.vue'
 
-const { catalogueList, createPurchase, refillSuggestions, attachmentList, attachmentUpload, attachmentRemove } = vi.hoisted(() => ({
+const { catalogueList, createPurchase, refillSuggestions, attachmentList, attachmentUpload, attachmentRemove, routeLeaveGuards } = vi.hoisted(() => ({
   catalogueList: vi.fn(),
   createPurchase: vi.fn(),
   refillSuggestions: vi.fn(),
   attachmentList: vi.fn(),
   attachmentUpload: vi.fn(),
   attachmentRemove: vi.fn(),
+  routeLeaveGuards: [] as Array<() => boolean>,
+}))
+
+vi.mock('vue-router', () => ({
+  onBeforeRouteLeave: (guard: () => boolean) => routeLeaveGuards.push(guard),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -73,6 +78,7 @@ describe('PurchasesView receipt header', () => {
     attachmentList.mockReset().mockResolvedValue({ attachments: [] })
     attachmentUpload.mockReset().mockResolvedValue({ id: 2, original_filename: 'rechnung.pdf', size_bytes: 10 })
     attachmentRemove.mockReset().mockResolvedValue(undefined)
+    routeLeaveGuards.length = 0
   })
 
   it('shows attachments and exposes enabled editing without expanding first', async () => {
@@ -159,6 +165,34 @@ describe('PurchasesView receipt header', () => {
       goods_total_cents: 10000,
       items: [{ variant_id: 11, quantity: 1, unit_cost_cents: 0 }],
     }))
+  })
+
+  it('warns before leaving with an unfinished purchase basket', async () => {
+    catalogueList.mockResolvedValue({
+      articles: [{
+        id: 1,
+        name: 'Vinyl-Paket',
+        total_stock: 0,
+        option_groups: [],
+        variants: [{
+          id: 11, option_value_ids: [], combination_key: '', no_reorder: false,
+          is_active: true, is_offered: true, on_hand: 0,
+        }],
+      }],
+    })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const wrapper = mount(PurchasesView)
+    await flushPromises()
+
+    await wrapper.get('.selection-button').trigger('click')
+    await wrapper.findAll('.price-mode-switch button')
+      .find((entry) => entry.text() === 'purchases.basketPrice')!.trigger('click')
+    await wrapper.findAll('button')
+      .find((entry) => entry.text() === 'purchases.addPosition')!.trigger('click')
+
+    expect(routeLeaveGuards).toHaveLength(1)
+    expect(routeLeaveGuards[0]!()).toBe(false)
+    expect(confirm).toHaveBeenCalledWith('purchases.unfinishedLeave')
   })
 
   it('keeps multiple selected invoice files and uploads them after booking', async () => {

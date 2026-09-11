@@ -108,8 +108,8 @@ async function saveEvent() {
       await salesApi.createEvent(name, false)
       flash.success(t('administration.events.created'))
     } else {
-      await salesApi.renameEvent(editor.id!, name)
-      flash.success(t('administration.events.renamed'))
+      const renamed = await salesApi.renameEvent(editor.id!, name)
+      flash.success(t(renamed.merged ? 'administration.events.merged' : 'administration.events.renamed'))
     }
     eventEditor.value = null
     events.value = (await salesApi.events()).events

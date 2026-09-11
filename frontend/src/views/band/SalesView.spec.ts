@@ -6,6 +6,7 @@ import SalesView from './SalesView.vue'
 const {
   assortment, catalogueList, book, bookHistorical, createEvent,
   createPaymentQrIntent, events, queue, offlineState, sessionState, route, routerReplace,
+  routeLeaveGuards,
 } = vi.hoisted(() => {
   const queuedSale = vi.fn()
   return {
@@ -25,12 +26,14 @@ const {
     },
     route: { name: 'sales', query: {} as Record<string, string> },
     routerReplace: vi.fn(),
+    routeLeaveGuards: [] as Array<() => boolean>,
   }
 })
 
 vi.mock('vue-router', () => ({
   useRoute: () => route,
   useRouter: () => ({ replace: routerReplace }),
+  onBeforeRouteLeave: (guard: () => boolean) => routeLeaveGuards.push(guard),
 }))
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
@@ -108,6 +111,7 @@ describe('SalesView checkout', () => {
     sessionState.capabilities.can_manage_purchases = true
     route.query = {}
     routerReplace.mockReset().mockResolvedValue(undefined)
+    routeLeaveGuards.length = 0
     createPaymentQrIntent.mockReset()
     events.mockReset().mockResolvedValue({ events: [], selected_event_id: 0 })
     assortment.mockReset().mockResolvedValue({
@@ -246,6 +250,19 @@ describe('SalesView checkout', () => {
     await button(wrapper, 'sales.book').trigger('click')
     await flushPromises()
     expect(book).toHaveBeenCalledOnce()
+  })
+
+  it('warns before leaving with an unfinished sales basket', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    await button(wrapper, 'Testshirt').trigger('click')
+    await button(wrapper, 'sales.addToCart').trigger('click')
+
+    expect(routeLeaveGuards).toHaveLength(1)
+    expect(routeLeaveGuards[0]!()).toBe(false)
+    expect(confirm).toHaveBeenCalledWith('sales.unfinishedLeave')
   })
 
   it('books Spende/Sonstiges as a separate stock-neutral receipt', async () => {

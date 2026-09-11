@@ -10,6 +10,7 @@ import AppDialog from '@/components/ui/AppDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
+import { usePendingChangesGuard } from '@/composables/usePendingChangesGuard'
 import { useFlashStore } from '@/stores/flash'
 import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
@@ -78,6 +79,15 @@ const allVariantsMode = computed(() => commonStockMode(activeVariants.value))
 const configurationLocked = computed(
   () => selected.value?.configuration_locked ?? selected.value?.configuration_complete ?? false,
 )
+const unfinishedCreatedArticleId = ref<number | null>(null)
+const hasUnfinishedNewArticle = computed(() => {
+  const id = unfinishedCreatedArticleId.value
+  return id !== null && articles.value.some(
+    (article) => article.id === id && !article.configuration_complete,
+  )
+})
+
+usePendingChangesGuard(hasUnfinishedNewArticle, () => t('articles.unfinishedLeave'))
 
 onMounted(load)
 
@@ -241,6 +251,7 @@ async function createArticle() {
     newArticleName.value = ''
     flash.success(t('articles.created'))
     selectedId.value = created.id
+    unfinishedCreatedArticleId.value = created.id
     await load()
   } catch (error) {
     report(error)
@@ -257,6 +268,7 @@ async function removeIncompleteArticle() {
   try {
     await catalogueApi.removeIncomplete(article.id)
     articles.value = articles.value.filter((entry) => entry.id !== article.id)
+    if (unfinishedCreatedArticleId.value === article.id) unfinishedCreatedArticleId.value = null
     selectedId.value = null
     if (articles.value.length) select(articles.value[0].id)
     flash.success(t('articles.deleted'))
@@ -361,6 +373,9 @@ async function save() {
     })
     const index = articles.value.findIndex((article) => article.id === saved.id)
     if (index >= 0) articles.value.splice(index, 1, saved)
+    if (saved.configuration_complete && unfinishedCreatedArticleId.value === saved.id) {
+      unfinishedCreatedArticleId.value = null
+    }
     select(saved.id)
     flash.success(t('articles.saved'))
   } catch (error) {

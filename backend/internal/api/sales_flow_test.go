@@ -471,16 +471,62 @@ func TestMembersCanRenameEventsWithoutChangingHistoricalSales(t *testing.T) {
 		t.Fatalf("another band must not rename the event, got %d %v", hidden.Status, hidden.Body)
 	}
 
-	h.signInAs(band, models.RoleMember)
-	h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{"name": "Zweiter Gig"})
-	conflict := h.do(http.MethodPatch, "/api/v1/sale-events/"+itoa(eventID), map[string]any{"name": "Zweiter Gig"})
-	if conflict.Status != http.StatusConflict || conflict.Body["code"] != "sale_event_name_conflict" {
-		t.Fatalf("duplicate rename must conflict: %d %v", conflict.Status, conflict.Body)
-	}
-
 	h.signInAs(band, models.RoleSeller)
 	if blocked := h.do(http.MethodPatch, "/api/v1/sale-events/"+itoa(eventID), map[string]any{"name": "Nicht erlaubt"}); blocked.Status != http.StatusForbidden {
 		t.Fatalf("seller rename must be forbidden, got %d", blocked.Status)
+	}
+}
+
+func TestRenamingEventToAnExistingNameMergesOnlyActiveEvents(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+
+	target := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{
+		"name": "Gemeinsamer Gig", "select": false,
+	})
+	source := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{
+		"name": "Zweiter Gig", "select": true,
+	})
+	targetID := int64(target.Body["id"].(float64))
+	sourceID := int64(source.Body["id"].(float64))
+
+	merged := h.do(http.MethodPatch, "/api/v1/sale-events/"+itoa(sourceID), map[string]any{
+		"name": "Gemeinsamer Gig",
+	})
+	if merged.Status != http.StatusOK || merged.Body["merged"] != true ||
+		int64(merged.Body["id"].(float64)) != targetID || merged.Body["is_selected"] != true {
+		t.Fatalf("active events must merge and transfer selection: %d %v", merged.Status, merged.Body)
+	}
+	listed := h.do(http.MethodGet, "/api/v1/sale-events", nil)
+	if got := len(jsonList(listed.Body, "events")); got != 1 {
+		t.Fatalf("merge must leave one active event, got %d: %v", got, listed.Body)
+	}
+	if int64(listed.Body["selected_event_id"].(float64)) != targetID {
+		t.Fatalf("merged target must remain selected: %v", listed.Body)
+	}
+	var sourceCount int64
+	if err := h.db.Model(&models.SaleEvent{}).Where("id = ?", sourceID).Count(&sourceCount).Error; err != nil {
+		t.Fatalf("count merged source: %v", err)
+	}
+	if sourceCount != 0 {
+		t.Fatalf("merged source event still exists")
+	}
+
+	deleted := h.do(http.MethodDelete, "/api/v1/sale-events/"+itoa(targetID), nil)
+	if deleted.Status != http.StatusNoContent {
+		t.Fatalf("delete merged event: %d %v", deleted.Status, deleted.Body)
+	}
+	replacement := h.do(http.MethodPost, "/api/v1/sale-events", map[string]any{
+		"name": "Anderer Gig", "select": true,
+	})
+	replacementID := int64(replacement.Body["id"].(float64))
+	renamed := h.do(http.MethodPatch, "/api/v1/sale-events/"+itoa(replacementID), map[string]any{
+		"name": "Gemeinsamer Gig",
+	})
+	if renamed.Status != http.StatusOK || renamed.Body["merged"] != nil ||
+		int64(renamed.Body["id"].(float64)) != replacementID {
+		t.Fatalf("a deleted namesake must not participate in a merge: %d %v", renamed.Status, renamed.Body)
 	}
 }
 

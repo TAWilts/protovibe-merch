@@ -542,6 +542,7 @@ type saleEventPayload struct {
 	ID         int64  `json:"id"`
 	Name       string `json:"name"`
 	IsSelected bool   `json:"is_selected"`
+	Merged     bool   `json:"merged,omitempty"`
 }
 
 // listSaleEvents returns the band's events, most recently used first, together
@@ -678,26 +679,52 @@ func (s *Server) renameSaleEvent(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	var event models.SaleEvent
-	if err := s.db.WithContext(ctx).First(&event, id).Error; err != nil {
+	result := models.SaleEvent{}
+	oldName := ""
+	merged := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.WithContext(ctx).First(&event, id).Error; err != nil {
+			return err
+		}
+		oldName = event.Name
+
+		var existing models.SaleEvent
+		err := tx.WithContext(ctx).Where("id <> ? AND name = ?", id, name).First(&existing).Error
+		switch {
+		case err == nil:
+			merged = true
+			if event.LastSelectedAt.After(existing.LastSelectedAt) {
+				existing.LastSelectedAt = event.LastSelectedAt
+				if err := tx.WithContext(ctx).Model(&existing).
+					Update("last_selected_at", existing.LastSelectedAt).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.WithContext(ctx).Model(&models.SaleEventState{}).
+				Where("event_id = ?", event.ID).Update("event_id", existing.ID).Error; err != nil {
+				return err
+			}
+			if err := tx.WithContext(ctx).Delete(&event).Error; err != nil {
+				return err
+			}
+			result = existing
+			return nil
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			return err
+		}
+
+		if err := tx.WithContext(ctx).Model(&event).Update("name", name).Error; err != nil {
+			return err
+		}
+		event.Name = name
+		result = event
+		return nil
+	})
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			fail(c, http.StatusNotFound, "not_found", "no such event")
 			return
 		}
-		serverError(c, err)
-		return
-	}
-	var duplicate int64
-	if err := s.db.WithContext(ctx).Model(&models.SaleEvent{}).
-		Where("id <> ? AND name = ?", id, name).Count(&duplicate).Error; err != nil {
-		serverError(c, err)
-		return
-	}
-	if duplicate > 0 {
-		fail(c, http.StatusConflict, "sale_event_name_conflict", "an event with this name already exists")
-		return
-	}
-	oldName := event.Name
-	if err := s.db.WithContext(ctx).Model(&event).Update("name", name).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			fail(c, http.StatusConflict, "sale_event_name_conflict", "an event with this name already exists")
 			return
@@ -709,7 +736,7 @@ func (s *Server) renameSaleEvent(c *gin.Context) {
 		Action: audit.ActionSaleEventRenamed, EntityType: "sale_event", EntityID: &id,
 		Details: map[string]any{
 			"old": map[string]any{"name": oldName},
-			"new": map[string]any{"name": name},
+			"new": map[string]any{"id": result.ID, "name": result.Name, "merged": merged},
 		},
 	})
 	selectedID, err := s.selectedEventID(c)
@@ -717,7 +744,9 @@ func (s *Server) renameSaleEvent(c *gin.Context) {
 		serverError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, saleEventPayload{ID: event.ID, Name: name, IsSelected: event.ID == selectedID})
+	c.JSON(http.StatusOK, saleEventPayload{
+		ID: result.ID, Name: result.Name, IsSelected: result.ID == selectedID, Merged: merged,
+	})
 }
 
 func (s *Server) deleteSaleEvent(c *gin.Context) {

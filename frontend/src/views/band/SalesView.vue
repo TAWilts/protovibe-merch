@@ -22,6 +22,7 @@ import type {
   Variant,
 } from '@/api/types'
 import { useMoney, parseAmount } from '@/composables/useMoney'
+import { usePendingChangesGuard } from '@/composables/usePendingChangesGuard'
 import { useFlashStore } from '@/stores/flash'
 import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
@@ -80,6 +81,7 @@ const specialDescription = ref('Spende')
 const specialAmountInput = ref('')
 
 const basket = ref<BasketLine[]>([])
+usePendingChangesGuard(() => basket.value.length > 0, () => t('sales.unfinishedLeave'))
 const hasSpecialBasket = computed(() => basket.value.some(
   (line) => line.lineType === 'donation' || line.lineType === 'misc_income',
 ))

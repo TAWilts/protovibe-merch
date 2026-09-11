@@ -168,11 +168,25 @@ describe('LandingView registration', () => {
     expect(wrapper.findComponent({ name: 'LandingMiniApp' }).exists()).toBe(false)
   })
 
+  it('offers the sandbox beside the top login action', async () => {
+    const wrapper = mount(LandingView)
+    await flushPromises()
+
+    const quickStart = wrapper.get('.hero-actions .landing-button-sandbox')
+    expect(quickStart.text()).toBe('landing.hero.tryWithoutLogin')
+    await quickStart.trigger('click')
+    await flushPromises()
+
+    expect(session.enterSandbox).toHaveBeenCalledOnce()
+    expect(routerPush).toHaveBeenCalledWith({ name: 'sandbox-sales' })
+  })
+
   it('hides the sandbox entry when the instance disabled it', async () => {
     config.mockResolvedValue({ registration_enabled: true, sandbox_enabled: false, environment: 'production' })
     const wrapper = mount(LandingView)
     await flushPromises()
     expect(wrapper.find('.sandbox-entry').exists()).toBe(false)
+    expect(wrapper.find('.hero-actions .landing-button-sandbox').exists()).toBe(false)
     expect(wrapper.findAll('.interactive-merch-section')).toHaveLength(1)
   })
 })

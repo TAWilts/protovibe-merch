@@ -11,6 +11,7 @@ import AppToggle from '@/components/ui/AppToggle.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import TableSkeleton from '@/components/ui/TableSkeleton.vue'
 import { useMoney, parseAmount } from '@/composables/useMoney'
+import { usePendingChangesGuard } from '@/composables/usePendingChangesGuard'
 import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 import { datedFilename, downloadCsv } from '@/utils/csvDownload'
@@ -65,6 +66,7 @@ interface CartLine {
   unitCostCents: number
 }
 const cart = ref<CartLine[]>([])
+usePendingChangesGuard(() => cart.value.length > 0, () => t('purchases.unfinishedLeave'))
 
 const purchasableArticles = computed(() =>
   articles.value.filter((article) => article.variants.some((variant) => !variant.no_reorder)),

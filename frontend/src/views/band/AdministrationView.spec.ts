@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AdministrationView from './AdministrationView.vue'
 
-const { paymentQrSettings, savePaymentQrSettings, grants, listUsers, events, createEvent, renameEvent, selectEvent, deleteEvent, setFeatureVisibility, session } = vi.hoisted(() => ({
+const { paymentQrSettings, savePaymentQrSettings, grants, listUsers, events, createEvent, renameEvent, selectEvent, deleteEvent, setFeatureVisibility, flashSuccess, session } = vi.hoisted(() => ({
   paymentQrSettings: vi.fn(),
   savePaymentQrSettings: vi.fn(),
   grants: vi.fn(),
@@ -14,6 +14,7 @@ const { paymentQrSettings, savePaymentQrSettings, grants, listUsers, events, cre
   selectEvent: vi.fn(),
   deleteEvent: vi.fn(),
   setFeatureVisibility: vi.fn(),
+  flashSuccess: vi.fn(),
   session: {
     featureFlags: { payment_qr: true },
     user: { show_packing_list: true, show_product_palette: true },
@@ -29,7 +30,7 @@ vi.mock('vue-i18n', () => ({
   }),
 }))
 vi.mock('@/stores/flash', () => ({
-  useFlashStore: () => ({ success: vi.fn(), error: vi.fn() }),
+  useFlashStore: () => ({ success: flashSuccess, error: vi.fn() }),
 }))
 vi.mock('@/stores/session', () => ({
   useSessionStore: () => session,
@@ -52,6 +53,7 @@ describe('AdministrationView payment QR settings', () => {
     session.user.show_product_palette = true
     session.setFeatureVisibility = setFeatureVisibility
     setFeatureVisibility.mockReset().mockResolvedValue({ show_packing_list: false, show_product_palette: true })
+    flashSuccess.mockReset()
     grants.mockReset().mockResolvedValue({ grants: [] })
     listUsers.mockReset().mockResolvedValue({ users: [], assignable_roles: [] })
     events.mockReset().mockResolvedValue({ events: [], selected_event_id: 0 })
@@ -132,6 +134,23 @@ describe('AdministrationView payment QR settings', () => {
     await wrapper.get('.confirmation-dialog .danger-button').trigger('click')
     await flushPromises()
     expect(deleteEvent).toHaveBeenCalledWith(1)
+  })
+
+  it('reports when renaming merged two active events', async () => {
+    session.capabilities.is_band_admin = false
+    events.mockResolvedValue({
+      events: [{ id: 1, name: 'Gig', is_selected: false }], selected_event_id: 0,
+    })
+    renameEvent.mockResolvedValue({ id: 2, name: 'Festival', is_selected: false, merged: true })
+    const wrapper = mount(AdministrationView)
+    await flushPromises()
+
+    await wrapper.get('.event-admin-list article').findAll('button')[1]!.trigger('click')
+    await wrapper.get('.confirmation-dialog input').setValue('Festival')
+    await wrapper.get('.confirmation-dialog form').trigger('submit')
+    await flushPromises()
+
+    expect(flashSuccess).toHaveBeenCalledWith('administration.events.merged')
   })
 
   it('lets members hide personal modules without changing band feature flags', async () => {

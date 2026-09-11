@@ -325,6 +325,15 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
             <RouterLink class="landing-button landing-button-ghost" :to="{ name: 'login' }">
               {{ t('landing.hero.login') }}
             </RouterLink>
+            <button
+              v-if="sandboxEnabled !== false"
+              class="landing-button landing-button-sandbox"
+              type="button"
+              :disabled="sandboxBusy"
+              @click="startSandbox"
+            >
+              {{ sandboxBusy ? t('common.loading') : t('landing.hero.tryWithoutLogin') }}
+            </button>
           </div>
           <div class="hero-trust">
             <span>✓ {{ t('landing.hero.mobile') }}</span>
@@ -1636,6 +1645,13 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 .landing-button:hover:not(:disabled) { transform: translateY(-1px); }
 .landing-button-primary { color: var(--landing-accent-ink); background: var(--landing-accent); box-shadow: none; }
 .landing-button-ghost { color: #f4f4f6; border-color: var(--landing-line); background: #181a1f; }
+.landing-button-sandbox {
+  color: #241700;
+  border-color: #f1c680;
+  background: #e5ad45;
+  box-shadow: none;
+}
+.landing-button-sandbox:hover:not(:disabled) { background: #edbb5c; }
 .landing-button:focus-visible,
 .landing-page button:focus-visible,
 .landing-page a:focus-visible,

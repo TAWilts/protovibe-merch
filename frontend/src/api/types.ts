@@ -270,6 +270,7 @@ export interface SaleEvent {
   id: number
   name: string
   is_selected: boolean
+  merged?: boolean
 }
 
 /** One position a seller added to the basket, before it is booked. */

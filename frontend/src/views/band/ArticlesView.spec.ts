@@ -3,12 +3,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ArticlesView from './ArticlesView.vue'
 
-const { list, create, save, removeIncomplete, routerPush } = vi.hoisted(() => ({
+const { list, create, save, removeIncomplete, routerPush, routeLeaveGuards } = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   save: vi.fn(),
   removeIncomplete: vi.fn(),
   routerPush: vi.fn(),
+  routeLeaveGuards: [] as Array<() => boolean>,
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -24,7 +25,10 @@ vi.mock('@/stores/session', () => ({
   }),
 }))
 vi.mock('@/stores/offline', () => ({ useOfflineStore: () => ({ online: true }) }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ push: routerPush }) }))
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: routerPush }),
+  onBeforeRouteLeave: (guard: () => boolean) => routeLeaveGuards.push(guard),
+}))
 vi.mock('@/api/endpoints', () => ({
   catalogueApi: { list, create, save, removeIncomplete },
   photosApi: {
@@ -101,6 +105,7 @@ describe('ArticlesView variant generation', () => {
     save.mockReset().mockResolvedValue(confirmedArticle)
     removeIncomplete.mockReset().mockResolvedValue(undefined)
     routerPush.mockReset().mockResolvedValue(undefined)
+    routeLeaveGuards.length = 0
   })
 
   it('keeps the variant result hidden until a new article is confirmed', async () => {
@@ -124,6 +129,32 @@ describe('ArticlesView variant generation', () => {
     expect((wrapper.get('.sale-price-field input').element as HTMLInputElement).value).toBe('')
     expect(wrapper.find('.minimum-for-all').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('articles.retired')
+  })
+
+  it('warns before leaving a newly created article with unsaved configuration', async () => {
+    list
+      .mockResolvedValueOnce({ articles: [] })
+      .mockResolvedValue({ articles: [draftArticle] })
+    create.mockResolvedValue(draftArticle)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    await wrapper.get('.article-create-panel input').setValue('Neuer Artikel')
+    await wrapper.get('.article-create-panel form').trigger('submit')
+    await flushPromises()
+
+    expect(routeLeaveGuards).toHaveLength(1)
+    expect(routeLeaveGuards[0]!()).toBe(false)
+    expect(confirm).toHaveBeenCalledWith('articles.unfinishedLeave')
+
+    await wrapper.get('.sale-price-field input').setValue('25,00')
+    await wrapper.get('.article-form-actions .primary-button').trigger('click')
+    await flushPromises()
+    confirm.mockClear()
+
+    expect(routeLeaveGuards[0]!()).toBe(true)
+    expect(confirm).not.toHaveBeenCalled()
   })
 
   it('requires a sale price when confirming a new article', async () => {
