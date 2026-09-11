@@ -1332,6 +1332,39 @@
       "live": "Live aktualisiert",
       "justNow": "gerade eben"
     },
+    "interactive": {
+      "kicker": "Ein Tool für den ganzen Touralltag",
+      "title": "Vom Packen bis zur Abrechnung.",
+      "lead": "Entdecke, wie der Merch Manager eure Abläufe rund um Tour, Merchstand und Bandkasse zusammenbringt.",
+      "sceneDescription": "Eine breite Illustration mit Analyse, Packliste, Merchstand und Konzertbühne. Sechs Bereiche sind interaktiv.",
+      "instructions": "Wähle mit Tab einen Funktionsbereich. Enter oder Leertaste aktiviert ihn dauerhaft.",
+      "items": {
+        "A": {
+          "title": "Bestseller & Bandfinanzen",
+          "description": "Welches Shirt ist am beliebtesten? Wie viel Gewinn haben wir beim letzten Gig gemacht? Hab den Überblick über die Bandfinanzen!"
+        },
+        "B": {
+          "title": "Packliste",
+          "description": "Wieder das Stimmgerät vergessen? Mit der integrierten Packliste passiert sowas nicht mehr!"
+        },
+        "C": {
+          "title": "Verkäufe überall buchen",
+          "description": "Bucht alle eure Verkäufe – egal ob Smartphone, Tablet oder PC!"
+        },
+        "D": {
+          "title": "Offline arbeiten",
+          "description": "Sogar in den tiefsten Bunkergigs – synchronisiert eure Daten im Nachhinein!"
+        },
+        "E": {
+          "title": "Merch-Diashow",
+          "description": "Der Merchstand wieder nur so groß wie ein Dixi? Zeig deine Produkte in einer animierten Diashow!"
+        },
+        "F": {
+          "title": "Weitere Ein- & Ausgaben",
+          "description": "Ob Spritgeld, gemeinsame Anschaffungen oder die Gage für den Fotografen – alle weiteren Ein- und Ausgaben finden ihren Platz."
+        }
+      }
+    },
     "demos": {
       "kicker": "Ein Ablauf statt fünf Insellösungen",
       "title": "So sieht ruhiger Merch-Verkauf aus.",

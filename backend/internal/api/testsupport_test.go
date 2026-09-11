@@ -189,6 +189,14 @@ func (h *harness) do(method, path string, payload any) response {
 
 	out := response{Status: res.StatusCode, Body: map[string]any{}}
 	_ = json.NewDecoder(res.Body).Decode(&out.Body)
+	// Starting or resetting a sandbox rotates both its session and CSRF token.
+	// Mirror the browser client by using the token returned with the new session
+	// for the next sandbox request.
+	if strings.HasPrefix(path, "/api/v1/sandbox") {
+		if token, ok := out.Body["csrf_token"].(string); ok && token != "" {
+			h.sandboxCSRFToken = token
+		}
+	}
 	return out
 }
 
@@ -215,6 +223,24 @@ func (h *harness) startSandbox() response {
 		h.sandboxCSRFToken = token
 	}
 	return res
+}
+
+func TestHarnessTracksRotatedSandboxCSRFToken(t *testing.T) {
+	receivedTokens := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		receivedTokens = append(receivedTokens, request.Header.Get("X-CSRF-Token"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"csrf_token": "rotated-token"})
+	}))
+	defer server.Close()
+
+	h := &harness{t: t, server: server, sandboxCSRFToken: "initial-token"}
+	h.do(http.MethodPost, "/api/v1/sandbox/reset", nil)
+	h.do(http.MethodPost, "/api/v1/sandbox/reset", nil)
+
+	if len(receivedTokens) != 2 || receivedTokens[0] != "initial-token" || receivedTokens[1] != "rotated-token" {
+		t.Fatalf("sandbox CSRF token was not refreshed between requests: %v", receivedTokens)
+	}
 }
 
 // makeBand inserts a tenant.

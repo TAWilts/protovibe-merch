@@ -6,6 +6,7 @@ import { RouterLink, useRouter } from 'vue-router'
 import { ApiError } from '@/api/client'
 import { registrationApi } from '@/api/endpoints'
 import type { PublicRegistrationStatus, RegistrationCredentials } from '@/api/types'
+import InteractiveMerchManagerGraphic from '@/components/landing/InteractiveMerchManagerGraphic.vue'
 import { marketingLocale, setMarketingLocale, type Locale } from '@/i18n'
 import { useSessionStore } from '@/stores/session'
 
@@ -359,7 +360,9 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
         </div>
       </section>
 
-      <section id="features" class="landing-section demos-section">
+      <InteractiveMerchManagerGraphic />
+
+      <section class="landing-section demos-section">
         <div class="landing-heading">
           <p class="landing-kicker">{{ t('landing.demos.kicker') }}</p>
           <h2>{{ t('landing.demos.title') }}</h2>

@@ -1332,6 +1332,39 @@
       "live": "Updated live",
       "justNow": "just now"
     },
+    "interactive": {
+      "kicker": "One tool for the whole tour",
+      "title": "From packing to accounting.",
+      "lead": "Discover how Merch Manager connects your workflows around touring, the merch booth and band finances.",
+      "sceneDescription": "A panoramic illustration showing analytics, a packing list, a merchandise booth and a concert stage. Six areas are interactive.",
+      "instructions": "Use Tab to choose a feature area. Enter or Space keeps it active.",
+      "items": {
+        "A": {
+          "title": "Bestsellers & band finances",
+          "description": "Which shirt sells best? How much profit did the last gig make? Keep an eye on your band's finances."
+        },
+        "B": {
+          "title": "Packing list",
+          "description": "Forgot the tuner again? The integrated packing list helps make sure that doesn't happen."
+        },
+        "C": {
+          "title": "Book sales anywhere",
+          "description": "Record all your sales – whether you're using a smartphone, tablet or PC."
+        },
+        "D": {
+          "title": "Work offline",
+          "description": "Even at the deepest bunker gigs, keep working offline and sync your data afterwards."
+        },
+        "E": {
+          "title": "Merch slideshow",
+          "description": "Tiny merch booth again? Show your products in an animated slideshow."
+        },
+        "F": {
+          "title": "Other income & expenses",
+          "description": "Fuel money, shared purchases or a photographer's fee – all other income and expenses have their place."
+        }
+      }
+    },
     "demos": {
       "kicker": "One workflow instead of five isolated tools",
       "title": "This is what calm merch sales look like.",

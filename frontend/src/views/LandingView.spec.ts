@@ -19,7 +19,7 @@ const { config, create, status, claim, session, setMarketingLocale, routerPush }
 }))
 
 vi.mock('vue-i18n', () => ({
-  useI18n: () => ({ t: (key: string) => key, d: (value: unknown) => String(value) }),
+  useI18n: () => ({ t: (key: string) => key, d: (value: unknown) => String(value), locale: { value: 'de' } }),
 }))
 vi.mock('@/i18n', () => ({
   marketingLocale: () => 'de',
@@ -57,6 +57,7 @@ describe('LandingView registration', () => {
     expect(wrapper.findAll('.faq-list article')).toHaveLength(3)
     expect(wrapper.find('.faq-list details').exists()).toBe(false)
     expect(wrapper.find('.landing-footer-links').exists()).toBe(true)
+    expect(wrapper.find('.interactive-merch-section').exists()).toBe(true)
   })
 
   it('stores the secret status token and renders a pending request', async () => {

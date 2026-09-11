@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interaktive Merch-Manager-Grafik – lokaler Prototyp</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #292337;
+      --accent: #d56cdb;
+      --accent-bright: #e58bea;
+      --accent-soft: rgba(213, 108, 219, .24);
+      --panel: #241c27;
+      --paper: #f9f9fe;
+      --muted: #71667e;
+      --focus: #a442b5;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      min-width: 320px;
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 18% 8%, rgba(213, 108, 219, .1), transparent 30rem),
+        linear-gradient(180deg, #f6f0fb 0, #fff 38rem);
+    }
+
+    button { font: inherit; }
+    .page {
+      width: min(1600px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 22px 0 40px;
+    }
+    .prototype-head {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 14px;
+    }
+    .prototype-head > div:first-child { min-width: 0; }
+    .eyebrow {
+      margin: 0 0 4px;
+      color: #90429d;
+      font-size: .72rem;
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(1.2rem, 2.4vw, 2rem);
+      letter-spacing: -.035em;
+    }
+    .prototype-hint {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: .9rem;
+    }
+    .language-switch {
+      display: inline-flex;
+      gap: 3px;
+      margin-left: auto;
+      padding: 3px;
+      border: 1px solid #dfcbe9;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .82);
+      box-shadow: 0 8px 25px rgba(62, 27, 76, .08);
+    }
+    .language-switch button {
+      min-width: 42px;
+      min-height: 34px;
+      border: 0;
+      border-radius: 999px;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      font-weight: 800;
+    }
+    .language-switch button[aria-pressed="true"] {
+      color: #101114;
+      background: var(--accent);
+    }
+    .language-switch button:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--focus) 40%, transparent);
+      outline-offset: 2px;
+    }
+
+    .experience {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(126, 75, 149, .18);
+      border-radius: 26px;
+      background: rgba(255, 255, 255, .72);
+      box-shadow: 0 30px 90px rgba(62, 27, 76, .12);
+      isolation: isolate;
+    }
+    .viewport { overflow: hidden; }
+    .canvas {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1774 / 887;
+      overflow: hidden;
+      background: var(--paper);
+    }
+    .art-scene,
+    .connector-layer,
+    .hotspot-layer {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+    .art-scene {
+      z-index: 1;
+      overflow: hidden;
+      background: var(--paper);
+    }
+    .art-layer {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      object-fit: fill;
+      user-select: none;
+      -webkit-user-drag: none;
+      opacity: .32;
+      transition: opacity 190ms ease;
+    }
+    .art-background { opacity: .55; }
+    .art-layer.is-highlighted { opacity: 1; }
+    .connector-layer { z-index: 5; overflow: visible; pointer-events: none; }
+    .hotspot-layer { z-index: 8; pointer-events: none; }
+
+    .hotspot {
+      position: absolute;
+      z-index: var(--priority);
+      padding: 0;
+      border: 2px solid transparent;
+      border-radius: 18px;
+      background: transparent;
+      cursor: pointer;
+      pointer-events: auto;
+      touch-action: manipulation;
+    }
+    .hotspot:focus-visible {
+      border-color: var(--focus);
+      outline: 4px solid var(--accent-soft);
+      outline-offset: 3px;
+    }
+    .hotspot-marker {
+      position: absolute;
+      left: var(--pin-x);
+      top: var(--pin-y);
+      width: clamp(17px, 1.65vw, 25px);
+      height: clamp(17px, 1.65vw, 25px);
+      border: 3px solid white;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 5px var(--accent-soft), 0 5px 14px rgba(83, 36, 99, .25);
+      transform: translate(-50%, -50%);
+      transition: transform 180ms ease, box-shadow 180ms ease;
+      pointer-events: none;
+    }
+    .hotspot:hover .hotspot-marker,
+    .hotspot:focus-visible .hotspot-marker,
+    .hotspot[aria-pressed="true"] .hotspot-marker {
+      transform: translate(-50%, -50%) scale(1.18);
+      box-shadow: 0 0 0 9px rgba(213, 108, 219, .3), 0 7px 18px rgba(83, 36, 99, .28);
+    }
+    .hotspot[aria-pressed="true"] .hotspot-marker::after {
+      position: absolute;
+      inset: 4px;
+      border-radius: inherit;
+      background: var(--panel);
+      content: "";
+    }
+
+    .callout {
+      position: absolute;
+      z-index: 10;
+      top: 6.5%;
+      left: 20.5%;
+      width: min(25rem, 27%);
+      min-width: 260px;
+      padding: clamp(15px, 1.5vw, 24px);
+      border: 1px solid #55405c;
+      border-left: 6px solid var(--accent);
+      border-radius: 18px;
+      color: #f4f4f6;
+      background: var(--panel);
+      box-shadow: 0 18px 55px rgba(62, 27, 76, .2);
+      backdrop-filter: blur(10px);
+    }
+    .callout-kicker {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 7px;
+      color: var(--accent-bright);
+      font-size: .7rem;
+      font-weight: 850;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .callout-kicker::before {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--accent);
+      content: "";
+    }
+    .callout h2 {
+      margin: 0;
+      color: var(--accent-bright);
+      font-size: clamp(1.18rem, 2vw, 2rem);
+      line-height: 1.06;
+      letter-spacing: -.04em;
+    }
+    .callout p:last-child {
+      margin: 10px 0 0;
+      color: #e0d5e5;
+      font-size: clamp(.84rem, 1vw, 1rem);
+      line-height: 1.5;
+    }
+    #connector {
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      filter: drop-shadow(0 4px 3px rgba(83, 36, 99, .18));
+      transition: d 180ms ease;
+    }
+
+    .debug .hotspot { border-color: #ef4444; background: rgba(239, 68, 68, .06); }
+    .debug .hotspot::after {
+      position: absolute;
+      left: 50%;
+      bottom: 6px;
+      color: #2948ff;
+      content: attr(data-id);
+      font-size: 24px;
+      font-weight: 900;
+      transform: translateX(-50%);
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 1050px) and (min-width: 761px) {
+      .callout { top: 3%; left: 19%; width: 30%; min-width: 230px; }
+      .callout p:last-child { margin-top: 6px; line-height: 1.35; }
+    }
+
+    @media (max-width: 760px) {
+      .page { width: 100%; padding: 12px 0 28px; }
+      .prototype-head { padding: 0 14px; align-items: flex-start; }
+      .prototype-hint { max-width: 25rem; }
+      .experience { border-right: 0; border-left: 0; border-radius: 0; }
+      .viewport { overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
+      .canvas { width: 980px; max-width: none; }
+      .connector-layer { display: none; }
+      .callout {
+        position: relative;
+        inset: auto;
+        width: auto;
+        min-width: 0;
+        margin: 14px;
+        padding: 18px;
+        border-radius: 14px;
+      }
+      .callout h2 { font-size: 1.35rem; }
+      .hotspot-marker { width: 28px; height: 28px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="prototype-head">
+      <div>
+        <p class="eyebrow" data-copy="prototype">Lokaler Interaktionsentwurf</p>
+        <h1>Merch Manager</h1>
+        <p class="prototype-hint" data-copy="hint">Entdecke die Bereiche per Maus, Touch oder Tab-Taste.</p>
+      </div>
+      <div class="language-switch" aria-label="Sprache wählen">
+        <button type="button" data-language="de" aria-pressed="true">DE</button>
+        <button type="button" data-language="en" aria-pressed="false">EN</button>
+      </div>
+    </header>
+
+    <section class="experience" aria-label="Interaktive Übersicht der Merch-Manager-Funktionen">
+      <div class="viewport" id="viewport">
+        <div class="canvas" id="canvas">
+          <div class="art-scene" id="scene" role="img" aria-labelledby="scene-title scene-description">
+            <!-- Original PNG attachments, each once at the same full-canvas coordinates. -->
+            <img class="art-layer art-background" src="latest-merch-images/hintergrund.png" alt="" draggable="false">
+            <img class="art-layer" data-layer="A" src="latest-merch-images/A-analytics.png" alt="" draggable="false">
+            <img class="art-layer" data-layer="B" src="latest-merch-images/B-packliste.png" alt="" draggable="false">
+            <img class="art-layer is-highlighted" data-layer="C" src="latest-merch-images/C-verkauf.png" alt="" draggable="false">
+            <img class="art-layer" data-layer="D" src="latest-merch-images/D-offline.png" alt="" draggable="false">
+            <img class="art-layer" data-layer="E" src="latest-merch-images/E-diashow.png" alt="" draggable="false">
+            <img class="art-layer" data-layer="F" src="latest-merch-images/F-ausgaben.png" alt="" draggable="false">
+          </div>
+
+          <p class="sr-only" id="scene-title">Merch Manager bei Tourplanung, Merchverkauf und Konzert</p>
+          <p class="sr-only" id="scene-description">Eine breite Illustration mit Analyse, Packliste, Merchstand und Konzertbühne. Sechs Bereiche sind interaktiv.</p>
+
+          <svg class="connector-layer" viewBox="0 0 1774 887" aria-hidden="true">
+            <path id="connector" d=""/>
+          </svg>
+          <div class="hotspot-layer" id="hotspot-layer"></div>
+        </div>
+      </div>
+
+      <article class="callout" id="callout" aria-live="polite" aria-atomic="true">
+        <p class="callout-kicker" id="callout-kicker">Merch Manager</p>
+        <h2 id="callout-title">Verkäufe überall buchen</h2>
+        <p id="callout-description">Bucht alle eure Verkäufe – egal ob Smartphone, Tablet oder PC!</p>
+      </article>
+    </section>
+    <p class="sr-only" id="interaction-instructions">Wähle mit Tab einen Funktionsbereich. Enter oder Leertaste aktiviert ihn dauerhaft.</p>
+  </main>
+
+  <script>
+    const VIEWBOX = { width: 1774, height: 887 };
+    const pointerPriority = ['D', 'E', 'C', 'A', 'B', 'F'];
+    const copy = {
+      de: {
+        prototype: 'Lokaler Interaktionsentwurf',
+        hint: 'Entdecke die Bereiche per Maus, Touch oder Tab-Taste.',
+        language: 'Sprache wählen',
+        region: 'Interaktive Übersicht der Merch-Manager-Funktionen',
+        instructions: 'Wähle mit Tab einen Funktionsbereich. Enter oder Leertaste aktiviert ihn dauerhaft.',
+        pageTitle: 'Interaktive Merch-Manager-Grafik – lokaler Prototyp',
+        sceneTitle: 'Merch Manager bei Tourplanung, Merchverkauf und Konzert',
+        sceneDescription: 'Eine breite Illustration mit Analyse, Packliste, Merchstand und Konzertbühne. Sechs Bereiche sind interaktiv.',
+        A: ['Bestseller & Bandfinanzen', 'Welches Shirt ist am beliebtesten? Wie viel Gewinn haben wir beim letzten Gig gemacht? Hab den Überblick über die Bandfinanzen!'],
+        B: ['Packliste', 'Wieder das Stimmgerät vergessen? Mit der integrierten Packliste passiert sowas nicht mehr!'],
+        C: ['Verkäufe überall buchen', 'Bucht alle eure Verkäufe – egal ob Smartphone, Tablet oder PC!'],
+        D: ['Offline arbeiten', 'Sogar in den tiefsten Bunkergigs – synchronisiert eure Daten im Nachhinein!'],
+        E: ['Merch-Diashow', 'Der Merchstand wieder nur so groß wie ein Dixi? Zeig deine Produkte in einer animierten Diashow!'],
+        F: ['Weitere Ein- & Ausgaben', 'Ob Spritgeld, gemeinsame Anschaffungen oder die Gage für den Fotografen – alle weiteren Ein- und Ausgaben finden ihren Platz.'],
+      },
+      en: {
+        prototype: 'Local interaction prototype',
+        hint: 'Explore each area with a mouse, touch or the Tab key.',
+        language: 'Choose language',
+        region: 'Interactive overview of Merch Manager features',
+        instructions: 'Use Tab to choose a feature area. Enter or Space keeps it active.',
+        pageTitle: 'Interactive Merch Manager graphic – local prototype',
+        sceneTitle: 'Merch Manager for tour planning, merchandise sales and concerts',
+        sceneDescription: 'A panoramic illustration showing analytics, a packing list, a merchandise booth and a concert stage. Six areas are interactive.',
+        A: ['Bestsellers & band finances', "Which shirt sells best? How much profit did the last gig make? Keep an eye on your band's finances."],
+        B: ['Packing list', "Forgot the tuner again? The integrated packing list helps make sure that doesn't happen."],
+        C: ['Book sales anywhere', "Record all your sales – whether you're using a smartphone, tablet or PC."],
+        D: ['Work offline', 'Even at the deepest bunker gigs, keep working offline and sync your data afterwards.'],
+        E: ['Merch slideshow', 'Tiny merch booth again? Show your products in an animated slideshow.'],
+        F: ['Other income & expenses', "Fuel money, shared purchases or a photographer's fee – all other income and expenses have their place."],
+      },
+    };
+
+    const hotspots = [
+      { id: 'A', slug: 'analytics', hit: [38, 351, 290, 365], anchor: [300, 391] },
+      { id: 'B', slug: 'packing-list', hit: [328, 400, 311, 243], anchor: [602, 438] },
+      { id: 'C', slug: 'sales', hit: [647, 162, 591, 574], anchor: [706, 320] },
+      { id: 'D', slug: 'offline', hit: [1141, 305, 88, 129], anchor: [1205, 367] },
+      { id: 'E', slug: 'slideshow', hit: [999, 596, 194, 122], anchor: [1170, 624] },
+      { id: 'F', slug: 'expenses', hit: [1251, 236, 523, 410], anchor: [1320, 410] },
+    ];
+
+    const byId = Object.fromEntries(hotspots.map((hotspot) => [hotspot.id, hotspot]));
+    const scene = document.querySelector('#scene');
+    const experience = document.querySelector('.experience');
+    const viewport = document.querySelector('#viewport');
+    const canvas = document.querySelector('#canvas');
+    const callout = document.querySelector('#callout');
+    const layer = document.querySelector('#hotspot-layer');
+    const title = document.querySelector('#callout-title');
+    const description = document.querySelector('#callout-description');
+    const connector = document.querySelector('#connector');
+    const languageButtons = [...document.querySelectorAll('[data-language]')];
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let language = 'de';
+    let selected = 'C';
+
+    if (new URLSearchParams(location.search).get('debug') === '1') experience.classList.add('debug');
+
+    function percent(value, total) { return `${value / total * 100}%`; }
+
+    for (const hotspot of hotspots) {
+      const [x, y, width, height] = hotspot.hit;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'hotspot';
+      button.dataset.id = hotspot.id;
+      button.dataset.slug = hotspot.slug;
+      button.setAttribute('aria-describedby', 'interaction-instructions');
+      button.style.left = percent(x, VIEWBOX.width);
+      button.style.top = percent(y, VIEWBOX.height);
+      button.style.width = percent(width, VIEWBOX.width);
+      button.style.height = percent(height, VIEWBOX.height);
+      button.style.setProperty('--pin-x', percent(hotspot.anchor[0] - x, width));
+      button.style.setProperty('--pin-y', percent(hotspot.anchor[1] - y, height));
+      button.style.setProperty('--priority', String(pointerPriority.length - pointerPriority.indexOf(hotspot.id)));
+      button.innerHTML = '<span class="hotspot-marker" aria-hidden="true"></span>';
+      button.addEventListener('mouseenter', () => activate(hotspot.id, false));
+      button.addEventListener('mouseleave', () => {
+        if (document.activeElement !== button) activate(selected, false);
+      });
+      button.addEventListener('focus', () => activate(hotspot.id, false));
+      button.addEventListener('blur', () => activate(selected, false));
+      button.addEventListener('click', () => {
+        selected = hotspot.id;
+        activate(selected, true);
+      });
+      layer.append(button);
+    }
+
+    function connectorPath([x, y]) {
+      const canvasRect = canvas.getBoundingClientRect();
+      const calloutRect = callout.getBoundingClientRect();
+      if (!canvasRect.width || !canvasRect.height) return '';
+
+      const scaleX = VIEWBOX.width / canvasRect.width;
+      const scaleY = VIEWBOX.height / canvasRect.height;
+      const left = (calloutRect.left - canvasRect.left) * scaleX;
+      const right = (calloutRect.right - canvasRect.left) * scaleX;
+      const top = (calloutRect.top - canvasRect.top) * scaleY;
+      const bottom = (calloutRect.bottom - canvasRect.top) * scaleY;
+      const centerX = (left + right) / 2;
+      const centerY = (top + bottom) / 2;
+
+      // Straight into the card when it is directly above/below or beside the dot.
+      // All endpoints lie behind the opaque card, so no line end is visible.
+      if (x >= left && x <= right) return `M${x} ${y} V${centerY}`;
+      if (y >= top && y <= bottom) return `M${x} ${y} H${centerX}`;
+
+      // Diagonal placement needs one right-angle bend; finish at the card centre.
+      return `M${x} ${y} V${centerY} H${centerX}`;
+    }
+
+    function activate(id, committed) {
+      const hotspot = byId[id];
+      scene.querySelectorAll('[data-layer]').forEach((layer) => {
+        layer.classList.toggle('is-highlighted', layer.dataset.layer === id);
+      });
+      document.querySelectorAll('.hotspot').forEach((button) => {
+        button.setAttribute('aria-pressed', String(button.dataset.id === id));
+      });
+      title.textContent = copy[language][id][0];
+      description.textContent = copy[language][id][1];
+      connector.setAttribute('d', connectorPath(hotspot.anchor));
+      if (committed && window.innerWidth <= 760) scrollToHotspot(hotspot);
+    }
+
+    function scrollToHotspot(hotspot) {
+      const sceneWidth = document.querySelector('#canvas').getBoundingClientRect().width;
+      const center = (hotspot.hit[0] + hotspot.hit[2] / 2) / VIEWBOX.width * sceneWidth;
+      viewport.scrollTo({ left: Math.max(0, center - viewport.clientWidth / 2), behavior: reducedMotion.matches ? 'auto' : 'smooth' });
+    }
+
+    function applyLanguage(next) {
+      language = next;
+      document.documentElement.lang = next;
+      document.title = copy[next].pageTitle;
+      document.querySelector('[data-copy="prototype"]').textContent = copy[next].prototype;
+      document.querySelector('[data-copy="hint"]').textContent = copy[next].hint;
+      document.querySelector('.language-switch').setAttribute('aria-label', copy[next].language);
+      experience.setAttribute('aria-label', copy[next].region);
+      document.querySelector('#interaction-instructions').textContent = copy[next].instructions;
+      document.querySelector('#scene-title').textContent = copy[next].sceneTitle;
+      document.querySelector('#scene-description').textContent = copy[next].sceneDescription;
+      languageButtons.forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.language === next)));
+      document.querySelectorAll('.hotspot').forEach((button) => {
+        const id = button.dataset.id;
+        button.setAttribute('aria-label', `${copy[next][id][0]}: ${copy[next][id][1]}`);
+      });
+      activate(selected, false);
+    }
+
+    languageButtons.forEach((button) => button.addEventListener('click', () => applyLanguage(button.dataset.language)));
+    window.addEventListener('resize', () => activate(selected, false));
+    applyLanguage('de');
+    requestAnimationFrame(() => {
+      if (window.innerWidth <= 760) scrollToHotspot(byId.C);
+    });
+  </script>
+</body>
+</html>
