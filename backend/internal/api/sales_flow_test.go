@@ -506,7 +506,8 @@ func TestRenamingEventToAnExistingNameMergesOnlyActiveEvents(t *testing.T) {
 		t.Fatalf("merged target must remain selected: %v", listed.Body)
 	}
 	var sourceCount int64
-	if err := h.db.Model(&models.SaleEvent{}).Where("id = ?", sourceID).Count(&sourceCount).Error; err != nil {
+	if err := h.db.WithContext(h.ctx()).Model(&models.SaleEvent{}).
+		Where("id = ?", sourceID).Count(&sourceCount).Error; err != nil {
 		t.Fatalf("count merged source: %v", err)
 	}
 	if sourceCount != 0 {
