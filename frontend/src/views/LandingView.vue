@@ -141,6 +141,7 @@ function describeError(caught: unknown): string {
 async function loadConfig() {
   try {
     const publicConfig = await registrationApi.config()
+    session.setEnvironment(publicConfig.environment)
     registrationEnabled.value = publicConfig.registration_enabled
     sandboxEnabled.value = publicConfig.sandbox_enabled
   } catch {
@@ -284,11 +285,19 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 </script>
 
 <template>
-  <div id="top" class="landing-page" :class="{ 'animations-paused': !pageActive }">
+  <div
+    id="top"
+    class="landing-page"
+    :class="{ 'animations-paused': !pageActive, 'is-development': session.isDevelopment }"
+  >
     <header class="landing-header">
-      <a class="landing-brand" href="#top" aria-label="Merch Manager">
-        <span class="brand-mark">M</span>
-        <span>Merch Manager</span>
+      <a
+        class="landing-brand"
+        href="#top"
+        :aria-label="t(session.isDevelopment ? 'app.testName' : 'app.name')"
+      >
+        <span class="brand-mark">{{ session.isDevelopment ? 'T' : 'M' }}</span>
+        <span>{{ t(session.isDevelopment ? 'app.testName' : 'app.name') }}</span>
       </a>
       <nav class="landing-nav" :aria-label="t('landing.nav.label')">
         <a href="#features">{{ t('landing.nav.features') }}</a>
@@ -1577,8 +1586,8 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 .registration-card { min-height:550px; padding:clamp(22px,4vw,38px); border:1px solid rgba(255,255,255,.12); border-radius:20px; background:rgba(25,18,33,.88); box-shadow:0 35px 80px rgba(0,0,0,.3); }
 .registration-form { display:grid; gap:17px; }.registration-form-heading { margin-bottom:6px; display:flex; gap:15px; align-items:start; }.registration-form-heading > span { color:#e782f7; font:700 .75rem ui-monospace,monospace; }.registration-form h3,.status-panel h3,.credential-panel h3,.registration-unavailable h3 { margin:0 0 7px; font-size:1.45rem; letter-spacing:-.035em; }.registration-form p,.status-panel > p,.credential-panel > p,.registration-unavailable p { margin:0; color:#a99daf; line-height:1.55; }
 .registration-form label,.resume-link label { display:grid; gap:7px; color:#b9aFC0; font-size:.75rem; font-weight:730; }
-.registration-form input,.resume-link input { width:100%; padding:11px 12px; border:1px solid rgba(255,255,255,.12); border-radius:9px; color:#f8f4fb; background:#0e0a13; outline:none; }.registration-form input:focus,.resume-link input:focus { border-color:#e982f9; box-shadow:0 0 0 3px rgba(217,95,241,.12); }
-.registration-form small { color:#817687; font-size:.68rem; font-weight:500; }.registration-columns { display:grid; grid-template-columns:1fr 1fr; gap:12px; }.slug-field { display:grid; grid-template-columns:auto 1fr; align-items:center; overflow:hidden; border:1px solid rgba(255,255,255,.12); border-radius:9px; background:#0e0a13; }.slug-field > span { padding:0 0 0 12px; color:#7f7487; }.slug-field input { border:0; box-shadow:none; }.privacy-check { grid-template-columns:auto 1fr!important; align-items:start; line-height:1.45; cursor:pointer; }.privacy-check input { width:18px;height:18px;accent-color:#d95ff1; }.honeypot { position:absolute!important; left:-10000px!important; width:1px!important; height:1px!important; overflow:hidden!important; }.submit-registration { width:100%; margin-top:5px; }.landing-button:disabled { opacity:.55;cursor:wait; }
+.registration-form input,.resume-link input { width:100%; padding:11px 12px; border:1px solid rgba(255,255,255,.12); border-radius:9px; color:#f8f4fb; background:#0e0a13; outline:none; }.registration-form input:focus,.resume-link input:focus { border-color:var(--landing-accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--landing-accent) 13%, transparent); }
+.registration-form small { color:#817687; font-size:.68rem; font-weight:500; }.registration-columns { display:grid; grid-template-columns:1fr 1fr; gap:12px; }.slug-field { display:grid; grid-template-columns:auto 1fr; align-items:center; overflow:hidden; border:1px solid rgba(255,255,255,.12); border-radius:9px; background:#0e0a13; }.slug-field > span { padding:0 0 0 12px; color:#7f7487; }.slug-field input { border:0; box-shadow:none; }.privacy-check { grid-template-columns:auto 1fr!important; align-items:start; line-height:1.45; cursor:pointer; }.privacy-check input { width:18px;height:18px;accent-color:var(--landing-accent); }.honeypot { position:absolute!important; left:-10000px!important; width:1px!important; height:1px!important; overflow:hidden!important; }.submit-registration { width:100%; margin-top:5px; }.landing-button:disabled { opacity:.55;cursor:wait; }
 .landing-alert { margin-bottom:16px; padding:11px 13px; border-radius:9px; font-size:.8rem; line-height:1.45; }.landing-alert.error { color:#ffd8dc; border:1px solid rgba(242,121,131,.28); background:rgba(242,121,131,.1); }.landing-alert.success { color:#c9f4d9;border:1px solid rgba(82,209,139,.27);background:rgba(82,209,139,.09); }.landing-alert.warning { margin:16px 0 0;color:#ffe1b4;border:1px solid rgba(243,179,90,.25);background:rgba(243,179,90,.09); }
 .status-panel,.credential-panel,.registration-unavailable { display:grid; justify-items:start; }.status-orb { width:48px;height:48px;margin-bottom:22px;display:grid;place-items:center;border:1px solid rgba(255,255,255,.16);border-radius:50%;color:#c9bcd0;background:rgba(255,255,255,.05);font-size:1.25rem;font-weight:850; }.status-orb.pending { animation:orb-pulse 1.8s infinite; }.status-orb.approved { color:#9ff0bc;border-color:rgba(82,209,139,.35);background:rgba(82,209,139,.1); }.status-orb.rejected,.status-orb.expired { color:#ffc4ca;border-color:rgba(242,121,131,.35);background:rgba(242,121,131,.1); }@keyframes orb-pulse{50%{box-shadow:0 0 0 9px rgba(217,95,241,.06)}}
 .status-details,.credential-panel dl { width:100%;margin:25px 0 0;display:grid;gap:0;border-top:1px solid rgba(255,255,255,.09); }.status-details > div,.credential-panel dl > div { padding:11px 0;display:grid;grid-template-columns:minmax(110px,.7fr) 1fr;gap:15px;border-bottom:1px solid rgba(255,255,255,.07); }.status-details dt,.credential-panel dt { color:#8f8496;font-size:.72rem;font-weight:700; }.status-details dd,.credential-panel dd { margin:0;overflow-wrap:anywhere;font-size:.86rem; }.credential-panel code,.status-details code { color:#f09afe; }.credential-panel .setup-code dd code { display:inline-block;padding:8px 10px;border-radius:7px;color:#190820;background:#f1a0fc;font-size:1.05rem;font-weight:900;letter-spacing:.06em; }
@@ -1593,8 +1602,19 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
   --landing-bg: #101114;
   --landing-panel: #181a1f;
   --landing-line: #3b3f48;
+  --landing-accent: #d56cdb;
+  --landing-accent-bright: #e58bea;
+  --landing-accent-ink: #101114;
+  --landing-accent-soft: #241c27;
   color: #f4f4f6;
   background: var(--landing-bg);
+}
+.landing-page.is-development {
+  --landing-line: #57482d;
+  --landing-accent: #e5ad45;
+  --landing-accent-bright: #f1c680;
+  --landing-accent-ink: #241700;
+  --landing-accent-soft: #2b2417;
 }
 
 .landing-page::before,
@@ -1610,33 +1630,33 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 .landing-nav a:hover { color: #f4f4f6; background: #20232a; }
 .landing-locale { border-color: var(--landing-line); background: #101114; }
 .landing-locale button { color: #a3a7b1; }
-.landing-locale button.active { color: #101114; background: #d56cdb; }
-.landing-kicker { color: #e58bea; }
+.landing-locale button.active { color: var(--landing-accent-ink); background: var(--landing-accent); }
+.landing-kicker { color: var(--landing-accent-bright); }
 .landing-button { border-radius: 9px; }
 .landing-button:hover:not(:disabled) { transform: translateY(-1px); }
-.landing-button-primary { color: #101114; background: #d56cdb; box-shadow: none; }
+.landing-button-primary { color: var(--landing-accent-ink); background: var(--landing-accent); box-shadow: none; }
 .landing-button-ghost { color: #f4f4f6; border-color: var(--landing-line); background: #181a1f; }
 .landing-button:focus-visible,
 .landing-page button:focus-visible,
 .landing-page a:focus-visible,
-.landing-page input:focus-visible { outline-color: color-mix(in srgb, #d56cdb 55%, transparent); }
+.landing-page input:focus-visible { outline-color: color-mix(in srgb, var(--landing-accent) 55%, transparent); }
 .app-showcase { perspective: none; }
 .hero-window { transform: none; }
 .demo-window { border-color: var(--landing-line); border-radius: 12px; background: #181a1f; box-shadow: 0 18px 46px rgba(0,0,0,.28); }
 .hero-app-grid > div { border-color: #31343c; background: #131519; }
 .feature-card { border-color: var(--landing-line); border-radius: 12px; background: var(--landing-panel); }
 .feature-card:hover { border-color: #626773; }
-.feature-icon { border-color: #55405c; color: #e58bea; background: #241c27; }
+.feature-icon { border-color: color-mix(in srgb, var(--landing-accent) 38%, var(--landing-line)); color: var(--landing-accent-bright); background: var(--landing-accent-soft); }
 .workflow-grid li { border-top-color: var(--landing-line); background: transparent; }
-.registration-note { border-left-color: #d56cdb; background: #181a1f; }
+.registration-note { border-left-color: var(--landing-accent); background: #181a1f; }
 .registration-card { border-color: var(--landing-line); border-radius: 12px; background: var(--landing-panel); box-shadow: none; }
 .registration-form input,
 .resume-link input,
 .slug-field { border-color: var(--landing-line); background: #101114; }
 .registration-form input:focus,
-.resume-link input:focus { border-color: #d56cdb; box-shadow: 0 0 0 3px rgba(213,108,219,.13); }
+.resume-link input:focus { border-color: var(--landing-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--landing-accent) 13%, transparent); }
 .landing-footer { border-top-color: var(--landing-line); }
-.landing-footer-links a { color: #e58bea; }
+.landing-footer-links a { color: var(--landing-accent-bright); }
 
 .sandbox-entry {
   margin-bottom: 45px;

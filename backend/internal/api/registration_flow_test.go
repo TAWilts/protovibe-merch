@@ -55,7 +55,7 @@ func TestPublicRegistrationFlagAndRateLimit(t *testing.T) {
 		t.Setenv("SANDBOX_ENABLED", "false")
 		h := newHarness(t)
 		config := h.do(http.MethodGet, "/api/v1/public/registrations/config", nil)
-		if config.Status != http.StatusOK || config.Body["registration_enabled"] != false || config.Body["sandbox_enabled"] != false {
+		if config.Status != http.StatusOK || config.Body["registration_enabled"] != false || config.Body["sandbox_enabled"] != false || config.Body["environment"] != "development" {
 			t.Fatalf("disabled config: %d %v", config.Status, config.Body)
 		}
 		created := h.do(http.MethodPost, "/api/v1/public/registrations", map[string]any{

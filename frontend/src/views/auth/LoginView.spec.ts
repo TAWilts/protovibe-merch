@@ -3,15 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import LoginView from './LoginView.vue'
 
-const { login, routeQuery } = vi.hoisted(() => ({
+const { login, routeQuery, session } = vi.hoisted(() => ({
   login: vi.fn(),
   routeQuery: { value: {} as Record<string, string> },
+  session: { adopt: vi.fn(), isDevelopment: false },
 }))
 
 vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 vi.mock('@/i18n', () => ({ marketingLocale: () => 'de', setMarketingLocale: vi.fn() }))
 vi.mock('@/api/endpoints', () => ({ authApi: { login } }))
-vi.mock('@/stores/session', () => ({ useSessionStore: () => ({ adopt: vi.fn() }) }))
+vi.mock('@/stores/session', () => ({ useSessionStore: () => session }))
 vi.mock('vue-router', () => ({
   useRoute: () => ({ query: routeQuery.value }),
   useRouter: () => ({ replace: vi.fn() }),
@@ -22,6 +23,7 @@ describe('LoginView handover link', () => {
   beforeEach(() => {
     localStorage.clear()
     routeQuery.value = { band: 'ready-band', username: 'band-admin' }
+    session.isDevelopment = false
     login.mockReset().mockResolvedValue({ needs_mfa: true, pending_token: 'pending' })
   })
 
@@ -32,6 +34,14 @@ describe('LoginView handover link', () => {
     expect(wrapper.find('.login-card').exists()).toBe(true)
     expect((wrapper.get('input[autocomplete="organization"]').element as HTMLInputElement).value).toBe('ready-band')
     expect((wrapper.get('input[autocomplete="username"]').element as HTMLInputElement).value).toBe('band-admin')
+  })
+
+  it('shows testsuite branding in development', () => {
+    session.isDevelopment = true
+    const wrapper = mount(LoginView)
+
+    expect(wrapper.get('.login-context .brand').text()).toContain('app.testName')
+    expect(wrapper.get('.login-context .brand-mark').text()).toBe('T')
   })
 
   it('loads remembered names while query parameters retain priority', () => {

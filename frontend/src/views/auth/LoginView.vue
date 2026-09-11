@@ -237,7 +237,8 @@ async function confirmReset() {
     <div class="login-shell">
       <aside class="login-context">
         <RouterLink :to="{ name: 'landing' }" class="brand">
-          <span class="brand-mark">P</span><span>{{ t('app.name') }}</span>
+          <span class="brand-mark">{{ session.isDevelopment ? 'T' : 'P' }}</span>
+          <span>{{ t(session.isDevelopment ? 'app.testName' : 'app.name') }}</span>
         </RouterLink>
         <div>
           <p class="eyebrow">{{ t('landing.hero.kicker') }}</p>
@@ -253,7 +254,8 @@ async function confirmReset() {
 
       <section class="login-card">
       <div class="brand brand-login login-card-brand">
-        <span class="brand-mark">P</span><span>{{ t('app.name') }}</span>
+        <span class="brand-mark">{{ session.isDevelopment ? 'T' : 'P' }}</span>
+        <span>{{ t(session.isDevelopment ? 'app.testName' : 'app.name') }}</span>
       </div>
 
       <template v-if="recoveryCodes.length">

@@ -57,6 +57,7 @@ func (s *Server) registrationConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"registration_enabled": s.cfg.PublicRegistrationEnabled,
 		"sandbox_enabled":      s.cfg.SandboxEnabled,
+		"environment":          s.cfg.Environment,
 	})
 }
 

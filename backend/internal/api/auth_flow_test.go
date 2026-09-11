@@ -29,6 +29,9 @@ func TestLoginWithPassword(t *testing.T) {
 	if me.Status != http.StatusOK {
 		t.Fatalf("me: expected 200, got %d: %v", me.Status, me.Body)
 	}
+	if me.Body["environment"] != "development" {
+		t.Fatalf("me must expose the runtime environment, got %v", me.Body["environment"])
+	}
 	caps, _ := me.Body["capabilities"].(map[string]any)
 	if caps["can_access_band_workflows"] != true {
 		t.Fatalf("a seller must have band workflow access: %v", caps)

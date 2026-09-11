@@ -123,9 +123,9 @@ async function discardSandbox() {
 <template>
   <header v-if="session.isAuthenticated" class="app-header">
     <RouterLink class="brand" :to="platformOnly ? { name: 'platform-dashboard' } : { name: routeName('sales') }">
-      <span class="brand-mark">P</span>
+      <span class="brand-mark">{{ session.isDevelopment ? 'T' : 'P' }}</span>
       <span class="brand-copy">
-        <strong>{{ t('app.name') }}</strong>
+        <strong>{{ t(session.isDevelopment ? 'app.testName' : 'app.name') }}</strong>
         <small v-if="session.band?.name">{{ session.band.name }}</small>
       </span>
     </RouterLink>

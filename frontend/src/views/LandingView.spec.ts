@@ -12,6 +12,8 @@ const { config, create, status, claim, session, setMarketingLocale, routerPush }
     isAuthenticated: false,
     capabilities: null as null | { is_platform_staff: boolean; can_access_band_workflows: boolean },
     supportGrant: null,
+    isDevelopment: false,
+    setEnvironment: vi.fn(),
     enterSandbox: vi.fn(),
   },
   setMarketingLocale: vi.fn(),
@@ -38,13 +40,15 @@ describe('LandingView registration', () => {
   beforeEach(() => {
     window.localStorage.clear()
     window.history.replaceState(null, '', '/')
-    config.mockReset().mockResolvedValue({ registration_enabled: true, sandbox_enabled: true })
+    config.mockReset().mockResolvedValue({ registration_enabled: true, sandbox_enabled: true, environment: 'production' })
     create.mockReset()
     status.mockReset()
     claim.mockReset()
     setMarketingLocale.mockClear()
     session.isAuthenticated = false
     session.capabilities = null
+    session.isDevelopment = false
+    session.setEnvironment.mockReset()
     session.enterSandbox.mockReset().mockResolvedValue({})
     routerPush.mockReset().mockResolvedValue(undefined)
   })
@@ -60,6 +64,18 @@ describe('LandingView registration', () => {
     expect(wrapper.findAll('.interactive-merch-section')).toHaveLength(1)
     expect(wrapper.findAll('.interactive-heading')).toHaveLength(1)
     expect(wrapper.findAll('.hero-window')).toHaveLength(2)
+  })
+
+  it('uses the testsuite brand and runtime environment on a development instance', async () => {
+    session.isDevelopment = true
+    config.mockResolvedValue({ registration_enabled: true, sandbox_enabled: true, environment: 'development' })
+    const wrapper = mount(LandingView)
+    await flushPromises()
+
+    expect(session.setEnvironment).toHaveBeenCalledWith('development')
+    expect(wrapper.get('.landing-header .landing-brand').text()).toContain('app.testName')
+    expect(wrapper.get('.landing-header .brand-mark').text()).toBe('T')
+    expect(wrapper.get('.landing-page').classes()).toContain('is-development')
   })
 
   it('stores the secret status token and renders a pending request', async () => {
@@ -118,7 +134,7 @@ describe('LandingView registration', () => {
   })
 
   it('shows the friendly disabled state instead of the request form', async () => {
-    config.mockResolvedValue({ registration_enabled: false, sandbox_enabled: true })
+    config.mockResolvedValue({ registration_enabled: false, sandbox_enabled: true, environment: 'production' })
     const wrapper = mount(LandingView)
     await flushPromises()
 
@@ -153,7 +169,7 @@ describe('LandingView registration', () => {
   })
 
   it('hides the sandbox entry when the instance disabled it', async () => {
-    config.mockResolvedValue({ registration_enabled: true, sandbox_enabled: false })
+    config.mockResolvedValue({ registration_enabled: true, sandbox_enabled: false, environment: 'production' })
     const wrapper = mount(LandingView)
     await flushPromises()
     expect(wrapper.find('.sandbox-entry').exists()).toBe(false)

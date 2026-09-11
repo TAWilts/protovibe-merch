@@ -73,4 +73,10 @@ describe('theme token contract', () => {
     expect(tableScroll).toContain('overscroll-behavior-x: contain')
     expect(tableScroll).toContain('touch-action: pan-x pan-y pinch-zoom')
   })
+
+  it('shares the amber accent between sandbox and development instances', () => {
+    expect(themeCss).toContain('html[data-sandbox],\nhtml[data-development]')
+    const developmentTheme = themeCss.slice(themeCss.indexOf('html[data-sandbox]'))
+    expect(developmentTheme).toContain('--accent: #e5ad45')
+  })
 })

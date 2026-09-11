@@ -1,5 +1,5 @@
 {
-  "app": { "name": "Merch Manager" },
+  "app": { "name": "Merch Manager", "testName": "testsuite" },
   "accountMenu": {
     "open": "Kontomenü öffnen",
     "profile": "Profil und Darstellung"

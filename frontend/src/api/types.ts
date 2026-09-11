@@ -8,6 +8,8 @@ export type Role =
   | 'support_admin'
   | 'system_admin'
 
+export type RuntimeEnvironment = 'development' | 'production'
+
 export interface Capabilities {
   role: Role
   role_label: string
@@ -84,6 +86,7 @@ export interface Identity {
   support_grant?: SupportGrantBanner
   sandbox?: SandboxIdentity
   sandbox_available?: boolean
+  environment: RuntimeEnvironment
 }
 
 export interface LoginResponse {

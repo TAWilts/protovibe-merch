@@ -5,16 +5,18 @@ import { ApiError, getApiMode } from '@/api/client'
 import type { Identity } from '@/api/types'
 import { useSessionStore } from './session'
 
-const { me, logout, featureVisibility, sandboxStart } = vi.hoisted(() => ({
+const { me, logout, featureVisibility, sandboxStart, registrationConfig } = vi.hoisted(() => ({
   me: vi.fn(),
   logout: vi.fn(),
   featureVisibility: vi.fn(),
   sandboxStart: vi.fn(),
+  registrationConfig: vi.fn(),
 }))
 vi.mock('@/api/endpoints', () => ({
   authApi: { me, logout },
   profileApi: { featureVisibility },
   sandboxApi: { start: sandboxStart },
+  registrationApi: { config: registrationConfig },
 }))
 
 const identity = {
@@ -24,6 +26,7 @@ const identity = {
   },
   band: { id: 12, slug: 'band', name: 'Band', feature_flags: { packing_list: true } },
   capabilities: { can_access_band_workflows: true },
+  environment: 'production',
 } as Identity
 
 describe('offline session identity', () => {
@@ -33,6 +36,13 @@ describe('offline session identity', () => {
     logout.mockReset()
     featureVisibility.mockReset()
     sandboxStart.mockReset()
+    registrationConfig.mockReset().mockResolvedValue({
+      registration_enabled: true,
+      sandbox_enabled: true,
+      environment: 'production',
+    })
+    document.documentElement.removeAttribute('data-development')
+    document.documentElement.removeAttribute('data-sandbox')
     setActivePinia(createPinia())
   })
 
@@ -58,6 +68,29 @@ describe('offline session identity', () => {
     await session.restore()
     expect(session.identity).toBeNull()
     expect(localStorage.getItem('protovibe.offline-identity.v1')).toBeNull()
+  })
+
+  it('applies development branding for signed-out and signed-in sessions', async () => {
+    me.mockRejectedValueOnce(new ApiError(401, 'signed out'))
+    registrationConfig.mockResolvedValueOnce({
+      registration_enabled: true,
+      sandbox_enabled: true,
+      environment: 'development',
+    })
+    const signedOut = useSessionStore()
+    await signedOut.restore()
+
+    expect(signedOut.isDevelopment).toBe(true)
+    expect(document.documentElement.hasAttribute('data-development')).toBe(true)
+    expect(document.title).toBe('testsuite')
+
+    setActivePinia(createPinia())
+    const signedIn = useSessionStore()
+    signedIn.adopt({ ...identity, environment: 'development' })
+
+    expect(signedIn.isDevelopment).toBe(true)
+    expect(document.documentElement.hasAttribute('data-development')).toBe(true)
+    expect(document.title).toBe('testsuite')
   })
 
   it('updates and caches the current user feature visibility', async () => {

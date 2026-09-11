@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { authApi, profileApi, sandboxApi } from '@/api/endpoints'
+import { authApi, profileApi, registrationApi, sandboxApi } from '@/api/endpoints'
 import { ApiError, setApiMode, setCsrfToken } from '@/api/client'
-import type { Identity, Role } from '@/api/types'
+import type { Identity, Role, RuntimeEnvironment } from '@/api/types'
 import { setLocale } from '@/i18n'
 
 /**
@@ -19,6 +19,7 @@ export const useSessionStore = defineStore('session', () => {
   const offlineIdentity = ref(false)
   const loading = ref(false)
   const ready = ref(false)
+  const environment = ref<RuntimeEnvironment>('production')
 
   const user = computed(() => identity.value?.user ?? null)
   const band = computed(() => identity.value?.band ?? null)
@@ -27,13 +28,21 @@ export const useSessionStore = defineStore('session', () => {
   const supportGrant = computed(() => identity.value?.support_grant ?? null)
   const isAuthenticated = computed(() => identity.value !== null)
   const isSandbox = computed(() => identity.value?.sandbox !== undefined)
+  const isDevelopment = computed(() => environment.value === 'development')
+
+  function setEnvironment(next: RuntimeEnvironment | string | undefined) {
+    environment.value = next === 'development' ? 'development' : 'production'
+    document.documentElement.toggleAttribute('data-development', isDevelopment.value)
+    const appName = isDevelopment.value ? 'testsuite' : 'Merch Manager'
+    document.title = identity.value?.sandbox ? `SANDBOX \u00b7 ${appName}` : appName
+  }
 
   /** Applies account preferences that are available inside the app. */
   function applyPreferences(next: Identity | null) {
     const theme = next?.user.ui_theme ?? 'aurora'
     document.documentElement.dataset.theme = theme
     document.documentElement.toggleAttribute('data-sandbox', Boolean(next?.sandbox))
-    document.title = next?.sandbox ? 'SANDBOX · Merch Manager' : 'Merch Manager'
+    setEnvironment(next?.environment ?? environment.value)
     // Marketing and login are bilingual, but the authenticated application
     // remains German until its English catalogue is complete.
     setLocale('de')
@@ -47,6 +56,7 @@ export const useSessionStore = defineStore('session', () => {
   ) {
     identity.value = next
     offlineIdentity.value = fromOfflineCache
+    if (next) setEnvironment(next.environment)
     if (next?.band && !next.sandbox && !fromOfflineCache) {
       // This deliberately stores only the already-public session identity.
       // Passwords, MFA secrets and recovery codes never enter this object.
@@ -88,6 +98,12 @@ export const useSessionStore = defineStore('session', () => {
           setApiMode('normal')
         } else {
           adopt(null, undefined, applyUserPreferences)
+          try {
+            setEnvironment((await registrationApi.config()).environment)
+          } catch {
+            // If even public configuration is unavailable, retain the last
+            // known runtime branding and let the login page remain usable.
+          }
         }
       } else {
         const cached = cachedOfflineIdentity()
@@ -203,9 +219,12 @@ export const useSessionStore = defineStore('session', () => {
     supportGrant,
     isAuthenticated,
     isSandbox,
+    environment,
+    isDevelopment,
     loading,
     ready,
     adopt,
+    setEnvironment,
     clear,
     restore,
     logout,

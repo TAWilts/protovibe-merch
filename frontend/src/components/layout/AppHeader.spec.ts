@@ -21,6 +21,7 @@ const { session, route, routerReplace } = vi.hoisted(() => {
       featureFlags: { offline_sales: true, slideshow: true, packing_list: true },
       supportGrant: null,
       isSandbox: false,
+      isDevelopment: false,
       enterSandbox: vi.fn(),
       setSandboxTutorial: vi.fn(),
       logout: vi.fn(),
@@ -54,6 +55,7 @@ describe('AppHeader navigation', () => {
     session.user.show_packing_list = true
     session.user.show_product_palette = true
     session.capabilities.can_access_member_workflows = true
+    session.isDevelopment = false
     session.logout.mockReset().mockResolvedValue(true)
     routerReplace.mockReset().mockResolvedValue(undefined)
   })
@@ -70,6 +72,14 @@ describe('AppHeader navigation', () => {
     route.name = 'packing-list'
     const wrapper = mount(AppHeader)
     expect(wrapper.find('.offline-sync-status').exists()).toBe(true)
+  })
+
+  it('labels a development instance as the testsuite', () => {
+    session.isDevelopment = true
+    const wrapper = mount(AppHeader)
+
+    expect(wrapper.get('.brand-mark').text()).toBe('T')
+    expect(wrapper.get('.brand-copy strong').text()).toBe('app.testName')
   })
 
   it('honours personal feature visibility for members but not sellers', () => {

@@ -299,6 +299,7 @@ type meResponse struct {
 	SupportGrant     *supportGrantBanner `json:"support_grant,omitempty"`
 	Sandbox          *sandboxIdentity    `json:"sandbox,omitempty"`
 	SandboxAvailable bool                `json:"sandbox_available"`
+	Environment      string              `json:"environment"`
 }
 
 type sandboxIdentity struct {
@@ -348,7 +349,7 @@ func (s *Server) identityPayload(ctx context.Context, user *models.User, grant *
 		caps.MFARequired = false
 		caps.SensitiveActionMFARequired = false
 	}
-	payload := &meResponse{Capabilities: caps}
+	payload := &meResponse{Capabilities: caps, Environment: s.cfg.Environment}
 	payload.User.ID = user.ID
 	payload.User.Username = user.Username
 	payload.User.Role = user.Role

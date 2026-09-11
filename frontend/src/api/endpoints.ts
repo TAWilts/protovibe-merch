@@ -43,11 +43,16 @@ import type {
   RegistrationCredentials,
   PackingSnapshot,
   PackingOperation,
+  RuntimeEnvironment,
 } from './types'
 
 /** Anonymous onboarding. Status secrets are always sent in the body. */
 export const registrationApi = {
-  config: () => api.get<{ registration_enabled: boolean; sandbox_enabled: boolean }>('/public/registrations/config'),
+  config: () => api.get<{
+    registration_enabled: boolean
+    sandbox_enabled: boolean
+    environment: RuntimeEnvironment
+  }>('/public/registrations/config'),
   create: (payload: {
     band_name: string
     band_slug: string

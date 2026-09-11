@@ -15,6 +15,7 @@ const { session, routerReplace } = vi.hoisted(() => ({
     },
     supportGrant: null,
     isSandbox: false,
+    isDevelopment: false,
     enterSandbox: vi.fn(),
     logout: vi.fn(),
   },

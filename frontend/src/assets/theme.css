@@ -132,9 +132,10 @@ html[data-theme="midnight"] {
   --shadow-color: 5 9 20;
 }
 
-/* The sandbox keeps a distinct amber accent independent of the user's theme;
-   the persistent banner still carries the textual warning for accessibility. */
-html[data-sandbox] {
+/* Sandbox sessions and development instances keep a distinct amber accent
+   independent of the user's theme. Only the sandbox gets its warning banner. */
+html[data-sandbox],
+html[data-development] {
   --accent: #e5ad45;
   --on-accent: #241700;
   --focus-ring: #ffd98f;
