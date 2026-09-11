@@ -12,6 +12,7 @@ import {
   type QueuedSale,
 } from '@/offline/outbox'
 import { synchronize } from '@/offline/sync'
+import { requestPersistentStorage } from '@/offline/persistence'
 
 /**
  * Tracks the connection and the offline sales queue.
@@ -69,6 +70,7 @@ export const useOfflineStore = defineStore('offline', () => {
 
   /** Wires the browser's connection events. */
   function start() {
+    void requestPersistentStorage()
     window.addEventListener('online', () => {
       online.value = true
       void sync()
