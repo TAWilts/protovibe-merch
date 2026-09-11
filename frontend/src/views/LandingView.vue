@@ -503,7 +503,7 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
       </section>
 
       <section v-if="sandboxEnabled !== false" class="landing-section sandbox-entry">
-        <div>
+        <div class="sandbox-entry-copy">
           <p class="landing-kicker">{{ t('landing.sandbox.kicker') }}</p>
           <h2>{{ t('landing.sandbox.title') }}</h2>
           <p>{{ t('landing.sandbox.lead') }}</p>
@@ -514,14 +514,19 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
           </ul>
           <p v-if="sandboxError" class="landing-alert error">{{ sandboxError }}</p>
         </div>
-        <button
-          class="landing-button landing-button-primary"
-          type="button"
-          :disabled="sandboxBusy"
-          @click="startSandbox"
-        >
-          {{ sandboxBusy ? t('common.loading') : t('landing.sandbox.start') }}
-        </button>
+        <div class="sandbox-entry-demo">
+          <InteractiveMerchManagerGraphic embedded />
+          <div class="sandbox-entry-actions">
+            <button
+              class="landing-button landing-button-primary"
+              type="button"
+              :disabled="sandboxBusy"
+              @click="startSandbox"
+            >
+              {{ sandboxBusy ? t('common.loading') : t('landing.sandbox.start') }}
+            </button>
+          </div>
+        </div>
       </section>
 
       <section class="landing-section feature-section">
@@ -1604,10 +1609,6 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 .sandbox-entry {
   margin-bottom: 45px;
   padding: clamp(28px, 5vw, 55px);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 35px;
   border: 1px solid #6d521c;
   border-radius: 12px;
   background: linear-gradient(135deg, #221d13, #181a1f);
@@ -1615,11 +1616,14 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
 .sandbox-entry h2 { margin: 4px 0 12px; font-size: clamp(1.8rem, 4vw, 3rem); }
 .sandbox-entry p { max-width: 65ch; color: #c6bdad; line-height: 1.6; }
 .sandbox-entry ul { padding-left: 20px; color: #e8d8b6; }
+.sandbox-entry-copy { max-width: 780px; }
+.sandbox-entry-demo { margin-top: clamp(28px, 4vw, 46px); }
+.sandbox-entry-actions { margin-top: 32px; display: flex; justify-content: flex-end; }
 .sandbox-entry .landing-button { min-width: 210px; }
 
 .app-showcase:not(.is-visible) *, .demo-animated:not(.is-visible) *, .animations-paused * { animation-play-state: paused!important; }
 @media (prefers-reduced-motion: reduce) { .landing-page * { scroll-behavior:auto!important; animation:none!important; transition:none!important; }.app-showcase,.story-row,.feature-card,.workflow-grid li { opacity:1;transform:none; } }
 @media (max-width: 900px) { .landing-nav { display:none; }.hero-section,.registration-section { grid-template-columns:1fr; }.hero-section { padding-top:130px; }.hero-copy { text-align:center; }.hero-lead { margin-right:auto;margin-left:auto; }.hero-actions,.hero-trust { justify-content:center; }.hero-window { transform:none; }.story-row { grid-template-columns:1fr;gap:28px; }.story-reverse .story-copy { order:0; }.feature-grid { grid-template-columns:1fr 1fr; }.registration-intro { position:static; }.faq-section { grid-template-columns:1fr;gap:10px; } }
-@media (max-width: 760px) { .sandbox-entry { grid-template-columns: 1fr; } .sandbox-entry .landing-button { width: 100%; } }
+@media (max-width: 760px) { .sandbox-entry-actions { margin-top: 26px; } .sandbox-entry .landing-button { width: 100%; } }
 @media (max-width: 620px) { .landing-header { top:8px;right:8px;left:8px;min-height:56px;padding-left:11px;border-radius:14px; }.landing-brand > span:last-child { display:none; }.landing-actions { gap:6px; }.landing-button-small { min-height:36px;padding:7px 10px; }.landing-section,.landing-footer { width:min(100% - 28px,1180px); }.hero-section { min-height:auto;padding:125px 0 65px; }.hero-copy h1 { font-size:clamp(3rem,15vw,4.6rem); }.hero-app-grid { min-height:500px;grid-template-columns:1fr 1fr; }.demo-cart { grid-column:1/-1; }.demos-section,.feature-section,.workflow-section,.registration-section,.faq-section { padding:72px 0; }.story-row { min-height:0;margin-bottom:70px; }.wizard-demo,.inventory-demo,.mosaic-demo { min-height:300px; }.feature-grid,.workflow-grid,.registration-columns { grid-template-columns:1fr; }.feature-card { min-height:180px; }.workflow-grid li { min-height:190px; }.registration-card { padding:20px 16px; }.resume-link { grid-template-columns:1fr; }.status-details > div,.credential-panel dl > div { grid-template-columns:1fr;gap:4px; }.landing-footer { flex-wrap:wrap;justify-content:center;text-align:center; }.landing-footer p { width:100%;order:3; }.stock-row { grid-template-columns:105px 1fr 25px;gap:8px; }.mosaic-track { grid-template-columns:1fr 1fr; }.merch-tile:nth-child(n+5) { display:none; } }
 </style>

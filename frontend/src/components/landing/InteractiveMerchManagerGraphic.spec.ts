@@ -47,6 +47,15 @@ describe('InteractiveMerchManagerGraphic', () => {
     expect(wrapper.get('[data-layer="C"]').classes()).toContain('is-highlighted')
   })
 
+  it('embeds the same graphic without duplicating the landing-page heading or anchor', () => {
+    const wrapper = mount(InteractiveMerchManagerGraphic, { props: { embedded: true } })
+
+    expect(wrapper.get('.interactive-merch-section').classes()).toContain('is-embedded')
+    expect(wrapper.get('.interactive-merch-section').attributes('id')).toBeUndefined()
+    expect(wrapper.find('.interactive-heading').exists()).toBe(false)
+    expect(wrapper.findAll('.art-layer')).toHaveLength(7)
+  })
+
   it('previews on hover and keeps a clicked area active afterwards', async () => {
     const wrapper = mount(InteractiveMerchManagerGraphic)
 
@@ -97,4 +106,3 @@ describe('InteractiveMerchManagerGraphic', () => {
     expect(wrapper.get('[data-connector]').attributes('d')).toBe('M300 391 V150')
   })
 })
-

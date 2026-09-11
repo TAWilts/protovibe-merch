@@ -57,7 +57,8 @@ describe('LandingView registration', () => {
     expect(wrapper.findAll('.faq-list article')).toHaveLength(3)
     expect(wrapper.find('.faq-list details').exists()).toBe(false)
     expect(wrapper.find('.landing-footer-links').exists()).toBe(true)
-    expect(wrapper.find('.interactive-merch-section').exists()).toBe(true)
+    expect(wrapper.findAll('.interactive-merch-section')).toHaveLength(2)
+    expect(wrapper.findAll('.interactive-heading')).toHaveLength(1)
   })
 
   it('stores the secret status token and renders a pending request', async () => {
@@ -137,7 +138,12 @@ describe('LandingView registration', () => {
 
   it('starts the full server sandbox from the landing page', async () => {
     const wrapper = mount(LandingView)
-    await wrapper.get('.sandbox-entry button').trigger('click')
+    await flushPromises()
+    const sandboxGraphic = wrapper.get('.sandbox-entry .interactive-merch-section')
+    const sandboxButton = wrapper.get('.sandbox-entry-actions button')
+    expect(sandboxGraphic.classes()).toContain('is-embedded')
+    expect(sandboxGraphic.element.compareDocumentPosition(sandboxButton.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await sandboxButton.trigger('click')
     await flushPromises()
     expect(session.enterSandbox).toHaveBeenCalledOnce()
     expect(routerPush).toHaveBeenCalledWith({ name: 'sandbox-sales' })
@@ -149,5 +155,6 @@ describe('LandingView registration', () => {
     const wrapper = mount(LandingView)
     await flushPromises()
     expect(wrapper.find('.sandbox-entry').exists()).toBe(false)
+    expect(wrapper.findAll('.interactive-merch-section')).toHaveLength(1)
   })
 })

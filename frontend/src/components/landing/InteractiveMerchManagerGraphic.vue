@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch, type CSSProperties } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import analyticsImage from '@/assets/landing/interactive-merch-manager/A-analytics.png'
@@ -17,6 +17,12 @@ import {
 } from '@/content/landing/interactiveMerchManagerHotspots'
 
 const { locale, t } = useI18n()
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+}>(), {
+  embedded: false,
+})
+const instructionsId = `interactive-merch-instructions-${useId()}`
 
 const viewport = ref<HTMLElement | null>(null)
 const canvas = ref<HTMLElement | null>(null)
@@ -152,8 +158,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section id="features" class="landing-section interactive-merch-section">
-    <div class="interactive-heading">
+  <section
+    :id="props.embedded ? undefined : 'features'"
+    class="landing-section interactive-merch-section"
+    :class="{ 'is-embedded': props.embedded }"
+  >
+    <div v-if="!props.embedded" class="interactive-heading">
       <p class="interactive-kicker">{{ t('landing.interactive.kicker') }}</p>
       <h2>{{ t('landing.interactive.title') }}</h2>
       <p>{{ t('landing.interactive.lead') }}</p>
@@ -199,7 +209,7 @@ onBeforeUnmount(() => {
               :style="hotspotStyle(hotspot)"
               :aria-label="hotspotLabel(hotspot.id)"
               :aria-pressed="activeId === hotspot.id"
-              aria-describedby="interactive-merch-instructions"
+              :aria-describedby="instructionsId"
               @mouseenter="preview(hotspot.id)"
               @mouseleave="stopPointerPreview(hotspot.id)"
               @focus="focus(hotspot.id)"
@@ -219,7 +229,7 @@ onBeforeUnmount(() => {
       </article>
     </div>
 
-    <p id="interactive-merch-instructions" class="sr-only">
+    <p :id="instructionsId" class="sr-only">
       {{ t('landing.interactive.instructions') }}
     </p>
   </section>
@@ -228,6 +238,12 @@ onBeforeUnmount(() => {
 <style scoped>
 .interactive-merch-section {
   padding: 105px 0;
+}
+
+.interactive-merch-section.is-embedded {
+  width: 100%;
+  margin: 0;
+  padding: 0;
 }
 
 .interactive-heading {
