@@ -69,6 +69,7 @@ const confirmedArticle = {
 const draftArticle = {
   ...confirmedArticle,
   name: 'Neuer Artikel',
+  default_sale_price_cents: 0,
   configuration_complete: false,
   configuration_locked: false,
   variants: [],
@@ -120,8 +121,32 @@ describe('ArticlesView variant generation', () => {
       default_sale_price_cents: 0,
       defer_variants: true,
     })
+    expect((wrapper.get('.sale-price-field input').element as HTMLInputElement).value).toBe('')
     expect(wrapper.find('.minimum-for-all').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('articles.retired')
+  })
+
+  it('requires a sale price when confirming a new article', async () => {
+    list.mockResolvedValue({ articles: [draftArticle] })
+
+    const wrapper = mount(ArticlesView)
+    await flushPromises()
+
+    await wrapper.get('.article-form-actions .primary-button').trigger('click')
+    await flushPromises()
+
+    expect(save).not.toHaveBeenCalled()
+    expect(wrapper.get('#article-sale-price-error').text()).toBe('articles.salePriceRequired')
+    expect(wrapper.get('.sale-price-field input').attributes('aria-invalid')).toBe('true')
+
+    await wrapper.get('.sale-price-field input').setValue('25,00')
+    expect(wrapper.find('#article-sale-price-error').exists()).toBe(false)
+    await wrapper.get('.article-form-actions .primary-button').trigger('click')
+    await flushPromises()
+
+    expect(save).toHaveBeenCalledWith(1, expect.objectContaining({
+      default_sale_price_cents: 2500,
+    }))
   })
 
   it('applies a numeric minimum stock value to every active variant', async () => {

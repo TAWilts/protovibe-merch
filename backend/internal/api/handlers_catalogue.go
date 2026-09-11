@@ -433,6 +433,8 @@ func (s *Server) reportCatalogueError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "invalid_name", err.Error())
 	case errors.Is(err, catalogue.ErrNegativePrice):
 		fail(c, http.StatusBadRequest, "invalid_price", err.Error())
+	case errors.Is(err, catalogue.ErrSalePriceRequired):
+		fail(c, http.StatusBadRequest, "sale_price_required", err.Error())
 	case errors.Is(err, catalogue.ErrInvalidMinimumStock):
 		fail(c, http.StatusBadRequest, "invalid_minimum_stock", err.Error())
 	case errors.Is(err, catalogue.ErrInvalidTargetStock):

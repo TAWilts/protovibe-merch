@@ -59,6 +59,7 @@ var (
 	ErrInvalidTargetStock         = errors.New("catalogue: target stock cannot be negative")
 	ErrInvalidOptionConfiguration = errors.New("catalogue: every option group requires at least one value")
 	ErrOptionRemovalLocked        = errors.New("catalogue: saved option groups and values cannot be removed")
+	ErrSalePriceRequired          = errors.New("catalogue: a sale price is required before confirming the article")
 )
 
 // ApplyConfiguration saves an article's options, variants and prices in one
@@ -93,6 +94,17 @@ func (s *Service) ApplyConfigurationWithWithdrawal(ctx context.Context, articleI
 		}
 		if err := validateLockedOptionMembership(ctx, tx, articleID, cfg.OptionGroups); err != nil {
 			return err
+		}
+		// Draft creation stores zero because the database column is intentionally
+		// non-nullable. Requiring the field in the first configuration request
+		// distinguishes that sentinel from a deliberately entered price of zero.
+		var variantCount int64
+		if err := tx.WithContext(ctx).Model(&models.Variant{}).
+			Where("article_id = ?", articleID).Count(&variantCount).Error; err != nil {
+			return err
+		}
+		if variantCount == 0 && article.DefaultSalePriceCents == 0 && cfg.DefaultSalePriceCents == nil {
+			return ErrSalePriceRequired
 		}
 
 		if err := applyArticleFields(ctx, tx, &article, cfg); err != nil {

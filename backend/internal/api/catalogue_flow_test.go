@@ -121,6 +121,46 @@ func TestArticleDraftDefersVariants(t *testing.T) {
 	}
 }
 
+func TestArticleDraftRequiresSalePriceOnFirstConfiguration(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+
+	created := h.do(http.MethodPost, "/api/v1/articles", map[string]any{
+		"name":                     "Draft Without Price",
+		"default_sale_price_cents": 0,
+		"defer_variants":           true,
+	})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("create draft: %d %v", created.Status, created.Body)
+	}
+	articleID := int64(created.Body["id"].(float64))
+	groups := jsonList(created.Body, "option_groups")
+
+	blocked := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"option_groups": groups,
+	})
+	if blocked.Status != http.StatusBadRequest || blocked.Body["code"] != "sale_price_required" {
+		t.Fatalf("expected missing sale price validation, got %d %v", blocked.Status, blocked.Body)
+	}
+
+	reloaded := h.do(http.MethodGet, "/api/v1/articles/"+itoa(articleID), nil)
+	if reloaded.Status != http.StatusOK || reloaded.Body["configuration_complete"] != false {
+		t.Fatalf("a rejected confirmation must leave the draft incomplete: %d %v", reloaded.Status, reloaded.Body)
+	}
+
+	saved := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"default_sale_price_cents": 2500,
+		"option_groups":            groups,
+	})
+	if saved.Status != http.StatusOK || saved.Body["configuration_complete"] != true {
+		t.Fatalf("confirm draft with price: %d %v", saved.Status, saved.Body)
+	}
+	if saved.Body["default_sale_price_cents"] != float64(2500) {
+		t.Fatalf("confirmed article must keep the entered price: %v", saved.Body)
+	}
+}
+
 func TestLockedArticleRejectsOptionRemovalAtomically(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()

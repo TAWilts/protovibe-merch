@@ -59,6 +59,7 @@ const draft = ref<{
   salePrice: string
   groups: DraftGroup[]
 }>({ name: '', salePrice: '', groups: [] })
+const salePriceError = ref('')
 
 const newArticleName = ref('')
 
@@ -137,9 +138,15 @@ function select(id: number) {
   const article = articles.value.find((entry) => entry.id === id)
   if (!article) return
 
+  salePriceError.value = ''
   draft.value = {
     name: article.name,
-    salePrice: toInput(article.default_sale_price_cents),
+    // Drafts are created with a zero sentinel in the database. Keep their
+    // price field genuinely empty until the manager enters a value. Once an
+    // article has been confirmed, an explicit zero remains visible as 0,00.
+    salePrice: !article.configuration_complete && article.default_sale_price_cents === 0
+      ? ''
+      : toInput(article.default_sale_price_cents),
     groups: article.option_groups
       .filter((group) => group.is_active)
       .map((group) => ({
@@ -309,11 +316,20 @@ function moveGroup(index: number, delta: number) {
 async function save() {
   if (!selected.value || busy.value) return
 
-  const sale = parseAmount(draft.value.salePrice)
-  if (sale === null) {
-    flash.error(t('articles.invalidPrice'))
+  const rawSalePrice = draft.value.salePrice.trim()
+  if (!rawSalePrice) {
+    salePriceError.value = t('articles.salePriceRequired')
+    flash.error(salePriceError.value)
     return
   }
+
+  const sale = parseAmount(rawSalePrice)
+  if (sale === null) {
+    salePriceError.value = t('articles.invalidPrice')
+    flash.error(salePriceError.value)
+    return
+  }
+  salePriceError.value = ''
 
   const preparedGroups = draft.value.groups.map((group) => ({
     id: group.id,
@@ -571,7 +587,22 @@ async function applyTargetToAll() {
           <div class="article-form-group">
             <h3>{{ t('articles.basics') }}</h3>
             <label>{{ t('articles.name') }}<input v-model="draft.name" /></label>
-            <label>{{ t('articles.defaultSalePrice') }}<input v-model="draft.salePrice" inputmode="decimal" /></label>
+            <label class="sale-price-field">
+              {{ t('articles.defaultSalePrice') }}
+              <input
+                v-model="draft.salePrice"
+                inputmode="decimal"
+                :aria-invalid="salePriceError ? 'true' : undefined"
+                :aria-describedby="salePriceError ? 'article-sale-price-error' : undefined"
+                @input="salePriceError = ''"
+              />
+              <small
+                v-if="salePriceError"
+                id="article-sale-price-error"
+                class="field-error"
+                role="alert"
+              >{{ salePriceError }}</small>
+            </label>
           </div>
 
           <div class="article-form-group">
@@ -975,6 +1006,17 @@ async function applyTargetToAll() {
 
 .minimum-for-all input {
   width: 7rem;
+}
+
+.sale-price-field .field-error {
+  color: var(--danger-text);
+  font-size: .76rem;
+  font-weight: 650;
+}
+
+.sale-price-field input[aria-invalid='true'] {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-soft);
 }
 
 .variant-bulk-controls {
