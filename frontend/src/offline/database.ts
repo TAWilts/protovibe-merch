@@ -5,6 +5,8 @@ import type { PackingOperation, PackingSnapshot } from '@/api/types'
 
 export interface QueuedSaleRecord {
   eventId: string
+  /** Stored with the event so every retry uses the exact original device. */
+  deviceId?: string
   payload: BookSalePayload
   createdAt: string
   attempts: number

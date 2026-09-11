@@ -6,9 +6,11 @@ import SalesView from './SalesView.vue'
 const {
   assortment, catalogueList, book, bookHistorical, createEvent,
   createPaymentQrIntent, events, queue, offlineState, sessionState, route, routerReplace,
-  routeLeaveGuards,
+  routeLeaveGuards, prepareSale, preparedSalePayload,
 } = vi.hoisted(() => {
   const queuedSale = vi.fn()
+  const prepare = vi.fn()
+  const payload = vi.fn()
   return {
     assortment: vi.fn(),
     catalogueList: vi.fn(),
@@ -18,7 +20,9 @@ const {
     createPaymentQrIntent: vi.fn(),
     events: vi.fn(),
     queue: queuedSale,
-    offlineState: { online: true, queue: queuedSale },
+    prepareSale: prepare,
+    preparedSalePayload: payload,
+    offlineState: { online: true, queue: queuedSale, queuePrepared: queuedSale },
     sessionState: {
       user: { username: 'seller', show_variant_photos: true },
       featureFlags: { payment_qr: true, offline_sales: true },
@@ -52,7 +56,11 @@ vi.mock('@/stores/offline', () => ({
 vi.mock('@/stores/session', () => ({
   useSessionStore: () => sessionState,
 }))
-vi.mock('@/offline/outbox', () => ({ deviceId: vi.fn().mockResolvedValue('desktop-1') }))
+vi.mock('@/offline/outbox', () => ({
+  deviceId: vi.fn().mockResolvedValue('desktop-1'),
+  prepareSale,
+  preparedSalePayload,
+}))
 vi.mock('@/api/endpoints', () => ({
   catalogueApi: {
     assortment,
@@ -107,6 +115,18 @@ describe('SalesView checkout', () => {
     bookHistorical.mockReset().mockResolvedValue({ receipt_id: 'V-20260827-001', sale_ids: [2] })
     createEvent.mockReset()
     queue.mockReset()
+    prepareSale.mockReset().mockImplementation(async (payload) => ({
+      eventId: 'sale-event-1',
+      deviceId: 'desktop-1',
+      createdAt: '2026-09-12T12:00:00.000Z',
+      payload,
+    }))
+    preparedSalePayload.mockReset().mockImplementation((prepared) => ({
+      ...prepared.payload,
+      client_event_id: prepared.eventId,
+      client_device_id: prepared.deviceId,
+      client_created_at: prepared.createdAt,
+    }))
     offlineState.online = true
     sessionState.capabilities.can_manage_purchases = true
     route.query = {}
@@ -295,7 +315,7 @@ describe('SalesView checkout', () => {
     expect(queue).not.toHaveBeenCalled()
   })
 
-  it('puts a live donation into the existing offline queue after a network failure', async () => {
+  it('queues a network-uncertain sale with the exact identity used for its first request', async () => {
     book.mockRejectedValueOnce(new Error('offline'))
     const wrapper = mount(SalesView)
     await flushPromises()
@@ -308,9 +328,19 @@ describe('SalesView checkout', () => {
     await button(wrapper, 'sales.book').trigger('click')
     await flushPromises()
 
+    expect(book).toHaveBeenCalledWith(expect.objectContaining({
+      client_event_id: 'sale-event-1',
+      client_device_id: 'desktop-1',
+      client_created_at: '2026-09-12T12:00:00.000Z',
+    }))
     expect(queue).toHaveBeenCalledWith(expect.objectContaining({
-      items: [{ line_type: 'donation', description: 'Spende', amount_cents: 500 }],
-      amount_given_cents: 500,
+      eventId: 'sale-event-1',
+      deviceId: 'desktop-1',
+      createdAt: '2026-09-12T12:00:00.000Z',
+      payload: expect.objectContaining({
+        items: [{ line_type: 'donation', description: 'Spende', amount_cents: 500 }],
+        amount_given_cents: 500,
+      }),
     }))
   })
 

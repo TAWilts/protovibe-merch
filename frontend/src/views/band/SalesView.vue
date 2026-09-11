@@ -26,7 +26,7 @@ import { usePendingChangesGuard } from '@/composables/usePendingChangesGuard'
 import { useFlashStore } from '@/stores/flash'
 import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
-import { deviceId } from '@/offline/outbox'
+import { deviceId, prepareSale, preparedSalePayload } from '@/offline/outbox'
 import PaymentMethodIcon from '@/components/PaymentMethodIcon.vue'
 import { stockModeForVariant } from '@/utils/stockMode'
 
@@ -920,9 +920,11 @@ async function book(override?: BookSalePayload): Promise<boolean> {
   busy.value = true
 
   const payload: BookSalePayload = override ?? salePayload()
+  let prepared: Awaited<ReturnType<typeof prepareSale>> | null = null
 
   try {
-    const result = await salesApi.book(payload)
+    prepared = await prepareSale(payload)
+    const result = await salesApi.book(preparedSalePayload(prepared))
     flash.success(t('sales.booked', { receipt: result.receipt_id }))
     resetAfterSale()
     await Promise.all([loadAssortment(), refreshReceiptPreview()])
@@ -933,13 +935,17 @@ async function book(override?: BookSalePayload): Promise<boolean> {
     // taking the app to a gig.
     if (error instanceof ApiError) {
       flash.error(t(`errors.${error.detailCode ?? 'generic'}`, error.message || t('errors.generic')))
-    } else if (session.featureFlags?.offline_sales !== false) {
-      await offline.queue(payload)
-      flash.success(t('sales.queuedOffline'))
-      resetAfterSale()
-      return true
+    } else if (session.featureFlags?.offline_sales !== false && prepared) {
+      try {
+        await offline.queuePrepared(prepared)
+        flash.success(t('sales.queuedOffline'))
+        resetAfterSale()
+        return true
+      } catch {
+        flash.error(t('sales.offlineQueueFailed'))
+      }
     } else {
-      flash.error(t('errors.network'))
+      flash.error(prepared ? t('errors.network') : t('sales.offlineQueueFailed'))
     }
     return false
   } finally {

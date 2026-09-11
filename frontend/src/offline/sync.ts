@@ -1,7 +1,7 @@
 import { ApiError, request } from '@/api/client'
 import type { SaleResult } from '@/api/types'
 
-import { deviceId, markAttempt, pending, remove } from './outbox'
+import { deviceId, markAttempt, pending, preparedSalePayload, remove } from './outbox'
 
 /**
  * Transmits queued sales.
@@ -39,12 +39,12 @@ export async function synchronize(): Promise<SyncOutcome> {
       try {
         await request<SaleResult>('/sales', {
           method: 'POST',
-          body: {
-            ...entry.payload,
-            client_event_id: entry.eventId,
-            client_device_id: device,
-            client_created_at: entry.createdAt,
-          },
+          body: preparedSalePayload({
+            eventId: entry.eventId,
+            deviceId: entry.deviceId ?? device,
+            createdAt: entry.createdAt,
+            payload: entry.payload,
+          }),
         })
         // A replayed answer counts as settled too; the sale exists either way.
         await remove(entry.eventId)

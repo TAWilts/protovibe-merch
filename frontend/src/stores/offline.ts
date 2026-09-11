@@ -2,7 +2,15 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import type { BookSalePayload } from '@/api/endpoints'
-import { count, enqueue, failed, remove, type QueuedSale } from '@/offline/outbox'
+import {
+  count,
+  enqueue,
+  enqueuePrepared,
+  failed,
+  remove,
+  type PreparedSale,
+  type QueuedSale,
+} from '@/offline/outbox'
 import { synchronize } from '@/offline/sync'
 
 /**
@@ -46,6 +54,13 @@ export const useOfflineStore = defineStore('offline', () => {
     return entry.eventId
   }
 
+  /** Persists a failed first delivery with the same identity it already used. */
+  async function queuePrepared(prepared: PreparedSale): Promise<string> {
+    const entry = await enqueuePrepared(prepared)
+    await refresh()
+    return entry.eventId
+  }
+
   /** Discards a rejected entry after the seller dealt with it. */
   async function discard(eventId: string) {
     await remove(eventId)
@@ -68,6 +83,6 @@ export const useOfflineStore = defineStore('offline', () => {
   return {
     online, queued, conflicts, syncing, lastSyncAt,
     hasQueue, hasConflicts,
-    refresh, sync, queue, discard, start,
+    refresh, sync, queue, queuePrepared, discard, start,
   }
 })

@@ -14,6 +14,20 @@ import { offlineDB, type QueuedSaleRecord } from './database'
 export type QueuedSale = QueuedSaleRecord
 
 /**
+ * Stable metadata allocated before the first delivery attempt.
+ *
+ * The base payload deliberately stays separate from the transport fields. The
+ * latter are added only at the API boundary and retained beside the payload in
+ * IndexedDB if the response becomes uncertain.
+ */
+export interface PreparedSale {
+  eventId: string
+  deviceId: string
+  createdAt: string
+  payload: BookSalePayload
+}
+
+/**
  * Returns this device's stable identifier, creating one on first use.
  *
  * It is only used to attribute a queued sale to the phone it was made on,
@@ -29,17 +43,43 @@ export async function deviceId(): Promise<string> {
   return generated
 }
 
-/** Adds a sale to the queue. */
-export async function enqueue(payload: BookSalePayload): Promise<QueuedSale> {
-  const entry: QueuedSale = {
-    eventId: crypto.randomUUID(),
+/** Allocates the idempotency envelope before any request reaches the server. */
+export async function prepareSale(payload: BookSalePayload): Promise<PreparedSale> {
+  return {
+    eventId: payload.client_event_id ?? crypto.randomUUID(),
+    deviceId: payload.client_device_id ?? await deviceId(),
+    createdAt: payload.client_created_at ?? new Date().toISOString(),
     payload,
-    createdAt: new Date().toISOString(),
+  }
+}
+
+/** Builds the exact request used by both the initial delivery and every retry. */
+export function preparedSalePayload(prepared: PreparedSale): BookSalePayload {
+  return {
+    ...prepared.payload,
+    client_event_id: prepared.eventId,
+    client_device_id: prepared.deviceId,
+    client_created_at: prepared.createdAt,
+  }
+}
+
+/** Persists an already prepared sale without replacing its identity. */
+export async function enqueuePrepared(prepared: PreparedSale): Promise<QueuedSale> {
+  const entry: QueuedSale = {
+    eventId: prepared.eventId,
+    deviceId: prepared.deviceId,
+    payload: prepared.payload,
+    createdAt: prepared.createdAt,
     attempts: 0,
   }
   const instance = await offlineDB()
   await instance.put('sales', entry)
   return entry
+}
+
+/** Adds a sale that has not yet been prepared to the queue. */
+export async function enqueue(payload: BookSalePayload): Promise<QueuedSale> {
+  return enqueuePrepared(await prepareSale(payload))
 }
 
 /** Returns the queued sales, oldest first, so they book in the order made. */
