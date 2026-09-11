@@ -99,7 +99,9 @@ describe('OperationsView payment baskets', () => {
 
     const wrapper = mount(OperationsView)
     await flushPromises()
-    expect(wrapper.get('.shipping-cost-row').text()).toContain('5,00')
+    const shippingRow = wrapper.get('.shipping-cost-row')
+    expect(shippingRow.get('.shipping-cost-copy > span').text()).toBe('operations.shippingCost')
+    expect(shippingRow.get('.shipping-cost-copy b').text()).toContain('5,00')
     await wrapper.get('.shipping-cost-row button').trigger('click')
     await wrapper.get('.confirmation-dialog input').setValue('7,00')
     await wrapper.get('.confirmation-dialog form').trigger('submit')

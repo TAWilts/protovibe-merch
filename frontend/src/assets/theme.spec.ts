@@ -67,4 +67,10 @@ describe('theme token contract', () => {
     expect(baseCss).not.toContain('var(--surface-muted)')
     expect(baseCss).not.toContain('var(--surface)')
   })
+
+  it('allows vertical page panning over horizontally scrollable tables', () => {
+    const tableScroll = baseCss.match(/\.table-scroll\s*\{[^}]*\}/)?.[0]
+    expect(tableScroll).toContain('overscroll-behavior-x: contain')
+    expect(tableScroll).toContain('touch-action: pan-x pan-y pinch-zoom')
+  })
 })

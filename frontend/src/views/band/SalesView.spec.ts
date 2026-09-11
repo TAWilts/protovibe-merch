@@ -332,6 +332,7 @@ describe('SalesView checkout', () => {
     await flushPromises()
     await button(wrapper, 'Ausverkauftes Shirt').trigger('click')
     expect(wrapper.get('.stock-sale-warning').text()).toContain('sales.stockWarning')
+    expect(wrapper.find('.order-only-hint').exists()).toBe(false)
 
     await button(wrapper, 'sales.addToCart').trigger('click')
     expect(wrapper.findAll('.stock-sale-warning').length).toBeGreaterThan(0)
@@ -342,6 +343,37 @@ describe('SalesView checkout', () => {
     await button(wrapper, 'sales.book').trigger('click')
     await flushPromises()
     expect(book).toHaveBeenCalledOnce()
+  })
+
+  it('labels an empty on-demand variant instead of showing the generic stock warning', async () => {
+    assortment.mockResolvedValueOnce({
+      payment_methods: ['Bar'],
+      articles: [{
+        id: 1,
+        name: 'Shirt auf Bestellung',
+        total_stock: 0,
+        option_groups: [],
+        variants: [{
+          id: 11,
+          combination_key: '',
+          option_value_ids: [],
+          sale_price_cents: 2000,
+          target_stock: 0,
+          is_offered: true,
+          no_reorder: false,
+          on_hand: 0,
+          photo_ids: [],
+        }],
+      }],
+    })
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+    await button(wrapper, 'Shirt auf Bestellung').trigger('click')
+
+    expect(wrapper.get('.order-only-hint').text()).toContain('sales.onlyOnOrder')
+    expect(wrapper.find('.stock-sale-warning').exists()).toBe(false)
+    expect(wrapper.get('.till-stock').attributes('title')).toBe('sales.onlyOnOrder')
   })
 
   it('requires an explicit confirmation before booking a discount', async () => {

@@ -255,8 +255,10 @@ async function saveShippingCost() {
             </p>
 
             <div class="shipping-cost-row">
-              <span>{{ t('operations.shippingCost') }}</span>
-              <b>{{ format(shipment.shippingCostCents) }}</b>
+              <span class="shipping-cost-copy">
+                <span>{{ t('operations.shippingCost') }}</span>
+                <b>{{ format(shipment.shippingCostCents) }}</b>
+              </span>
               <button class="compact-button" type="button" @click="startShippingEdit(shipment)">
                 {{ t('operations.editShipping') }}
               </button>
@@ -495,10 +497,30 @@ async function saveShippingCost() {
 
 .shipping-cost-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   font-variant-numeric: tabular-nums;
+}
+
+.shipping-cost-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.shipping-cost-copy b {
+  color: var(--text-primary);
+}
+
+@media (max-width: 440px) {
+  .shipping-cost-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .shipping-cost-row .compact-button {
+    justify-self: start;
+  }
 }
 
 .shipment-card footer {

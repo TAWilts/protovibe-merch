@@ -294,7 +294,7 @@ input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer
 .table-filter small { min-height: 1em; color: var(--accent-bright); font-size: .73rem; font-weight: 650; }
 .operations-filter-row { display: flex; justify-content: end; margin: -2px 0 3px; }
 .no-margin { margin-bottom: 4px; }
-.table-scroll { overflow: auto; margin-inline: -20px; border-block: 1px solid var(--border-subtle); border-inline: 0; border-radius: 0; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; touch-action: pan-x pinch-zoom; }
+.table-scroll { overflow: auto; margin-inline: -20px; border-block: 1px solid var(--border-subtle); border-inline: 0; border-radius: 0; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; touch-action: pan-x pan-y pinch-zoom; }
 table { width: 100%; border-collapse: collapse; min-width: 660px; font-size: .87rem; }
 .purchases-table { min-width: 1250px; }
 th { position: sticky; top: 0; z-index: 1; background: var(--surface-inset); color: var(--text-secondary); text-align: left; font-size: .72rem; letter-spacing: .035em; }

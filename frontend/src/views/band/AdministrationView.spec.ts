@@ -146,4 +146,20 @@ describe('AdministrationView payment QR settings', () => {
 
     expect(setFeatureVisibility).toHaveBeenCalledWith({ show_packing_list: false })
   })
+
+  it('places the role explanation beside the accounts heading with a scalable info icon', async () => {
+    listUsers.mockResolvedValue({ users: [], assignable_roles: ['seller', 'member'] })
+    const wrapper = mount(AdministrationView)
+    await flushPromises()
+
+    const heading = wrapper.get('.user-admin-panel .users-heading-title')
+    const help = heading.get('.role-help')
+    expect(heading.text()).toContain('administration.users.title')
+    expect(help.get('svg').attributes('viewBox')).toBe('0 0 24 24')
+    expect(wrapper.find('.role-field .role-help').exists()).toBe(false)
+
+    await help.get('summary').trigger('click')
+    expect(help.attributes()).toHaveProperty('open')
+    expect(help.get('.role-help-panel').text()).toContain('administration.users.roleHelpIntro')
+  })
 })

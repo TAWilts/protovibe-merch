@@ -296,6 +296,7 @@
     "lowStock": "Bestand unter Mindestmenge",
     "outOfStock": "Kein Bestand mehr verzeichnet",
     "stockWarning": "Für diese Variante ist kein Bestand mehr verzeichnet. Der Verkauf wird trotzdem gebucht.",
+    "onlyOnOrder": "Nur auf Bestellung",
     "variantPhotoAlt": "{variant}, Foto {index}",
     "variantPhotoExact": "Produktfoto dieser Variante",
     "variantPhotoFallback": "Foto einer ähnlichen Variante: {variant}",

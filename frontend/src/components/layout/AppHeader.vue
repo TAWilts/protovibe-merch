@@ -159,10 +159,10 @@ async function discardSandbox() {
     <div class="user-menu">
       <SupportMessageDialog v-if="caps?.can_access_band_workflows && !session.isSandbox" />
 
-      <!-- The sync state is always visible while selling: a seller at a stand
-           must be able to tell at a glance whether their sales have landed. -->
+      <!-- The sync state stays visible throughout the band's offline-capable
+           workflows, including the packing list. -->
       <button
-        v-if="route.name !== 'packing-list' && route.name !== 'sandbox-packing-list' && caps?.can_access_band_workflows && !session.isSandbox"
+        v-if="caps?.can_access_band_workflows && !session.isSandbox"
         class="offline-sync-status"
         :class="{ 'is-offline': !combinedOnline, 'has-queue': combinedQueued > 0 }"
         type="button"

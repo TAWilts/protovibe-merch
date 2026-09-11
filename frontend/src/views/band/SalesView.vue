@@ -27,6 +27,7 @@ import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
 import { deviceId } from '@/offline/outbox'
 import PaymentMethodIcon from '@/components/PaymentMethodIcon.vue'
+import { stockModeForVariant } from '@/utils/stockMode'
 
 /**
  * The point of sale, ported from _old/templates/sales.html.
@@ -226,6 +227,13 @@ const selectedVariant = computed<Variant | null>(() => {
   const wanted = [...chosen].sort((a, b) => a - b).join('|')
   return sellableVariants.value.find((variant) => variant.combination_key === wanted) ?? null
 })
+
+const selectedVariantIsOrderOnly = computed(() => (
+  !historicalMode.value
+  && selectedVariant.value !== null
+  && selectedVariant.value.on_hand <= 0
+  && stockModeForVariant(selectedVariant.value) === 'on_demand'
+))
 
 const variantLabel = computed(() => {
   const article = selectedArticle.value
@@ -1025,10 +1033,15 @@ function resetAfterSale() {
             <span
               class="till-stock"
               :class="{ 'is-empty': selectedVariant.on_hand <= 0 }"
-              :title="selectedVariant.on_hand <= 0 ? t('sales.stockWarning') : ''"
+              :title="selectedVariant.on_hand <= 0
+                ? t(selectedVariantIsOrderOnly ? 'sales.onlyOnOrder' : 'sales.stockWarning')
+                : ''"
             >{{ t('sales.inStock', { count: selectedVariant.on_hand }) }}</span>
           </p>
-          <p v-if="selectedVariant && selectedVariant.on_hand <= 0" class="stock-sale-warning" role="status">
+          <p v-if="selectedVariantIsOrderOnly" class="order-only-hint" role="status">
+            {{ t('sales.onlyOnOrder') }}
+          </p>
+          <p v-else-if="selectedVariant && selectedVariant.on_hand <= 0" class="stock-sale-warning" role="status">
             {{ t('sales.stockWarning') }}
           </p>
           <p
@@ -1966,12 +1979,20 @@ function resetAfterSale() {
   border-bottom: 1px dashed var(--border);
 }
 
-.stock-sale-warning {
+.stock-sale-warning,
+.order-only-hint {
   margin: 8px 0 0;
-  color: var(--warning);
   font-size: 0.84rem;
   font-weight: 700;
   line-height: 1.35;
+}
+
+.stock-sale-warning {
+  color: var(--warning);
+}
+
+.order-only-hint {
+  color: var(--accent-bright);
 }
 
 .till-line-warning {

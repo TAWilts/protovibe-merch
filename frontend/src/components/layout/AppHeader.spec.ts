@@ -66,10 +66,10 @@ describe('AppHeader navigation', () => {
     expect(text.indexOf('nav.packingList')).toBeLessThan(text.indexOf('nav.administration'))
   })
 
-  it('hides the global sync chip on the packing-list route', () => {
+  it('keeps the global sync chip visible on the packing-list route', () => {
     route.name = 'packing-list'
     const wrapper = mount(AppHeader)
-    expect(wrapper.find('.offline-sync-status').exists()).toBe(false)
+    expect(wrapper.find('.offline-sync-status').exists()).toBe(true)
   })
 
   it('honours personal feature visibility for members but not sellers', () => {

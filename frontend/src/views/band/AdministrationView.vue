@@ -481,10 +481,33 @@ function durationLabel(seconds: number): string {
       </template>
     </section>
 
-    <section v-if="isBandAdmin && !session.isSandbox" class="table-section">
+    <section v-if="isBandAdmin && !session.isSandbox" class="table-section user-admin-panel">
       <div class="section-heading">
         <div>
-          <h2>{{ t('administration.users.title') }}</h2>
+          <div class="users-heading-title">
+            <h2>{{ t('administration.users.title') }}</h2>
+            <details class="role-help">
+              <summary
+                :aria-label="t('administration.users.roleHelp')"
+                :title="t('administration.users.roleHelp')"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 11v5" />
+                  <path d="M12 8h.01" />
+                </svg>
+              </summary>
+              <div class="role-help-panel">
+                <p>{{ t('administration.users.roleHelpIntro') }}</p>
+                <dl class="role-list">
+                  <div v-for="role in assignableRoles" :key="role">
+                    <dt>{{ t(`administration.users.roles.${role}`) }}</dt>
+                    <dd>{{ t(`administration.users.roleDescriptions.${role}`) }}</dd>
+                  </div>
+                </dl>
+              </div>
+            </details>
+          </div>
           <p>{{ t('administration.users.intro') }}</p>
         </div>
       </div>
@@ -507,24 +530,7 @@ function durationLabel(seconds: number): string {
             <input v-model="newUser.username" required />
           </label>
           <div class="role-field">
-            <div class="role-field-label">
-              <span>{{ t('administration.users.role') }}</span>
-              <details class="role-help">
-                <summary
-                  :aria-label="t('administration.users.roleHelp')"
-                  :title="t('administration.users.roleHelp')"
-                >?</summary>
-                <div class="role-help-panel">
-                  <p>{{ t('administration.users.roleHelpIntro') }}</p>
-                  <dl class="role-list">
-                    <div v-for="role in assignableRoles" :key="role">
-                      <dt>{{ t(`administration.users.roles.${role}`) }}</dt>
-                      <dd>{{ t(`administration.users.roleDescriptions.${role}`) }}</dd>
-                    </div>
-                  </dl>
-                </div>
-              </details>
-            </div>
+            <span>{{ t('administration.users.role') }}</span>
             <select v-model="newUser.role">
               <option v-for="role in assignableRoles" :key="role" :value="role">
                 {{ t(`administration.users.roles.${role}`) }}
@@ -764,23 +770,25 @@ function durationLabel(seconds: number): string {
   font-weight: 650;
 }
 
-.role-field-label {
+.users-heading-title {
   position: relative;
-  display: block;
-  line-height: inherit;
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
 }
 
 .role-help {
-  position: absolute;
-  top: -4px;
-  right: 0;
+  position: static;
   z-index: 3;
 }
 
 .role-help > summary {
   display: grid;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   place-items: center;
   padding: 0;
   border: 1px solid var(--border);
@@ -788,9 +796,13 @@ function durationLabel(seconds: number): string {
   color: var(--accent-bright);
   background: var(--panel-raised);
   cursor: pointer;
-  font-size: 0.78rem;
-  font-weight: 850;
   list-style: none;
+}
+
+.role-help > summary svg {
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 .role-help > summary::-webkit-details-marker {
@@ -804,8 +816,9 @@ function durationLabel(seconds: number): string {
 
 .role-help-panel {
   position: absolute;
-  top: 30px;
-  right: 0;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 4;
   width: min(430px, calc(100vw - 44px));
   padding: 14px;
   border: 1px solid var(--border);
