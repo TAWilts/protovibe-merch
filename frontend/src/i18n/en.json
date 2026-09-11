@@ -297,6 +297,7 @@
     "outOfStock": "Kein Bestand mehr verzeichnet",
     "stockWarning": "There is no recorded stock for this variant. The sale can still be booked.",
     "onlyOnOrder": "Available by order only",
+    "pausedVariant": "Paused — this variant is not currently offered.",
     "variantPhotoAlt": "{variant}, Foto {index}",
     "variantPhotoExact": "Product photo of this variant",
     "variantPhotoFallback": "Photo of a similar variant: {variant}",

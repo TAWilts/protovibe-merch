@@ -332,6 +332,53 @@ func TestAssortmentHidesWithdrawnAndIncompleteArticles(t *testing.T) {
 	}
 }
 
+// TestAssortmentKeepsPausedVariantsVisible pins the difference between
+// removing an article from the assortment and the explicit paused stock mode:
+// sellers may see and understand paused entries, but they remain not offered.
+func TestAssortmentKeepsPausedVariantsVisible(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+
+	created := h.do(http.MethodPost, "/api/v1/articles", map[string]any{
+		"name": "Paused Shirt", "default_sale_price_cents": 1800,
+	})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("create: %d %v", created.Status, created.Body)
+	}
+	articleID := int64(created.Body["id"].(float64))
+	updates := make([]any, 0, len(jsonList(created.Body, "variants")))
+	for _, raw := range jsonList(created.Body, "variants") {
+		updates = append(updates, map[string]any{
+			"id": jsonObject(raw)["id"], "is_offered": false, "no_reorder": false,
+		})
+	}
+
+	paused := h.do(http.MethodPut, "/api/v1/articles/"+itoa(articleID), map[string]any{
+		"is_offered": false,
+		"variants":   updates,
+	})
+	if paused.Status != http.StatusOK {
+		t.Fatalf("pause: %d %v", paused.Status, paused.Body)
+	}
+
+	res := h.do(http.MethodGet, "/api/v1/assortment", nil)
+	articles := jsonList(res.Body, "articles")
+	if len(articles) != 1 {
+		t.Fatalf("the paused article should remain visible at the point of sale: %v", res.Body)
+	}
+	article := jsonObject(articles[0])
+	if article["is_offered"] != false {
+		t.Fatalf("the visible paused article must remain not offered: %v", article)
+	}
+	for _, raw := range jsonList(article, "variants") {
+		variant := jsonObject(raw)
+		if variant["is_offered"] != false || variant["no_reorder"] != false {
+			t.Fatalf("expected an explicit paused variant: %v", variant)
+		}
+	}
+}
+
 // TestCatalogueIsBandScopedOverHTTP is the tenant boundary seen from outside:
 // one band's articles must be invisible and unreachable to another.
 func TestCatalogueIsBandScopedOverHTTP(t *testing.T) {

@@ -115,8 +115,11 @@ func (s *Server) getArticle(c *gin.Context) {
 	c.JSON(http.StatusOK, payload[0])
 }
 
-// getAssortment returns only what can actually be sold right now, which keeps
-// the point-of-sale payload small on a phone with a weak connection.
+// getAssortment returns what can be sold right now plus explicitly paused
+// variants. Paused entries remain visible at the point of sale so their state
+// is understandable, but the sales service still rejects them as not offered.
+// Discontinued variants and ordinary withdrawn articles stay out of the small
+// point-of-sale payload.
 func (s *Server) getAssortment(c *gin.Context) {
 	all, err := s.buildArticles(c, 0, false)
 	if err != nil {
@@ -126,16 +129,25 @@ func (s *Server) getAssortment(c *gin.Context) {
 
 	offered := make([]articlePayload, 0, len(all))
 	for _, article := range all {
-		if !article.IsOffered || !article.IsActive || !article.ConfigurationComplete {
+		if !article.IsActive || !article.ConfigurationComplete {
 			continue
 		}
 		variants := make([]variantPayload, 0, len(article.Variants))
+		hasPausedVariant := false
 		for _, variant := range article.Variants {
-			if variant.IsActive && variant.IsOffered {
+			if !variant.IsActive {
+				continue
+			}
+			if variant.IsOffered {
+				variants = append(variants, variant)
+				continue
+			}
+			if !variant.NoReorder {
+				hasPausedVariant = true
 				variants = append(variants, variant)
 			}
 		}
-		if len(variants) == 0 {
+		if len(variants) == 0 || (!article.IsOffered && !hasPausedVariant) {
 			continue
 		}
 		article.Variants = variants

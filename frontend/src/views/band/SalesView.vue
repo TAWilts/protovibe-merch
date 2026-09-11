@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 
@@ -130,6 +130,8 @@ const needsShipping = computed(() => !historicalMode.value && !hasSpecialBasket.
  * to prevent. So the offset is measured.
  */
 const tillEl = ref<HTMLElement | null>(null)
+const articleColumnEl = ref<HTMLElement | null>(null)
+const variantColumnEl = ref<HTMLElement | null>(null)
 
 function measureTill() {
   const element = tillEl.value
@@ -176,11 +178,16 @@ const visibleArticles = computed(() => {
       return article.variants.some((variant) => variant.is_active !== false)
         && (!needle || article.name.toLowerCase().includes(needle))
     }
-    const sellable = article.is_offered !== false
-      && article.is_active !== false
+    const activeVariants = article.variants.filter((variant) => variant.is_active !== false)
+    const hasOfferedVariant = article.is_offered !== false
+      && activeVariants.some((variant) => variant.is_offered !== false)
+    const hasPausedVariant = activeVariants.some((variant) => (
+      variant.is_offered === false && stockModeForVariant(variant) === 'paused'
+    ))
+    const visible = article.is_active !== false
       && article.configuration_complete !== false
-      && article.variants.some((variant) => variant.is_offered !== false && variant.is_active !== false)
-    return sellable && (!needle || article.name.toLowerCase().includes(needle))
+      && (hasOfferedVariant || hasPausedVariant)
+    return visible && (!needle || article.name.toLowerCase().includes(needle))
   })
 })
 
@@ -188,10 +195,12 @@ const selectedArticle = computed(
   () => specialMode.value ? null : articles.value.find((article) => article.id === selectedArticleId.value) ?? null,
 )
 
-const sellableVariants = computed(() =>
+const displayedVariants = computed(() =>
   (selectedArticle.value?.variants ?? [])
     .filter((variant) => variant.is_active !== false
-      && (historicalMode.value || variant.is_offered !== false)),
+      && (historicalMode.value
+        || variant.is_offered !== false
+        || (variant.is_offered === false && stockModeForVariant(variant) === 'paused'))),
 )
 
 /**
@@ -206,7 +215,7 @@ const optionGroups = computed(() =>
     .map((group) => ({
       ...group,
       values: group.values.filter((value) => value.is_active
-        && sellableVariants.value.some((variant) => variant.option_value_ids.includes(value.id))),
+        && displayedVariants.value.some((variant) => variant.option_value_ids.includes(value.id))),
     }))
     .filter((group) => group.values.length > 0),
 )
@@ -225,7 +234,7 @@ const selectedVariant = computed<Variant | null>(() => {
   if (chosen.some((value) => value === undefined)) return null
 
   const wanted = [...chosen].sort((a, b) => a - b).join('|')
-  return sellableVariants.value.find((variant) => variant.combination_key === wanted) ?? null
+  return displayedVariants.value.find((variant) => variant.combination_key === wanted) ?? null
 })
 
 const selectedVariantIsOrderOnly = computed(() => (
@@ -233,6 +242,14 @@ const selectedVariantIsOrderOnly = computed(() => (
   && selectedVariant.value !== null
   && selectedVariant.value.on_hand <= 0
   && stockModeForVariant(selectedVariant.value) === 'on_demand'
+))
+
+const selectedVariantIsPaused = computed(() => (
+  !historicalMode.value
+  && selectedVariant.value !== null
+  && (selectedArticle.value?.is_offered === false
+    || (selectedVariant.value.is_offered === false
+      && stockModeForVariant(selectedVariant.value) === 'paused'))
 ))
 
 const variantLabel = computed(() => {
@@ -342,7 +359,10 @@ const canAddToCart = computed(
       && specialDescription.value.trim().length <= 200
       && specialAmountCents.value !== null
       && specialAmountCents.value > 0
-    : selectedVariant.value !== null && quantity.value > 0 && parseAmount(unitPriceInput.value) !== null,
+    : selectedVariant.value !== null
+      && !selectedVariantIsPaused.value
+      && quantity.value > 0
+      && parseAmount(unitPriceInput.value) !== null,
 )
 const canBook = computed(() => basket.value.length > 0 && !busy.value)
 const paymentStepReady = computed(() => {
@@ -458,6 +478,7 @@ function selectArticle(article: Article) {
     const first = group.values[0]
     if (first) chosenValues.value[group.id] = first.id
   }
+  scrollToMobileColumn('variant')
 }
 
 function chooseValue(groupId: number, valueId: number) {
@@ -476,6 +497,33 @@ function selectSpecial() {
   specialDescription.value = 'Spende'
   specialAmountInput.value = ''
   specialMode.value = true
+  scrollToMobileColumn('variant')
+}
+
+function liveArticleStatus(article: Article) {
+  const activeVariants = article.variants.filter((variant) => variant.is_active !== false)
+  const hasOfferedVariant = article.is_offered !== false
+    && activeVariants.some((variant) => variant.is_offered !== false)
+  const hasPausedVariant = activeVariants.some((variant) => (
+    variant.is_offered === false && stockModeForVariant(variant) === 'paused'
+  ))
+  return !hasOfferedVariant && hasPausedVariant
+    ? t('articles.stockModes.paused.label')
+    : ''
+}
+
+function scrollToMobileColumn(target: 'articles' | 'variant') {
+  const mobile = window.matchMedia?.('(max-width: 700px)').matches ?? window.innerWidth <= 700
+  if (!mobile) return
+
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  void nextTick(() => {
+    const element = target === 'articles' ? articleColumnEl.value : variantColumnEl.value
+    element?.scrollIntoView?.({
+      behavior: reduceMotion ? 'auto' : 'smooth',
+      block: 'start',
+    })
+  })
 }
 
 function historicalArticleStatus(article: Article) {
@@ -764,6 +812,7 @@ function addToCart() {
       onHand: 1,
     }]
     amountGivenInput.value = (amount / 100).toFixed(2).replace('.', ',')
+    scrollToMobileColumn('articles')
     return
   }
   const variant = selectedVariant.value
@@ -788,6 +837,7 @@ function addToCart() {
     })
   }
   quantity.value = 1
+  scrollToMobileColumn('articles')
 }
 
 /**
@@ -966,7 +1016,7 @@ function resetAfterSale() {
     </div>
 
     <template v-if="checkoutStep === 1">
-      <section class="till-column till-articles">
+      <section ref="articleColumnEl" class="till-column till-articles">
         <header class="till-column-head">
           <h2>{{ t('sales.articles') }}</h2>
           <input v-model="articleFilter" class="till-filter" type="search" :placeholder="t('sales.filterArticles')" />
@@ -986,6 +1036,9 @@ function resetAfterSale() {
                 <em v-if="historicalMode && historicalArticleStatus(article)" class="historical-state">
                   {{ historicalArticleStatus(article) }}
                 </em>
+                <em v-else-if="liveArticleStatus(article)" class="historical-state paused-state">
+                  {{ liveArticleStatus(article) }}
+                </em>
               </span>
               <small>{{ article.total_stock }}</small>
             </button>
@@ -1004,7 +1057,7 @@ function resetAfterSale() {
         </div>
       </section>
 
-      <section class="till-column till-variant">
+      <section ref="variantColumnEl" class="till-column till-variant">
         <div class="till-scroll">
           <div v-if="specialMode" class="special-entry-intro">
             <p class="eyebrow">{{ t('sales.specialEntry') }}</p>
@@ -1032,13 +1085,21 @@ function resetAfterSale() {
             <strong>{{ variantLabel }}</strong>
             <span
               class="till-stock"
-              :class="{ 'is-empty': selectedVariant.on_hand <= 0 }"
-              :title="selectedVariant.on_hand <= 0
-                ? t(selectedVariantIsOrderOnly ? 'sales.onlyOnOrder' : 'sales.stockWarning')
-                : ''"
+              :class="{
+                'is-empty': selectedVariant.on_hand <= 0 && !selectedVariantIsPaused,
+                'is-paused': selectedVariantIsPaused,
+              }"
+              :title="selectedVariantIsPaused
+                ? t('sales.pausedVariant')
+                : selectedVariant.on_hand <= 0
+                  ? t(selectedVariantIsOrderOnly ? 'sales.onlyOnOrder' : 'sales.stockWarning')
+                  : ''"
             >{{ t('sales.inStock', { count: selectedVariant.on_hand }) }}</span>
           </p>
-          <p v-if="selectedVariantIsOrderOnly" class="order-only-hint" role="status">
+          <p v-if="selectedVariantIsPaused" class="paused-variant-hint" role="status">
+            {{ t('sales.pausedVariant') }}
+          </p>
+          <p v-else-if="selectedVariantIsOrderOnly" class="order-only-hint" role="status">
             {{ t('sales.onlyOnOrder') }}
           </p>
           <p v-else-if="selectedVariant && selectedVariant.on_hand <= 0" class="stock-sale-warning" role="status">
@@ -1720,6 +1781,10 @@ function resetAfterSale() {
   font-weight: 650;
 }
 
+.paused-state {
+  color: var(--muted);
+}
+
 .historical-variant-notice {
   margin-top: 10px;
 }
@@ -1979,8 +2044,14 @@ function resetAfterSale() {
   border-bottom: 1px dashed var(--border);
 }
 
+.till-stock.is-paused {
+  background: var(--surface-subtle);
+  color: var(--muted);
+}
+
 .stock-sale-warning,
-.order-only-hint {
+.order-only-hint,
+.paused-variant-hint {
   margin: 8px 0 0;
   font-size: 0.84rem;
   font-weight: 700;
@@ -1993,6 +2064,10 @@ function resetAfterSale() {
 
 .order-only-hint {
   color: var(--accent-bright);
+}
+
+.paused-variant-hint {
+  color: var(--muted);
 }
 
 .till-line-warning {
@@ -2397,6 +2472,8 @@ function resetAfterSale() {
 @media (max-width: 700px) {
   .till { grid-template-columns: minmax(0, 1fr); }
   .till-column { min-height: auto; }
+  .till-articles,
+  .till-variant { scroll-margin-top: calc(var(--till-offset, 110px) + 8px); }
   .till-scroll {
     overflow: visible;
     overscroll-behavior: auto;

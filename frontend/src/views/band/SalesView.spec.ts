@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import SalesView from './SalesView.vue'
 
@@ -83,6 +83,20 @@ function field(wrapper: ReturnType<typeof mount>, labelText: string) {
   if (!input.exists()) throw new Error(`field ${labelText} not found`)
   return input
 }
+
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  if (originalScrollIntoView) {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: originalScrollIntoView,
+    })
+  } else {
+    Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView')
+  }
+})
 
 describe('SalesView checkout', () => {
   beforeEach(() => {
@@ -376,6 +390,76 @@ describe('SalesView checkout', () => {
     expect(wrapper.get('.till-stock').attributes('title')).toBe('sales.onlyOnOrder')
   })
 
+  it('shows paused articles and variants without allowing them into the cart', async () => {
+    assortment.mockResolvedValueOnce({
+      payment_methods: ['Bar'],
+      articles: [{
+        id: 1,
+        name: 'Pausiertes Shirt',
+        is_active: true,
+        is_offered: false,
+        configuration_complete: true,
+        total_stock: 5,
+        option_groups: [],
+        variants: [{
+          id: 11,
+          combination_key: '',
+          option_value_ids: [],
+          sale_price_cents: 2000,
+          target_stock: 10,
+          is_offered: false,
+          no_reorder: false,
+          is_active: true,
+          on_hand: 5,
+          photo_ids: [],
+        }],
+      }],
+    })
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    expect(wrapper.get('.paused-state').text()).toBe('articles.stockModes.paused.label')
+    await button(wrapper, 'Pausiertes Shirt').trigger('click')
+
+    expect(wrapper.get('.paused-variant-hint').text()).toBe('sales.pausedVariant')
+    expect(wrapper.get('.till-stock').classes()).toContain('is-paused')
+    expect(wrapper.get('.till-stock').attributes('title')).toBe('sales.pausedVariant')
+    expect(wrapper.get('.till-add').attributes('disabled')).toBeDefined()
+  })
+
+  it('scrolls from an article to its options and back after adding on mobile', async () => {
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+      matches: query === '(max-width: 700px)',
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })))
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+    await button(wrapper, 'Testshirt').trigger('click')
+    await flushPromises()
+
+    expect(scrollIntoView).toHaveBeenNthCalledWith(1, { behavior: 'smooth', block: 'start' })
+    expect(scrollIntoView.mock.instances[0]).toBe(wrapper.get('.till-variant').element)
+
+    await button(wrapper, 'sales.addToCart').trigger('click')
+    await flushPromises()
+
+    expect(scrollIntoView).toHaveBeenNthCalledWith(2, { behavior: 'smooth', block: 'start' })
+    expect(scrollIntoView.mock.instances[1]).toBe(wrapper.get('.till-articles').element)
+  })
+
   it('requires an explicit confirmation before booking a discount', async () => {
     const wrapper = mount(SalesView)
     await flushPromises()
@@ -406,7 +490,7 @@ describe('SalesView checkout', () => {
         { id: 1, name: 'Aktiv', is_active: true, is_offered: true, configuration_complete: true, total_stock: 1, option_groups: [], variants: [{ id: 11, combination_key: '', option_value_ids: [], sale_price_cents: 100, on_hand: 1, photo_ids: [], is_active: true, is_offered: true }] },
         { id: 2, name: 'Nicht anbieten', is_active: true, is_offered: false, configuration_complete: true, total_stock: 1, option_groups: [], variants: [{ id: 12, combination_key: '', option_value_ids: [], sale_price_cents: 100, on_hand: 1, photo_ids: [], is_active: true, is_offered: true }] },
         { id: 3, name: 'Inaktiv', is_active: false, is_offered: true, configuration_complete: true, total_stock: 1, option_groups: [], variants: [{ id: 13, combination_key: '', option_value_ids: [], sale_price_cents: 100, on_hand: 1, photo_ids: [], is_active: true, is_offered: true }] },
-        { id: 4, name: 'Keine Variante', is_active: true, is_offered: true, configuration_complete: true, total_stock: 1, option_groups: [], variants: [{ id: 14, combination_key: '', option_value_ids: [], sale_price_cents: 100, on_hand: 1, photo_ids: [], is_active: true, is_offered: false }] },
+        { id: 4, name: 'Keine Variante', is_active: true, is_offered: true, configuration_complete: true, total_stock: 1, option_groups: [], variants: [{ id: 14, combination_key: '', option_value_ids: [], sale_price_cents: 100, on_hand: 1, photo_ids: [], is_active: true, is_offered: false, no_reorder: true }] },
       ],
     })
 
