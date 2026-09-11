@@ -1,12 +1,14 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiError } from '@/api/client'
 import SalesView from './SalesView.vue'
 
 const {
   assortment, catalogueList, book, bookHistorical, createEvent,
   createPaymentQrIntent, events, queue, offlineState, sessionState, route, routerReplace,
   routeLeaveGuards, prepareSale, preparedSalePayload,
+  loadSalesAssortment, saveSalesAssortment,
 } = vi.hoisted(() => {
   const queuedSale = vi.fn()
   const prepare = vi.fn()
@@ -22,9 +24,12 @@ const {
     queue: queuedSale,
     prepareSale: prepare,
     preparedSalePayload: payload,
+    loadSalesAssortment: vi.fn(),
+    saveSalesAssortment: vi.fn(),
     offlineState: { online: true, queue: queuedSale, queuePrepared: queuedSale },
     sessionState: {
       user: { username: 'seller', show_variant_photos: true },
+      band: { id: 12 },
       featureFlags: { payment_qr: true, offline_sales: true },
       capabilities: { can_access_member_workflows: true, can_manage_purchases: true },
     },
@@ -61,6 +66,7 @@ vi.mock('@/offline/outbox', () => ({
   prepareSale,
   preparedSalePayload,
 }))
+vi.mock('@/offline/assortment', () => ({ loadSalesAssortment, saveSalesAssortment }))
 vi.mock('@/api/endpoints', () => ({
   catalogueApi: {
     assortment,
@@ -127,6 +133,8 @@ describe('SalesView checkout', () => {
       client_device_id: prepared.deviceId,
       client_created_at: prepared.createdAt,
     }))
+    loadSalesAssortment.mockReset().mockResolvedValue(null)
+    saveSalesAssortment.mockReset().mockResolvedValue(undefined)
     offlineState.online = true
     sessionState.capabilities.can_manage_purchases = true
     route.query = {}
@@ -270,6 +278,75 @@ describe('SalesView checkout', () => {
     await button(wrapper, 'sales.book').trigger('click')
     await flushPromises()
     expect(book).toHaveBeenCalledOnce()
+  })
+
+  it('stores every successfully loaded live assortment for the current band', async () => {
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    expect(saveSalesAssortment).toHaveBeenCalledWith(12, expect.objectContaining({
+      payment_methods: ['Bar'],
+      articles: [expect.objectContaining({ name: 'Testshirt' })],
+    }))
+    expect(wrapper.find('.offline-assortment-note').exists()).toBe(false)
+  })
+
+  it('reopens sales from the current band’s cached assortment after a network failure', async () => {
+    assortment.mockRejectedValueOnce(new TypeError('network unavailable'))
+    loadSalesAssortment.mockResolvedValueOnce({
+      bandId: 12,
+      savedAt: '2026-09-12T12:00:00.000Z',
+      paymentMethods: ['Bar'],
+      articles: [{
+        id: 2,
+        name: 'Offline Shirt',
+        total_stock: 4,
+        option_groups: [],
+        variants: [{
+          id: 22,
+          combination_key: '',
+          option_value_ids: [],
+          sale_price_cents: 2200,
+          on_hand: 4,
+          photo_ids: [],
+        }],
+      }],
+    })
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    expect(loadSalesAssortment).toHaveBeenCalledWith(12)
+    expect(wrapper.text()).toContain('Offline Shirt')
+    expect(wrapper.get('.offline-assortment-note').text()).toContain('sales.offlineAssortment')
+    expect(wrapper.find('.offline-not-ready').exists()).toBe(false)
+  })
+
+  it('blocks an offline cold start until this band has been prepared once', async () => {
+    assortment.mockRejectedValueOnce(new TypeError('network unavailable'))
+    loadSalesAssortment.mockResolvedValueOnce(null)
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    expect(wrapper.get('.offline-not-ready').text()).toContain('sales.offlineNotReadyTitle')
+    expect(wrapper.text()).not.toContain('sales.specialEntry')
+  })
+
+  it('does not hide an explicit server rejection behind cached data', async () => {
+    assortment.mockRejectedValueOnce(new ApiError(403, 'forbidden'))
+    loadSalesAssortment.mockResolvedValueOnce({
+      bandId: 12,
+      savedAt: '2026-09-12T12:00:00.000Z',
+      paymentMethods: ['Bar'],
+      articles: [],
+    })
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    expect(loadSalesAssortment).not.toHaveBeenCalled()
+    expect(wrapper.get('.offline-not-ready').text()).toContain('sales.assortmentServerError')
   })
 
   it('warns before leaving with an unfinished sales basket', async () => {

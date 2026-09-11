@@ -1,7 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 
 import type { BookSalePayload } from '@/api/endpoints'
-import type { PackingOperation, PackingSnapshot } from '@/api/types'
+import type { Article, PackingOperation, PackingSnapshot } from '@/api/types'
 
 export interface QueuedSaleRecord {
   eventId: string
@@ -51,6 +51,13 @@ export interface PackingPhotoCacheRecord {
   blob: Blob
 }
 
+export interface SalesAssortmentRecord {
+  bandId: number
+  savedAt: string
+  articles: Article[]
+  paymentMethods: string[]
+}
+
 export interface OfflineSchema extends DBSchema {
   sales: {
     key: string
@@ -69,10 +76,11 @@ export interface OfflineSchema extends DBSchema {
     value: PackingPhotoCacheRecord
     indexes: { 'by-namespace': string }
   }
+  sales_assortments: { key: number; value: SalesAssortmentRecord }
 }
 
 const DB_NAME = 'merch-offline'
-const DB_VERSION = 2
+const DB_VERSION = 3
 let connection: Promise<IDBPDatabase<OfflineSchema>> | null = null
 
 export function offlineDB() {
@@ -90,6 +98,9 @@ export function offlineDB() {
           queue.createIndex('by-namespace-created', ['namespace', 'createdAt'])
           const photos = instance.createObjectStore('packing_photo_cache', { keyPath: 'key' })
           photos.createIndex('by-namespace', 'namespace')
+        }
+        if (oldVersion < 3) {
+          instance.createObjectStore('sales_assortments', { keyPath: 'bandId' })
         }
       },
       terminated() { connection = null },

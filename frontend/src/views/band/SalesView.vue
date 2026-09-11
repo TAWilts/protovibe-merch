@@ -27,6 +27,7 @@ import { useFlashStore } from '@/stores/flash'
 import { useOfflineStore } from '@/stores/offline'
 import { useSessionStore } from '@/stores/session'
 import { deviceId, prepareSale, preparedSalePayload } from '@/offline/outbox'
+import { loadSalesAssortment, saveSalesAssortment, type SalesAssortment } from '@/offline/assortment'
 import PaymentMethodIcon from '@/components/PaymentMethodIcon.vue'
 import { stockModeForVariant } from '@/utils/stockMode'
 
@@ -52,6 +53,13 @@ const events = ref<SaleEvent[]>([])
 const selectedEventId = ref<number>(0)
 const receiptId = ref('')
 const loading = ref(true)
+type AssortmentState = 'loading' | 'live' | 'cached' | 'storage-error' | 'offline-not-ready' | 'server-error'
+const assortmentState = ref<AssortmentState>('loading')
+const cachedAssortmentSavedAt = ref('')
+const assortmentUnavailable = computed(() => (
+  assortmentState.value === 'offline-not-ready' || assortmentState.value === 'server-error'
+))
+const hasAssortmentNotice = computed(() => !['loading', 'live'].includes(assortmentState.value))
 
 const historicalMode = ref(false)
 const historicalSoldOn = ref('')
@@ -415,13 +423,50 @@ onUnmounted(() => {
 async function loadAssortment() {
   try {
     const result = await catalogueApi.assortment()
-    articles.value = result.articles
-    paymentMethods.value = result.payment_methods
-    if (result.payment_methods.length && !result.payment_methods.includes(paymentMethod.value)) {
-      paymentMethod.value = result.payment_methods[0]
+    applyAssortment(result)
+    assortmentState.value = 'live'
+    cachedAssortmentSavedAt.value = ''
+    if (session.band?.id !== undefined) {
+      try {
+        await saveSalesAssortment(session.band.id, result)
+      } catch {
+        // Online selling still works, but the device is not prepared for a
+        // cold offline start until IndexedDB accepts a snapshot.
+        assortmentState.value = 'storage-error'
+      }
     }
-  } catch {
-    flash.error(t('errors.generic'))
+  } catch (error) {
+    if (error instanceof ApiError) {
+      assortmentState.value = 'server-error'
+      flash.error(t('sales.assortmentServerError'))
+      return
+    }
+    try {
+      const cached = session.band?.id === undefined
+        ? null
+        : await loadSalesAssortment(session.band.id)
+      if (cached) {
+        applyAssortment({ articles: cached.articles, payment_methods: cached.paymentMethods })
+        cachedAssortmentSavedAt.value = cached.savedAt
+        assortmentState.value = 'cached'
+        return
+      }
+    } catch {
+      // An unavailable IndexedDB has the same operational result as a device
+      // that has never cached its assortment: offline sales cannot start.
+    }
+    articles.value = []
+    paymentMethods.value = []
+    assortmentState.value = 'offline-not-ready'
+    flash.error(t('sales.offlineNotReady'))
+  }
+}
+
+function applyAssortment(result: SalesAssortment) {
+  articles.value = result.articles
+  paymentMethods.value = result.payment_methods
+  if (result.payment_methods.length && !result.payment_methods.includes(paymentMethod.value)) {
+    paymentMethod.value = result.payment_methods[0]!
   }
 }
 
@@ -987,7 +1032,7 @@ function resetAfterSale() {
   <main
     ref="tillEl"
     class="till checkout-till"
-    :class="[`checkout-step-${checkoutStep}`, { 'has-note': isOrder || historicalMode }]"
+    :class="[`checkout-step-${checkoutStep}`, { 'has-note': isOrder || historicalMode || hasAssortmentNotice }]"
   >
     <h1 class="visually-hidden">{{ isOrder ? t('sales.ordersTitle') : t('sales.title') }}</h1>
 
@@ -1022,8 +1067,25 @@ function resetAfterSale() {
         @click="setHistoricalMode(false)"
       >{{ t('sales.historicalLeave') }}</button>
     </div>
+    <p v-else-if="assortmentState === 'cached'" class="till-mode-note offline-assortment-note" role="status">
+      {{ t('sales.offlineAssortment', { savedAt: cachedAssortmentSavedAt }) }}
+    </p>
+    <p v-else-if="assortmentState === 'storage-error'" class="till-mode-note offline-storage-note" role="status">
+      {{ t('sales.offlineStorageFailed') }}
+    </p>
+    <p v-else-if="assortmentState === 'server-error'" class="till-mode-note offline-storage-note" role="alert">
+      {{ t('sales.assortmentServerError') }}
+    </p>
+    <p v-else-if="assortmentState === 'offline-not-ready'" class="till-mode-note offline-storage-note" role="alert">
+      {{ t('sales.offlineNotReady') }}
+    </p>
 
-    <template v-if="checkoutStep === 1">
+    <section v-if="checkoutStep === 1 && assortmentUnavailable" class="till-column offline-not-ready">
+      <h2>{{ t('sales.offlineNotReadyTitle') }}</h2>
+      <p>{{ assortmentState === 'server-error' ? t('sales.assortmentServerError') : t('sales.offlineNotReady') }}</p>
+    </section>
+
+    <template v-else-if="checkoutStep === 1">
       <section ref="articleColumnEl" class="till-column till-articles">
         <header class="till-column-head">
           <h2>{{ t('sales.articles') }}</h2>
@@ -1733,6 +1795,34 @@ function resetAfterSale() {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   text-align: center;
+}
+
+.offline-assortment-note {
+  border-color: var(--warning-border);
+  background: var(--warning-soft);
+}
+
+.offline-storage-note {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.offline-not-ready {
+  grid-column: 1 / -1;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.offline-not-ready h2,
+.offline-not-ready p {
+  max-width: 680px;
+  margin: 0;
+}
+
+.offline-not-ready p {
+  margin-top: 8px;
+  color: var(--text-secondary);
 }
 
 .special-selection-button {
