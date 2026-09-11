@@ -515,7 +515,39 @@ onBeforeUnmount(() => document.removeEventListener('visibilitychange', onVisibil
           <p v-if="sandboxError" class="landing-alert error">{{ sandboxError }}</p>
         </div>
         <div class="sandbox-entry-demo">
-          <InteractiveMerchManagerGraphic embedded />
+          <div class="app-showcase is-visible sandbox-sales-demo" aria-hidden="true">
+            <div class="showcase-glow"></div>
+            <div class="demo-window hero-window">
+              <div class="demo-titlebar">
+                <span class="demo-logo">M</span><strong>Merch Manager</strong>
+                <span class="demo-event">Live · Tour 2026</span>
+              </div>
+              <div class="hero-app-grid">
+                <div class="demo-products">
+                  <span class="demo-label">{{ t('landing.demo.article') }}</span>
+                  <button class="demo-product active"><i class="shirt-icon"></i><span>Tour Shirt<small>25,00 €</small></span></button>
+                  <button class="demo-product"><i class="record-icon"></i><span>Vinyl<small>22,00 €</small></span></button>
+                  <button class="demo-product"><i class="bag-icon"></i><span>Tote Bag<small>15,00 €</small></span></button>
+                </div>
+                <div class="demo-options">
+                  <span class="demo-label">{{ t('landing.demo.variant') }}</span>
+                  <strong>Tour Shirt</strong>
+                  <small>{{ t('landing.demo.size') }}</small>
+                  <div class="demo-pills"><span>S</span><span class="selected">M</span><span>L</span><span>XL</span></div>
+                  <small>{{ t('landing.demo.color') }}</small>
+                  <div class="demo-swatches"><span></span><span class="active"></span><span></span></div>
+                  <button class="demo-add">+ {{ t('landing.demo.add') }}</button>
+                </div>
+                <div class="demo-cart">
+                  <span class="demo-label">{{ t('landing.demo.cart') }}</span>
+                  <div><strong>Tour Shirt · M</strong><span>25,00 €</span></div>
+                  <div><strong>Tote Bag</strong><span>15,00 €</span></div>
+                  <div class="demo-total"><span>{{ t('landing.demo.total') }}</span><strong>40,00 €</strong></div>
+                  <button>{{ t('landing.demo.continue') }} →</button>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="sandbox-entry-actions">
             <button
               class="landing-button landing-button-primary"
