@@ -3,6 +3,8 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -46,11 +48,71 @@ func TestAnonymousSandboxUsesSeparateSessionAndSeedData(t *testing.T) {
 	if jsonObject(identity["sandbox"])["storage_quota_bytes"].(float64) != 25*1024*1024 {
 		t.Fatalf("unexpected sandbox quota: %v", identity["sandbox"])
 	}
+	if jsonObject(identity["sandbox"])["template_version"].(float64) != 2 {
+		t.Fatalf("unexpected sandbox template: %v", identity["sandbox"])
+	}
 
 	articles := h.do(http.MethodGet, "/api/v1/sandbox/articles?include_inactive=true", nil)
 	if articles.Status != http.StatusOK || len(jsonList(articles.Body, "articles")) == 0 {
 		t.Fatalf("seed catalogue missing: %d %v", articles.Status, articles.Body)
 	}
+	var tourShirt map[string]any
+	for _, raw := range jsonList(articles.Body, "articles") {
+		article := jsonObject(raw)
+		if article["name"] == "Tour Shirt" {
+			tourShirt = article
+			break
+		}
+	}
+	if tourShirt == nil {
+		t.Fatalf("Tour Shirt missing from sandbox catalogue: %v", articles.Body)
+	}
+	groups := jsonList(tourShirt, "option_groups")
+	wantedOptions := []struct {
+		name   string
+		values []string
+	}{
+		{name: "Größe", values: []string{"S", "M", "L", "XL", "XXL"}},
+		{name: "Farbe", values: []string{"Weiß", "Schwarz"}},
+	}
+	if len(groups) != len(wantedOptions) {
+		t.Fatalf("Tour Shirt should have size and colour options: %v", groups)
+	}
+	for index, wanted := range wantedOptions {
+		group := jsonObject(groups[index])
+		if group["name"] != wanted.name {
+			t.Errorf("option group %d = %v, want %q", index, group["name"], wanted.name)
+		}
+		values := jsonList(group, "values")
+		if len(values) != len(wanted.values) {
+			t.Fatalf("option group %q values = %v, want %v", wanted.name, values, wanted.values)
+		}
+		for valueIndex, wantedValue := range wanted.values {
+			if got := jsonObject(values[valueIndex])["value"]; got != wantedValue {
+				t.Errorf("option group %q value %d = %v, want %q", wanted.name, valueIndex, got, wantedValue)
+			}
+		}
+	}
+	if variants := jsonList(tourShirt, "variants"); len(variants) != 10 {
+		t.Fatalf("Tour Shirt should have all ten size/colour combinations, got %d", len(variants))
+	}
+
+	photos := h.do(http.MethodGet, "/api/v1/sandbox/photos", nil)
+	photoList := jsonList(photos.Body, "photos")
+	if photos.Status != http.StatusOK || len(photoList) != 1 {
+		t.Fatalf("sandbox shirt photo missing: %d %v", photos.Status, photos.Body)
+	}
+	photo := jsonObject(photoList[0])
+	if photo["article_name"] != "Tour Shirt" || photo["original_filename"] != "shirt.jpg" {
+		t.Fatalf("sandbox photo is not attached to the Tour Shirt: %v", photo)
+	}
+	photoID := int64(photo["id"].(float64))
+	photoStatus, photoBody, _ := h.download("/api/v1/sandbox/photos/" + itoa(photoID) + "/file")
+	const landingShirtSHA256 = "9ecc09892f0ea7b9ee803a709dc95545667a3c12542d6534cbfcbef44ebacdac"
+	if digest := fmt.Sprintf("%x", sha256.Sum256(photoBody)); photoStatus != http.StatusOK || digest != landingShirtSHA256 {
+		t.Fatalf("sandbox shirt photo differs from the landing-page demo photo: status=%d sha256=%s", photoStatus, digest)
+	}
+
 	balances := h.do(http.MethodGet, "/api/v1/sandbox/balances", nil)
 	if balances.Status != http.StatusOK {
 		t.Fatalf("seed balances unavailable: %d %v", balances.Status, balances.Body)

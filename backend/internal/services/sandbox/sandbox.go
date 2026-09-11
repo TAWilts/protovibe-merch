@@ -5,7 +5,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
+	_ "embed"
 	"errors"
 	"fmt"
 	"time"
@@ -16,11 +16,19 @@ import (
 
 	"github.com/tawilts/protovibe-merch/backend/internal/auth"
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/catalogue"
 	"github.com/tawilts/protovibe-merch/backend/internal/storage"
 	"github.com/tawilts/protovibe-merch/backend/internal/tenant"
 )
 
-const TemplateVersion = 1
+const TemplateVersion = 2
+
+// tourShirtDemoImage is the same picture shown for the shirt on the landing
+// page. Embedding it keeps sandbox creation independent of the frontend image
+// and of the server's working directory.
+//
+//go:embed assets/tour-shirt.jpg
+var tourShirtDemoImage []byte
 
 var (
 	ErrDisabled = errors.New("sandbox: disabled")
@@ -56,9 +64,15 @@ func (s *Service) cross(ctx context.Context) *gorm.DB {
 // ActiveForSource finds the one reusable environment belonging to a signed-in
 // real account. Anonymous sandboxes are resumed only through their cookie.
 func (s *Service) ActiveForSource(ctx context.Context, userID int64) (*models.SandboxEnvironment, error) {
+	now := s.now()
+	if err := s.cross(ctx).Model(&models.SandboxEnvironment{}).
+		Where("source_user_id = ? AND status = ? AND template_version <> ?", userID, models.SandboxStatusActive, TemplateVersion).
+		Updates(map[string]any{"status": models.SandboxStatusPurging, "updated_at": now}).Error; err != nil {
+		return nil, err
+	}
 	var env models.SandboxEnvironment
 	err := s.cross(ctx).
-		Where("source_user_id = ? AND status = ? AND expires_at > ?", userID, models.SandboxStatusActive, s.now()).
+		Where("source_user_id = ? AND status = ? AND template_version = ? AND expires_at > ?", userID, models.SandboxStatusActive, TemplateVersion, now).
 		Order("created_at DESC, id DESC").First(&env).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
@@ -74,7 +88,7 @@ func (s *Service) Load(ctx context.Context, id int64) (*models.SandboxEnvironmen
 		}
 		return nil, err
 	}
-	if env.Status != models.SandboxStatusActive || !s.now().Before(env.ExpiresAt) {
+	if env.Status != models.SandboxStatusActive || env.TemplateVersion != TemplateVersion || !s.now().Before(env.ExpiresAt) {
 		_ = s.cross(ctx).Model(&env).Update("status", models.SandboxStatusPurging).Error
 		return nil, ErrExpired
 	}
@@ -187,42 +201,81 @@ func (s *Service) create(ctx context.Context, sourceUserID *int64, replacingID i
 func boolPointer(value bool) *bool { return &value }
 
 func (s *Service) seed(db *gorm.DB, bandID, userID int64, now time.Time) (string, error) {
-	article := models.Article{Name: "Tour-Shirt", DefaultSalePriceCents: 2500, IsOffered: true, IsActive: true}
+	article := models.Article{Name: "Tour Shirt", DefaultSalePriceCents: 2500, IsOffered: true, IsActive: true}
 	if err := db.Create(&article).Error; err != nil {
 		return "", err
 	}
-	group := models.OptionGroup{ArticleID: article.ID, Name: "Ausführung", Position: 0, IsActive: true}
-	if err := db.Create(&group).Error; err != nil {
+
+	sizeGroup := models.OptionGroup{ArticleID: article.ID, Name: "Größe", Position: 0, IsActive: true}
+	if err := db.Create(&sizeGroup).Error; err != nil {
 		return "", err
 	}
-	labels := []string{"Schwarz M", "Weiß L", "Vorbestellung", "Pausiert", "Aus Sortiment"}
-	values := make([]models.OptionValue, len(labels))
-	for i, label := range labels {
-		values[i] = models.OptionValue{OptionGroupID: group.ID, Value: label, Position: i, IsActive: true}
-		if err := db.Create(&values[i]).Error; err != nil {
+	colourGroup := models.OptionGroup{ArticleID: article.ID, Name: "Farbe", Position: 1, IsActive: true}
+	if err := db.Create(&colourGroup).Error; err != nil {
+		return "", err
+	}
+
+	sizes := []string{"S", "M", "L", "XL", "XXL"}
+	colours := []string{"Weiß", "Schwarz"}
+	sizeValues := make(map[string]models.OptionValue, len(sizes))
+	colourValues := make(map[string]models.OptionValue, len(colours))
+	for position, label := range sizes {
+		value := models.OptionValue{OptionGroupID: sizeGroup.ID, Value: label, Position: position, IsActive: true}
+		if err := db.Create(&value).Error; err != nil {
 			return "", err
 		}
+		sizeValues[label] = value
 	}
-	zero, target := 0, 15
-	variants := []models.Variant{
-		{ArticleID: article.ID, OptionValueIDs: models.JSONInt64Slice{values[0].ID}, CombinationKey: fmt.Sprint(values[0].ID), SalePriceCents: 2500, MinimumStock: intPointer(5), TargetStock: &target, IsOffered: true, IsActive: true},
-		{ArticleID: article.ID, OptionValueIDs: models.JSONInt64Slice{values[1].ID}, CombinationKey: fmt.Sprint(values[1].ID), SalePriceCents: 2500, TargetStock: &target, IsOffered: true, NoReorder: true, IsActive: true},
-		{ArticleID: article.ID, OptionValueIDs: models.JSONInt64Slice{values[2].ID}, CombinationKey: fmt.Sprint(values[2].ID), SalePriceCents: 2500, TargetStock: &zero, IsOffered: true, IsActive: true},
-		{ArticleID: article.ID, OptionValueIDs: models.JSONInt64Slice{values[3].ID}, CombinationKey: fmt.Sprint(values[3].ID), SalePriceCents: 2500, TargetStock: &target, IsOffered: false, IsActive: true},
-		{ArticleID: article.ID, OptionValueIDs: models.JSONInt64Slice{values[4].ID}, CombinationKey: fmt.Sprint(values[4].ID), SalePriceCents: 2500, IsOffered: false, NoReorder: true, IsActive: true},
+	for position, label := range colours {
+		value := models.OptionValue{OptionGroupID: colourGroup.ID, Value: label, Position: position, IsActive: true}
+		if err := db.Create(&value).Error; err != nil {
+			return "", err
+		}
+		colourValues[label] = value
+	}
+
+	variants := make([]models.Variant, 0, len(sizes)*len(colours))
+	variantIndexes := make(map[string]int, len(sizes)*len(colours))
+	for _, size := range sizes {
+		for _, colour := range colours {
+			selection := size + "|" + colour
+			optionIDs := models.JSONInt64Slice{sizeValues[size].ID, colourValues[colour].ID}
+			variant := models.Variant{
+				ArticleID: article.ID, OptionValueIDs: optionIDs, CombinationKey: catalogue.CombinationKey(optionIDs),
+				SalePriceCents: 2500, TargetStock: intPointer(15), IsOffered: true, IsActive: true,
+			}
+			switch selection {
+			case "S|Weiß":
+				variant.TargetStock = intPointer(0) // Auf Bestellung
+			case "L|Weiß":
+				variant.NoReorder = true // Abverkauf
+			case "XL|Weiß":
+				variant.IsOffered = false // Pausiert
+			case "XXL|Weiß":
+				variant.TargetStock = nil
+				variant.IsOffered = false
+				variant.NoReorder = true // Aus Sortiment
+			case "M|Schwarz":
+				variant.MinimumStock = intPointer(5)
+			}
+			variantIndexes[selection] = len(variants)
+			variants = append(variants, variant)
+		}
 	}
 	for i := range variants {
 		if err := db.Create(&variants[i]).Error; err != nil {
 			return "", err
 		}
 	}
+	blackMedium := variants[variantIndexes["M|Schwarz"]]
+	whiteLarge := variants[variantIndexes["L|Weiß"]]
 
 	today := models.NewDate(now.Year(), now.Month(), now.Day())
 	actorID := userID
 	actor := models.Actor{CreatedByUserID: &actorID, CreatedByUsername: "Demo"}
 	purchases := []models.Purchase{
-		{ReceiptID: "DEMO-E-001", VariantID: variants[0].ID, Quantity: 20, UnitCostCents: 900, LineTotalCostCents: 18000, PriceMode: models.PurchasePriceUnit, PricesIncludeVAT: true, VATRateBasisPoints: 1900, PurchasedOn: today, Supplier: "Beispieltextilien", InvoiceReference: "DEMO-4711", Actor: actor},
-		{ReceiptID: "DEMO-E-001", VariantID: variants[1].ID, Quantity: 6, UnitCostCents: 900, LineTotalCostCents: 5400, PriceMode: models.PurchasePriceUnit, PricesIncludeVAT: true, VATRateBasisPoints: 1900, PurchasedOn: today, Supplier: "Beispieltextilien", InvoiceReference: "DEMO-4711", Actor: actor},
+		{ReceiptID: "DEMO-E-001", VariantID: blackMedium.ID, Quantity: 20, UnitCostCents: 900, LineTotalCostCents: 18000, PriceMode: models.PurchasePriceUnit, PricesIncludeVAT: true, VATRateBasisPoints: 1900, PurchasedOn: today, Supplier: "Beispieltextilien", InvoiceReference: "DEMO-4711", Actor: actor},
+		{ReceiptID: "DEMO-E-001", VariantID: whiteLarge.ID, Quantity: 6, UnitCostCents: 900, LineTotalCostCents: 5400, PriceMode: models.PurchasePriceUnit, PricesIncludeVAT: true, VATRateBasisPoints: 1900, PurchasedOn: today, Supplier: "Beispieltextilien", InvoiceReference: "DEMO-4711", Actor: actor},
 	}
 	for i := range purchases {
 		if err := db.Create(&purchases[i]).Error; err != nil {
@@ -236,7 +289,7 @@ func (s *Service) seed(db *gorm.DB, bandID, userID int64, now time.Time) (string
 	if err := db.Create(&models.SaleEventState{EventID: event.ID, UpdatedAt: now}).Error; err != nil {
 		return "", err
 	}
-	variantID := variants[0].ID
+	variantID := blackMedium.ID
 	if err := db.Create(&models.Sale{
 		ReceiptID: "DEMO-V-001", LineType: models.SaleLineMerchandise, VariantID: &variantID,
 		Quantity: 3, UnitPriceCents: 2500, AmountDueCents: 7500, AmountGivenCents: int64Pointer(7500),
@@ -263,12 +316,11 @@ func (s *Service) seed(db *gorm.DB, bandID, userID int64, now time.Time) (string
 		return "", err
 	}
 
-	image, _ := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2n2kAAAAASUVORK5CYII=")
-	object, err := s.files.Put(db.Statement.Context, bandID, storage.CategoryVariantPhoto, "image/png", bytes.NewReader(image))
+	object, err := s.files.Put(db.Statement.Context, bandID, storage.CategoryVariantPhoto, "image/jpeg", bytes.NewReader(tourShirtDemoImage))
 	if err != nil {
 		return "", err
 	}
-	photo := models.VariantPhoto{VariantID: variants[0].ID, FilePath: object.Key, OriginalFilename: "demo-shirt.png", IncludeInSlideshow: true, ShowPrice: true, SizeBytes: object.SizeBytes, CreatedAt: now, Actor: actor}
+	photo := models.VariantPhoto{VariantID: blackMedium.ID, FilePath: object.Key, OriginalFilename: "shirt.jpg", IncludeInSlideshow: true, ShowPrice: true, SizeBytes: object.SizeBytes, CreatedAt: now, Actor: actor}
 	if err := db.Create(&photo).Error; err != nil {
 		_ = s.files.Delete(db.Statement.Context, object.Key)
 		return "", err
