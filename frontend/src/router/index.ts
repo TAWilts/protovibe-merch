@@ -3,6 +3,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import type { FeatureFlags } from '@/api/types'
 import { setLocale } from '@/i18n'
+import { nextSandboxTutorialStep } from '@/utils/sandboxTutorial'
 
 /**
  * The public landing page and two authenticated shells share one router: the
@@ -134,6 +135,13 @@ router.beforeEach(async (to) => {
 
   if (!session.isAuthenticated) {
     return { name: 'login', query: { next: to.fullPath } }
+  }
+
+  const tutorialStep = sandboxRoute
+    ? nextSandboxTutorialStep(session.identity?.sandbox)
+    : null
+  if (tutorialStep && to.name !== tutorialStep.route) {
+    return { name: tutorialStep.route }
   }
 
   if (!sandboxRoute && session.isSandbox) {

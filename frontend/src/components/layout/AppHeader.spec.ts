@@ -20,6 +20,7 @@ const { session, route, routerReplace } = vi.hoisted(() => {
       },
       featureFlags: { offline_sales: true, slideshow: true, packing_list: true },
       supportGrant: null,
+      identity: null as any,
       isSandbox: false,
       isDevelopment: false,
       enterSandbox: vi.fn(),
@@ -55,6 +56,9 @@ describe('AppHeader navigation', () => {
     session.user.show_packing_list = true
     session.user.show_product_palette = true
     session.capabilities.can_access_member_workflows = true
+    session.capabilities.can_manage_articles = false
+    session.identity = null
+    session.isSandbox = false
     session.isDevelopment = false
     session.logout.mockReset().mockResolvedValue(true)
     routerReplace.mockReset().mockResolvedValue(undefined)
@@ -80,6 +84,41 @@ describe('AppHeader navigation', () => {
 
     expect(wrapper.get('.brand-mark').text()).toBe('T')
     expect(wrapper.get('.brand-copy strong').text()).toBe('app.testName')
+  })
+
+  it('locks every sandbox tab except the current tutorial task', () => {
+    session.isSandbox = true
+    session.capabilities.can_manage_articles = true
+    session.identity = {
+      sandbox: {
+        tutorial_visible: true,
+        tutorial_state: { catalogue: false, purchase: false, sale: false, balance: false },
+      },
+    }
+
+    const wrapper = mount(AppHeader)
+    const navigation = wrapper.get('.main-nav')
+
+    expect(navigation.findAll('a').map((link) => link.text())).toEqual(['nav.articles'])
+    expect(navigation.findAll('.sandbox-nav-locked').map((link) => link.text())).toContain('nav.sales')
+    expect(navigation.findAll('.sandbox-nav-locked').map((link) => link.text())).toContain('nav.purchases')
+    expect(navigation.findAll('.sandbox-nav-locked').map((link) => link.text())).toContain('nav.balances')
+  })
+
+  it('unlocks the sandbox navigation when the tutorial is skipped', () => {
+    session.isSandbox = true
+    session.capabilities.can_manage_articles = true
+    session.identity = {
+      sandbox: {
+        tutorial_visible: false,
+        tutorial_state: { catalogue: false, purchase: false, sale: false, balance: false },
+      },
+    }
+
+    const wrapper = mount(AppHeader)
+
+    expect(wrapper.find('.sandbox-nav-locked').exists()).toBe(false)
+    expect(wrapper.get('.main-nav').findAll('a').length).toBeGreaterThan(1)
   })
 
   it('honours personal feature visibility for members but not sellers', () => {

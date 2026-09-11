@@ -254,7 +254,7 @@ func (s *Server) trackSandboxProgress() gin.HandlerFunc {
 		path := strings.TrimPrefix(c.Request.URL.Path, sandboxAPIPrefix)
 		step := ""
 		switch {
-		case (c.Request.Method == http.MethodPost || c.Request.Method == http.MethodPut) && strings.HasPrefix(path, "/articles"):
+		case c.Request.Method == http.MethodPut && strings.HasPrefix(path, "/articles/"):
 			step = "catalogue"
 		case c.Request.Method == http.MethodPost && path == "/purchases":
 			step = "purchase"

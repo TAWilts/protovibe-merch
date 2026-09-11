@@ -30,7 +30,7 @@
     },
     "tutorial": {
       "title": "Sandbox-Aufgaben",
-      "hint": "Ein möglicher Rundgang durch die Anwendung",
+      "hint": "Schließe diesen Schritt ab, um den nächsten freizuschalten.",
       "catalogue": "Artikel und Variante",
       "catalogueDescription": "Lege einen neuen Artikel an, zum Beispiel einen Hoodie in verschiedenen Größen und Farben. Gib einen Preis an und drücke auf „Konfiguration speichern“. Bei den Varianten darunter bestimmst du anschließend, wie der Artikel angeboten werden soll. Mit „Mindestbestand“ und „Sollbestand“ legst du außerdem fest, wie viel ihr auf Lager halten möchtet und ab wann eine Warnung erscheint.",
       "purchase": "Einkauf buchen",
@@ -39,7 +39,8 @@
       "saleDescription": "Der Gig ist vorbei und am Merchstand geht es los: Lege einige Artikel in den Warenkorb, wähle die Zahlungsart und bestätige den Verkauf. Probiere auch einen Versand aus – den Vorgang findest du danach unter „Offene Vorgänge“.",
       "balance": "Bestand und Bilanz",
       "balanceDescription": "Was habt ihr eingenommen und welche Bestände müsst ihr auffüllen? Finde es im Tab „Bilanzen“ heraus. Wenn du bei den Artikeln Sollbestände hinterlegt hast, kannst du im Einkauf außerdem automatisch eine Einkaufsliste erstellen lassen.",
-      "hide": "Ausblenden",
+      "locked": "Schließe zuerst die aktuelle Sandbox-Aufgabe ab oder wähle „Überspringen“.",
+      "hide": "Überspringen",
       "restart": "Aufgabenliste neu starten"
     }
   },

@@ -8,6 +8,7 @@ import { useSessionStore } from '@/stores/session'
 import { usePackingStore } from '@/stores/packing'
 import { useFlashStore } from '@/stores/flash'
 import SupportMessageDialog from '@/components/SupportMessageDialog.vue'
+import { nextSandboxTutorialStep } from '@/utils/sandboxTutorial'
 import AccountMenu from './AccountMenu.vue'
 
 /**
@@ -35,6 +36,7 @@ const viaGrant = computed(() => session.supportGrant !== null)
 const combinedQueued = computed(() => offline.queued + packing.queued)
 const combinedSyncing = computed(() => offline.syncing || packing.syncing)
 const combinedOnline = computed(() => offline.online && packing.online)
+const tutorialStep = computed(() => nextSandboxTutorialStep(session.identity?.sandbox))
 
 function syncOfflineData() {
   void offline.sync()
@@ -76,6 +78,16 @@ const links = computed<NavLink[]>(() => {
 function routeName(name: string) {
   return session.isSandbox ? `sandbox-${name}` : name
 }
+
+function tutorialLocks(name: string) {
+  return session.isSandbox && tutorialStep.value !== null && tutorialStep.value.nav !== name
+}
+
+const brandTarget = computed(() => {
+  if (platformOnly.value) return { name: 'platform-dashboard' }
+  if (session.isSandbox && tutorialStep.value) return { name: tutorialStep.value.route }
+  return { name: routeName('sales') }
+})
 
 /** The divider separates selling from managing, as in the original. */
 const dividerAfter = 'slideshow'
@@ -122,7 +134,7 @@ async function discardSandbox() {
 
 <template>
   <header v-if="session.isAuthenticated" class="app-header">
-    <RouterLink class="brand" :to="platformOnly ? { name: 'platform-dashboard' } : { name: routeName('sales') }">
+    <RouterLink class="brand" :to="brandTarget">
       <span class="brand-mark">{{ session.isDevelopment ? 'T' : 'P' }}</span>
       <span class="brand-copy">
         <strong>{{ t(session.isDevelopment ? 'app.testName' : 'app.name') }}</strong>
@@ -133,10 +145,17 @@ async function discardSandbox() {
     <nav class="main-nav" :aria-label="t('nav.label')">
       <template v-for="link in links" :key="link.name">
         <RouterLink
+          v-if="!tutorialLocks(link.name)"
           :to="{ name: routeName(link.name) }"
           :class="{ active: isActive(link.name) }"
           :aria-current="isActive(link.name) ? 'page' : undefined"
         >{{ link.label }}</RouterLink>
+        <span
+          v-else
+          class="sandbox-nav-locked"
+          aria-disabled="true"
+          :title="t('sandbox.tutorial.locked')"
+        >{{ link.label }}</span>
         <span
           v-if="link.name === dividerAfter"
           class="main-nav-divider"
@@ -193,6 +212,18 @@ async function discardSandbox() {
 </template>
 
 <style scoped>
+.sandbox-nav-locked {
+  display: grid;
+  place-items: center;
+  padding: 0 12px;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  cursor: not-allowed;
+  font-size: .93rem;
+  opacity: .42;
+  white-space: nowrap;
+}
+
 .offline-sync-status {
   min-height: 31px;
   padding: 5px 10px;
@@ -241,6 +272,8 @@ async function discardSandbox() {
  * coloured marker occupies header space.
  */
 @media (max-width: 700px) {
+  .sandbox-nav-locked { padding: 8px 9px; font-size: .82rem; }
+
   .offline-sync-status {
     position: relative;
     width: 34px;

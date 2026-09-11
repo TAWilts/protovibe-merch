@@ -30,7 +30,7 @@
     },
     "tutorial": {
       "title": "Sandbox tasks",
-      "hint": "A suggested tour through the application",
+      "hint": "Complete this step to unlock the next one.",
       "catalogue": "Product and variant",
       "catalogueDescription": "Create a new product, such as a hoodie in different sizes and colours. Enter a price and select ‘Save configuration’. In the variants below, choose how the product should be offered. You can also use minimum and target stock to decide how many items you want to keep in stock and when a warning should appear.",
       "purchase": "Book a purchase",
@@ -39,7 +39,8 @@
       "saleDescription": "The gig is over and the merch stand is busy: add a few products to the basket, choose the payment method and confirm the sale. Try shipping a product too – you will find it afterwards under ‘Open tasks’.",
       "balance": "Stock and balances",
       "balanceDescription": "How much did you take and which stock needs refilling? Find out in the Balances tab. If you entered target stock for products, Purchases can also create a shopping list for you automatically.",
-      "hide": "Hide",
+      "locked": "Complete the current sandbox task first or choose ‘Skip’.",
+      "hide": "Skip",
       "restart": "Restart task list"
     }
   },

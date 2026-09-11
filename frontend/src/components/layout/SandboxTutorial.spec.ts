@@ -8,7 +8,7 @@ const { session } = vi.hoisted(() => ({
     identity: {
       sandbox: {
         tutorial_visible: true,
-        tutorial_state: { catalogue: true, purchase: false, sale: false, balance: false },
+        tutorial_state: { catalogue: false, purchase: false, sale: false, balance: false },
       },
     },
     setSandboxTutorial: vi.fn(),
@@ -22,21 +22,51 @@ vi.mock('vue-router', () => ({
 vi.mock('@/stores/session', () => ({ useSessionStore: () => session }))
 
 describe('SandboxTutorial', () => {
-  beforeEach(() => session.setSandboxTutorial.mockReset())
+  beforeEach(() => {
+    session.identity.sandbox.tutorial_visible = true
+    session.identity.sandbox.tutorial_state = {
+      catalogue: false,
+      purchase: false,
+      sale: false,
+      balance: false,
+    }
+    session.setSandboxTutorial.mockReset()
+  })
 
-  it('shows a concrete description for every sandbox task', async () => {
+  it('shows only the first outstanding task and labels the exit as skip', async () => {
     const wrapper = mount(SandboxTutorial)
 
-    expect(wrapper.findAll('.sandbox-tutorial-tasks li')).toHaveLength(4)
-    expect(wrapper.findAll('.sandbox-task-copy > span').map((entry) => entry.text())).toEqual([
-      'sandbox.tutorial.catalogueDescription',
-      'sandbox.tutorial.purchaseDescription',
-      'sandbox.tutorial.saleDescription',
-      'sandbox.tutorial.balanceDescription',
-    ])
-    expect(wrapper.findAll('.sandbox-tutorial-tasks li')[0]!.classes()).toContain('done')
+    expect(wrapper.findAll('.sandbox-tutorial-tasks li')).toHaveLength(1)
+    expect(wrapper.get('.sandbox-task-copy strong').text()).toBe('sandbox.tutorial.catalogue')
+    expect(wrapper.get('.sandbox-task-copy > span').text()).toBe('sandbox.tutorial.catalogueDescription')
+    expect(wrapper.get('.sandbox-tutorial-heading button').text()).toBe('sandbox.tutorial.hide')
 
     await wrapper.get('.sandbox-tutorial-heading button').trigger('click')
     expect(session.setSandboxTutorial).toHaveBeenCalledWith(false)
+  })
+
+  it.each([
+    [{ catalogue: true, purchase: false, sale: false, balance: false }, 'purchase'],
+    [{ catalogue: true, purchase: true, sale: false, balance: false }, 'sale'],
+    [{ catalogue: true, purchase: true, sale: true, balance: false }, 'balance'],
+  ])('shows the next step for progress %o', (tutorialState, expectedStep) => {
+    session.identity.sandbox.tutorial_state = tutorialState
+
+    const wrapper = mount(SandboxTutorial)
+
+    expect(wrapper.findAll('.sandbox-tutorial-tasks li')).toHaveLength(1)
+    expect(wrapper.get('.sandbox-task-copy strong').text()).toBe(`sandbox.tutorial.${expectedStep}`)
+    expect(wrapper.get('.sandbox-task-copy > span').text()).toBe(`sandbox.tutorial.${expectedStep}Description`)
+  })
+
+  it('disappears after all guided tasks are complete', () => {
+    session.identity.sandbox.tutorial_state = {
+      catalogue: true,
+      purchase: true,
+      sale: true,
+      balance: true,
+    }
+
+    expect(mount(SandboxTutorial).find('.sandbox-tutorial').exists()).toBe(false)
   })
 })

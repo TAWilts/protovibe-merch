@@ -359,12 +359,25 @@ func (s *Service) SetTutorialVisible(ctx context.Context, env *models.SandboxEnv
 }
 
 func (s *Service) MarkProgress(ctx context.Context, env *models.SandboxEnvironment, step string) error {
-	if step != "catalogue" && step != "purchase" && step != "sale" && step != "balance" {
+	steps := []string{"catalogue", "purchase", "sale", "balance"}
+	stepIndex := -1
+	for index, candidate := range steps {
+		if candidate == step {
+			stepIndex = index
+			break
+		}
+	}
+	if stepIndex < 0 {
 		return nil
 	}
 	state := env.TutorialState
 	if state == nil {
 		state = initialProgress()
+	}
+	for _, prerequisite := range steps[:stepIndex] {
+		if done, _ := state[prerequisite].(bool); !done {
+			return nil
+		}
 	}
 	if done, _ := state[step].(bool); done {
 		return nil

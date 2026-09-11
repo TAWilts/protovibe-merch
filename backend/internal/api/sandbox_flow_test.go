@@ -130,6 +130,63 @@ func TestAnonymousSandboxUsesSeparateSessionAndSeedData(t *testing.T) {
 	}
 }
 
+func TestSandboxTutorialAdvancesOnlyAfterTheCurrentTask(t *testing.T) {
+	h := newHarness(t)
+	t.Cleanup(func() { cleanupSandboxes(t, h) })
+
+	if started := h.startSandbox(); started.Status != http.StatusOK {
+		t.Fatalf("start sandbox: %d %v", started.Status, started.Body)
+	}
+
+	// Visiting a later workflow must neither fail nor complete it out of order.
+	if balances := h.do(http.MethodGet, "/api/v1/sandbox/balances", nil); balances.Status != http.StatusOK {
+		t.Fatalf("read sandbox balances: %d %v", balances.Status, balances.Body)
+	}
+
+	created := h.do(http.MethodPost, "/api/v1/sandbox/articles", map[string]any{
+		"name":                     "Tutorial Hoodie",
+		"default_sale_price_cents": 3000,
+		"defer_variants":           true,
+	})
+	if created.Status != http.StatusCreated {
+		t.Fatalf("create tutorial draft: %d %v", created.Status, created.Body)
+	}
+
+	progress := func() map[string]any {
+		t.Helper()
+		identity := h.do(http.MethodGet, "/api/v1/sandbox/me", nil)
+		if identity.Status != http.StatusOK {
+			t.Fatalf("read sandbox identity: %d %v", identity.Status, identity.Body)
+		}
+		return jsonObject(jsonObject(identity.Body["sandbox"])["tutorial_state"])
+	}
+
+	initial := progress()
+	for _, step := range []string{"catalogue", "purchase", "sale", "balance"} {
+		if initial[step] == true {
+			t.Fatalf("step %q advanced before the catalogue configuration was saved: %v", step, initial)
+		}
+	}
+
+	articleID := int64(created.Body["id"].(float64))
+	saved := h.do(http.MethodPut, "/api/v1/sandbox/articles/"+itoa(articleID), map[string]any{
+		"option_groups": jsonList(created.Body, "option_groups"),
+	})
+	if saved.Status != http.StatusOK {
+		t.Fatalf("save tutorial article configuration: %d %v", saved.Status, saved.Body)
+	}
+
+	afterCatalogue := progress()
+	if afterCatalogue["catalogue"] != true {
+		t.Fatalf("saving the configuration did not complete the catalogue step: %v", afterCatalogue)
+	}
+	for _, step := range []string{"purchase", "sale", "balance"} {
+		if afterCatalogue[step] == true {
+			t.Fatalf("later step %q advanced out of order: %v", step, afterCatalogue)
+		}
+	}
+}
+
 func TestSignedInSandboxPreservesRealSessionAndCanSwitchRole(t *testing.T) {
 	h := newHarness(t)
 	t.Cleanup(func() { cleanupSandboxes(t, h) })

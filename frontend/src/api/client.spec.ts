@@ -72,6 +72,29 @@ describe('API client', () => {
     expect(new Headers(options.headers).get('X-CSRF-Token')).toBe('sandbox-token')
   })
 
+  it('advances the catalogue tutorial only after saving an article configuration', async () => {
+    const progress = vi.fn()
+    window.addEventListener('sandbox-progress', progress)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 1 }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 1 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await request('/articles', { method: 'POST', body: { name: 'Hoodie' }, apiMode: 'sandbox' })
+    expect(progress).not.toHaveBeenCalled()
+
+    await request('/articles/1', { method: 'PUT', body: { option_groups: [] }, apiMode: 'sandbox' })
+    expect(progress).toHaveBeenCalledOnce()
+
+    window.removeEventListener('sandbox-progress', progress)
+  })
+
   it('notifies the app shell when a request loses its session', async () => {
     const unauthorized = vi.fn()
     setUnauthorizedHandler(unauthorized)

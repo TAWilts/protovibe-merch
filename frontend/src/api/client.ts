@@ -124,7 +124,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   }
 
   if (mode === 'sandbox' && (
-    ((method === 'POST' || method === 'PUT') && path.startsWith('/articles')) ||
+    (method === 'PUT' && path.startsWith('/articles/')) ||
     (method === 'POST' && (path === '/purchases' || path === '/sales')) ||
     (method === 'GET' && (path === '/balances' || path.startsWith('/exports/')))
   )) {
