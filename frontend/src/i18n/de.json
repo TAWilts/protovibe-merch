@@ -1585,9 +1585,12 @@
     },
     "faq": {
       "title": "Noch Fragen?",
-      "email": { "question": "Brauche ich schon eine funktionierende E-Mail-Anbindung?", "answer": "Nein. Die Anfrage und Übergabe funktionieren vorerst über einen sicheren Statuslink. Die Kontaktadresse wird nur gespeichert und noch nicht angeschrieben." },
-      "approval": { "question": "Wird meine Band sofort angelegt?", "answer": "Nein. Ein System-Admin prüft die Anfrage zuerst und kann Schreibfehler korrigieren. Erst die Freigabe erstellt Band und ersten Admin gemeinsam." },
-      "link": { "question": "Was passiert, wenn ich den Statuslink verliere?", "answer": "Ohne E-Mail-Versand lässt sich der Link nicht automatisch wiederherstellen. Nach einer Freigabe kann ein System-Admin bei Bedarf einen neuen Einrichtungscode ausgeben." }
+      "purpose": { "question": "Wofür brauche ich den Merch Manager?", "answer": "Damit eure Band Verkäufe, Bestände, Einkäufe, Packlisten und gemeinsame Ausgaben an einem Ort organisiert. Ihr seht direkt, was verkauft wurde, was nachbestellt werden muss und wie eure Merch- und Bandkasse dasteht." },
+      "deletion": { "question": "Warum kann ich manche Vorgänge und Varianten nicht löschen?", "answer": "Vertrauen ist gut, Kontrolle ist besser: Gebuchte Vorgänge bleiben für eine nachvollziehbare Historie erhalten und können stattdessen storniert werden. Gespeicherte Variantenoptionen bleiben bestehen, damit Bestände und frühere Buchungen nicht versehentlich einer neuen Variante zugeordnet werden. Noch nicht gespeicherte Eingaben kannst du weiterhin verwerfen." },
+      "costs": { "question": "Kostet die Nutzung etwas?", "answer": "Nein. Bislang sind auch für die Zukunft keine Nutzungskosten geplant." },
+      "shopApi": { "question": "Wird es eine Anbindung an Shop-Systeme geben?", "answer": "Eine Integration in Shop-APIs ist derzeit nicht geplant. Der Merch Manager konzentriert sich auf den direkten Verkauf, Bestände und die Abläufe eurer Band." },
+      "sandbox": { "question": "Kann ich alles ausprobieren, ohne mich anzumelden?", "answer": "Ja. Die vollständige Sandbox verwendet nur isolierte Demodaten und hat keine Auswirkungen auf eine echte Band. Sie wird nach Ablauf automatisch gelöscht." },
+      "offline": { "question": "Funktioniert der Merch Manager auch ohne Internet?", "answer": "Verkauf und Packliste bleiben nach dem ersten Laden auch offline nutzbar. Neue Vorgänge werden lokal vorgemerkt und nach der nächsten Verbindung synchronisiert." }
     },
     "footer": "Verkauf, Bestand und Bandkasse in einem gemeinsamen Werkzeug.",
     "legal": {

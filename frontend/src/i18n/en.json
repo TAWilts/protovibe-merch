@@ -1576,9 +1576,12 @@
     },
     "faq": {
       "title": "Questions?",
-      "email": { "question": "Do I need working email delivery?", "answer": "No. The request and handover currently use a secure status link. The contact address is stored but no message is sent yet." },
-      "approval": { "question": "Is my band created immediately?", "answer": "No. A system administrator reviews the request first and can correct typing mistakes. Approval creates the band and its first administrator together." },
-      "link": { "question": "What if I lose the status link?", "answer": "Without email delivery, the link cannot be recovered automatically. After approval, a system administrator can issue a new setup code if necessary." }
+      "purpose": { "question": "What do I need Merch Manager for?", "answer": "It keeps your band's sales, stock, purchases, packing lists and shared expenses in one place. You can immediately see what sold, what needs restocking and how your merchandise and band finances are doing." },
+      "deletion": { "question": "Why can't I delete some transactions and variants?", "answer": "Trust is good, control is better: booked transactions remain available for a traceable history and can be cancelled instead. Saved variant options remain in place so stock and earlier bookings are not accidentally assigned to a new variant. Unsaved input can still be discarded." },
+      "costs": { "question": "Does it cost anything?", "answer": "No. There are currently no plans to charge for using it in the future either." },
+      "shopApi": { "question": "Will there be an integration with online shops?", "answer": "An integration with shop APIs is not currently planned. Merch Manager focuses on direct sales, stock and your band's workflows." },
+      "sandbox": { "question": "Can I try everything without signing up?", "answer": "Yes. The full sandbox uses isolated demo data and cannot affect a real band. It is deleted automatically after it expires." },
+      "offline": { "question": "Does Merch Manager work without internet access?", "answer": "Sales and packing lists remain usable offline after the first load. New operations are queued locally and synchronised when the connection returns." }
     },
     "footer": "Sales, inventory and band finances in one shared tool.",
     "legal": {

@@ -43,7 +43,7 @@ const form = reactive({
 })
 
 const features = ['mobile', 'payments', 'inventory', 'roles', 'backups', 'support'] as const
-const faqs = ['email', 'approval', 'link'] as const
+const faqs = ['purpose', 'deletion', 'costs', 'shopApi', 'sandbox', 'offline'] as const
 const privacyUrl = import.meta.env.VITE_PRIVACY_URL?.trim() ?? ''
 const imprintUrl = import.meta.env.VITE_IMPRINT_URL?.trim() ?? ''
 
