@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SandboxIdentity } from '@/api/types'
-import { nextSandboxTutorialStep } from './sandboxTutorial'
+import {
+  nextSandboxTutorialStep,
+  sandboxExplorationSteps,
+  sandboxTutorialComplete,
+} from './sandboxTutorial'
 
 function sandbox(progress: SandboxIdentity['tutorial_state'], visible = true): SandboxIdentity {
   return {
@@ -27,5 +31,17 @@ describe('nextSandboxTutorialStep', () => {
   it('returns no task after completion or when the tutorial was skipped', () => {
     expect(nextSandboxTutorialStep(sandbox({ catalogue: true, purchase: true, sale: true, balance: true }))).toBeNull()
     expect(nextSandboxTutorialStep(sandbox({ catalogue: false, purchase: false, sale: false, balance: false }, false))).toBeNull()
+  })
+
+  it('recognises the transition to the optional exploration journey', () => {
+    expect(sandboxTutorialComplete(sandbox({ catalogue: true, purchase: true, sale: true, balance: false }))).toBe(false)
+    expect(sandboxTutorialComplete(sandbox({ catalogue: true, purchase: true, sale: true, balance: true }))).toBe(true)
+    expect(sandboxExplorationSteps.map((step) => step.key)).toEqual([
+      'shipping',
+      'cancellation',
+      'slideshow',
+      'packing',
+      'roles',
+    ])
   })
 })

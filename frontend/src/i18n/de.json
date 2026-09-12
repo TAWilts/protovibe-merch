@@ -31,6 +31,7 @@
     "tutorial": {
       "title": "Sandbox-Aufgaben",
       "hint": "Schließe diesen Schritt ab, um den nächsten freizuschalten.",
+      "timeline": "Pflichtschritte der Sandbox-Einführung",
       "catalogue": "Artikel und Variante",
       "catalogueDescription": "Lege einen neuen Artikel an, zum Beispiel einen Hoodie in verschiedenen Größen und Farben. Gib einen Preis an und drücke auf „Konfiguration speichern“. Bei den Varianten darunter bestimmst du anschließend, wie der Artikel angeboten werden soll. Mit „Mindestbestand“ und „Sollbestand“ legst du außerdem fest, wie viel ihr auf Lager halten möchtet und ab wann eine Warnung erscheint.",
       "purchase": "Einkauf buchen",
@@ -39,8 +40,29 @@
       "saleDescription": "Der Gig ist vorbei und am Merchstand geht es los: Lege einige Artikel in den Warenkorb, wähle die Zahlungsart und bestätige den Verkauf. Probiere auch einen Versand aus – den Vorgang findest du danach unter „Offene Vorgänge“.",
       "balance": "Bestand und Bilanz",
       "balanceDescription": "Was habt ihr eingenommen und welche Bestände müsst ihr auffüllen? Finde es im Tab „Bilanzen“ heraus. Wenn du bei den Artikeln Sollbestände hinterlegt hast, kannst du im Einkauf außerdem automatisch eine Einkaufsliste erstellen lassen.",
+      "optionalTitle": "Noch mehr ausprobieren",
+      "optionalHint": "Die Einführung ist geschafft. Diese Schritte sind freiwillig und können in beliebiger Reihenfolge ausprobiert werden.",
+      "optionalTimeline": "Optionale Vorschläge für die Sandbox",
+      "shipping": "Versandverkauf und offenen Vorgang bearbeiten",
+      "shippingDescription": "Lege im Verkauf Artikel in den Warenkorb und wähle „Als Versand buchen“. Öffne danach „Offene Vorgänge“, um Versandkosten, Sendungsstatus oder weitere Angaben zu bearbeiten und den Vorgang abzuschließen.",
+      "cancellation": "Verkauf stornieren",
+      "cancellationDescription": "Öffne die Historie und klappe den gewünschten Verkaufsbeleg auf. Dort kannst du den gesamten Verkauf oder einzelne Positionen stornieren; Bestand und Bilanz werden entsprechend korrigiert.",
+      "slideshow": "Diashow anzeigen",
+      "slideshowDescription": "Öffne die Diashow, wähle die gewünschten Produktbilder aus und starte die Präsentation für euren Merchstand. Die Vollbildansicht lässt sich jederzeit wieder beenden.",
+      "packing": "Packliste bestücken",
+      "packingDescription": "Öffne die Packliste, lege einen Behälter oder ein Gigbag an und füge die mitzunehmenden Artikel hinzu. Beim Packen kannst du ihren Status direkt in der Liste markieren.",
+      "roles": "Verschiedene Rollen ausprobieren",
+      "rolesDescription": "Wechsle oben im gelben Sandbox-Banner zwischen Verkäufer, Mitglied, Manager und Band-Admin. So siehst du direkt, welche Ansichten und Aktionen der jeweiligen Rolle zur Verfügung stehen.",
+      "openStep": "Zum Schritt",
+      "state": {
+        "done": "Erledigt",
+        "current": "Aktueller Schritt",
+        "upcoming": "Kommender Schritt",
+        "optional": "Freiwilliger Schritt"
+      },
       "locked": "Schließe zuerst die aktuelle Sandbox-Aufgabe ab oder wähle „Überspringen“.",
-      "hide": "Überspringen",
+      "skip": "Überspringen",
+      "hide": "Ausblenden",
       "restart": "Aufgabenliste neu starten"
     }
   },

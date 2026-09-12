@@ -31,6 +31,7 @@
     "tutorial": {
       "title": "Sandbox tasks",
       "hint": "Complete this step to unlock the next one.",
+      "timeline": "Required sandbox introduction steps",
       "catalogue": "Product and variant",
       "catalogueDescription": "Create a new product, such as a hoodie in different sizes and colours. Enter a price and select ‘Save configuration’. In the variants below, choose how the product should be offered. You can also use minimum and target stock to decide how many items you want to keep in stock and when a warning should appear.",
       "purchase": "Book a purchase",
@@ -39,8 +40,29 @@
       "saleDescription": "The gig is over and the merch stand is busy: add a few products to the basket, choose the payment method and confirm the sale. Try shipping a product too – you will find it afterwards under ‘Open tasks’.",
       "balance": "Stock and balances",
       "balanceDescription": "How much did you take and which stock needs refilling? Find out in the Balances tab. If you entered target stock for products, Purchases can also create a shopping list for you automatically.",
+      "optionalTitle": "Explore some more",
+      "optionalHint": "You have completed the introduction. These steps are optional and can be tried in any order.",
+      "optionalTimeline": "Optional sandbox suggestions",
+      "shipping": "Book a shipment and edit the open task",
+      "shippingDescription": "Add products to the basket in Sales and choose ‘Book as shipment’. Then open ‘Open tasks’ to edit shipping costs, shipment status or other details and complete the task.",
+      "cancellation": "Cancel a sale",
+      "cancellationDescription": "Open History and expand the sale receipt you want to change. You can cancel the entire sale or individual items; stock and balances are corrected accordingly.",
+      "slideshow": "Show the slideshow",
+      "slideshowDescription": "Open the slideshow, select the product images you want and start the presentation for your merch stand. You can leave the full-screen view at any time.",
+      "packing": "Fill the packing list",
+      "packingDescription": "Open the packing list, create a container or gig bag and add the products you want to take. While packing, you can mark their status directly in the list.",
+      "roles": "Try different roles",
+      "rolesDescription": "Use the yellow sandbox banner at the top to switch between seller, member, manager and band admin. This shows which views and actions are available to each role.",
+      "openStep": "Go to step",
+      "state": {
+        "done": "Completed",
+        "current": "Current step",
+        "upcoming": "Upcoming step",
+        "optional": "Optional step"
+      },
       "locked": "Complete the current sandbox task first or choose ‘Skip’.",
-      "hide": "Skip",
+      "skip": "Skip",
+      "hide": "Hide",
       "restart": "Restart task list"
     }
   },

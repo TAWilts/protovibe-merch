@@ -7,7 +7,22 @@ export const sandboxTutorialSteps = [
   { key: 'balance', route: 'sandbox-balances', nav: 'balances' },
 ] as const
 
+export const sandboxExplorationSteps = [
+  { key: 'shipping', route: 'sandbox-sales' },
+  { key: 'cancellation', route: 'sandbox-history' },
+  { key: 'slideshow', route: 'sandbox-slideshow' },
+  { key: 'packing', route: 'sandbox-packing-list' },
+  { key: 'roles', route: null },
+] as const
+
 export type SandboxTutorialStep = (typeof sandboxTutorialSteps)[number]
+export type SandboxExplorationStep = (typeof sandboxExplorationSteps)[number]
+
+export function sandboxTutorialComplete(
+  sandbox: SandboxIdentity | null | undefined,
+): boolean {
+  return sandboxTutorialSteps.every((step) => sandbox?.tutorial_state[step.key] === true)
+}
 
 /**
  * Returns the one route currently available in the guided sandbox. Hiding the
