@@ -14,15 +14,13 @@ const padding = { top: 48, right: 24, bottom: 56, left: 76 }
 const chartWidth = computed(() => Math.max(780, props.points.length * 250))
 const maximum = computed(() => Math.max(
   1,
-  ...props.points.flatMap((point) => [point.income_cents, point.expense_cents, point.difference_cents]),
+  ...props.points.flatMap((point) => [point.income_cents, point.expense_cents, Math.abs(point.difference_cents)]),
 ))
-const minimum = computed(() => Math.min(0, ...props.points.map((point) => point.difference_cents)))
-const ticks = computed(() => [...new Set([maximum.value, 0, minimum.value])])
+const ticks = computed(() => [maximum.value, 0])
 
 function y(value: number) {
   const usableHeight = height - padding.top - padding.bottom
-  const range = Math.max(1, maximum.value - minimum.value)
-  return padding.top + ((maximum.value - value) / range) * usableHeight
+  return padding.top + ((maximum.value - value) / maximum.value) * usableHeight
 }
 
 function accountHolderLabel(point: AccountHolderTotal) {
@@ -39,9 +37,18 @@ const groups = computed(() => {
   return props.points.map((point, index) => {
     const center = padding.left + slot * index + slot / 2
     const values = [
-      { key: 'income', value: point.income_cents, className: 'income-bar' },
-      { key: 'expense', value: point.expense_cents, className: 'expense-bar' },
-      { key: 'difference', value: point.difference_cents, className: 'difference-bar' },
+      { key: 'income', value: point.income_cents, magnitude: point.income_cents, className: 'income-bar' },
+      { key: 'expense', value: point.expense_cents, magnitude: point.expense_cents, className: 'expense-bar' },
+      {
+        key: 'difference',
+        value: point.difference_cents,
+        magnitude: Math.abs(point.difference_cents),
+        className: point.difference_cents > 0
+          ? 'difference-bar difference-positive-bar'
+          : point.difference_cents < 0
+            ? 'difference-bar difference-negative-bar'
+            : 'difference-bar difference-zero-bar',
+      },
     ]
     const start = center - (barWidth * 3 + gap * 2) / 2
     return {
@@ -49,14 +56,14 @@ const groups = computed(() => {
       center,
       label: accountHolderLabel(point),
       bars: values.map((series, seriesIndex) => {
-        const valueY = y(series.value)
+        const valueY = y(series.magnitude)
         return {
           ...series,
           x: start + seriesIndex * (barWidth + gap),
-          y: series.value === 0 ? zero - 1 : Math.min(zero, valueY),
+          y: series.magnitude === 0 ? zero - 1 : valueY,
           width: barWidth,
-          height: series.value === 0 ? 2 : Math.max(1, Math.abs(zero - valueY)),
-          labelY: series.value < 0 ? Math.min(height - padding.bottom + 18, valueY + 15) : Math.max(13, valueY - 8),
+          height: series.magnitude === 0 ? 2 : Math.max(1, zero - valueY),
+          labelY: Math.max(13, valueY - 8),
         }
       }),
     }
@@ -127,13 +134,16 @@ const groups = computed(() => {
 </template>
 
 <style scoped>
-.account-holder-chart-wrap { display: grid; gap: 10px; }
+.account-holder-chart-wrap { --chart-income: #65a9f3; display: grid; gap: 10px; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: 16px; color: var(--text-secondary); font-size: .84rem; }
 .chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .chart-legend i { width: 12px; height: 12px; border-radius: 3px; }
-.income-key, .income-bar { fill: var(--success-text); background: var(--success-text); }
-.expense-key, .expense-bar { fill: var(--danger); background: var(--danger); }
-.difference-key, .difference-bar { fill: var(--accent); background: var(--accent); }
+.income-key, .income-bar { fill: var(--chart-income); background: var(--chart-income); }
+.expense-key, .expense-bar { fill: var(--warning); background: var(--warning); }
+.difference-key { background: linear-gradient(90deg, var(--success) 0 50%, var(--danger) 50%); }
+.difference-positive-bar { fill: var(--success); }
+.difference-negative-bar { fill: var(--danger); }
+.difference-zero-bar { fill: var(--text-tertiary); }
 .account-holder-chart-scroll { overflow-x: auto; touch-action: pan-x pan-y; border-radius: var(--radius-control); outline: none; }
 .account-holder-chart-scroll:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 .account-holder-chart { display: block; max-width: none; }

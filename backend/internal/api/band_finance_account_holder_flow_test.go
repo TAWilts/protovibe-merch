@@ -239,6 +239,58 @@ func TestAccountHolderBalancesCombineBandFinancesAndPurchaseReceipts(t *testing.
 	assertTotal(200, -800)
 }
 
+func TestAccountHolderBalancesCountCollectedSalesAsBandCashIncome(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	_, variants := h.sellableArticle("Verkaufserloese der Bandkasse")
+
+	book := func(soldOn string, isPaid bool, amountGiven int64) response {
+		t.Helper()
+		payload := map[string]any{
+			"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 1}},
+			"payment_method": "Bar", "is_paid": isPaid, "is_received": true,
+			"sold_on": soldOn,
+		}
+		if isPaid {
+			payload["amount_given_cents"] = amountGiven
+		} else {
+			payload["customer_name"] = "Offener Kunde"
+			payload["customer_address"] = "Testweg 1"
+		}
+		result := h.do(http.MethodPost, "/api/v1/sales", payload)
+		if result.Status != http.StatusCreated {
+			t.Fatalf("book sale: %d %v", result.Status, result.Body)
+		}
+		return result
+	}
+
+	// The band actually receives 20.00 EUR: 18.00 EUR sale price and a 2.00
+	// EUR donation. Both belong to the shared band cash account.
+	book("2026-09-10", true, 2000)
+	book("2026-09-10", false, 0)
+	cancelled := book("2026-09-10", true, 1800)
+	cancelledID := int64(jsonList(cancelled.Body, "sale_ids")[0].(float64))
+	if result := h.do(http.MethodPatch, "/api/v1/sales/"+itoa(cancelledID)+"/cancel", map[string]any{"scope": "item"}); result.Status != http.StatusOK {
+		t.Fatalf("cancel sale: %d %v", result.Status, result.Body)
+	}
+	book("2026-08-31", true, 1800)
+
+	balances := h.do(http.MethodGet, "/api/v1/balances?from=2026-09-01&to=2026-09-30", nil)
+	if balances.Status != http.StatusOK {
+		t.Fatalf("balances: %d %v", balances.Status, balances.Body)
+	}
+	totals := jsonList(balances.Body, "account_holder_totals")
+	if len(totals) != 1 {
+		t.Fatalf("expected only the band cash account: %v", totals)
+	}
+	bandCash := jsonObject(totals[0])
+	if bandCash["account_holder_user_id"] != nil || bandCash["income_cents"] != float64(2000) ||
+		bandCash["expense_cents"] != float64(0) || bandCash["difference_cents"] != float64(-2000) {
+		t.Fatalf("only collected, active, in-period sales must reach band cash: %v", bandCash)
+	}
+}
+
 func TestRecurringBandFinanceCopiesAccountHolder(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()

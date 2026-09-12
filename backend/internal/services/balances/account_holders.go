@@ -70,6 +70,26 @@ func (s *Service) accountHolderTotalsPeriod(
 		merge(entry)
 	}
 
+	// Sales do not have an account-holder selector: money collected at the
+	// merch counter belongs to the shared band cash account. Only payments that
+	// actually moved and were not cancelled count here, matching the
+	// "collected" value in the main balance summary.
+	type collectedSaleTotal struct {
+		IncomeCents int64
+	}
+	var collectedSales collectedSaleTotal
+	saleQuery := s.db.WithContext(ctx).Model(&models.Sale{}).
+		Where("sales.is_cancelled = ? AND sales.is_paid = ?", false, true)
+	saleQuery = period.apply(saleQuery, "sales.sold_on")
+	if err := saleQuery.
+		Select(`COALESCE(SUM(sales.amount_due_cents - sales.discount_cents + sales.donation_cents), 0) AS income_cents`).
+		Scan(&collectedSales).Error; err != nil {
+		return nil, err
+	}
+	if collectedSales.IncomeCents != 0 {
+		merge(AccountHolderTotal{IncomeCents: collectedSales.IncomeCents})
+	}
+
 	// Purchase metadata is repeated on every receipt line. Grouping active
 	// lines by receipt keeps shipping cent-exact and includes it exactly once,
 	// including when only part of a receipt was cancelled.

@@ -33,6 +33,12 @@ describe('AccountHolderChart', () => {
     expect(wrapper.findAll('.income-bar')).toHaveLength(2)
     expect(wrapper.findAll('.expense-bar')).toHaveLength(2)
     expect(wrapper.findAll('.difference-bar')).toHaveLength(2)
+    expect(wrapper.findAll('.difference-negative-bar')).toHaveLength(1)
+    expect(wrapper.findAll('.difference-positive-bar')).toHaveLength(1)
+    const zeroLineY = Number(wrapper.get('.zero-line').attributes('y1'))
+    for (const bar of wrapper.findAll('rect')) {
+      expect(Number(bar.attributes('y'))).toBeLessThan(zeroLineY)
+    }
     expect(wrapper.findAll('.bar-value').map((node) => node.text())).toEqual([
       '10,00 €', '0,00 €', '-10,00 €', '0,00 €', '25,00 €', '25,00 €',
     ])
