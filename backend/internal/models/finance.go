@@ -45,6 +45,9 @@ type BandTransaction struct {
 	Description     string              `gorm:"size:500;not null" json:"description"`
 	AmountCents     int64               `gorm:"not null" json:"amount_cents"`
 
+	AccountHolderUserID   *int64 `json:"account_holder_user_id"`
+	AccountHolderUsername string `gorm:"size:150;not null;default:''" json:"account_holder_username"`
+
 	IsSettled         bool       `gorm:"not null;index" json:"is_settled"`
 	IsAsset           bool       `gorm:"not null;index" json:"is_asset"`
 	SettledAt         *time.Time `json:"settled_at,omitempty"`

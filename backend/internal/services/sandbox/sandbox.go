@@ -300,7 +300,8 @@ func (s *Service) seed(db *gorm.DB, bandID, userID int64, now time.Time) (string
 	}
 	if err := db.Create(&models.BandTransaction{
 		TransactionType: models.BandExpense, TransactionOn: today, Category: "Werbung / Marketing",
-		Description: "Demo-Plakate", AmountCents: 4500, IsSettled: true,
+		Description: "Demo-Plakate", AmountCents: 4500,
+		AccountHolderUserID: &actorID, AccountHolderUsername: "Demo", IsSettled: true,
 		CreatedAt: now, UpdatedAt: now, Actor: actor,
 	}).Error; err != nil {
 		return "", err

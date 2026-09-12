@@ -4,7 +4,12 @@ import { useI18n } from 'vue-i18n'
 
 import { bandFinanceAttachmentsApi, reportsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
-import type { Attachment, BandLedger, BandTransaction } from '@/api/types'
+import type {
+  Attachment,
+  BandFinanceAccountHolder,
+  BandLedger,
+  BandTransaction,
+} from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import RecurringBandFinances from '@/components/RecurringBandFinances.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
@@ -31,6 +36,7 @@ const ledger = ref<BandLedger | null>(null)
 const loading = ref(true)
 const busy = ref(false)
 const editingId = ref<number | null>(null)
+const editingAccountHolder = ref<BandFinanceAccountHolder | null>(null)
 const pendingFiles = ref<File[]>([])
 const financeFileInput = ref<HTMLInputElement | null>(null)
 const attachmentsFor = ref<BandTransaction | null>(null)
@@ -42,6 +48,12 @@ const dateTo = ref('')
 
 const canManage = computed(() => session.capabilities?.can_manage_band_finances ?? false)
 const canCreate = computed(() => session.capabilities?.can_create_band_finances ?? false)
+const accountHolders = computed(() => {
+  const holders = [...(ledger.value?.account_holders ?? [])]
+  const editing = editingAccountHolder.value
+  if (editing && !holders.some((holder) => holder.id === editing.id)) holders.push(editing)
+  return holders
+})
 
 const visibleEntries = computed(() =>
   (ledger.value?.entries ?? []).filter((entry) =>
@@ -100,6 +112,7 @@ function freshForm() {
     category: 'Gage',
     description: '',
     amount: '',
+    account_holder_user_id: null as number | null,
     is_settled: true,
     is_asset: false,
   }
@@ -148,6 +161,7 @@ function exportVisible() {
       t('bandFinances.type'),
       t('bandFinances.category'),
       t('bandFinances.description'),
+      t('bandFinances.accountHolder'),
       t('bandFinances.amount'),
       t('bandFinances.status'),
     ],
@@ -156,6 +170,7 @@ function exportVisible() {
       entry.transaction_type === 'income' ? t('bandFinances.income') : t('bandFinances.expense'),
       entry.category,
       entry.description,
+      accountHolderLabel(entry.account_holder_username),
       `${entry.transaction_type === 'expense' ? '-' : '+'}${format(entry.amount_cents)}`,
       statusLabel(entry),
     ]),
@@ -188,8 +203,13 @@ function statusLabel(entry: BandTransaction) {
   return entry.is_settled ? t('bandFinances.paid') : t('bandFinances.notPaid')
 }
 
+function accountHolderLabel(username: string) {
+  return username || t('bandFinances.bandCash')
+}
+
 function resetForm() {
   editingId.value = null
+  editingAccountHolder.value = null
   form.value = freshForm()
   pendingFiles.value = []
   if (financeFileInput.value) financeFileInput.value.value = ''
@@ -220,12 +240,16 @@ async function uploadFiles(transactionId: number, files: File[]) {
 function startEdit(entry: BandTransaction) {
   if (entry.is_cancelled || entry.is_settled) return
   editingId.value = entry.id
+  editingAccountHolder.value = entry.account_holder_user_id === null
+    ? null
+    : { id: entry.account_holder_user_id, username: entry.account_holder_username }
   form.value = {
     transaction_type: entry.transaction_type,
     transaction_on: entry.transaction_on,
     category: entry.category,
     description: entry.description,
     amount: (entry.amount_cents / 100).toFixed(2).replace('.', ','),
+    account_holder_user_id: entry.account_holder_user_id,
     is_settled: false,
     is_asset: entry.is_asset,
   }
@@ -241,6 +265,7 @@ async function submit() {
     category: form.value.category.trim(),
     description: form.value.description.trim(),
     amount_cents: amountCents.value,
+    account_holder_user_id: form.value.account_holder_user_id,
     is_asset: form.value.transaction_type === 'expense' && form.value.is_asset,
   }
   try {
@@ -422,6 +447,18 @@ async function cancelEntry(id: number) {
             <input v-model="form.description" required />
           </label>
 
+          <label>
+            {{ form.transaction_type === 'income'
+              ? t('bandFinances.receivedBy')
+              : t('bandFinances.paidBy') }}
+            <select v-model="form.account_holder_user_id">
+              <option :value="null">{{ t('bandFinances.bandCash') }}</option>
+              <option v-for="holder in accountHolders" :key="holder.id" :value="holder.id">
+                {{ holder.username }}
+              </option>
+            </select>
+          </label>
+
           <AppToggle
             v-if="form.transaction_type === 'expense'"
             class="checkbox-row settlement-checkbox asset-checkbox"
@@ -491,6 +528,7 @@ async function cancelEntry(id: number) {
         v-if="canManage"
         :income-categories="ledger.suggested_income_categories"
         :expense-categories="ledger.suggested_expense_categories"
+        :account-holders="ledger.account_holders"
         @changed="load"
       />
 
@@ -536,6 +574,7 @@ async function cancelEntry(id: number) {
                 <th>{{ t('common.date') }}</th>
                 <th>{{ t('bandFinances.category') }}</th>
                 <th>{{ t('bandFinances.description') }}</th>
+                <th>{{ t('bandFinances.accountHolder') }}</th>
                 <th class="numeric">{{ t('bandFinances.amount') }}</th>
                 <th>{{ t('bandFinances.status') }}</th>
                 <th v-if="canManage"></th>
@@ -565,6 +604,7 @@ async function cancelEntry(id: number) {
                     @click="openFinanceAttachments(entry)"
                   >📎 <span>{{ entry.attachments?.length ?? 0 }}</span></button>
                 </td>
+                <td>{{ accountHolderLabel(entry.account_holder_username) }}</td>
                 <td class="numeric" :class="entry.transaction_type">
                   {{ entry.transaction_type === 'expense' ? '−' : '+' }}{{ format(entry.amount_cents) }}
                 </td>

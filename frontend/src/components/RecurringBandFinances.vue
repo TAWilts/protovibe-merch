@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import { reportsApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
-import type { RecurringBandTransaction } from '@/api/types'
+import type { BandFinanceAccountHolder, RecurringBandTransaction } from '@/api/types'
 import AppToggle from '@/components/ui/AppToggle.vue'
 import { parseAmount, useMoney } from '@/composables/useMoney'
 import { useFlashStore } from '@/stores/flash'
@@ -12,6 +12,7 @@ import { useFlashStore } from '@/stores/flash'
 const props = defineProps<{
   incomeCategories: string[]
   expenseCategories: string[]
+  accountHolders: BandFinanceAccountHolder[]
 }>()
 const emit = defineEmits<{ changed: [] }>()
 
@@ -27,6 +28,7 @@ const form = ref({
   category: 'Equipment',
   description: '',
   amount: '',
+  account_holder_user_id: null as number | null,
   is_settled: true,
   is_asset: true,
   interval_value: 1,
@@ -88,6 +90,7 @@ async function createRule() {
       category: form.value.category.trim(),
       description: form.value.description.trim(),
       amount_cents: amount,
+      account_holder_user_id: form.value.account_holder_user_id,
       is_settled: form.value.is_settled,
       is_asset: form.value.transaction_type === 'expense' && form.value.is_asset,
       interval_value: Math.trunc(form.value.interval_value),
@@ -172,6 +175,18 @@ async function deleteRule(rule: RecurringBandTransaction) {
         <input v-model="form.description" required />
       </label>
 
+      <label>
+        {{ form.transaction_type === 'income'
+          ? t('bandFinances.receivedBy')
+          : t('bandFinances.paidBy') }}
+        <select v-model="form.account_holder_user_id">
+          <option :value="null">{{ t('bandFinances.bandCash') }}</option>
+          <option v-for="holder in props.accountHolders" :key="holder.id" :value="holder.id">
+            {{ holder.username }}
+          </option>
+        </select>
+      </label>
+
       <AppToggle
         v-if="form.transaction_type === 'expense'"
         class="checkbox-row settlement-checkbox"
@@ -216,6 +231,7 @@ async function deleteRule(rule: RecurringBandTransaction) {
             <th>{{ t('bandFinances.description') }}</th>
             <th>{{ t('bandFinances.recurring.interval') }}</th>
             <th>{{ t('bandFinances.recurring.next') }}</th>
+            <th>{{ t('bandFinances.accountHolder') }}</th>
             <th class="numeric">{{ t('bandFinances.amount') }}</th>
             <th>{{ t('bandFinances.status') }}</th>
             <th></th>
@@ -244,6 +260,7 @@ async function deleteRule(rule: RecurringBandTransaction) {
               }) }}
             </td>
             <td>{{ rule.next_run_on }}</td>
+            <td>{{ rule.account_holder_username || t('bandFinances.bandCash') }}</td>
             <td class="numeric" :class="rule.transaction_type">
               {{ rule.transaction_type === 'expense' ? '−' : '+' }}{{ format(rule.amount_cents) }}
             </td>

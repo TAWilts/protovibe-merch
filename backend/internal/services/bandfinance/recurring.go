@@ -18,15 +18,16 @@ var ErrInvalidInterval = errors.New("bandfinance: interval must be a positive nu
 
 // RecurringEntry is a new repeating ledger rule.
 type RecurringEntry struct {
-	TransactionType models.BandTransactionType `json:"transaction_type"`
-	StartOn         models.Date                `json:"start_on"`
-	Category        string                     `json:"category"`
-	Description     string                     `json:"description"`
-	AmountCents     int64                      `json:"amount_cents"`
-	IsSettled       *bool                      `json:"is_settled,omitempty"`
-	IsAsset         bool                       `json:"is_asset"`
-	IntervalValue   int                        `json:"interval_value"`
-	IntervalUnit    models.RecurrenceUnit      `json:"interval_unit"`
+	TransactionType     models.BandTransactionType `json:"transaction_type"`
+	StartOn             models.Date                `json:"start_on"`
+	Category            string                     `json:"category"`
+	Description         string                     `json:"description"`
+	AmountCents         int64                      `json:"amount_cents"`
+	AccountHolderUserID *int64                     `json:"account_holder_user_id"`
+	IsSettled           *bool                      `json:"is_settled,omitempty"`
+	IsAsset             bool                       `json:"is_asset"`
+	IntervalValue       int                        `json:"interval_value"`
+	IntervalUnit        models.RecurrenceUnit      `json:"interval_unit"`
 }
 
 // CreateRecurring stores a schedule. Its first occurrence is due on StartOn.
@@ -43,22 +44,28 @@ func (s *Service) CreateRecurring(ctx context.Context, entry RecurringEntry, act
 	if entry.StartOn.IsZero() || !validInterval(entry.IntervalValue, entry.IntervalUnit) {
 		return nil, ErrInvalidInterval
 	}
+	holderID, holderUsername, err := resolveAccountHolder(ctx, s.db, entry.AccountHolderUserID)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	rule := &models.RecurringBandTransaction{
-		TransactionType: entry.TransactionType,
-		StartOn:         entry.StartOn,
-		NextRunOn:       entry.StartOn,
-		Category:        strings.TrimSpace(entry.Category),
-		Description:     strings.TrimSpace(entry.Description),
-		AmountCents:     entry.AmountCents,
-		IsSettled:       settledOrDefault(entry.IsSettled),
-		IsAsset:         entry.TransactionType == models.BandExpense && entry.IsAsset,
-		IntervalValue:   entry.IntervalValue,
-		IntervalUnit:    entry.IntervalUnit,
-		IsActive:        true,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		TransactionType:       entry.TransactionType,
+		StartOn:               entry.StartOn,
+		NextRunOn:             entry.StartOn,
+		Category:              strings.TrimSpace(entry.Category),
+		Description:           strings.TrimSpace(entry.Description),
+		AmountCents:           entry.AmountCents,
+		AccountHolderUserID:   holderID,
+		AccountHolderUsername: holderUsername,
+		IsSettled:             settledOrDefault(entry.IsSettled),
+		IsAsset:               entry.TransactionType == models.BandExpense && entry.IsAsset,
+		IntervalValue:         entry.IntervalValue,
+		IntervalUnit:          entry.IntervalUnit,
+		IsActive:              true,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 	rule.CreatedByUserID = &actor.UserID
 	rule.CreatedByUsername = actor.Username
@@ -213,16 +220,18 @@ func (s *Service) materializeRule(ctx context.Context, bandID, id int64, through
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				now := time.Now().UTC()
 				booking := &models.BandTransaction{
-					Tenant:          models.Tenant{BandID: bandID},
-					TransactionType: rule.TransactionType,
-					TransactionOn:   due,
-					Category:        rule.Category,
-					Description:     rule.Description,
-					AmountCents:     rule.AmountCents,
-					IsSettled:       rule.IsSettled,
-					IsAsset:         rule.IsAsset,
-					CreatedAt:       now,
-					UpdatedAt:       now,
+					Tenant:                models.Tenant{BandID: bandID},
+					TransactionType:       rule.TransactionType,
+					TransactionOn:         due,
+					Category:              rule.Category,
+					Description:           rule.Description,
+					AmountCents:           rule.AmountCents,
+					AccountHolderUserID:   rule.AccountHolderUserID,
+					AccountHolderUsername: rule.AccountHolderUsername,
+					IsSettled:             rule.IsSettled,
+					IsAsset:               rule.IsAsset,
+					CreatedAt:             now,
+					UpdatedAt:             now,
 					Actor: models.Actor{
 						CreatedByUserID:   rule.CreatedByUserID,
 						CreatedByUsername: rule.CreatedByUsername,

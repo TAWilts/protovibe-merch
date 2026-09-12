@@ -45,6 +45,8 @@ const transaction = {
   category: 'Gage',
   description: 'Sommerfest',
   amount_cents: 10000,
+  account_holder_user_id: 17,
+  account_holder_username: 'Alex',
   is_settled: true,
   is_asset: false,
   settled_by_username: 'member',
@@ -55,6 +57,7 @@ const transaction = {
 
 const ledger = {
   entries: [transaction],
+  account_holders: [{ id: 17, username: 'Alex' }, { id: 18, username: 'Kim' }],
   categories: [],
   suggested_categories: ['Gage'],
   suggested_income_categories: ['Gage'],
@@ -119,11 +122,31 @@ describe('BandFinancesView attachments', () => {
     await flushPromises()
 
     expect(createBandEntry).toHaveBeenCalledWith(expect.objectContaining({
-      description: 'Neue Gage', amount_cents: 2500,
+      description: 'Neue Gage', amount_cents: 2500, account_holder_user_id: null,
     }))
     expect(attachmentUpload.mock.calls).toEqual([
       [8, files[0]],
       [8, files[1]],
     ])
+  })
+
+  it('assigns a booking to an active user and shows the holder in the ledger', async () => {
+    const wrapper = mount(BandFinancesView, {
+      global: { stubs: { DateRangeFilter: true, RecurringBandFinances: true } },
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Alex')
+    const holder = field(wrapper, 'bandFinances.receivedBy')
+    expect(holder.element.value).toBe('bandFinances.bandCash')
+    await holder.setValue('18')
+    await field(wrapper, 'bandFinances.description').setValue('Private Gage')
+    await field(wrapper, 'bandFinances.amount').setValue('50,00')
+    await wrapper.get('.stack-form').trigger('submit')
+    await flushPromises()
+
+    expect(createBandEntry).toHaveBeenCalledWith(expect.objectContaining({
+      account_holder_user_id: 18,
+    }))
   })
 })

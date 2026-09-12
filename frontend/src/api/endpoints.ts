@@ -275,6 +275,7 @@ export const reportsApi = {
     category: string
     description: string
     amount_cents: number
+    account_holder_user_id: number | null
     is_settled: boolean
     is_asset: boolean
   }) => api.post<BandTransaction>('/band-finances', payload),
@@ -284,6 +285,7 @@ export const reportsApi = {
     category: string
     description: string
     amount_cents: number
+    account_holder_user_id: number | null
     is_asset: boolean
   }) => api.patch<BandTransaction>(`/band-finances/${id}`, payload),
   settleBandEntry: (id: number) => api.patch<void>(`/band-finances/${id}/settle`),
@@ -296,6 +298,7 @@ export const reportsApi = {
     category: string
     description: string
     amount_cents: number
+    account_holder_user_id: number | null
     is_settled: boolean
     is_asset: boolean
     interval_value: number

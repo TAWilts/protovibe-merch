@@ -107,12 +107,13 @@ type Payload struct {
 	ReorderRows  []Row `json:"reorder_rows"`
 	ObsoleteRows []Row `json:"obsolete_rows"`
 
-	TopSellingItems []RankingEntry       `json:"top_selling_items"`
-	TopRevenueItems []RankingEntry       `json:"top_revenue_items"`
-	TopEvents       []RankingEntry       `json:"top_events"`
-	TopSellers      []RankingEntry       `json:"top_sellers"`
-	DailyIncome     []DailyIncome        `json:"daily_income"`
-	EventTimeline   []EventTimelinePoint `json:"event_timeline"`
+	TopSellingItems     []RankingEntry       `json:"top_selling_items"`
+	TopRevenueItems     []RankingEntry       `json:"top_revenue_items"`
+	TopEvents           []RankingEntry       `json:"top_events"`
+	TopSellers          []RankingEntry       `json:"top_sellers"`
+	DailyIncome         []DailyIncome        `json:"daily_income"`
+	EventTimeline       []EventTimelinePoint `json:"event_timeline"`
+	AccountHolderTotals []AccountHolderTotal `json:"account_holder_totals"`
 }
 
 // Service computes the balances payload.

@@ -127,6 +127,8 @@ func (s *Server) createBandTransaction(c *gin.Context) {
 		Details: map[string]any{
 			"type": string(transaction.TransactionType), "amount_cents": transaction.AmountCents,
 			"is_settled": transaction.IsSettled, "is_asset": transaction.IsAsset,
+			"account_holder_user_id":  transaction.AccountHolderUserID,
+			"account_holder_username": transaction.AccountHolderUsername,
 		},
 	})
 	c.JSON(http.StatusCreated, transaction)
@@ -155,7 +157,9 @@ func (s *Server) updateBandTransaction(c *gin.Context) {
 		Action: "band_transaction.updated", EntityType: "band_transaction", EntityID: &id,
 		Details: map[string]any{
 			"type": string(transaction.TransactionType), "amount_cents": transaction.AmountCents,
-			"is_asset": transaction.IsAsset,
+			"is_asset":                transaction.IsAsset,
+			"account_holder_user_id":  transaction.AccountHolderUserID,
+			"account_holder_username": transaction.AccountHolderUsername,
 		},
 	})
 	c.JSON(http.StatusOK, transaction)
@@ -219,10 +223,12 @@ func (s *Server) createRecurringBandTransaction(c *gin.Context) {
 		EntityType: "recurring_band_transaction",
 		EntityID:   &rule.ID,
 		Details: map[string]any{
-			"interval_value": rule.IntervalValue,
-			"interval_unit":  rule.IntervalUnit,
-			"is_settled":     rule.IsSettled,
-			"is_asset":       rule.IsAsset,
+			"interval_value":          rule.IntervalValue,
+			"interval_unit":           rule.IntervalUnit,
+			"is_settled":              rule.IsSettled,
+			"is_asset":                rule.IsAsset,
+			"account_holder_user_id":  rule.AccountHolderUserID,
+			"account_holder_username": rule.AccountHolderUsername,
 		},
 	})
 	c.JSON(http.StatusCreated, rule)
@@ -322,6 +328,8 @@ func (s *Server) reportBandFinanceError(c *gin.Context, err error) {
 		fail(c, http.StatusBadRequest, "invalid_type", err.Error())
 	case errors.Is(err, bandfinance.ErrMissingFields):
 		fail(c, http.StatusBadRequest, "missing_fields", err.Error())
+	case errors.Is(err, bandfinance.ErrInvalidAccountHolder):
+		fail(c, http.StatusBadRequest, "invalid_account_holder", err.Error())
 	case errors.Is(err, bandfinance.ErrInvalidInterval):
 		fail(c, http.StatusBadRequest, "invalid_interval", err.Error())
 	default:

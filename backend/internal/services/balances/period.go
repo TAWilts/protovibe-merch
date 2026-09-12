@@ -70,6 +70,9 @@ func (s *Service) ComputePeriod(ctx context.Context, period Period) (*Payload, e
 	if payload.EventTimeline, err = s.eventTimelinePeriod(ctx, period); err != nil {
 		return nil, err
 	}
+	if payload.AccountHolderTotals, err = s.accountHolderTotalsPeriod(ctx, period); err != nil {
+		return nil, err
+	}
 	return payload, nil
 }
 

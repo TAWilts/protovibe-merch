@@ -437,6 +437,15 @@ export interface BalancesPayload {
   top_sellers: RankingEntry[]
   daily_income: DailyIncome[]
   event_timeline: EventTimelinePoint[]
+  account_holder_totals: AccountHolderTotal[]
+}
+
+export interface AccountHolderTotal {
+  account_holder_user_id: number | null
+  account_holder_username: string
+  income_cents: number
+  expense_cents: number
+  difference_cents: number
 }
 
 export interface FinanceReportSummary {
@@ -531,6 +540,8 @@ export interface BandTransaction {
   category: string
   description: string
   amount_cents: number
+  account_holder_user_id: number | null
+  account_holder_username: string
   is_settled: boolean
   is_asset: boolean
   settled_at?: string
@@ -559,6 +570,8 @@ export interface RecurringBandTransaction {
   category: string
   description: string
   amount_cents: number
+  account_holder_user_id: number | null
+  account_holder_username: string
   is_settled: boolean
   is_asset: boolean
   interval_value: number
@@ -573,9 +586,15 @@ export interface CategoryTotal {
   balance_cents: number
 }
 
+export interface BandFinanceAccountHolder {
+  id: number
+  username: string
+}
+
 export interface BandLedger {
   entries: BandTransaction[]
   categories: CategoryTotal[]
+  account_holders: BandFinanceAccountHolder[]
   suggested_categories: string[]
   suggested_income_categories: string[]
   suggested_expense_categories: string[]

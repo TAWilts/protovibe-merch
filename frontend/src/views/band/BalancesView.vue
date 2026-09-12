@@ -11,6 +11,7 @@ import { useFlashStore } from '@/stores/flash'
 import { useSessionStore } from '@/stores/session'
 import IncomeChart from '@/components/IncomeChart.vue'
 import EventTimelineChart from '@/components/EventTimelineChart.vue'
+import AccountHolderChart from '@/components/AccountHolderChart.vue'
 import BalanceTable, { type BalanceSortKey } from '@/components/BalanceTable.vue'
 import AppToggle from '@/components/ui/AppToggle.vue'
 
@@ -426,6 +427,15 @@ td:last-child, th:last-child { text-align: right; }
             <strong>{{ format(data.summary.overall_balance_cents) }}</strong>
           </article>
         </div>
+        <div class="account-holder-chart-panel">
+          <div class="section-heading">
+            <div>
+              <h3>{{ t('balances.accountHolderChart') }}</h3>
+              <p>{{ t('balances.accountHolderChartHint') }}</p>
+            </div>
+          </div>
+          <AccountHolderChart :points="data.account_holder_totals ?? []" />
+        </div>
       </section>
 
       <section class="insight-grid">
@@ -618,5 +628,11 @@ td small {
 
 .finance-report-panel {
   border-color: var(--border-default);
+}
+
+.account-holder-chart-panel {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-subtle);
 }
 </style>

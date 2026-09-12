@@ -21,26 +21,28 @@ import (
 
 // Errors returned by the ledger.
 var (
-	ErrNotFound         = errors.New("bandfinance: no such entry")
-	ErrAlreadyCancelled = errors.New("bandfinance: this entry is already cancelled")
-	ErrAlreadySettled   = errors.New("bandfinance: this entry is already settled")
-	ErrSettledImmutable = errors.New("bandfinance: settled entries cannot be edited")
-	ErrInvalidAmount    = errors.New("bandfinance: the amount must be positive")
-	ErrInvalidType      = errors.New("bandfinance: the type must be income or expense")
-	ErrInvalidDate      = errors.New("bandfinance: the transaction date is required")
-	ErrMissingFields    = errors.New("bandfinance: category and description are required")
+	ErrNotFound             = errors.New("bandfinance: no such entry")
+	ErrAlreadyCancelled     = errors.New("bandfinance: this entry is already cancelled")
+	ErrAlreadySettled       = errors.New("bandfinance: this entry is already settled")
+	ErrSettledImmutable     = errors.New("bandfinance: settled entries cannot be edited")
+	ErrInvalidAmount        = errors.New("bandfinance: the amount must be positive")
+	ErrInvalidType          = errors.New("bandfinance: the type must be income or expense")
+	ErrInvalidDate          = errors.New("bandfinance: the transaction date is required")
+	ErrMissingFields        = errors.New("bandfinance: category and description are required")
+	ErrInvalidAccountHolder = errors.New("bandfinance: account holder must be an active user of this band")
 )
 
 // Entry is a new or editable ledger line. IsSettled is a pointer so older API
 // clients that omit the field keep the historical default: immediately settled.
 type Entry struct {
-	TransactionType models.BandTransactionType `json:"transaction_type"`
-	TransactionOn   models.Date                `json:"transaction_on"`
-	Category        string                     `json:"category"`
-	Description     string                     `json:"description"`
-	AmountCents     int64                      `json:"amount_cents"`
-	IsSettled       *bool                      `json:"is_settled,omitempty"`
-	IsAsset         bool                       `json:"is_asset"`
+	TransactionType     models.BandTransactionType `json:"transaction_type"`
+	TransactionOn       models.Date                `json:"transaction_on"`
+	Category            string                     `json:"category"`
+	Description         string                     `json:"description"`
+	AmountCents         int64                      `json:"amount_cents"`
+	AccountHolderUserID *int64                     `json:"account_holder_user_id"`
+	IsSettled           *bool                      `json:"is_settled,omitempty"`
+	IsAsset             bool                       `json:"is_asset"`
 }
 
 // Actor is who booked the entry.
@@ -88,18 +90,24 @@ func (s *Service) Create(ctx context.Context, entry Entry, actor Actor) (*models
 	if err != nil {
 		return nil, err
 	}
+	holderID, holderUsername, err := resolveAccountHolder(ctx, s.db, entry.AccountHolderUserID)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	transaction := &models.BandTransaction{
-		TransactionType: entry.TransactionType,
-		TransactionOn:   entry.TransactionOn,
-		Category:        category,
-		Description:     description,
-		AmountCents:     entry.AmountCents,
-		IsSettled:       settledOrDefault(entry.IsSettled),
-		IsAsset:         entry.TransactionType == models.BandExpense && entry.IsAsset,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		TransactionType:       entry.TransactionType,
+		TransactionOn:         entry.TransactionOn,
+		Category:              category,
+		Description:           description,
+		AmountCents:           entry.AmountCents,
+		AccountHolderUserID:   holderID,
+		AccountHolderUsername: holderUsername,
+		IsSettled:             settledOrDefault(entry.IsSettled),
+		IsAsset:               entry.TransactionType == models.BandExpense && entry.IsAsset,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 	transaction.CreatedByUserID = &actor.UserID
 	transaction.CreatedByUsername = actor.Username
@@ -139,16 +147,28 @@ func (s *Service) Update(ctx context.Context, id int64, entry Entry) (*models.Ba
 			return ErrSettledImmutable
 		}
 
+		holderID := updated.AccountHolderUserID
+		holderUsername := updated.AccountHolderUsername
+		if !sameAccountHolder(entry.AccountHolderUserID, updated.AccountHolderUserID) {
+			var err error
+			holderID, holderUsername, err = resolveAccountHolder(ctx, tx, entry.AccountHolderUserID)
+			if err != nil {
+				return err
+			}
+		}
+
 		if err := tx.WithContext(ctx).Model(&models.BandTransaction{}).
 			Where("id = ?", id).
 			Updates(map[string]any{
-				"transaction_type": entry.TransactionType,
-				"transaction_on":   entry.TransactionOn,
-				"category":         category,
-				"description":      description,
-				"amount_cents":     entry.AmountCents,
-				"is_asset":         entry.TransactionType == models.BandExpense && entry.IsAsset,
-				"updated_at":       time.Now().UTC(),
+				"transaction_type":        entry.TransactionType,
+				"transaction_on":          entry.TransactionOn,
+				"category":                category,
+				"description":             description,
+				"amount_cents":            entry.AmountCents,
+				"account_holder_user_id":  holderID,
+				"account_holder_username": holderUsername,
+				"is_asset":                entry.TransactionType == models.BandExpense && entry.IsAsset,
+				"updated_at":              time.Now().UTC(),
 			}).Error; err != nil {
 			return err
 		}
@@ -231,8 +251,9 @@ type CategoryTotal struct {
 
 // Ledger is the ledger view: every entry plus the category breakdown.
 type Ledger struct {
-	Entries    []models.BandTransaction `json:"entries"`
-	Categories []CategoryTotal          `json:"categories"`
+	Entries        []models.BandTransaction `json:"entries"`
+	Categories     []CategoryTotal          `json:"categories"`
+	AccountHolders []AccountHolder          `json:"account_holders"`
 	// SuggestedCategories remains for older clients. New clients use the
 	// type-specific standardised lists and "Sonstiges" as their fallback.
 	SuggestedCategories        []string `json:"suggested_categories"`
@@ -257,6 +278,10 @@ func (s *Service) List(ctx context.Context) (*Ledger, error) {
 	if err != nil {
 		return nil, err
 	}
+	holders, err := listAccountHolders(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
 
 	ledger := &Ledger{
 		Entries:                    entries,
@@ -264,6 +289,7 @@ func (s *Service) List(ctx context.Context) (*Ledger, error) {
 		SuggestedIncomeCategories:  models.DefaultBandIncomeCategories,
 		SuggestedExpenseCategories: models.DefaultBandExpenseCategories,
 		Categories:                 []CategoryTotal{},
+		AccountHolders:             holders,
 	}
 	if ledger.Entries == nil {
 		ledger.Entries = []models.BandTransaction{}
