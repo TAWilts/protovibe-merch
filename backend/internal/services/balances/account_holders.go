@@ -10,8 +10,9 @@ import (
 
 // AccountHolderTotal compares settled band income and expenses by the account
 // through which the money actually moved. A nil user ID is the band cash
-// account. DifferenceCents is expenses minus income, so a positive value for a
-// person means they advanced private funds for the band.
+// account. DifferenceCents is income minus expenses: positive values are a
+// surplus, while a negative value for a person means they advanced private
+// funds for the band.
 type AccountHolderTotal struct {
 	AccountHolderUserID   *int64 `json:"account_holder_user_id"`
 	AccountHolderUsername string `json:"account_holder_username"`
@@ -128,14 +129,15 @@ func (s *Service) accountHolderTotalsPeriod(
 		totals = append(totals, entry)
 	}
 	for i := range totals {
-		totals[i].DifferenceCents = totals[i].ExpenseCents - totals[i].IncomeCents
+		totals[i].DifferenceCents = totals[i].IncomeCents - totals[i].ExpenseCents
 	}
 	sort.SliceStable(totals, func(i, j int) bool {
 		if totals[i].AccountHolderUserID == nil || totals[j].AccountHolderUserID == nil {
 			return totals[i].AccountHolderUserID == nil && totals[j].AccountHolderUserID != nil
 		}
 		if totals[i].DifferenceCents != totals[j].DifferenceCents {
-			return totals[i].DifferenceCents > totals[j].DifferenceCents
+			// A larger private advance is now the more negative difference.
+			return totals[i].DifferenceCents < totals[j].DifferenceCents
 		}
 		return strings.ToLower(totals[i].AccountHolderUsername) < strings.ToLower(totals[j].AccountHolderUsername)
 	})

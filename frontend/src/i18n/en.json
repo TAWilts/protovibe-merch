@@ -536,7 +536,7 @@
     "bandExpense": "Band-Ausgaben",
     "overallBalance": "Gesamtsaldo",
     "accountHolderChart": "Cash movements by person",
-    "accountHolderChartHint": "Compare income received, band expenses and merchandise purchases paid. Paid sales are recorded as income in the band cash account. A positive difference means that private money was advanced for the band.",
+    "accountHolderChartHint": "Compare income received, band expenses and merchandise purchases paid. Paid sales are recorded as income in the band cash account. Difference is income minus expenses: positive (green) is a surplus, while negative (red) means higher expenses or privately advanced money.",
     "accountHolderChartDescription": "Income, expenses and difference by band cash account or person.",
     "privateContribution": "Difference",
     "noAccountHolderTotals": "There are no paid sales, received band entries, or paid band and merchandise purchases in the selected period.",

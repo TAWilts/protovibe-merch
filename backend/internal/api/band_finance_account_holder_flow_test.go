@@ -146,15 +146,15 @@ func TestAccountHolderBalancesUseCurrentNameAndKeepDeletedHistory(t *testing.T) 
 		t.Fatalf("expected band cash and two users: %v", totals)
 	}
 	bandTotal := jsonObject(totals[0])
-	if bandTotal["account_holder_user_id"] != nil || bandTotal["income_cents"] != float64(1000) || bandTotal["difference_cents"] != float64(-1000) {
+	if bandTotal["account_holder_user_id"] != nil || bandTotal["income_cents"] != float64(1000) || bandTotal["difference_cents"] != float64(1000) {
 		t.Fatalf("band cash total is wrong or not first: %v", bandTotal)
 	}
 	aliceTotal := jsonObject(totals[1])
-	if aliceTotal["account_holder_username"] != "Alice Neu" || aliceTotal["income_cents"] != float64(500) || aliceTotal["expense_cents"] != float64(3000) || aliceTotal["difference_cents"] != float64(2500) {
+	if aliceTotal["account_holder_username"] != "Alice Neu" || aliceTotal["income_cents"] != float64(500) || aliceTotal["expense_cents"] != float64(3000) || aliceTotal["difference_cents"] != float64(-2500) {
 		t.Fatalf("alice total must use current name and exclude open/cancelled entries: %v", aliceTotal)
 	}
 	bobTotal := jsonObject(totals[2])
-	if bobTotal["account_holder_username"] != bob.Username || bobTotal["difference_cents"] != float64(-4000) {
+	if bobTotal["account_holder_username"] != bob.Username || bobTotal["difference_cents"] != float64(4000) {
 		t.Fatalf("deleted holder must retain the booking snapshot: %v", bobTotal)
 	}
 }
@@ -220,7 +220,7 @@ func TestAccountHolderBalancesCombineBandFinancesAndPurchaseReceipts(t *testing.
 
 	// Goods (2,000 + 1,500) and the receipt's shipping (400) are purchase
 	// expenses alongside the regular 200-cent band expense.
-	assertTotal(4100, 3100)
+	assertTotal(4100, -3100)
 
 	ids := jsonList(purchase.Body, "purchase_ids")
 	firstID := int64(ids[0].(float64))
@@ -229,14 +229,14 @@ func TestAccountHolderBalancesCombineBandFinancesAndPurchaseReceipts(t *testing.
 	}
 	// A partial cancellation removes only that line; receipt shipping remains
 	// counted exactly once.
-	assertTotal(2100, 1100)
+	assertTotal(2100, -1100)
 
 	receiptID := purchase.Body["receipt_id"].(string)
 	if cancelled := h.do(http.MethodPatch, "/api/v1/purchase-receipts/"+receiptID+"/cancel", nil); cancelled.Status != http.StatusNoContent {
 		t.Fatalf("cancel remaining receipt positions: %d %v", cancelled.Status, cancelled.Body)
 	}
 	// A fully cancelled receipt contributes neither goods nor shipping.
-	assertTotal(200, -800)
+	assertTotal(200, 800)
 }
 
 func TestAccountHolderBalancesCountCollectedSalesAsBandCashIncome(t *testing.T) {
@@ -286,7 +286,7 @@ func TestAccountHolderBalancesCountCollectedSalesAsBandCashIncome(t *testing.T) 
 	}
 	bandCash := jsonObject(totals[0])
 	if bandCash["account_holder_user_id"] != nil || bandCash["income_cents"] != float64(2000) ||
-		bandCash["expense_cents"] != float64(0) || bandCash["difference_cents"] != float64(-2000) {
+		bandCash["expense_cents"] != float64(0) || bandCash["difference_cents"] != float64(2000) {
 		t.Fatalf("only collected, active, in-period sales must reach band cash: %v", bandCash)
 	}
 }
