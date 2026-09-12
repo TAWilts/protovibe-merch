@@ -158,6 +158,7 @@ func TestPurchaseAccountHoldersAreReceiptScopedAndHistoricalAssignmentsRemainEdi
 	band := h.makeBand()
 	manager := h.signInAs(band, models.RoleManager)
 	holder := h.makeUser(&band.ID, models.RoleMember, "ein-langes-passwort")
+	snapshotHolderName := holder.Username
 	inactive := h.makeUser(&band.ID, models.RoleSeller, "ein-langes-passwort")
 	otherBand := h.makeBand()
 	otherHolder := h.makeUser(&otherBand.ID, models.RoleMember, "ein-langes-passwort")
@@ -171,12 +172,12 @@ func TestPurchaseAccountHoldersAreReceiptScopedAndHistoricalAssignmentsRemainEdi
 		"purchased_on": "2026-09-10", "supplier": "Privatdruckerei",
 		"shipping_cost_cents": 500, "account_holder_user_id": holder.ID,
 	})
-	if created.Status != http.StatusCreated || created.Body["account_holder_user_id"] != float64(holder.ID) || created.Body["account_holder_username"] != holder.Username {
+	if created.Status != http.StatusCreated || created.Body["account_holder_user_id"] != float64(holder.ID) || created.Body["account_holder_username"] != snapshotHolderName {
 		t.Fatalf("create attributed purchase: %d %v", created.Status, created.Body)
 	}
 	receiptID := created.Body["receipt_id"].(string)
 	ids := jsonList(created.Body, "purchase_ids")
-	currentHolderName := holder.Username + " Neu"
+	currentHolderName := snapshotHolderName + " Neu"
 	if err := h.db.WithContext(h.ctx()).Model(holder).Update("username", currentHolderName).Error; err != nil {
 		t.Fatalf("rename holder: %v", err)
 	}
@@ -236,20 +237,20 @@ func TestPurchaseAccountHoldersAreReceiptScopedAndHistoricalAssignmentsRemainEdi
 		"shipping_cost_cents": 500, "account_holder_user_id": holder.ID,
 	}
 	preserved := h.do(http.MethodPatch, "/api/v1/purchases/receipt/"+receiptID, editPayload)
-	if preserved.Status != http.StatusOK || preserved.Body["account_holder_username"] != holder.Username {
+	if preserved.Status != http.StatusOK || preserved.Body["account_holder_username"] != snapshotHolderName {
 		t.Fatalf("editing must preserve a now-inactive holder: %d %v", preserved.Status, preserved.Body)
 	}
 	if err := h.db.WithContext(h.ctx()).Delete(holder).Error; err != nil {
 		t.Fatalf("delete historical holder: %v", err)
 	}
 	preservedDeleted := h.do(http.MethodPatch, "/api/v1/purchases/receipt/"+receiptID, editPayload)
-	if preservedDeleted.Status != http.StatusOK || preservedDeleted.Body["account_holder_username"] != holder.Username {
+	if preservedDeleted.Status != http.StatusOK || preservedDeleted.Body["account_holder_username"] != snapshotHolderName {
 		t.Fatalf("editing must preserve a deleted holder snapshot: %d %v", preservedDeleted.Status, preservedDeleted.Body)
 	}
 	listedAfterDelete := h.do(http.MethodGet, "/api/v1/purchases", nil)
 	for _, raw := range jsonList(listedAfterDelete.Body, "purchases") {
 		position := jsonObject(raw)
-		if position["receipt_id"] == receiptID && position["account_holder_username"] != holder.Username {
+		if position["receipt_id"] == receiptID && position["account_holder_username"] != snapshotHolderName {
 			t.Fatalf("a deleted holder must fall back to the historical snapshot: %v", position)
 		}
 	}
@@ -261,14 +262,14 @@ func TestPurchaseAccountHoldersAreReceiptScopedAndHistoricalAssignmentsRemainEdi
 		t.Fatalf("cross-tenant receipt reassignment must be rejected: %d %v", rejected.Status, rejected.Body)
 	}
 	var stored []models.Purchase
-	if err := h.db.WithContext(h.ctx()).Where("receipt_id = ?", receiptID).Find(&stored).Error; err != nil {
+	if err := h.db.WithContext(h.ctx()).Where("band_id = ? AND receipt_id = ?", band.ID, receiptID).Find(&stored).Error; err != nil {
 		t.Fatalf("reload receipt: %v", err)
 	}
 	if len(stored) != 2 {
 		t.Fatalf("expected two stored positions, got %d", len(stored))
 	}
 	for _, position := range stored {
-		if position.Supplier != "Historisch erhalten" || position.AccountHolderUserID == nil || *position.AccountHolderUserID != holder.ID || position.AccountHolderUsername != holder.Username {
+		if position.Supplier != "Historisch erhalten" || position.AccountHolderUserID == nil || *position.AccountHolderUserID != holder.ID || position.AccountHolderUsername != snapshotHolderName {
 			t.Fatalf("invalid edit must leave every position unchanged: %+v", stored)
 		}
 	}
