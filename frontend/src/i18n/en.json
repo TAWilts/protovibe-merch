@@ -314,6 +314,8 @@
       "offlineNotReady": "Connect once and open Sales so products, variants, prices and payment methods can be stored safely on this device.",
       "offlineStorageFailed": "The product data could not be stored locally. Online sales still work, but restarting without a connection is not protected on this device yet.",
       "assortmentServerError": "The server did not provide the product data. Stale offline data is not used in this case for safety.",
+      "offlineConflictsTitle": "{count} offline sale requires attention",
+      "offlineConflictsIntro": "The server permanently rejected this booking. It remains stored on this device and is not silently discarded.",
     "historicalOffer": "Import historical data",
     "historicalOfferHint": "Assign past event sales directly to the existing catalogue.",
     "historicalEnter": "Record historical sales",

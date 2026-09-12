@@ -314,6 +314,8 @@
       "offlineNotReady": "Stelle einmal eine Verbindung her und öffne den Verkauf, damit Artikel, Varianten, Preise und Bezahlarten sicher auf diesem Gerät gespeichert werden.",
       "offlineStorageFailed": "Der Artikelstand konnte nicht lokal gespeichert werden. Online-Verkäufe funktionieren, ein Neustart ohne Verbindung ist auf diesem Gerät aber noch nicht abgesichert.",
       "assortmentServerError": "Der Server hat den Artikelstand nicht bereitgestellt. Veraltete Offline-Daten werden in diesem Fall aus Sicherheitsgründen nicht verwendet.",
+      "offlineConflictsTitle": "{count} Offline-Verkauf benötigt Aufmerksamkeit",
+      "offlineConflictsIntro": "Der Server hat diese Buchung dauerhaft abgelehnt. Sie bleibt auf diesem Gerät gespeichert und wird nicht stillschweigend verworfen.",
     "historicalOffer": "Historische Daten übernehmen",
     "historicalOfferHint": "Alte Veranstaltungsverkäufe direkt dem bestehenden Katalog zuordnen.",
     "historicalEnter": "Historische Verkäufe erfassen",

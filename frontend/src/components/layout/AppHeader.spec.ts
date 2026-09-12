@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AppHeader from './AppHeader.vue'
 
-const { session, route, routerReplace } = vi.hoisted(() => {
+const { session, route, routerReplace, offlineState } = vi.hoisted(() => {
   return {
     session: {
       isAuthenticated: true,
@@ -29,6 +29,14 @@ const { session, route, routerReplace } = vi.hoisted(() => {
     },
     route: { name: 'sales' },
     routerReplace: vi.fn(),
+    offlineState: {
+      online: true,
+      hasQueue: false,
+      syncing: false,
+      queued: 0,
+      conflicts: [] as unknown[],
+      sync: vi.fn(),
+    },
   }
 })
 
@@ -40,7 +48,7 @@ vi.mock('vue-router', () => ({
 }))
 vi.mock('@/stores/session', () => ({ useSessionStore: () => session }))
 vi.mock('@/stores/offline', () => ({
-  useOfflineStore: () => ({ online: true, hasQueue: false, syncing: false, queued: 0, sync: vi.fn() }),
+  useOfflineStore: () => offlineState,
 }))
 vi.mock('@/stores/packing', () => ({
   usePackingStore: () => ({ online: true, syncing: false, queued: 0, sync: vi.fn() }),
@@ -60,6 +68,9 @@ describe('AppHeader navigation', () => {
     session.identity = null
     session.isSandbox = false
     session.isDevelopment = false
+    offlineState.online = true
+    offlineState.queued = 0
+    offlineState.conflicts = []
     session.logout.mockReset().mockResolvedValue(true)
     routerReplace.mockReset().mockResolvedValue(undefined)
   })
@@ -76,6 +87,15 @@ describe('AppHeader navigation', () => {
     route.name = 'packing-list'
     const wrapper = mount(AppHeader)
     expect(wrapper.find('.offline-sync-status').exists()).toBe(true)
+  })
+
+  it('prioritises permanently rejected offline sales in the global status', () => {
+    offlineState.conflicts = [{ eventId: 'failed-sale' }]
+
+    const wrapper = mount(AppHeader)
+
+    expect(wrapper.get('.offline-sync-status').classes()).toContain('has-conflicts')
+    expect(wrapper.get('.offline-sync-label').text()).toBe('sync.conflicts')
   })
 
   it('labels a development instance as the testsuite', () => {

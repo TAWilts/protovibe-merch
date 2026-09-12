@@ -26,7 +26,12 @@ const {
     preparedSalePayload: payload,
     loadSalesAssortment: vi.fn(),
     saveSalesAssortment: vi.fn(),
-    offlineState: { online: true, queue: queuedSale, queuePrepared: queuedSale },
+    offlineState: {
+      online: true,
+      queue: queuedSale,
+      queuePrepared: queuedSale,
+      conflicts: [] as Array<Record<string, unknown>>,
+    },
     sessionState: {
       user: { username: 'seller', show_variant_photos: true },
       band: { id: 12 },
@@ -136,6 +141,7 @@ describe('SalesView checkout', () => {
     loadSalesAssortment.mockReset().mockResolvedValue(null)
     saveSalesAssortment.mockReset().mockResolvedValue(undefined)
     offlineState.online = true
+    offlineState.conflicts = []
     sessionState.capabilities.can_manage_purchases = true
     route.query = {}
     routerReplace.mockReset().mockResolvedValue(undefined)
@@ -347,6 +353,21 @@ describe('SalesView checkout', () => {
 
     expect(loadSalesAssortment).not.toHaveBeenCalled()
     expect(wrapper.get('.offline-not-ready').text()).toContain('sales.assortmentServerError')
+  })
+
+  it('keeps permanently rejected offline sales visibly flagged for intervention', async () => {
+    offlineState.conflicts = [{
+      eventId: 'failed-sale',
+      attempts: 2,
+      lastError: 'Bestand wurde zwischenzeitlich geändert',
+      failedPermanently: true,
+    }]
+
+    const wrapper = mount(SalesView)
+    await flushPromises()
+
+    expect(wrapper.get('.offline-sale-conflicts').text()).toContain('sales.offlineConflictsTitle')
+    expect(wrapper.get('.offline-sale-conflicts').text()).toContain('Bestand wurde zwischenzeitlich geändert')
   })
 
   it('warns before leaving with an unfinished sales basket', async () => {

@@ -36,6 +36,7 @@ const viaGrant = computed(() => session.supportGrant !== null)
 const combinedQueued = computed(() => offline.queued + packing.queued)
 const combinedSyncing = computed(() => offline.syncing || packing.syncing)
 const combinedOnline = computed(() => offline.online && packing.online)
+const saleConflictCount = computed(() => offline.conflicts.length)
 const tutorialStep = computed(() => nextSandboxTutorialStep(session.identity?.sandbox))
 
 function syncOfflineData() {
@@ -183,13 +184,18 @@ async function discardSandbox() {
       <button
         v-if="caps?.can_access_band_workflows && !session.isSandbox"
         class="offline-sync-status"
-        :class="{ 'is-offline': !combinedOnline, 'has-queue': combinedQueued > 0 }"
+        :class="{
+          'is-offline': !combinedOnline,
+          'has-queue': combinedQueued > 0,
+          'has-conflicts': saleConflictCount > 0,
+        }"
         type="button"
         :disabled="!combinedOnline || combinedSyncing"
         @click="syncOfflineData"
       >
         <span class="offline-sync-label">
-          <template v-if="!combinedOnline">{{ t('sync.offline', { count: combinedQueued }) }}</template>
+          <template v-if="saleConflictCount > 0">{{ t('sync.conflicts', { count: saleConflictCount }) }}</template>
+          <template v-else-if="!combinedOnline">{{ t('sync.offline', { count: combinedQueued }) }}</template>
           <template v-else-if="combinedSyncing">{{ t('sync.syncing') }}</template>
           <template v-else-if="combinedQueued > 0">{{ t('sync.pending', { count: combinedQueued }) }}</template>
           <template v-else>{{ t('sync.online') }}</template>
@@ -256,12 +262,22 @@ async function discardSandbox() {
   border-color: var(--danger);
 }
 
+.offline-sync-status.has-conflicts {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 .offline-sync-status.has-queue::before {
   background: var(--warning);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 16%, transparent);
 }
 
 .offline-sync-status.is-offline::before {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.offline-sync-status.has-conflicts::before {
   background: var(--danger);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 16%, transparent);
 }

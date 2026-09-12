@@ -1091,6 +1091,11 @@ function resetAfterSale() {
           <h2>{{ t('sales.articles') }}</h2>
           <input v-model="articleFilter" class="till-filter" type="search" :placeholder="t('sales.filterArticles')" />
         </header>
+        <section v-if="offline.conflicts.length" class="offline-sale-conflicts" role="alert">
+          <strong>{{ t('sales.offlineConflictsTitle', { count: offline.conflicts.length }) }}</strong>
+          <span>{{ t('sales.offlineConflictsIntro') }}</span>
+          <small v-if="offline.conflicts[0]?.lastError">{{ offline.conflicts[0].lastError }}</small>
+        </section>
         <div class="till-scroll">
           <div class="button-list">
             <button
@@ -1822,6 +1827,23 @@ function resetAfterSale() {
 
 .offline-not-ready p {
   margin-top: 8px;
+  color: var(--text-secondary);
+}
+
+.offline-sale-conflicts {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-control);
+  background: var(--danger-soft);
+  font-size: .78rem;
+  line-height: 1.35;
+}
+
+.offline-sale-conflicts span,
+.offline-sale-conflicts small {
   color: var(--text-secondary);
 }
 
