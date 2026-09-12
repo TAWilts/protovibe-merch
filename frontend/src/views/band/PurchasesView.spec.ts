@@ -3,13 +3,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PurchasesView from './PurchasesView.vue'
 
-const { catalogueList, createPurchase, refillSuggestions, attachmentList, attachmentUpload, attachmentRemove, routeLeaveGuards } = vi.hoisted(() => ({
+const {
+  catalogueList,
+  purchasesList,
+  createPurchase,
+  updateReceipt,
+  refillSuggestions,
+  attachmentList,
+  attachmentUpload,
+  attachmentRemove,
+  downloadCsv,
+  routeLeaveGuards,
+} = vi.hoisted(() => ({
   catalogueList: vi.fn(),
+  purchasesList: vi.fn(),
   createPurchase: vi.fn(),
+  updateReceipt: vi.fn(),
   refillSuggestions: vi.fn(),
   attachmentList: vi.fn(),
   attachmentUpload: vi.fn(),
   attachmentRemove: vi.fn(),
+  downloadCsv: vi.fn(),
   routeLeaveGuards: [] as Array<() => boolean>,
 }))
 
@@ -26,12 +40,19 @@ vi.mock('@/stores/flash', () => ({
 vi.mock('@/stores/session', () => ({
   useSessionStore: () => ({ capabilities: { can_manage_purchases: true } }),
 }))
+vi.mock('@/utils/csvDownload', () => ({
+  datedFilename: (base: string) => `${base}.csv`,
+  downloadCsv,
+}))
 vi.mock('@/api/endpoints', () => ({
   catalogueApi: { list: catalogueList },
   salesApi: { receiptPreview: vi.fn().mockResolvedValue({ receipt_id: 'E-2' }) },
   purchasesApi: {
-    list: vi.fn().mockResolvedValue({
+    list: purchasesList.mockResolvedValue({
       editing_enabled: true,
+      account_holders: [
+        { id: 18, username: 'Kim' },
+      ],
       purchases: [{
         id: 1,
         receipt_id: 'E-20260907-001',
@@ -41,6 +62,7 @@ vi.mock('@/api/endpoints', () => ({
         quantity: 2,
         unit_cost_cents: 900,
         total_cost_cents: 1800,
+        price_mode: 'unit',
         purchased_on: '2026-09-07',
         supplier: 'Druckerei',
         invoice_reference: 'R-1',
@@ -49,6 +71,8 @@ vi.mock('@/api/endpoints', () => ({
         prices_include_vat: true,
         vat_rate_basis_points: 1900,
         shipping_cost_cents: 500,
+        account_holder_user_id: 17,
+        account_holder_username: 'Alex',
         comment: '',
         is_cancelled: false,
         cancelled_by_username: '',
@@ -57,7 +81,7 @@ vi.mock('@/api/endpoints', () => ({
     }),
     lastCost: vi.fn(),
     create: createPurchase,
-    updateReceipt: vi.fn(),
+    updateReceipt,
     cancelReceipt: vi.fn(),
     refillSuggestions,
   },
@@ -73,11 +97,14 @@ vi.mock('@/api/endpoints', () => ({
 describe('PurchasesView receipt header', () => {
   beforeEach(() => {
     catalogueList.mockReset().mockResolvedValue({ articles: [] })
+    purchasesList.mockClear()
     createPurchase.mockReset().mockResolvedValue({ receipt_id: 'E-2', purchase_ids: [1], total_cost_cents: 1000 })
+    updateReceipt.mockReset().mockResolvedValue({ receipt_id: 'E-20260907-001', purchase_ids: [1], total_cost_cents: 1800 })
     refillSuggestions.mockReset().mockResolvedValue({ items: [] })
     attachmentList.mockReset().mockResolvedValue({ attachments: [] })
     attachmentUpload.mockReset().mockResolvedValue({ id: 2, original_filename: 'rechnung.pdf', size_bytes: 10 })
     attachmentRemove.mockReset().mockResolvedValue(undefined)
+    downloadCsv.mockReset()
     routeLeaveGuards.length = 0
   })
 
@@ -91,6 +118,21 @@ describe('PurchasesView receipt header', () => {
     expect(edit).toBeDefined()
     await edit!.trigger('click')
     expect(wrapper.get('.confirmation-dialog').text()).toContain('purchases.editTitle')
+    expect(wrapper.text()).toContain('purchases.paidBy: Alex')
+
+    const holderSelect = wrapper.get('.confirmation-dialog select')
+    expect(holderSelect.text()).toContain('Alex')
+    expect(holderSelect.text()).toContain('Kim')
+    expect((holderSelect.element as HTMLSelectElement).value).toBe('17')
+    await holderSelect.setValue('18')
+    await wrapper.findAll('.confirmation-dialog button')
+      .find((entry) => entry.text() === 'common.save')!.trigger('click')
+    await flushPromises()
+
+    expect(updateReceipt).toHaveBeenCalledWith(
+      'E-20260907-001',
+      expect.objectContaining({ account_holder_user_id: 18 }),
+    )
   })
 
   it('hides no-reorder variants but keeps withdrawn reorderable variants', async () => {
@@ -151,6 +193,10 @@ describe('PurchasesView receipt header', () => {
     const wrapper = mount(PurchasesView)
     await flushPromises()
 
+    const holderSelect = wrapper.get('.sale-details select')
+    expect((holderSelect.element as HTMLSelectElement).selectedIndex).toBe(0)
+    expect(holderSelect.text()).toContain('bandFinances.bandCash')
+    await holderSelect.setValue('18')
     await wrapper.get('.selection-button').trigger('click')
     const basketMode = wrapper.findAll('.price-mode-switch button')
       .find((entry) => entry.text() === 'purchases.basketPrice')
@@ -163,8 +209,31 @@ describe('PurchasesView receipt header', () => {
     expect(createPurchase).toHaveBeenCalledWith(expect.objectContaining({
       price_mode: 'basket',
       goods_total_cents: 10000,
+      account_holder_user_id: 18,
       items: [{ variant_id: 11, quantity: 1, unit_cost_cents: 0 }],
     }))
+    expect((wrapper.get('.sale-details select').element as HTMLSelectElement).selectedIndex).toBe(0)
+  })
+
+  it('exports the receipt payer in the filtered purchase CSV', async () => {
+    const wrapper = mount(PurchasesView)
+    await flushPromises()
+
+    const filter = wrapper.get('.table-filter input')
+    await filter.setValue('Alex')
+    expect(wrapper.find('.purchase-receipt-card').exists()).toBe(true)
+    await filter.setValue('Kim')
+    expect(wrapper.find('.purchase-receipt-card').exists()).toBe(false)
+    await filter.setValue('Alex')
+
+    await wrapper.get('.date-range-filter .secondary-button').trigger('click')
+
+    expect(downloadCsv).toHaveBeenCalledTimes(1)
+    const [filename, header, rows] = downloadCsv.mock.calls[0]!
+    expect(filename).toBe('einkaeufe.csv')
+    const holderColumn = header.indexOf('purchases.paidBy')
+    expect(holderColumn).toBeGreaterThan(-1)
+    expect(rows[0][holderColumn]).toBe('Alex')
   })
 
   it('warns before leaving with an unfinished purchase basket', async () => {

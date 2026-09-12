@@ -274,8 +274,8 @@ func (s *Service) seed(db *gorm.DB, bandID, userID int64, now time.Time) (string
 	actorID := userID
 	actor := models.Actor{CreatedByUserID: &actorID, CreatedByUsername: "Demo"}
 	purchases := []models.Purchase{
-		{ReceiptID: "DEMO-E-001", VariantID: blackMedium.ID, Quantity: 20, UnitCostCents: 900, LineTotalCostCents: 18000, PriceMode: models.PurchasePriceUnit, PricesIncludeVAT: true, VATRateBasisPoints: 1900, PurchasedOn: today, Supplier: "Beispieltextilien", InvoiceReference: "DEMO-4711", Actor: actor},
-		{ReceiptID: "DEMO-E-001", VariantID: whiteLarge.ID, Quantity: 6, UnitCostCents: 900, LineTotalCostCents: 5400, PriceMode: models.PurchasePriceUnit, PricesIncludeVAT: true, VATRateBasisPoints: 1900, PurchasedOn: today, Supplier: "Beispieltextilien", InvoiceReference: "DEMO-4711", Actor: actor},
+		{ReceiptID: "DEMO-E-001", VariantID: blackMedium.ID, Quantity: 20, UnitCostCents: 900, LineTotalCostCents: 18000, PriceMode: models.PurchasePriceUnit, PricesIncludeVAT: true, VATRateBasisPoints: 1900, AccountHolderUserID: &actorID, AccountHolderUsername: "Demo", PurchasedOn: today, Supplier: "Beispieltextilien", InvoiceReference: "DEMO-4711", Actor: actor},
+		{ReceiptID: "DEMO-E-001", VariantID: whiteLarge.ID, Quantity: 6, UnitCostCents: 900, LineTotalCostCents: 5400, PriceMode: models.PurchasePriceUnit, PricesIncludeVAT: true, VATRateBasisPoints: 1900, AccountHolderUserID: &actorID, AccountHolderUsername: "Demo", PurchasedOn: today, Supplier: "Beispieltextilien", InvoiceReference: "DEMO-4711", Actor: actor},
 	}
 	for i := range purchases {
 		if err := db.Create(&purchases[i]).Error; err != nil {

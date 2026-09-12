@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 
 import { attachmentsApi, catalogueApi, purchasesApi, salesApi } from '@/api/endpoints'
 import { ApiError } from '@/api/client'
-import type { Article, Attachment, Purchase, RefillSuggestion, Variant } from '@/api/types'
+import type { AccountHolder, Article, Attachment, Purchase, RefillSuggestion, Variant } from '@/api/types'
 import DateRangeFilter from '@/components/DateRangeFilter.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
 import AppToggle from '@/components/ui/AppToggle.vue'
@@ -30,6 +30,7 @@ const session = useSessionStore()
 
 const articles = ref<Article[]>([])
 const purchases = ref<Purchase[]>([])
+const accountHolders = ref<AccountHolder[]>([])
 const loading = ref(true)
 const purchasesLoadFailed = ref(false)
 const busy = ref(false)
@@ -56,6 +57,7 @@ const basketPriceInput = ref('')
 const pricesIncludeVat = ref(true)
 const vatRateInput = ref('19')
 const shippingCostInput = ref('0,00')
+const accountHolderUserId = ref<number | null>(null)
 const rememberedArticleCost = ref<Record<number, string>>({})
 
 interface CartLine {
@@ -167,6 +169,8 @@ interface PurchaseReceipt {
   pricesIncludeVat: boolean
   vatRateBasisPoints: number
   shippingCostCents: number
+  accountHolderUserId: number | null
+  accountHolderUsername: string
   hasAttachment: boolean
   isCancelled: boolean
 }
@@ -188,6 +192,8 @@ const visibleReceipts = computed(() => {
         pricesIncludeVat: purchase.prices_include_vat,
         vatRateBasisPoints: purchase.vat_rate_basis_points || 1900,
         shippingCostCents: purchase.shipping_cost_cents,
+        accountHolderUserId: purchase.account_holder_user_id,
+        accountHolderUsername: purchase.account_holder_username,
         hasAttachment: false,
         isCancelled: false,
       }
@@ -211,7 +217,7 @@ const visibleReceipts = computed(() => {
     const positions = receipt.positions
       .map((purchase) => `${purchase.article_name} ${purchase.variant_label} ${purchase.comment}`)
       .join(' ')
-    return `${receipt.receiptId} ${receipt.supplier} ${receipt.invoiceReference} ${positions}`
+    return `${receipt.receiptId} ${receipt.supplier} ${receipt.invoiceReference} ${receipt.accountHolderUsername} ${positions}`
       .toLowerCase()
       .includes(needle)
   })
@@ -227,6 +233,7 @@ function exportVisible() {
       t('common.quantity'),
       t('purchases.unitCost'),
       t('purchases.total'),
+      t('purchases.paidBy'),
       t('purchases.supplier'),
       t('purchases.invoiceReference'),
       t('common.comment'),
@@ -241,6 +248,7 @@ function exportVisible() {
         purchase.quantity,
         format(purchase.unit_cost_cents),
         format(purchase.total_cost_cents),
+        accountHolderLabel(receipt.accountHolderUsername),
         receipt.supplier,
         receipt.invoiceReference,
         purchase.comment,
@@ -250,7 +258,12 @@ function exportVisible() {
   )
 }
 
-onMounted(async () => {  await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
+function accountHolderLabel(username: string) {
+  return username || t('bandFinances.bandCash')
+}
+
+onMounted(async () => {
+  await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
   loading.value = false
 })
 
@@ -272,6 +285,7 @@ async function loadPurchases(showLoading = false) {
   try {
     const result = await purchasesApi.list()
     purchases.value = result.purchases
+    accountHolders.value = result.account_holders ?? []
     purchaseEditingEnabled.value = result.editing_enabled
   } catch {
     purchasesLoadFailed.value = true
@@ -430,6 +444,7 @@ async function book() {
       shipping_cost_cents: shipping,
       price_mode: priceMode.value,
       goods_total_cents: goodsTotal ?? undefined,
+      account_holder_user_id: accountHolderUserId.value,
       receipt_id: receiptId.value,
     })
     flash.success(t('purchases.booked', { receipt: result.receipt_id }))
@@ -440,6 +455,7 @@ async function book() {
     invoiceReference.value = ''
     shippingCostInput.value = '0,00'
     basketPriceInput.value = ''
+    accountHolderUserId.value = null
     receiptInvoices.value = []
     if (receiptInvoiceInput.value) receiptInvoiceInput.value.value = ''
     await Promise.all([loadArticles(), loadPurchases(), refreshPreview()])
@@ -483,6 +499,19 @@ const editShippingCostInput = ref('0,00')
 const editPriceMode = ref<'unit' | 'basket'>('unit')
 const editBasketPriceInput = ref('')
 const editLines = ref<ReceiptEditLine[]>([])
+const editAccountHolderUserId = ref<number | null>(null)
+const editAccountHolderOptions = computed(() => {
+  const options = [...accountHolders.value]
+  const receipt = editingReceipt.value
+  if (
+    receipt &&
+    receipt.accountHolderUserId !== null &&
+    !options.some((holder) => holder.id === receipt.accountHolderUserId)
+  ) {
+    options.push({ id: receipt.accountHolderUserId, username: receipt.accountHolderUsername })
+  }
+  return options
+})
 
 function toMoneyInput(cents: number) {
   return (cents / 100).toFixed(2).replace('.', ',')
@@ -493,6 +522,7 @@ function startEdit(receipt: PurchaseReceipt) {
   editPurchasedOn.value = receipt.purchasedOn
   editSupplier.value = receipt.supplier
   editInvoiceReference.value = receipt.invoiceReference
+  editAccountHolderUserId.value = receipt.accountHolderUserId
   editPricesIncludeVat.value = receipt.pricesIncludeVat
   editPriceMode.value = receipt.priceMode
   editVatRateInput.value = (receipt.vatRateBasisPoints / 100).toFixed(2).replace(/(?:[.,]00)$/, '').replace('.', ',')
@@ -587,6 +617,7 @@ async function saveReceiptEdit() {
       shipping_cost_cents: shipping,
       price_mode: editPriceMode.value,
       goods_total_cents: goodsTotal ?? undefined,
+      account_holder_user_id: editAccountHolderUserId.value,
     })
     flash.success(t('purchases.updated'))
     editingReceipt.value = null
@@ -921,6 +952,16 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
 
         <label>{{ t('purchases.shippingCost') }}<input v-model="shippingCostInput" inputmode="decimal" /></label>
 
+        <label>
+          {{ t('purchases.paidBy') }}
+          <select v-model="accountHolderUserId">
+            <option :value="null">{{ t('bandFinances.bandCash') }}</option>
+            <option v-for="holder in accountHolders" :key="holder.id" :value="holder.id">
+              {{ holder.username }}
+            </option>
+          </select>
+        </label>
+
         <div class="total-box purchase-total-box">
           <span>{{ t('purchases.netTotal') }}</span>
           <strong>{{ format(cartNetCents) }}</strong>
@@ -1024,6 +1065,7 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
               <span><b>{{ t('purchases.invoiceReference') }}:</b> {{ receipt.invoiceReference || '—' }}</span>
               <span><b>{{ t('purchases.priceMode') }}:</b> {{ t(receipt.priceMode === 'basket' ? 'purchases.basketPrice' : 'purchases.pricePerItem') }}</span>
               <span><b>{{ t('purchases.shippingCost') }}:</b> {{ format(receipt.shippingCostCents) }}</span>
+              <span><b>{{ t('purchases.paidBy') }}:</b> {{ accountHolderLabel(receipt.accountHolderUsername) }}</span>
             </div>
             <div class="table-scroll">
               <table>
@@ -1133,6 +1175,15 @@ async function cancelReceipt(receipt: PurchaseReceipt) {
           <label>{{ t('purchases.supplier') }}<input v-model="editSupplier" /></label>
         </div>
         <label>{{ t('purchases.invoiceReference') }}<input v-model="editInvoiceReference" /></label>
+        <label>
+          {{ t('purchases.paidBy') }}
+          <select v-model="editAccountHolderUserId">
+            <option :value="null">{{ t('bandFinances.bandCash') }}</option>
+            <option v-for="holder in editAccountHolderOptions" :key="holder.id" :value="holder.id">
+              {{ holder.username }}
+            </option>
+          </select>
+        </label>
         <div class="field-grid two-columns">
           <AppToggle v-model="editPricesIncludeVat" :label="t('purchases.priceIncludesVat')" />
           <label>{{ t('purchases.vatRate') }}<input v-model="editVatRateInput" inputmode="decimal" /></label>

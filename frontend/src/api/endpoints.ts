@@ -2,6 +2,7 @@ import { api, apiUrl, request } from './client'
 import type { TelemetryPayload } from './telemetry-types'
 import type {
   Article,
+  AccountHolder,
   AuditEntry,
   BackupRun,
   Band,
@@ -325,7 +326,7 @@ export const bandFinanceAttachmentsApi = {
 }
 
 export const purchasesApi = {
-  list: () => api.get<{ purchases: Purchase[]; editing_enabled: boolean }>('/purchases'),
+  list: () => api.get<{ purchases: Purchase[]; editing_enabled: boolean; account_holders: AccountHolder[] }>('/purchases'),
   create: (payload: {
     items: { variant_id: number; quantity: number; unit_cost_cents: number; comment?: string }[]
     purchased_on: string
@@ -336,6 +337,7 @@ export const purchasesApi = {
     shipping_cost_cents: number
     price_mode?: 'unit' | 'basket'
     goods_total_cents?: number
+    account_holder_user_id: number | null
     receipt_id?: string
   }) => api.post<{
     receipt_id: string
@@ -343,6 +345,8 @@ export const purchasesApi = {
     total_cost_cents: number
     goods_total_cents: number
     price_mode: 'unit' | 'basket'
+    account_holder_user_id: number | null
+    account_holder_username: string
   }>('/purchases', payload),
   updateReceipt: (receiptId: string, payload: {
     items: { id: number; quantity: number; unit_cost_cents: number }[]
@@ -354,12 +358,15 @@ export const purchasesApi = {
     shipping_cost_cents: number
     price_mode?: 'unit' | 'basket'
     goods_total_cents?: number
+    account_holder_user_id: number | null
   }) => api.patch<{
     receipt_id: string
     purchase_ids: number[]
     total_cost_cents: number
     goods_total_cents: number
     price_mode: 'unit' | 'basket'
+    account_holder_user_id: number | null
+    account_holder_username: string
   }>(
     `/purchases/receipt/${encodeURIComponent(receiptId)}`, payload,
   ),

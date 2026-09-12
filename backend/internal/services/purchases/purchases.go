@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/accountholder"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/catalogue"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/money"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/receipt"
@@ -24,17 +25,18 @@ import (
 
 // Errors returned by the purchases service.
 var (
-	ErrEmptyReceipt     = errors.New("purchases: the receipt has no positions")
-	ErrInvalidQuantity  = errors.New("purchases: quantity must be positive")
-	ErrNegativeCost     = errors.New("purchases: costs cannot be negative")
-	ErrUnknownVariant   = errors.New("purchases: unknown variant")
-	ErrNotFound         = errors.New("purchases: no such purchase")
-	ErrAlreadyCancelled = errors.New("purchases: purchase is already cancelled")
-	ErrInvalidVAT       = errors.New("purchases: VAT rate must be between 0 and 100 percent")
-	ErrNegativeShipping = errors.New("purchases: shipping costs cannot be negative")
-	ErrInvalidPriceMode = errors.New("purchases: invalid price mode")
-	ErrBasketTotal      = errors.New("purchases: basket price mode requires a non-negative goods total")
-	ErrBasketLineEdit   = errors.New("purchases: basket-priced receipts must be edited as a complete receipt")
+	ErrEmptyReceipt         = errors.New("purchases: the receipt has no positions")
+	ErrInvalidQuantity      = errors.New("purchases: quantity must be positive")
+	ErrNegativeCost         = errors.New("purchases: costs cannot be negative")
+	ErrUnknownVariant       = errors.New("purchases: unknown variant")
+	ErrNotFound             = errors.New("purchases: no such purchase")
+	ErrAlreadyCancelled     = errors.New("purchases: purchase is already cancelled")
+	ErrInvalidVAT           = errors.New("purchases: VAT rate must be between 0 and 100 percent")
+	ErrNegativeShipping     = errors.New("purchases: shipping costs cannot be negative")
+	ErrInvalidPriceMode     = errors.New("purchases: invalid price mode")
+	ErrBasketTotal          = errors.New("purchases: basket price mode requires a non-negative goods total")
+	ErrBasketLineEdit       = errors.New("purchases: basket-priced receipts must be edited as a complete receipt")
+	ErrInvalidAccountHolder = accountholder.ErrInvalid
 )
 
 // Item is one position of a goods receipt.
@@ -55,9 +57,10 @@ type Request struct {
 	PricesIncludeVAT   *bool `json:"prices_include_vat"`
 	VATRateBasisPoints *int  `json:"vat_rate_basis_points"`
 	// Shipping uses the same net/gross interpretation as the item prices.
-	ShippingCostCents int64                    `json:"shipping_cost_cents"`
-	PriceMode         models.PurchasePriceMode `json:"price_mode"`
-	GoodsTotalCents   *int64                   `json:"goods_total_cents"`
+	ShippingCostCents   int64                    `json:"shipping_cost_cents"`
+	PriceMode           models.PurchasePriceMode `json:"price_mode"`
+	GoodsTotalCents     *int64                   `json:"goods_total_cents"`
+	AccountHolderUserID *int64                   `json:"account_holder_user_id"`
 	// ReceiptID is the preview the client displayed.
 	ReceiptID string `json:"receipt_id"`
 }
@@ -69,15 +72,16 @@ type ReceiptEditItem struct {
 }
 
 type ReceiptUpdateRequest struct {
-	Items              []ReceiptEditItem        `json:"items"`
-	PurchasedOn        models.Date              `json:"purchased_on"`
-	Supplier           string                   `json:"supplier"`
-	InvoiceReference   string                   `json:"invoice_reference"`
-	PricesIncludeVAT   *bool                    `json:"prices_include_vat"`
-	VATRateBasisPoints *int                     `json:"vat_rate_basis_points"`
-	ShippingCostCents  int64                    `json:"shipping_cost_cents"`
-	PriceMode          models.PurchasePriceMode `json:"price_mode"`
-	GoodsTotalCents    *int64                   `json:"goods_total_cents"`
+	Items               []ReceiptEditItem        `json:"items"`
+	PurchasedOn         models.Date              `json:"purchased_on"`
+	Supplier            string                   `json:"supplier"`
+	InvoiceReference    string                   `json:"invoice_reference"`
+	PricesIncludeVAT    *bool                    `json:"prices_include_vat"`
+	VATRateBasisPoints  *int                     `json:"vat_rate_basis_points"`
+	ShippingCostCents   int64                    `json:"shipping_cost_cents"`
+	PriceMode           models.PurchasePriceMode `json:"price_mode"`
+	GoodsTotalCents     *int64                   `json:"goods_total_cents"`
+	AccountHolderUserID *int64                   `json:"account_holder_user_id"`
 }
 
 // Actor is who booked the receipt.
@@ -93,6 +97,8 @@ type Result struct {
 	TotalCostCents          int64                    `json:"total_cost_cents"`
 	GoodsTotalCents         int64                    `json:"goods_total_cents"`
 	PriceMode               models.PurchasePriceMode `json:"price_mode"`
+	AccountHolderUserID     *int64                   `json:"account_holder_user_id"`
+	AccountHolderUsername   string                   `json:"account_holder_username"`
 	AutoWithdrawnVariantIDs []int64                  `json:"-"`
 	AutoWithdrawnArticleIDs []int64                  `json:"-"`
 }
@@ -191,6 +197,10 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
 		if err := validateVariants(ctx, tx, req.Items); err != nil {
 			return err
 		}
+		holderID, holderUsername, err := accountholder.Resolve(ctx, tx, req.AccountHolderUserID)
+		if err != nil {
+			return err
+		}
 
 		receiptID, err := s.receipts.WithTx(tx).
 			Allocate(ctx, receipt.PrefixPurchase, req.ReceiptID, req.PurchasedOn, "")
@@ -206,21 +216,23 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
 			cost := costs[i]
 
 			purchase := &models.Purchase{
-				ReceiptID:          receiptID,
-				VariantID:          item.VariantID,
-				Quantity:           item.Quantity,
-				UnitCostCents:      cost.UnitCents,
-				PriceMode:          priceMode,
-				LineTotalCostCents: cost.LineCents,
-				PricesIncludeVAT:   includeVAT,
-				VATRateBasisPoints: vatRate,
-				ShippingCostCents:  shippingGross,
-				PurchasedOn:        req.PurchasedOn,
-				Supplier:           strings.TrimSpace(req.Supplier),
-				InvoiceReference:   strings.TrimSpace(req.InvoiceReference),
-				Comment:            strings.TrimSpace(item.Comment),
-				CreatedAt:          now,
-				UpdatedAt:          now,
+				ReceiptID:             receiptID,
+				VariantID:             item.VariantID,
+				Quantity:              item.Quantity,
+				UnitCostCents:         cost.UnitCents,
+				PriceMode:             priceMode,
+				LineTotalCostCents:    cost.LineCents,
+				PricesIncludeVAT:      includeVAT,
+				VATRateBasisPoints:    vatRate,
+				ShippingCostCents:     shippingGross,
+				AccountHolderUserID:   holderID,
+				AccountHolderUsername: holderUsername,
+				PurchasedOn:           req.PurchasedOn,
+				Supplier:              strings.TrimSpace(req.Supplier),
+				InvoiceReference:      strings.TrimSpace(req.InvoiceReference),
+				Comment:               strings.TrimSpace(item.Comment),
+				CreatedAt:             now,
+				UpdatedAt:             now,
 			}
 			purchase.CreatedByUserID = &actor.UserID
 			purchase.CreatedByUsername = actor.Username
@@ -233,7 +245,11 @@ func (s *Service) Create(ctx context.Context, req Request, actor Actor) (*Result
 		}
 		total += shippingGross
 
-		result = &Result{ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total, GoodsTotalCents: goodsGross, PriceMode: priceMode}
+		result = &Result{
+			ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total,
+			GoodsTotalCents: goodsGross, PriceMode: priceMode,
+			AccountHolderUserID: holderID, AccountHolderUsername: holderUsername,
+		}
 		return nil
 	})
 	if err != nil {
@@ -351,18 +367,30 @@ func (s *Service) UpdateReceipt(ctx context.Context, receiptID string, req Recei
 			return ErrEmptyReceipt
 		}
 
+		holderID := positions[0].AccountHolderUserID
+		holderUsername := positions[0].AccountHolderUsername
+		if !accountholder.Same(req.AccountHolderUserID, holderID) {
+			var err error
+			holderID, holderUsername, err = accountholder.Resolve(ctx, tx, req.AccountHolderUserID)
+			if err != nil {
+				return err
+			}
+		}
+
 		now := time.Now().UTC()
 		if err := tx.WithContext(ctx).Model(&models.Purchase{}).
 			Where("receipt_id = ?", receiptID).
 			Updates(map[string]any{
-				"purchased_on":          req.PurchasedOn,
-				"supplier":              strings.TrimSpace(req.Supplier),
-				"invoice_reference":     strings.TrimSpace(req.InvoiceReference),
-				"prices_include_vat":    includeVAT,
-				"vat_rate_basis_points": vatRate,
-				"shipping_cost_cents":   shippingGross,
-				"price_mode":            priceMode,
-				"updated_at":            now,
+				"purchased_on":            req.PurchasedOn,
+				"supplier":                strings.TrimSpace(req.Supplier),
+				"invoice_reference":       strings.TrimSpace(req.InvoiceReference),
+				"prices_include_vat":      includeVAT,
+				"vat_rate_basis_points":   vatRate,
+				"shipping_cost_cents":     shippingGross,
+				"account_holder_user_id":  holderID,
+				"account_holder_username": holderUsername,
+				"price_mode":              priceMode,
+				"updated_at":              now,
 			}).Error; err != nil {
 			return err
 		}
@@ -400,6 +428,7 @@ func (s *Service) UpdateReceipt(ctx context.Context, receiptID string, req Recei
 		result = &Result{
 			ReceiptID: receiptID, PurchaseIDs: ids, TotalCostCents: total,
 			GoodsTotalCents: goodsGross, PriceMode: priceMode,
+			AccountHolderUserID: holderID, AccountHolderUsername: holderUsername,
 			AutoWithdrawnVariantIDs: withdrawal.VariantIDs,
 			AutoWithdrawnArticleIDs: withdrawal.ArticleIDs,
 		}

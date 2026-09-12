@@ -159,6 +159,86 @@ func TestAccountHolderBalancesUseCurrentNameAndKeepDeletedHistory(t *testing.T) 
 	}
 }
 
+func TestAccountHolderBalancesCombineBandFinancesAndPurchaseReceipts(t *testing.T) {
+	h := newHarness(t)
+	band := h.makeBand()
+	h.signInAs(band, models.RoleManager)
+	holder := h.makeUser(&band.ID, models.RoleMember, "ein-langes-passwort")
+	_, variants := h.sellableArticle("Gemeinsame Zahlungsbilanz")
+
+	income := h.do(http.MethodPost, "/api/v1/band-finances", map[string]any{
+		"transaction_type": "income", "transaction_on": "2026-09-10",
+		"category": "Gage", "description": "Privat erhalten", "amount_cents": 1000,
+		"account_holder_user_id": holder.ID, "is_settled": true,
+	})
+	if income.Status != http.StatusCreated {
+		t.Fatalf("create band income: %d %v", income.Status, income.Body)
+	}
+	expense := h.do(http.MethodPost, "/api/v1/band-finances", map[string]any{
+		"transaction_type": "expense", "transaction_on": "2026-09-10",
+		"category": "Sonstiges", "description": "Privat bezahlt", "amount_cents": 200,
+		"account_holder_user_id": holder.ID, "is_settled": true,
+	})
+	if expense.Status != http.StatusCreated {
+		t.Fatalf("create band expense: %d %v", expense.Status, expense.Body)
+	}
+	purchase := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items": []any{
+			map[string]any{"variant_id": variants[0], "quantity": 2, "unit_cost_cents": 1000},
+			map[string]any{"variant_id": variants[1], "quantity": 3, "unit_cost_cents": 500},
+		},
+		"purchased_on": "2026-09-10", "shipping_cost_cents": 400,
+		"account_holder_user_id": holder.ID,
+	})
+	if purchase.Status != http.StatusCreated {
+		t.Fatalf("create purchase: %d %v", purchase.Status, purchase.Body)
+	}
+	outsidePeriod := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items":        []any{map[string]any{"variant_id": variants[0], "quantity": 1, "unit_cost_cents": 700}},
+		"purchased_on": "2026-08-31", "shipping_cost_cents": 300,
+		"account_holder_user_id": holder.ID,
+	})
+	if outsidePeriod.Status != http.StatusCreated {
+		t.Fatalf("create out-of-period purchase: %d %v", outsidePeriod.Status, outsidePeriod.Body)
+	}
+
+	assertTotal := func(wantExpense, wantDifference float64) {
+		t.Helper()
+		balances := h.do(http.MethodGet, "/api/v1/balances?from=2026-09-01&to=2026-09-30", nil)
+		if balances.Status != http.StatusOK {
+			t.Fatalf("balances: %d %v", balances.Status, balances.Body)
+		}
+		totals := jsonList(balances.Body, "account_holder_totals")
+		if len(totals) != 1 {
+			t.Fatalf("expected one attributed holder total: %v", totals)
+		}
+		total := jsonObject(totals[0])
+		if total["account_holder_user_id"] != float64(holder.ID) || total["income_cents"] != float64(1000) || total["expense_cents"] != wantExpense || total["difference_cents"] != wantDifference {
+			t.Fatalf("unexpected combined holder total: %v", total)
+		}
+	}
+
+	// Goods (2,000 + 1,500) and the receipt's shipping (400) are purchase
+	// expenses alongside the regular 200-cent band expense.
+	assertTotal(4100, 3100)
+
+	ids := jsonList(purchase.Body, "purchase_ids")
+	firstID := int64(ids[0].(float64))
+	if cancelled := h.do(http.MethodPatch, "/api/v1/purchases/"+itoa(firstID)+"/cancel", nil); cancelled.Status != http.StatusNoContent {
+		t.Fatalf("cancel one purchase position: %d %v", cancelled.Status, cancelled.Body)
+	}
+	// A partial cancellation removes only that line; receipt shipping remains
+	// counted exactly once.
+	assertTotal(2100, 1100)
+
+	receiptID := purchase.Body["receipt_id"].(string)
+	if cancelled := h.do(http.MethodPatch, "/api/v1/purchase-receipts/"+receiptID+"/cancel", nil); cancelled.Status != http.StatusNoContent {
+		t.Fatalf("cancel remaining receipt positions: %d %v", cancelled.Status, cancelled.Body)
+	}
+	// A fully cancelled receipt contributes neither goods nor shipping.
+	assertTotal(200, -800)
+}
+
 func TestRecurringBandFinanceCopiesAccountHolder(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()

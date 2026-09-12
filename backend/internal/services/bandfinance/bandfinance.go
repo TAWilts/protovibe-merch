@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/accountholder"
 )
 
 // Errors returned by the ledger.
@@ -29,7 +30,7 @@ var (
 	ErrInvalidType          = errors.New("bandfinance: the type must be income or expense")
 	ErrInvalidDate          = errors.New("bandfinance: the transaction date is required")
 	ErrMissingFields        = errors.New("bandfinance: category and description are required")
-	ErrInvalidAccountHolder = errors.New("bandfinance: account holder must be an active user of this band")
+	ErrInvalidAccountHolder = accountholder.ErrInvalid
 )
 
 // Entry is a new or editable ledger line. IsSettled is a pointer so older API

@@ -152,6 +152,128 @@ func TestReceiptEditingUsesTheFeatureFlagAndUpdatesSharedTerms(t *testing.T) {
 	}
 }
 
+func TestPurchaseAccountHoldersAreReceiptScopedAndHistoricalAssignmentsRemainEditable(t *testing.T) {
+	t.Setenv("PURCHASE_EDITING_ENABLED", "true")
+	h := newHarness(t)
+	band := h.makeBand()
+	manager := h.signInAs(band, models.RoleManager)
+	holder := h.makeUser(&band.ID, models.RoleMember, "ein-langes-passwort")
+	inactive := h.makeUser(&band.ID, models.RoleSeller, "ein-langes-passwort")
+	otherBand := h.makeBand()
+	otherHolder := h.makeUser(&otherBand.ID, models.RoleMember, "ein-langes-passwort")
+	_, variants := h.sellableArticle("Privat bezahlter Einkauf")
+
+	created := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items": []any{
+			map[string]any{"variant_id": variants[0], "quantity": 2, "unit_cost_cents": 900},
+			map[string]any{"variant_id": variants[1], "quantity": 3, "unit_cost_cents": 800},
+		},
+		"purchased_on": "2026-09-10", "supplier": "Privatdruckerei",
+		"shipping_cost_cents": 500, "account_holder_user_id": holder.ID,
+	})
+	if created.Status != http.StatusCreated || created.Body["account_holder_user_id"] != float64(holder.ID) || created.Body["account_holder_username"] != holder.Username {
+		t.Fatalf("create attributed purchase: %d %v", created.Status, created.Body)
+	}
+	receiptID := created.Body["receipt_id"].(string)
+	ids := jsonList(created.Body, "purchase_ids")
+	currentHolderName := holder.Username + " Neu"
+	if err := h.db.WithContext(h.ctx()).Model(holder).Update("username", currentHolderName).Error; err != nil {
+		t.Fatalf("rename holder: %v", err)
+	}
+
+	listed := h.do(http.MethodGet, "/api/v1/purchases", nil)
+	if listed.Status != http.StatusOK {
+		t.Fatalf("list purchases: %d %v", listed.Status, listed.Body)
+	}
+	positions := jsonList(listed.Body, "purchases")
+	if len(positions) != 2 {
+		t.Fatalf("expected two receipt positions: %v", positions)
+	}
+	for _, raw := range positions {
+		position := jsonObject(raw)
+		if position["account_holder_user_id"] != float64(holder.ID) || position["account_holder_username"] != currentHolderName {
+			t.Fatalf("all receipt positions must carry the holder's current name: %v", positions)
+		}
+	}
+	assignable := map[int64]bool{}
+	for _, raw := range jsonList(listed.Body, "account_holders") {
+		assignable[int64(jsonObject(raw)["id"].(float64))] = true
+	}
+	if !assignable[manager.ID] || !assignable[holder.ID] || !assignable[inactive.ID] || assignable[otherHolder.ID] {
+		t.Fatalf("assignable purchase holders must be active users of this band: %v", listed.Body["account_holders"])
+	}
+
+	bandCash := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items":        []any{map[string]any{"variant_id": variants[0], "quantity": 1, "unit_cost_cents": 700}},
+		"purchased_on": "2026-09-10",
+	})
+	if bandCash.Status != http.StatusCreated || bandCash.Body["account_holder_user_id"] != nil || bandCash.Body["account_holder_username"] != "" {
+		t.Fatalf("an omitted holder must mean band cash: %d %v", bandCash.Status, bandCash.Body)
+	}
+
+	if err := h.db.WithContext(h.ctx()).Model(inactive).Update("is_active", false).Error; err != nil {
+		t.Fatalf("deactivate holder: %v", err)
+	}
+	for name, userID := range map[string]int64{"inactive": inactive.ID, "other band": otherHolder.ID} {
+		invalid := h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+			"items":        []any{map[string]any{"variant_id": variants[0], "quantity": 1, "unit_cost_cents": 100}},
+			"purchased_on": "2026-09-10", "account_holder_user_id": userID,
+		})
+		if invalid.Status != http.StatusBadRequest || invalid.Body["code"] != "invalid_account_holder" {
+			t.Fatalf("%s holder must be rejected: %d %v", name, invalid.Status, invalid.Body)
+		}
+	}
+
+	if err := h.db.WithContext(h.ctx()).Model(holder).Update("is_active", false).Error; err != nil {
+		t.Fatalf("deactivate historical holder: %v", err)
+	}
+	editPayload := map[string]any{
+		"items": []any{
+			map[string]any{"id": ids[0], "quantity": 2, "unit_cost_cents": 900},
+			map[string]any{"id": ids[1], "quantity": 3, "unit_cost_cents": 800},
+		},
+		"purchased_on": "2026-09-11", "supplier": "Historisch erhalten",
+		"shipping_cost_cents": 500, "account_holder_user_id": holder.ID,
+	}
+	preserved := h.do(http.MethodPatch, "/api/v1/purchases/receipt/"+receiptID, editPayload)
+	if preserved.Status != http.StatusOK || preserved.Body["account_holder_username"] != holder.Username {
+		t.Fatalf("editing must preserve a now-inactive holder: %d %v", preserved.Status, preserved.Body)
+	}
+	if err := h.db.WithContext(h.ctx()).Delete(holder).Error; err != nil {
+		t.Fatalf("delete historical holder: %v", err)
+	}
+	preservedDeleted := h.do(http.MethodPatch, "/api/v1/purchases/receipt/"+receiptID, editPayload)
+	if preservedDeleted.Status != http.StatusOK || preservedDeleted.Body["account_holder_username"] != holder.Username {
+		t.Fatalf("editing must preserve a deleted holder snapshot: %d %v", preservedDeleted.Status, preservedDeleted.Body)
+	}
+	listedAfterDelete := h.do(http.MethodGet, "/api/v1/purchases", nil)
+	for _, raw := range jsonList(listedAfterDelete.Body, "purchases") {
+		position := jsonObject(raw)
+		if position["receipt_id"] == receiptID && position["account_holder_username"] != holder.Username {
+			t.Fatalf("a deleted holder must fall back to the historical snapshot: %v", position)
+		}
+	}
+
+	editPayload["supplier"] = "Darf nicht gespeichert werden"
+	editPayload["account_holder_user_id"] = otherHolder.ID
+	rejected := h.do(http.MethodPatch, "/api/v1/purchases/receipt/"+receiptID, editPayload)
+	if rejected.Status != http.StatusBadRequest || rejected.Body["code"] != "invalid_account_holder" {
+		t.Fatalf("cross-tenant receipt reassignment must be rejected: %d %v", rejected.Status, rejected.Body)
+	}
+	var stored []models.Purchase
+	if err := h.db.WithContext(h.ctx()).Where("receipt_id = ?", receiptID).Find(&stored).Error; err != nil {
+		t.Fatalf("reload receipt: %v", err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("expected two stored positions, got %d", len(stored))
+	}
+	for _, position := range stored {
+		if position.Supplier != "Historisch erhalten" || position.AccountHolderUserID == nil || *position.AccountHolderUserID != holder.ID || position.AccountHolderUsername != holder.Username {
+			t.Fatalf("invalid edit must leave every position unchanged: %+v", stored)
+		}
+	}
+}
+
 func TestBasketPricedPurchaseKeepsExactGoodsTotalAndShippingSeparate(t *testing.T) {
 	t.Setenv("PURCHASE_EDITING_ENABLED", "true")
 	h := newHarness(t)

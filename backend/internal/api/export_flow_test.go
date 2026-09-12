@@ -84,7 +84,7 @@ func TestExportHeadersMatchTheOriginal(t *testing.T) {
 		},
 		"einkaeufe": {
 			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Gesamt",
-			"Lieferant", "Rechnung", "Kommentar", "Storniert",
+			"Bezahlt von", "Lieferant", "Rechnung", "Kommentar", "Storniert",
 		},
 		"bestand": {
 			"Artikel", "Optionen", "Gekauft", "Verkauft", "Aktueller Bestand", "Mindestbestand",
@@ -115,11 +115,21 @@ func TestExportContentUsesGermanConventions(t *testing.T) {
 	h := newHarness(t)
 	band := h.makeBand()
 	h.signInAs(band, models.RoleManager)
+	holder := h.makeUser(&band.ID, models.RoleMember, "ein-langes-passwort")
 	_, variants := h.sellableArticle("Export Shirt")
 
 	h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
 		"items":        []any{map[string]any{"variant_id": variants[0], "quantity": 10, "unit_cost_cents": 950}},
 		"purchased_on": "2026-08-27", "supplier": "Druckerei Muster",
+		"account_holder_user_id": holder.ID,
+	})
+	currentHolderName := holder.Username + " Neu"
+	if err := h.db.WithContext(h.ctx()).Model(holder).Update("username", currentHolderName).Error; err != nil {
+		t.Fatalf("rename purchase holder: %v", err)
+	}
+	h.do(http.MethodPost, "/api/v1/purchases", map[string]any{
+		"items":        []any{map[string]any{"variant_id": variants[1], "quantity": 1, "unit_cost_cents": 800}},
+		"purchased_on": "2026-08-27", "supplier": "Bandkassen-Lieferant",
 	})
 	h.do(http.MethodPost, "/api/v1/sales", map[string]any{
 		"items":          []any{map[string]any{"variant_id": variants[0], "quantity": 2}},
@@ -151,6 +161,25 @@ func TestExportContentUsesGermanConventions(t *testing.T) {
 	}
 	if byColumn["Optionen"] == "" || byColumn["Verkauft von"] != "Jamie" {
 		t.Errorf("labels are missing: %v", rows[0])
+	}
+
+	// Purchase attribution is exported both for personal payments and the
+	// backwards-compatible band-cash default.
+	_, body, _ = h.download("/api/v1/exports/einkaeufe.csv")
+	header, rows = parseExport(t, body)
+	if len(rows) != 2 {
+		t.Fatalf("expected two purchase rows, got %d", len(rows))
+	}
+	paidBy := map[string]string{}
+	for _, row := range rows {
+		values := map[string]string{}
+		for i, name := range header {
+			values[name] = row[i]
+		}
+		paidBy[values["Lieferant"]] = values["Bezahlt von"]
+	}
+	if paidBy["Druckerei Muster"] != currentHolderName || paidBy["Bandkassen-Lieferant"] != "Bandkasse" {
+		t.Errorf("purchase account holders are missing: %v", paidBy)
 	}
 
 	// The inventory sheet must show the movements behind the stock figure.

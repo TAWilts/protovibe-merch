@@ -30,9 +30,11 @@ type Purchase struct {
 	LineTotalCostCents int64 `gorm:"not null;default:0" json:"line_total_cost_cents"`
 
 	// Receipt-level price metadata is repeated on each line, like supplier/date/reference.
-	PricesIncludeVAT   bool  `gorm:"not null" json:"prices_include_vat"`
-	VATRateBasisPoints int   `gorm:"not null;default:1900" json:"vat_rate_basis_points"`
-	ShippingCostCents  int64 `gorm:"not null;default:0" json:"shipping_cost_cents"`
+	PricesIncludeVAT      bool   `gorm:"not null" json:"prices_include_vat"`
+	VATRateBasisPoints    int    `gorm:"not null;default:1900" json:"vat_rate_basis_points"`
+	ShippingCostCents     int64  `gorm:"not null;default:0" json:"shipping_cost_cents"`
+	AccountHolderUserID   *int64 `json:"account_holder_user_id"`
+	AccountHolderUsername string `gorm:"size:150;not null;default:''" json:"account_holder_username"`
 
 	PurchasedOn Date   `gorm:"not null;index" json:"purchased_on"`
 	Supplier    string `gorm:"size:200;not null;default:''" json:"supplier"`

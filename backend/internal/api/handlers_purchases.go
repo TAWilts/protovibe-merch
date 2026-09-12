@@ -10,6 +10,7 @@ import (
 
 	"github.com/tawilts/protovibe-merch/backend/internal/audit"
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/accountholder"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/purchases"
 )
 
@@ -47,28 +48,30 @@ func (s *Server) refillSuggestions(c *gin.Context) {
 }
 
 type purchasePayload struct {
-	ID                   int64                    `json:"id"`
-	ReceiptID            string                   `json:"receipt_id"`
-	VariantID            int64                    `json:"variant_id"`
-	ArticleName          string                   `json:"article_name"`
-	VariantLabel         string                   `json:"variant_label"`
-	Quantity             int                      `json:"quantity"`
-	UnitCostCents        int64                    `json:"unit_cost_cents"`
-	TotalCostCents       int64                    `json:"total_cost_cents"`
-	PriceMode            models.PurchasePriceMode `json:"price_mode"`
-	PurchasedOn          models.Date              `json:"purchased_on"`
-	Supplier             string                   `json:"supplier"`
-	InvoiceReference     string                   `json:"invoice_reference"`
-	HasInvoiceFile       bool                     `json:"has_invoice_file"`
-	HasReceiptAttachment bool                     `json:"has_receipt_attachment"`
-	PricesIncludeVAT     bool                     `json:"prices_include_vat"`
-	VATRateBasisPoints   int                      `json:"vat_rate_basis_points"`
-	ShippingCostCents    int64                    `json:"shipping_cost_cents"`
-	Comment              string                   `json:"comment"`
-	IsCancelled          bool                     `json:"is_cancelled"`
-	CancelledAt          *time.Time               `json:"cancelled_at,omitempty"`
-	CancelledByUsername  string                   `json:"cancelled_by_username"`
-	CreatedByUsername    string                   `json:"created_by_username"`
+	ID                    int64                    `json:"id"`
+	ReceiptID             string                   `json:"receipt_id"`
+	VariantID             int64                    `json:"variant_id"`
+	ArticleName           string                   `json:"article_name"`
+	VariantLabel          string                   `json:"variant_label"`
+	Quantity              int                      `json:"quantity"`
+	UnitCostCents         int64                    `json:"unit_cost_cents"`
+	TotalCostCents        int64                    `json:"total_cost_cents"`
+	PriceMode             models.PurchasePriceMode `json:"price_mode"`
+	PurchasedOn           models.Date              `json:"purchased_on"`
+	Supplier              string                   `json:"supplier"`
+	InvoiceReference      string                   `json:"invoice_reference"`
+	HasInvoiceFile        bool                     `json:"has_invoice_file"`
+	HasReceiptAttachment  bool                     `json:"has_receipt_attachment"`
+	PricesIncludeVAT      bool                     `json:"prices_include_vat"`
+	VATRateBasisPoints    int                      `json:"vat_rate_basis_points"`
+	ShippingCostCents     int64                    `json:"shipping_cost_cents"`
+	AccountHolderUserID   *int64                   `json:"account_holder_user_id"`
+	AccountHolderUsername string                   `json:"account_holder_username"`
+	Comment               string                   `json:"comment"`
+	IsCancelled           bool                     `json:"is_cancelled"`
+	CancelledAt           *time.Time               `json:"cancelled_at,omitempty"`
+	CancelledByUsername   string                   `json:"cancelled_by_username"`
+	CreatedByUsername     string                   `json:"created_by_username"`
 }
 
 // listPurchases returns the goods-receipt history, newest first.
@@ -89,6 +92,17 @@ func (s *Server) listPurchases(c *gin.Context) {
 		serverError(c, err)
 		return
 	}
+	accountHolderIDs := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		if row.AccountHolderUserID != nil {
+			accountHolderIDs = append(accountHolderIDs, *row.AccountHolderUserID)
+		}
+	}
+	currentAccountHolderNames, err := accountholder.CurrentUsernames(ctx, s.db, accountHolderIDs)
+	if err != nil {
+		serverError(c, err)
+		return
+	}
 
 	var attachedReceiptIDs []string
 	if err := s.db.WithContext(ctx).Model(&models.PurchaseReceiptAttachment{}).
@@ -100,37 +114,51 @@ func (s *Server) listPurchases(c *gin.Context) {
 	for _, receiptID := range attachedReceiptIDs {
 		hasReceiptAttachment[receiptID] = true
 	}
+	accountHolders, err := accountholder.List(ctx, s.db)
+	if err != nil {
+		serverError(c, err)
+		return
+	}
 
 	payload := make([]purchasePayload, 0, len(rows))
 	for _, row := range rows {
+		accountHolderUsername := row.AccountHolderUsername
+		if row.AccountHolderUserID != nil {
+			if currentName, exists := currentAccountHolderNames[*row.AccountHolderUserID]; exists {
+				accountHolderUsername = currentName
+			}
+		}
 		payload = append(payload, purchasePayload{
-			ID:                   row.ID,
-			ReceiptID:            row.ReceiptID,
-			VariantID:            row.VariantID,
-			ArticleName:          labels[row.VariantID].ArticleName,
-			VariantLabel:         labels[row.VariantID].VariantLabel,
-			Quantity:             row.Quantity,
-			UnitCostCents:        row.UnitCostCents,
-			TotalCostCents:       row.LineTotalCostCents,
-			PriceMode:            row.PriceMode,
-			PurchasedOn:          row.PurchasedOn,
-			Supplier:             row.Supplier,
-			InvoiceReference:     row.InvoiceReference,
-			HasInvoiceFile:       row.InvoiceFilePath != "",
-			HasReceiptAttachment: hasReceiptAttachment[row.ReceiptID],
-			PricesIncludeVAT:     row.PricesIncludeVAT,
-			VATRateBasisPoints:   row.VATRateBasisPoints,
-			ShippingCostCents:    row.ShippingCostCents,
-			Comment:              row.Comment,
-			IsCancelled:          row.IsCancelled,
-			CancelledAt:          row.CancelledAt,
-			CancelledByUsername:  row.CancelledByUsername,
-			CreatedByUsername:    row.CreatedByUsername,
+			ID:                    row.ID,
+			ReceiptID:             row.ReceiptID,
+			VariantID:             row.VariantID,
+			ArticleName:           labels[row.VariantID].ArticleName,
+			VariantLabel:          labels[row.VariantID].VariantLabel,
+			Quantity:              row.Quantity,
+			UnitCostCents:         row.UnitCostCents,
+			TotalCostCents:        row.LineTotalCostCents,
+			PriceMode:             row.PriceMode,
+			PurchasedOn:           row.PurchasedOn,
+			Supplier:              row.Supplier,
+			InvoiceReference:      row.InvoiceReference,
+			HasInvoiceFile:        row.InvoiceFilePath != "",
+			HasReceiptAttachment:  hasReceiptAttachment[row.ReceiptID],
+			PricesIncludeVAT:      row.PricesIncludeVAT,
+			VATRateBasisPoints:    row.VATRateBasisPoints,
+			ShippingCostCents:     row.ShippingCostCents,
+			AccountHolderUserID:   row.AccountHolderUserID,
+			AccountHolderUsername: accountHolderUsername,
+			Comment:               row.Comment,
+			IsCancelled:           row.IsCancelled,
+			CancelledAt:           row.CancelledAt,
+			CancelledByUsername:   row.CancelledByUsername,
+			CreatedByUsername:     row.CreatedByUsername,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"purchases":       payload,
 		"editing_enabled": s.cfg.PurchaseEditingEnabled,
+		"account_holders": accountHolders,
 	})
 }
 
@@ -171,11 +199,13 @@ func (s *Server) createPurchase(c *gin.Context) {
 	s.audit.Log(ctx, actorFrom(c), audit.Entry{
 		Action: audit.ActionPurchaseCreated, EntityType: "purchase",
 		Details: map[string]any{
-			"receipt_id":        result.ReceiptID,
-			"positions":         len(result.PurchaseIDs),
-			"total_cost_cents":  result.TotalCostCents,
-			"goods_total_cents": result.GoodsTotalCents,
-			"price_mode":        result.PriceMode,
+			"receipt_id":              result.ReceiptID,
+			"positions":               len(result.PurchaseIDs),
+			"total_cost_cents":        result.TotalCostCents,
+			"goods_total_cents":       result.GoodsTotalCents,
+			"price_mode":              result.PriceMode,
+			"account_holder_user_id":  result.AccountHolderUserID,
+			"account_holder_username": result.AccountHolderUsername,
 		},
 	})
 	c.JSON(http.StatusCreated, result)
@@ -239,11 +269,13 @@ func (s *Server) updatePurchaseReceipt(c *gin.Context) {
 	s.audit.Log(ctx, actorFrom(c), audit.Entry{
 		Action: audit.ActionPurchaseUpdated, EntityType: "purchase_receipt",
 		Details: map[string]any{
-			"receipt_id":        receiptID,
-			"positions":         len(result.PurchaseIDs),
-			"total_cost_cents":  result.TotalCostCents,
-			"goods_total_cents": result.GoodsTotalCents,
-			"price_mode":        result.PriceMode,
+			"receipt_id":              receiptID,
+			"positions":               len(result.PurchaseIDs),
+			"total_cost_cents":        result.TotalCostCents,
+			"goods_total_cents":       result.GoodsTotalCents,
+			"price_mode":              result.PriceMode,
+			"account_holder_user_id":  result.AccountHolderUserID,
+			"account_holder_username": result.AccountHolderUsername,
 		},
 	})
 	s.logAutomaticWithdrawal(c, result.AutoWithdrawnVariantIDs, result.AutoWithdrawnArticleIDs, "purchase_receipt_update")
@@ -318,6 +350,8 @@ func (s *Server) reportPurchaseError(c *gin.Context, err error) {
 		fail(c, http.StatusConflict, "basket_receipt_requires_receipt_edit", err.Error())
 	case errors.Is(err, purchases.ErrInvalidVAT):
 		fail(c, http.StatusBadRequest, "invalid_vat", err.Error())
+	case errors.Is(err, purchases.ErrInvalidAccountHolder):
+		fail(c, http.StatusBadRequest, "invalid_account_holder", err.Error())
 	case errors.Is(err, purchases.ErrUnknownVariant):
 		fail(c, http.StatusBadRequest, "unknown_variant", err.Error())
 	default:

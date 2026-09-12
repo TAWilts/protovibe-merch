@@ -526,6 +526,8 @@ export interface Purchase {
   prices_include_vat: boolean
   vat_rate_basis_points: number
   shipping_cost_cents: number
+  account_holder_user_id: number | null
+  account_holder_username: string
   comment: string
   is_cancelled: boolean
   cancelled_at?: string
@@ -586,10 +588,12 @@ export interface CategoryTotal {
   balance_cents: number
 }
 
-export interface BandFinanceAccountHolder {
+export interface AccountHolder {
   id: number
   username: string
 }
+
+export type BandFinanceAccountHolder = AccountHolder
 
 export interface BandLedger {
   entries: BandTransaction[]

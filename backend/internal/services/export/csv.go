@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/tawilts/protovibe-merch/backend/internal/models"
+	"github.com/tawilts/protovibe-merch/backend/internal/services/accountholder"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/catalogue"
 	"github.com/tawilts/protovibe-merch/backend/internal/services/money"
 )
@@ -79,6 +80,13 @@ func yesNo(value bool) string {
 		return "ja"
 	}
 	return "nein"
+}
+
+func accountHolderLabel(username string) string {
+	if username == "" {
+		return "Bandkasse"
+	}
+	return username
 }
 
 // Build renders one sheet.
@@ -423,10 +431,26 @@ func (s *Service) purchaseSheet(ctx context.Context) (*Sheet, error) {
 	if err := s.db.WithContext(ctx).Order("purchased_on, id").Find(&purchases).Error; err != nil {
 		return nil, err
 	}
+	accountHolderIDs := make([]int64, 0, len(purchases))
+	for _, purchase := range purchases {
+		if purchase.AccountHolderUserID != nil {
+			accountHolderIDs = append(accountHolderIDs, *purchase.AccountHolderUserID)
+		}
+	}
+	currentAccountHolderNames, err := accountholder.CurrentUsernames(ctx, s.db, accountHolderIDs)
+	if err != nil {
+		return nil, err
+	}
 
 	rows := make([][]string, 0, len(purchases))
 	for _, purchase := range purchases {
 		entry := contexts[purchase.VariantID]
+		accountHolderUsername := purchase.AccountHolderUsername
+		if purchase.AccountHolderUserID != nil {
+			if currentName, exists := currentAccountHolderNames[*purchase.AccountHolderUserID]; exists {
+				accountHolderUsername = currentName
+			}
+		}
 		rows = append(rows, []string{
 			purchase.ReceiptID,
 			purchase.PurchasedOn.String(),
@@ -435,6 +459,7 @@ func (s *Service) purchaseSheet(ctx context.Context) (*Sheet, error) {
 			fmt.Sprintf("%d", purchase.Quantity),
 			money.FormatCSV(purchase.UnitCostCents),
 			money.FormatCSV(purchase.LineTotalCostCents),
+			accountHolderLabel(accountHolderUsername),
 			purchase.Supplier,
 			purchase.InvoiceReference,
 			purchase.Comment,
@@ -446,7 +471,7 @@ func (s *Service) purchaseSheet(ctx context.Context) (*Sheet, error) {
 		Name: string(KindPurchases),
 		Header: []string{
 			"Beleg-ID", "Datum", "Artikel", "Optionen", "Stück", "Preis/Stück", "Gesamt",
-			"Lieferant", "Rechnung", "Kommentar", "Storniert",
+			"Bezahlt von", "Lieferant", "Rechnung", "Kommentar", "Storniert",
 		},
 		Rows: rows,
 	}, nil
