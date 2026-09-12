@@ -9,9 +9,9 @@ const props = defineProps<{ points: EventTimelinePoint[] }>()
 const { t } = useI18n()
 const { format } = useMoney()
 
-const height = 300
-const padding = { top: 24, right: 18, bottom: 66, left: 82 }
-const chartWidth = computed(() => Math.max(720, props.points.length * 112))
+const height = 340
+const padding = { top: 48, right: 30, bottom: 70, left: 82 }
+const chartWidth = computed(() => Math.max(760, props.points.length * 210))
 const maximum = computed(() => Math.max(1, ...props.points.flatMap((point) => [point.income_cents, point.profit_cents])))
 const minimum = computed(() => Math.min(0, ...props.points.map((point) => point.profit_cents)))
 const ticks = computed(() => [...new Set([maximum.value, 0, minimum.value])])
@@ -32,8 +32,26 @@ const bars = computed(() => {
     const profitY = y(point.profit_cents)
     return {
       point,
-      income: { x: center - width - 3, y: Math.min(zero, incomeY), width, height: Math.max(1, Math.abs(zero - incomeY)) },
-      profit: { x: center + 3, y: Math.min(zero, profitY), width, height: Math.max(1, Math.abs(zero - profitY)) },
+      income: {
+        x: center - width - 3,
+        y: point.income_cents === 0 ? zero - 1 : Math.min(zero, incomeY),
+        width,
+        height: point.income_cents === 0 ? 2 : Math.max(1, Math.abs(zero - incomeY)),
+      },
+      incomeLabel: {
+        x: center - 4,
+        y: point.income_cents < 0 ? incomeY + 16 : Math.max(14, incomeY - 8),
+      },
+      profit: {
+        x: center + 3,
+        y: point.profit_cents === 0 ? zero - 1 : Math.min(zero, profitY),
+        width,
+        height: point.profit_cents === 0 ? 2 : Math.max(1, Math.abs(zero - profitY)),
+      },
+      profitLabel: {
+        x: center + 4,
+        y: point.profit_cents < 0 ? profitY + 16 : Math.max(14, profitY - 8),
+      },
       center,
       shortLabel: point.label.length > 16 ? `${point.label.slice(0, 15)}…` : point.label,
     }
@@ -64,9 +82,15 @@ const bars = computed(() => {
           <rect class="income-bar" v-bind="bar.income">
             <title>{{ `${bar.point.label}, ${bar.point.date}: ${t('balances.income')} ${format(bar.point.income_cents)}` }}</title>
           </rect>
+          <text class="bar-value income-value" :x="bar.incomeLabel.x" :y="bar.incomeLabel.y">
+            {{ format(bar.point.income_cents) }}
+          </text>
           <rect class="profit-bar" v-bind="bar.profit">
             <title>{{ `${bar.point.label}, ${bar.point.date}: ${t('balances.profit')} ${format(bar.point.profit_cents)}` }}</title>
           </rect>
+          <text class="bar-value profit-value" :x="bar.profitLabel.x" :y="bar.profitLabel.y">
+            {{ format(bar.point.profit_cents) }}
+          </text>
           <text class="event-label" :x="bar.center" :y="height - 36">{{ bar.shortLabel }}</text>
           <text class="date-label" :x="bar.center" :y="height - 18">{{ bar.point.date }}</text>
         </g>
@@ -92,7 +116,7 @@ const bars = computed(() => {
 .chart-legend i { width: 12px; height: 12px; border-radius: 3px; }
 .income-key, .income-bar { fill: var(--accent); background: var(--accent); }
 .profit-key, .profit-bar { fill: var(--success-text); background: var(--success-text); }
-.event-chart-scroll { overflow-x: auto; border-radius: var(--radius-control); outline: none; }
+.event-chart-scroll { overflow-x: auto; touch-action: pan-x pan-y; border-radius: var(--radius-control); outline: none; }
 .event-chart-scroll:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 .event-chart { display: block; max-width: none; }
 .axis-tick line { stroke: var(--border-subtle); stroke-width: 1; }
@@ -103,4 +127,7 @@ const bars = computed(() => {
 .event-label, .date-label { fill: var(--text-secondary); text-anchor: middle; }
 .event-label { font-size: 12px; font-weight: 700; }
 .date-label { font-size: 10px; }
+.bar-value { fill: var(--text-primary); font-size: 10px; font-weight: 700; }
+.income-value { text-anchor: end; }
+.profit-value { text-anchor: start; }
 </style>

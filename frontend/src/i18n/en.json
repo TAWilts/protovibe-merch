@@ -555,6 +555,7 @@
     "noEventTimeline": "There are no sales with an event in the selected period.",
     "incomeChart": "Income over time",
     "incomeChartHint": "Paid sales and donations by sale date.",
+    "incomeChartDescription": "Income by sale date.",
     "financeReport": "Finance report",
     "financeReportHint": "Download finance reports for the selected period.",
     "financeReportPdf": "Finance report as PDF",

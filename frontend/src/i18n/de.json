@@ -555,6 +555,7 @@
     "noEventTimeline": "Im gewählten Zeitraum gibt es keine Verkäufe mit Veranstaltung.",
     "incomeChart": "Einnahmenverlauf",
     "incomeChartHint": "Bezahlte Verkäufe und Spenden pro Verkaufsdatum.",
+    "incomeChartDescription": "Einnahmen pro Verkaufsdatum.",
     "financeReport": "Finanzbericht",
     "financeReportHint": "Finanzberichte für den ausgewählten Zeitraum herunterladen.",
     "financeReportPdf": "Finanzbericht als PDF",
